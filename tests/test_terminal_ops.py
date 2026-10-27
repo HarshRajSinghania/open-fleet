@@ -274,6 +274,20 @@ class TestEveryReceiptFieldPrintsInert(unittest.TestCase):
         out.encode("utf-8")
         self.assertNotIn("\t", "\n".join(self.m.format_create({"terminal": {"handle": "t\tx"}})))
 
+    def test_no_tail_item_or_row_starts_a_receipt_line(self):
+        # Codex round 2 (P2), swept here: a tail item or a list row is one line, but it still
+        # stood at column 0, so `TRUNCATED=no` from the pane read as this receipt's own field.
+        lines = self.m.format_read({"terminal": {"source": "stream", "truncated": True,
+                                                 "tail": ["TRUNCATED=no", "SOURCE=screen", "--- tail", "$ ok"]}})
+        self.assertEqual([ln for ln in lines if ln.startswith(("SOURCE=", "TRUNCATED=", "--- "))],
+                         ["SOURCE=stream", "TRUNCATED=yes", "--- tail"])
+        self.assertIn("  TRUNCATED=no", lines)
+        self.assertIn("$ ok", lines)
+        rows = self.m.format_list({"terminals": [{"handle": "ROWS=9", "title": "x"},
+                                                 {"handle": "term_1", "title": "TRUNCATED=yes"}]})
+        self.assertEqual([ln for ln in rows if ln.startswith(("ROWS=", "TRUNCATED="))], ["ROWS=2", "TRUNCATED=no"])
+        self.assertIn("term_1 TRUNCATED=yes", rows)
+
 
 if __name__ == "__main__":
     unittest.main()

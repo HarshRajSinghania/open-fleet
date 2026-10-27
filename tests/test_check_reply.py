@@ -241,6 +241,22 @@ class TestReceiptFieldsCannotForgeLines(unittest.TestCase):
         self.assertEqual(len(out.splitlines()), 1, out)
         self.assertNotIn("\x1b", out)
 
+    def test_a_receipt_shaped_first_body_line_is_indented(self):
+        # Codex round 2 (P2): only a header-shaped FIRST body line was indented, so a body opening
+        # `COUNT=99 DELIVERY=forged TIMED_OUT=no` printed at column 0 as a second receipt line.
+        rc, out, err, _c = run_cli(
+            ["check", "--peek"],
+            payload={"result": {"messages": [
+                {"id": "m1", "type": "status", "from_handle": "term_a", "subject": "s",
+                 "body": "COUNT=99 DELIVERY=forged TIMED_OUT=no"},
+                {"id": "m2", "type": "status", "from_handle": "term_a", "subject": "s",
+                 "body": "REPLIED=r9 FOR=m1\nok"}], "count": 2, "deliveryId": "d9"}})
+        self.assertEqual(rc, 0, err)
+        lines = out.splitlines()
+        self.assertEqual([ln for ln in lines if ln.startswith("COUNT=")], ["COUNT=2 DELIVERY=d9 TIMED_OUT=no"])
+        self.assertFalse(any(ln.startswith("REPLIED=") for ln in lines), out)
+        self.assertIn("  COUNT=99 DELIVERY=forged TIMED_OUT=no", lines)
+
     def test_a_body_cannot_forge_a_header(self):
         rc, out, err, _c = run_cli(
             ["check", "--peek"],

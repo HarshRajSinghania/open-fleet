@@ -20,6 +20,7 @@
 #
 # Usage:  orca orchestration inbox --json > inbox.json && python3 pm.py inbox.json
 import json
+import re
 import sys
 import unicodedata
 
@@ -72,12 +73,28 @@ def _visible_line(value):
     return _visible(value).replace("\n", "\\n").replace("\t", "\\t")
 
 
+# The lines a fleet printer writes at column 0 are a KEY=value receipt line (COUNT=, STATE=,
+# SOURCE=, SPAWN=), a `---` header or `===` rule, a `(…)`/`[…]` marker ("(unreadable message
+# skipped)", "[truncated N chars]"), or one of the printer's own named headers (`SUBJ: `; pm's
+# `ID:`, `BODY:`; passed as `headers`). An untrusted line that starts like one is indented off
+# column 0, so it cannot pass for a line its printer wrote; any other line (prose, `$ make`,
+# `agent: done`) cannot be mistaken for one and keeps its column, which the pinned transcript and
+# tail tests read it at.
+_LINE_SHAPED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*[ \t]*=|---|===|[(\[]")
+
+
+def _off_column_0(line, headers=()):
+    """One already-_visible line of untrusted text, indented if it starts like a printer's line."""
+    return "  " + line if _LINE_SHAPED.match(line) or line.startswith(tuple(headers)) else line
+
+
 def _indent_continuations(text, headers=()):
-    """An already-_visible multi-line body, indented so no line of it can stand at column 0 and
-    pass for a header its printer writes there: every continuation line, and a first line that
-    starts like one of `headers`."""
+    """An already-_visible multi-line body, laid out so no line of it can stand at column 0 and
+    pass for a header or a receipt line its printer writes there: every continuation line is
+    indented, and so is a first line shaped like one (_off_column_0 with `headers`: Codex round
+    2, a body opening `COUNT=99 DELIVERY=forged` printed as a second receipt line)."""
     lines = text.split("\n")
-    first = "  " + lines[0] if headers and lines[0].startswith(tuple(headers)) else lines[0]
+    first = _off_column_0(lines[0], headers)
     return "\n".join([first] + ["  " + ln for ln in lines[1:]])
 
 
@@ -131,11 +148,16 @@ def print_inbox(raw):
     print("MESSAGES:", len(msgs))
     for m in msgs:
         print("=" * 60)
-        print("ID:", _visible(m.get("id", "?")), "| FROM:", _visible(m.get("from_handle", "?")),
-              "| TYPE:", _visible(m.get("type", "?")))
-        print("SUBJ:", _visible(m.get("subject", "?")))
-        print("BODY:", _visible(m.get("body", "")))
-        print("PAYLOAD:", _visible(m.get("payload")))
+        # One line per field (Codex round 2, swept): a newline in any of them, or a body line
+        # shaped like `ID:`/`SUBJ:`/`====`, drew the fields of a message that never arrived. The
+        # body keeps its lines, as before; only a printer-shaped one moves off column 0.
+        fields = ("ID:", "SUBJ:", "BODY:", "PAYLOAD:", "MESSAGES:")
+        print("ID:", _visible_line(m.get("id", "?")), "| FROM:", _visible_line(m.get("from_handle", "?")),
+              "| TYPE:", _visible_line(m.get("type", "?")))
+        print("SUBJ:", _visible_line(m.get("subject", "?")))
+        body = _visible(m.get("body", "")).split("\n")
+        print("BODY:", "\n".join(body[:1] + [_off_column_0(ln, fields) for ln in body[1:]]))
+        print("PAYLOAD:", _visible_line(m.get("payload")))
     if skipped:
         print(f"pm.py: WARN: skipped {skipped} malformed segment(s)", file=sys.stderr)
     if unrecognized:

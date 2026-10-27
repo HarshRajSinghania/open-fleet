@@ -19,8 +19,12 @@
   `upstream_probe.py`. `sandbox_doctor.py` reads the recipe from recipe fields only, refuses a
   malformed recipe field, a repeated JSON key and a contradicting envelope, and reads placement
   claims in every spelling. `worker_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`,
-  `orca_cli.run_json` and `spawn_worker.sh` print every receipt field escaped and on one line,
-  bodies cannot pass for headers, and a lone surrogate no longer crashes the printer.
+  `orca_cli.run_json`, `pm.py` and `spawn_worker.sh` print every receipt field escaped and on one
+  line; no body line, tail item or list row stands at column 0 in the shape of a line those
+  printers write (`KEY=`, `---`, `===`, a `(…)` marker, a printer's own `SUBJ:`/`ID:` headers),
+  the first body line included;
+  a failed sandbox doctor's output and `sandbox_doctor.py`'s reason print escaped; and a lone
+  surrogate no longer crashes the printer.
   `send_msg.py` and `check_reply.py` say their sender check catches accidental mismatches only.
   `first_run.py` hands its on-host sandbox an allowlisted environment (locale names by name), so
   no operator credential reaches the worker. `scripts/install.sh` refuses an empty or

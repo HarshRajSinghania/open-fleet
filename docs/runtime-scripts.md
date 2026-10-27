@@ -253,9 +253,13 @@ Each message prints as a `--- <id> (<type>) from <handle>` block with `SUBJ:` an
 the body (capped at 2000 chars with a truncation marker); malformed entries skip
 with a stderr WARN. Consuming reads show what they consumed — a later check may
 never see these messages again. Every message field (id, type, sender, subject, body) passes
-through pm.py's `_visible`, so control and invisible characters render inertly, never actively;
-the `COUNT=… DELIVERY=… TIMED_OUT=…` and `REPLIED=… FOR=…` receipt lines print the runtime's ids
-and your `--id` as-is.
+through pm.py's `_visible`, so control and invisible characters render inertly, never actively.
+The single-line fields (id, type, sender, `SUBJ`, and the runtime's ids and your `--id` on the
+`COUNT=… DELIVERY=… TIMED_OUT=…` and `REPLIED=… FOR=…` receipt lines) go through `_visible_line`,
+newline and tab escaped too. A body's continuation lines are indented, and so is a first line
+that starts like any line a fleet printer writes at column 0 — a `KEY=` receipt line, a `---`
+header or `===` rule, a `(…)`/`[…]` marker, or this printer's `SUBJ: ` — so no body line can
+start one; a first line of plain prose keeps its column (W5-19, W4-11, Codex round 2).
 
 Exits: 0 checked/replied · 1 runtime/refusal/receipt failure · 2 usage or
 validation refusal (nothing invoked).
@@ -267,8 +271,8 @@ validation refusal (nothing invoked).
 > caller's own, so this catches an accidental mismatch only: the sender is
 > self-asserted here and the runtime is the authority (W5-19). Printed receipt
 > fields (`DELIVERY`, `REPLIED`, header parts, `SUBJ`) are inert and on one line,
-> and a body's continuation lines are indented, so a message cannot forge a
-> `--- <id> (<type>) from <handle>` header or another receipt line.
+> and no body line stands at column 0 in a printer line's shape, so a message cannot
+> forge a `--- <id> (<type>) from <handle>` header or another receipt line.
 
 ## `decisions.py`
 
@@ -1687,10 +1691,13 @@ Flags: none — the single argument is the input file. There is no help flag: pa
 Output prints `MESSAGES: <n>`, then per message `ID`, `FROM`, `TYPE`, `SUBJ`, `BODY`,
 `PAYLOAD`. Missing `ID`/`FROM`/`TYPE`/`SUBJ` print as `?`, but a missing `BODY` prints
 as an empty string and a missing `PAYLOAD` prints as `None`. Every printed field passes
-through escaping for C0/C1 controls (except LF and TAB, kept literal for readability), DEL, and
-invisible Unicode (Cf, Zl, Zp), so hostile text can neither drive the terminal nor reorder
-characters. Because LF passes through, a multi-line field (a `BODY`) can print a line that looks
-like a message header: read the message boundaries from the structure, never from a line's look. Malformed segments are skipped line-wise
+through escaping for C0/C1 controls, DEL, invisible Unicode (Cf, Zl, Zp) and lone surrogates
+(Cs), so hostile text can neither drive the terminal nor reorder characters. `ID`, `FROM`,
+`TYPE`, `SUBJ` and `PAYLOAD` escape LF and TAB too, so each stays on its line; `BODY` keeps its
+lines for readability, but one that starts like a line a fleet printer writes (this printer's
+`ID:`/`SUBJ:`/`BODY:`/`PAYLOAD:`/`MESSAGES:`, a `KEY=` line, `===`, `---`, a `(…)`/`[…]`
+marker) is indented off column 0, so a body cannot draw the
+fields of a message that never arrived (Codex round 2). Prose lines keep their column. Malformed segments are skipped line-wise
 (counted on stderr); envelopes carrying a `messages` key outside the expected shape warn
 as unrecognized rather than silently undercounting.
 
@@ -2067,7 +2074,9 @@ under `--- tail` (a receipt without `tail` fails closed — the payload is the p
 of the read); tail lines and titles render through pm.py's `_visible`, inertly, and every
 single-line field (`HANDLE`, `SOURCE`, `TITLE`, list rows) and every tail item goes through
 `_visible_line`, its newline and tab escaped, so a receipt value cannot forge another line
-(W4-11).
+(W4-11); a tail item or list row that starts like one of the receipt's own lines (`KEY=`,
+`---`) is also indented off column 0, so a pane printing `TRUNCATED=no` cannot pass for this
+receipt's field (Codex round 2); `agent: done` and other prose keep their column.
 Mutating verbs
 (close/rename/set-pane-title/split/switch/stop/send/wait) stay out (lifecycle-risk).
 
@@ -2233,8 +2242,10 @@ text blocks capped at 2000 chars, terminal reads print `--- tail` plus the lines
 missing payload fails closed; all of it through pm.py's `_visible`, inertly — and every
 single-line field, `STATE`/`STAGE`/`NEXT_ACTION`/`AGENT_WAIT`/`CURSOR`/`FALLBACK`, the fencing
 `DISPATCH`/`STATE`, the list rows and each tail item, through `_visible_line` (newline and tab
-escaped), and a message body's continuation lines indented, so it cannot pass for a
-`--- <id> (<role>)` header, W4-11); `stop` and
+escaped), a message body's continuation lines indented, and a body's first line, a tail item
+or a list row that starts like one of the receipt's own lines (`KEY=`, `---`, the
+`(unreadable message skipped)` marker) indented too, so none can pass for a `--- <id> (<role>)`
+header or a `SOURCE=`/`STATE=` field, W4-11, Codex round 2); `stop` and
 `abandon` take `--dispatch`, `--retry-request` (scripted fencing; `stop_unknown` fails,
 never claims); `release` and `retain` take `--dispatch`, `--retry-request` (reclaim; only
 `release_unknown` fails); `list` takes `--run`, `--terminal-state`, `--include-remote`,

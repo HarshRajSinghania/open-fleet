@@ -36,7 +36,7 @@ try:
 except ImportError:  # loaded by file path (tests): the resolver sits beside this script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
-from pm import _indent_continuations, _visible
+from pm import _indent_continuations, _off_column_0, _visible
 from pm import _visible_line as _line
 
 EXIT_OK = 0
@@ -234,7 +234,9 @@ def format_read(result, want="auto"):
         if not isinstance(tail, list):
             raise Failed("worker-read receipt names no terminal tail")
         lines.append("--- tail")
-        lines.extend(_line(line) for line in tail)  # one item, one line
+        # One item, one line — and off column 0 when it starts like this receipt's own lines
+        # (Codex round 2, swept: a pane printing `SOURCE=transcript` forged the field).
+        lines.extend(_off_column_0(_line(line)) for line in tail)
     return lines
 
 
@@ -264,9 +266,9 @@ def format_list(result):
     for row in workers:
         if not isinstance(row, dict):
             continue
-        lines.append(f"{_line(row.get('dispatchId') or '?')} "
-                     f"{_line(row.get('taskId') or '?')} "
-                     f"{_line(row.get('terminalState') or '?')}")
+        lines.append(_off_column_0(f"{_line(row.get('dispatchId') or '?')} "
+                                   f"{_line(row.get('taskId') or '?')} "
+                                   f"{_line(row.get('terminalState') or '?')}"))
     return lines
 
 

@@ -34,6 +34,7 @@ try:
 except ImportError:  # loaded by file path (tests): the resolver sits beside this script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
+from pm import _off_column_0
 from pm import _visible_line as _line
 
 EXIT_OK = 0
@@ -189,7 +190,9 @@ def format_read(result, want_screen=False):
     lines = [f"SOURCE={_line(source)}",
              f"TRUNCATED={'yes' if term.get('truncated') else 'no'}",
              "--- tail"]
-    lines.extend(_line(line) for line in tail)  # one item, one line
+    # One item, one line — and off column 0 when it starts like this receipt's own lines
+    # (Codex round 2, swept: a pane printing `SOURCE=transcript` forged the field).
+    lines.extend(_off_column_0(_line(line)) for line in tail)
     return lines
 
 
@@ -204,8 +207,8 @@ def format_list(result):
     for row in terminals:
         if not isinstance(row, dict):
             continue
-        lines.append(f"{_line(row.get('handle') or '?')} "
-                     f"{_line(row.get('title') or '?')}")
+        lines.append(_off_column_0(f"{_line(row.get('handle') or '?')} "
+                                   f"{_line(row.get('title') or '?')}"))
     return lines
 
 

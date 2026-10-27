@@ -891,7 +891,9 @@ def build_parser():
                    help="read .orca/human-grant-pubkey from this git ref and refuse a working "
                         "tree whose pin differs; use it whenever the tree being checked could "
                         "have been written by a worker. Must be a remote-tracking ref "
-                        "(refs/remotes/origin/main) or a commit id, resolved once (W3-07); "
+                        "(refs/remotes/origin/main, followed to its final target) or a commit "
+                        "id, resolved once (W3-07) — trustworthy only in a clone the checked "
+                        "change cannot write refs in (the coordinator's fetch, a CI checkout); "
                         "required when ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE claims a sound lane")
     sub = p.add_subparsers(dest="command", required=True)
 

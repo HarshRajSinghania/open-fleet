@@ -470,13 +470,26 @@ _LOOSE_KEY = re.compile(
 # A merge key, an anchor (`&name`, with or without a value after it) or an alias (`*name`), as a
 # YAML node starts: after a line start, whitespace or a flow indicator (a run: body is not read).
 _YAML_INDIRECTION = re.compile(r"<<\s*:|(?:^|[\s\[{,])[&*][A-Za-z_][\w-]*(?=\s|$|[\]},])")
+# The block YAML subset every line scan here reads as GitHub's parser does: an allowlist, held in
+# scripts/release_check.py because release gate 3 reads workflows the same way. Refusing hiding
+# spellings one at a time missed one a round: an explicit `? uses` / `: owner/action@v4` key, then
+# `-   uses:`, a `uses:` whose value sits on the next line, and a `!!str uses:` tag (PR #718
+# review round 3), each a mutable action ref the pin test never saw.
+_rc_spec = importlib.util.spec_from_file_location(
+    "_release_check_for_hygiene", ROOT / "scripts" / "release_check.py")
+_release_check = importlib.util.module_from_spec(_rc_spec)
+_rc_spec.loader.exec_module(_release_check)
 
 
 def _structure_offenders(name, text):
     """Why the stdlib scans in this module could misread a workflow: they read block-style YAML
-    line by line (no parser on the runner), so a workflow must be a `.yml` file whose scanned
-    keys are plain block keys, with no anchor, alias or merge key outside a `run:` body."""
+    line by line (no parser on the runner, and the suite is stdlib-only), so a workflow must be
+    a `.yml` file, every line of it inside the block subset release_check.block_yaml_offenders
+    allows (plain keys, two-space nesting, one `- ` per item, scalars only), and its scanned keys
+    carry no anchor, alias or merge key outside a `run:` body."""
     bad = [] if name.endswith(".yml") else [f"{name}: not a .yml file"]
+    bad += [f"{name}:{n}: outside the block subset: {line.strip()}"
+            for n, line in _release_check.block_yaml_offenders(text)]
     lines = text.splitlines()
     in_script, indent = False, 0
     for n, line in enumerate(lines, start=1):
@@ -523,7 +536,24 @@ class TheScansReadEveryWorkflowAsWritten(unittest.TestCase):
                      "x: &co\n  uses: actions/checkout@v4\njobs:\n  y:\n    steps:\n      - <<: *co\n",
                      "jobs:\n  x:\n    steps:\n      - uses: &u actions/checkout@v4\n",
                      "jobs:\n  x:\n    steps:\n      - name: a\n        with: *w\n",
-                     "jobs:\n  x:\n    steps: [{run: echo}]\n"):
+                     "jobs:\n  x:\n    steps: [{run: echo}]\n",
+                     # YAML explicit keys (PR #718 review round 3): `? uses` / `: owner/action@v4`
+                     "jobs:\n  x:\n    steps:\n      - ? uses\n        : actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\n        ? run\n        : echo hi\n",
+                     "jobs:\n  x:\n    steps:\n      -\n        ? uses\n        : actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - {? uses: actions/checkout@v4}\n",
+                     # and the rest of the class: no line scan here reads these as written
+                     "jobs:\n  x:\n    steps:\n      -   uses: actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - uses:\n          actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - !!str uses: actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - - uses: actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n    - uses: actions/checkout@v4\n",
+                     "jobs:\n    x:\n      timeout-minutes: 0\n      steps:\n        - run: echo\n",
+                     "jobs:\n  x:\n    steps:\n      - uses: \"actions/checkout@\n          v4\"\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\u2028        uses: actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - run: |\n          echo\n"
+                     "        'uses': actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\n        \"needs\": y\n"):
             with self.subTest(text=text):
                 self.assertTrue(_structure_offenders("w.yml", text))
         script = ("jobs:\n  x:\n    steps:\n      - run: |\n          a && b {x}, y\n"
@@ -820,6 +850,12 @@ class EveryActionIsPinnedToACommit(unittest.TestCase):
         return [m.group(1) for ln in text.splitlines() if (m := self.USES.match(ln))
                 and not self.PINNED.match(m.group(1))]
 
+    def _hidden_or_unpinned(self, name, text):
+        """Every ref USES reads that is not pinned, and every line that puts the file outside the
+        block subset USES reads as written (PR #718 review round 3: an explicit `? uses` key, or
+        `-   uses:`, was a `uses:` this scan never saw, so the pin test stayed green)."""
+        return _structure_offenders(name, text) + self._unpinned(text)
+
     def test_every_uses_is_a_full_commit_sha(self):
         seen = 0
         for path in WORKFLOWS:
@@ -828,7 +864,24 @@ class EveryActionIsPinnedToACommit(unittest.TestCase):
             with self.subTest(workflow=path.name):
                 self.assertEqual(self._unpinned(text), [],
                                  f"{path.name} uses an action by a movable ref")
+                self.assertEqual(self._hidden_or_unpinned(path.name, text), [],
+                                 f"{path.name} may hold a `uses:` this scan cannot see")
         self.assertGreaterEqual(seen, 40, "the scan stopped seeing the workflows' actions")
+
+    def test_a_uses_key_this_scan_cannot_read_is_refused(self):
+        pinned = "      - uses: actions/checkout@" + "a" * 40 + "\n"
+        for hidden in ("      - ? uses\n        : owner/action@v4\n",
+                       "      -\n        ? uses\n        : owner/action@v4\n",
+                       "      - {? uses: owner/action@v4}\n",
+                       "      -   uses: owner/action@v4\n",
+                       "      - uses:\n          owner/action@v4\n",
+                       "      - !!str uses: owner/action@v4\n",
+                       "      - \"uses\": owner/action@v4\n",
+                       "      - uses: &a owner/action@v4\n"):
+            text = "jobs:\n  x:\n    steps:\n" + pinned + hidden
+            with self.subTest(hidden=hidden):
+                self.assertTrue(self._hidden_or_unpinned("w.yml", text))
+        self.assertEqual(self._hidden_or_unpinned("w.yml", "jobs:\n  x:\n    steps:\n" + pinned), [])
 
     def test_the_scan_can_actually_see_one(self):
         for ref in ("actions/checkout@v4", "actions/checkout@main", "actions/checkout",

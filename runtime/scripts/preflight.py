@@ -294,10 +294,18 @@ def _active_runtime(explicit: str | None) -> str | None:
 
 
 def _load_providers():
-    """runtime/providers — the SAME registry and resolver dispatch uses (orca_cli.py)."""
-    root = str(Path(__file__).resolve().parents[2])
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    """runtime/providers — the SAME registry and resolver dispatch uses (orca_cli.py).
+
+    W3-01 (PR #719 re-attack): the repo ROOT never goes on sys.path. Put there, it let a
+    root-level file named like a stdlib module (`__future__.py`, `typing.py`, `sqlite3.py`)
+    answer an import the package makes while it loads — through `--mode readonly`, which
+    review-it runs over a graded tree. The `runtime` package is registered by path instead: a
+    module whose __path__ is a plain list naming this repository's runtime/, so `runtime.*`
+    resolves there and nothing else is searched for in the root."""
+    if "runtime" not in sys.modules:
+        package = type(sys)("runtime")  # a plain module object; nothing imported to make it
+        package.__path__ = [str(Path(__file__).resolve().parents[2] / "runtime")]
+        sys.modules["runtime"] = package
     from runtime import providers
     return providers
 

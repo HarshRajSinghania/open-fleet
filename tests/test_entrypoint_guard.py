@@ -18,9 +18,14 @@ every entry point the control plane runs, three ways:
 What counts as an entry point (ENTRY_POINTS): the B3/B4 carriers of the audit's threat model,
 every script a pull_request CI job runs from runtime/scripts/ or scripts/ over the graded tree,
 and the gate steps missions and playbooks run (preflight's quarantine gate, chain_check, the
-risk-review diff_scope signals, the release gate). Not listed, with the reason:
+risk-review diff_scope signals, the release gate), plus orca_cli.py, which preflight's runtime
+check shares the provider-registry bootstrap with. Not listed, with the reason:
 runtime/scripts/upstream_probe.py (scheduled over the default branch, never a graded tree);
 evidence-run.py (the WORKER's recorder; verify.py re-derives what it writes).
+
+The repo ROOT is planted too: preflight.py and orca_cli.py import the `runtime` package and used
+to put ROOT on sys.path to do it. scripts/shard-tests.py still does — it imports the PR's own
+tests/ package by design, so it runs the graded tree's code anyway and shadowing adds nothing.
 """
 import ast
 import os
@@ -48,6 +53,7 @@ ENTRY_POINTS = (
     "runtime/scripts/preflight.py",
     "runtime/scripts/diff_scope.py",
     "runtime/scripts/chain_check.py",
+    "runtime/scripts/orca_cli.py",
     "scripts/bind_check.py",
     "scripts/validate.py",
     "scripts/hint_replay.py",
@@ -75,6 +81,9 @@ PLANT = ("import os as _o\n"
          "raise ImportError('a planted stdlib shadow loaded: ' + __name__)\n")
 
 SCRIPT_DIRS = ("runtime/scripts", "scripts")
+# Plants also go at the copied repo ROOT: a script that puts ROOT on sys.path (to import the
+# `runtime` package) would let a root-level file named like a stdlib module answer.
+PLANT_DIRS = ("", *SCRIPT_DIRS)
 
 
 def _statements(rel):
@@ -144,7 +153,7 @@ class NoPlantedStdlibNameLoads(unittest.TestCase):
             shutil.copytree(ROOT / top, cls.tree / top,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         cls.names = sorted(n for n in sys.stdlib_module_names if n.isidentifier())
-        for d in SCRIPT_DIRS:
+        for d in PLANT_DIRS:
             for name in cls.names:
                 target = cls.tree / d / f"{name}.py"
                 if not target.exists():
@@ -155,10 +164,11 @@ class NoPlantedStdlibNameLoads(unittest.TestCase):
         cls._td.cleanup()
 
     def _loaded(self):
-        return sorted(f"{d}/{p.name}" for d in SCRIPT_DIRS for p in (self.tree / d).glob("PLANT-*"))
+        return sorted(f"{d or '.'}/{p.name}" for d in PLANT_DIRS
+                      for p in (self.tree / d).glob("PLANT-*"))
 
     def _clear(self):
-        for d in SCRIPT_DIRS:
+        for d in PLANT_DIRS:
             for p in (self.tree / d).glob("PLANT-*"):
                 p.unlink()
 
@@ -189,6 +199,29 @@ class NoPlantedStdlibNameLoads(unittest.TestCase):
                 # script reads its tree before parsing argv) — never a traceback.
                 self.assertNotIn("Traceback", proc.stderr,
                                  f"{rel} --help crashed: {proc.stderr[-400:]}")
+        self._clear()
+
+    def test_the_runtime_package_loads_without_the_repo_root_on_sys_path(self):
+        # PR #719 re-attack (W3-01 class): preflight.py and orca_cli.py put the repo ROOT at
+        # sys.path[0] to `from runtime import providers`, so a ROOT-level __future__.py /
+        # typing.py / sqlite3.py answered imports made while the package loaded — through
+        # `preflight.py --mode readonly`, which review-it runs over a graded tree. Driven down the
+        # real path: a selected runtime makes both load the provider registry.
+        subprocess.run(["git", "init", "-q", str(self.tree)], check=True, capture_output=True)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("PYTHON", "ORCA_", "OPEN_FLEET_"))}
+        env["OPEN_FLEET_RUNTIME"] = "posix"
+        for rel, args in (("runtime/scripts/preflight.py", ["--mode", "readonly"]),
+                          ("runtime/scripts/orca_cli.py", ["--version"])):
+            with self.subTest(rel=rel):
+                self._clear()
+                proc = subprocess.run([sys.executable, str(self.tree / rel), *args],
+                                      cwd=self.tree, env=env, capture_output=True, text=True,
+                                      timeout=120)
+                self.assertEqual(self._loaded(), [],
+                                 f"{rel} loaded a planted stdlib shadow: {proc.stderr[-400:]}")
+                self.assertNotIn("Traceback", proc.stderr, proc.stderr[-400:])
+                self.assertNotIn("registry unloadable", proc.stderr, proc.stderr[-400:])
         self._clear()
 
 

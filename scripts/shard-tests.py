@@ -147,6 +147,9 @@ def live_classes(module):
     the module cannot be split — it fails to import, or it defines load_tests, whose protocol may
     collect what no class attribute names — so it runs whole and unittest reports why.
     """
+    # ROOT goes on sys.path deliberately (W3-01 review): this IMPORTS the checkout's own tests/
+    # package — the graded tree's code, which CI runs anyway — so a root-level file shadowing a
+    # stdlib module gains nothing that tests/ itself does not already have. Never a gate's model.
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
@@ -339,7 +342,7 @@ def measure(module, scale=1.0, stream=None):
     `fixture_seconds` is the time before its first test ran (setUpModule and the first
     class's setUpClass): an upper bound on what a split shard pays again.
     """
-    if str(ROOT) not in sys.path:
+    if str(ROOT) not in sys.path:  # deliberate: runs the checkout's own tests (see live_classes)
         sys.path.insert(0, str(ROOT))
     start = time.perf_counter()
     suite = unittest.defaultTestLoader.loadTestsFromName(f"tests.{module}")

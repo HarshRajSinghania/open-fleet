@@ -1,9 +1,13 @@
 # Slice S3: full stack — app :8000, staging :8001 (own DB file), Prometheus
 # :9090, Grafana :3000 (one provisioned dashboard), Loki + Promtail,
 # Alertmanager -> app /hooks/alerts. Teardown: docker compose down -v.
+# Every image is pinned by its multi-arch index digest (2026-10-27 security audit,
+# W6-13): a tag can be re-pointed, a digest cannot. The tag stays beside it for the
+# reader; Docker pulls by the digest. To re-pin, read the tag's index digest from the
+# registry (the Docker-Content-Digest of its manifest) and re-hash the index it names.
 services:
   app:
-    image: python:3.13-slim
+    image: python:3.13-slim@sha256:b3575dcf816cdacc5292df77a6e3e59b8941631078373a045efa2ac1e9c5c3b2
     working_dir: /srv/app
     volumes:
       - .:/srv/app
@@ -16,7 +20,7 @@ services:
       - "127.0.0.1:8000:8000"
 
   staging:
-    image: python:3.13-slim
+    image: python:3.13-slim@sha256:b3575dcf816cdacc5292df77a6e3e59b8941631078373a045efa2ac1e9c5c3b2
     working_dir: /srv/app
     volumes:
       - .:/srv/app
@@ -29,7 +33,7 @@ services:
       - "127.0.0.1:8001:8000"
 
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command: --config.file=/etc/prometheus/prometheus.yml
@@ -37,7 +41,7 @@ services:
       - "127.0.0.1:9090:9090"
 
   grafana:
-    image: grafana/grafana:10.4.3
+    image: grafana/grafana:10.4.3@sha256:b7fcb534f7b3512801bb3f4e658238846435804deb479d105b5cdc680847c272
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
@@ -50,7 +54,7 @@ services:
       - "127.0.0.1:3000:3000"
 
   loki:
-    image: grafana/loki:3.1.0
+    image: grafana/loki:3.1.0@sha256:d947e68a84d9e44915dfa08c3bec27e2124efd5ba6c83443eb53578101ec69e3
     volumes:
       - ./observability/loki-config.yml:/etc/loki/config.yml:ro
       - loki-data:/loki
@@ -59,14 +63,14 @@ services:
       - "127.0.0.1:3100:3100"
 
   promtail:
-    image: grafana/promtail:3.1.0
+    image: grafana/promtail:3.1.0@sha256:b3db8e7b1cba0e8c45ce2ae72ebddfd88ebdcae86383f1680edf0074e9010ff6
     volumes:
       - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: -config.file=/etc/promtail/config.yml
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     volumes:
       - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     ports:

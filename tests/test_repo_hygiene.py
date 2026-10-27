@@ -602,6 +602,34 @@ class EveryWorkflowToolComesFromAHashedLock(unittest.TestCase):
         self.assertIn(".github/ci-tools.lock", scripts)
         self.assertRegex(scripts, r"(?m)^\s*ruff check evals/demo/target-app\s*$")
 
+    # 2026-10-27 security audit, W6-13: the fixture stack's seven `image:` refs were tags, which
+    # a registry can re-point; `smoke` runs them. A digest names exactly one image index.
+    IMAGE = re.compile(r"^\s*(?:-\s+)?image:\s*['\"]?([^\s'\"#]+)")
+    PINNED_IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$")
+
+    def _mutable_images(self, text):
+        return [m.group(1) for ln in text.splitlines() if (m := self.IMAGE.match(ln))
+                and not self.PINNED_IMAGE.match(m.group(1))]
+
+    def test_every_container_image_is_pinned_by_digest(self):
+        compose = (ROOT / "evals" / "demo" / "target-app" / "compose.yaml").read_text(
+            encoding="utf-8")
+        self.assertEqual(len([ln for ln in compose.splitlines() if self.IMAGE.match(ln)]), 7,
+                         "the demo stack's image count changed; pin the new one by digest")
+        self.assertEqual(self._mutable_images(compose), [],
+                         "compose.yaml runs an image by a tag a registry can re-point")
+        for path in WORKFLOWS:  # a job `container:` or `services:` image, should one appear
+            with self.subTest(workflow=path.name):
+                self.assertEqual(self._mutable_images(path.read_text(encoding="utf-8")), [])
+
+    def test_the_image_scan_can_actually_see_one(self):
+        digest = "@sha256:" + "c" * 64
+        for ref in ("python:3.13-slim", "prom/prometheus:v2.53.0", "grafana/loki",
+                    "python@sha256:" + "c" * 64, "python:3.13-slim@sha256:abc"):
+            with self.subTest(ref=ref):
+                self.assertEqual(self._mutable_images(f"    image: {ref}\n"), [ref])
+        self.assertEqual(self._mutable_images(f"    image: python:3.13-slim{digest}\n"), [])
+
     def test_the_scan_can_actually_see_one(self):
         for line in ("uvx ruff check .", "pip install ruff==0.16.7",
                      "python3 -m pip install -r requirements.txt", "uv tool run ruff"):

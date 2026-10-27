@@ -1240,6 +1240,34 @@ class TestBashWritesAreBounded(HookBase):
         # the devices would have waived it along with the bit bucket.
         self._deny("echo x > /dev/sda")
 
+    def test_a_path_segment_is_a_name_never_a_pattern_in_the_hooks_cwd(self):
+        # W4-09 (2026-10-27 audit): lexical_abs split the target with globbing ON, so a literal
+        # `.?` segment matched `..` in the HOOK's cwd and an in-boundary write was denied -- an
+        # answer that moved with the coordinator's cwd. Quoted, the shell writes these names
+        # literally, inside the worktree.
+        target = self.wt / "x" / ".?" / ".?" / ".?" / "f"
+        for cwd in (self.wt, self.tmp):
+            with self.subTest(cwd=cwd):
+                r = self.fire(event("Bash", command=f"echo x > '{target}'"),
+                              env_extra={"ORCA_UNIT_WORKTREE": str(self.wt)}, cwd=cwd)
+                self.assertEqual(r.stdout.strip(), "")
+                r = self.fire(event("Write", file_path=str(target)),
+                              env_extra={"ORCA_UNIT_WORKTREE": str(self.wt)}, cwd=cwd)
+                self.assertEqual(r.stdout.strip(), "")
+
+    def test_an_unquoted_glob_target_is_judged_by_every_path_it_expands_to(self):
+        # W4-09 sweep: the shell expands a glob in a redirect or tee target against the
+        # filesystem before it writes. The hook judged only the literal, so `> wt/lin*/secret`
+        # with wt/link -> outside/ was ALLOWED while the shell overwrote outside/secret.
+        (self.wt / "link").symlink_to(self.outside)
+        for command in (f"echo x > {self.wt}/lin*/secret", f"echo x | tee {self.wt}/l?nk/secret",
+                        f"echo x >> {self.wt}/[l]ink/secre?"):
+            with self.subTest(command=command):
+                self._deny(command)
+        for command in (f"echo x > {self.wt}/su*/f", f"echo x > {self.wt}/no-match*/f"):
+            with self.subTest(command=command):
+                self.assertEqual(self._fire_bash(command).stdout.strip(), "", command)
+
     def test_a_descriptor_duplication_does_not_swallow_the_next_redirect(self):
         """PR #308 review, P1 — reported as a bypass; it is not one, and this pins that.
 

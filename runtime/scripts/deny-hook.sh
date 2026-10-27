@@ -117,6 +117,8 @@
 # /etc/cron.d/x`, a Bash redirect or `tee` destination naming an ABSOLUTE path. Both go
 # through one resolver, which follows the whole symlink chain, so an in-boundary
 # name pointing out is judged by where it ends up however many links that takes.
+# Path segments are names, never patterns; a glob in a shell target is also judged
+# by every existing path the shell would expand it to (W4-09).
 #
 # What the Bash half does NOT cover, and says so at the block itself: a relative
 # target (the hook is not told the worker's cwd, and the segment before it may
@@ -4210,6 +4212,9 @@ lexical_abs() {
   _out=""
   _oldifs=$IFS
   IFS='/'
+  # A segment is a NAME, never a pattern: with globbing on, a `.?` or `q*` segment matched
+  # entries of the HOOK's cwd (`.?` matches `..`), so the answer moved with that cwd (W4-09).
+  set -f
   for _seg in $_p; do
     case "$_seg" in
       ''|.) : ;;
@@ -4217,6 +4222,7 @@ lexical_abs() {
       *) _out="$_out/$_seg" ;;
     esac
   done
+  set +f
   IFS=$_oldifs
   printf '%s' "${_out:-/}"
 }
@@ -5090,9 +5096,8 @@ if [ -n "${UNIT_WORKTREE:-}" ]; then
     exit 0
   fi
 
-  bounded_write() {
+  bounded_one() {
     _t=$1
-    case "$_t" in /*) : ;; *) return 0 ;; esac
     # The process's own standard streams and the bit bucket. `make > /dev/null`
     # is the most common redirect there is and writes nothing anyone can read;
     # refusing it would make the boundary a thing workers route around. Named
@@ -5106,6 +5111,33 @@ if [ -n "${UNIT_WORKTREE:-}" ]; then
     case "$RESOLVED/" in "$BOUND"/*) return 0 ;; esac
     decide deny "deny-hook: this worker may only write inside its own worktree. A shell redirect or tee destination names an absolute path outside the unit boundary."
     exit 0
+  }
+
+  bounded_write() {
+    _t=$1
+    case "$_t" in /*) : ;; *) return 0 ;; esac
+    # An unquoted glob in a target is expanded by the shell against the filesystem before
+    # it writes, so the literal alone is not the target: `> wt/lin*/f` with wt/link -> /x
+    # writes /x/f (W4-09). Every existing match is judged too (a quoted glob is written
+    # literally, so judging its matches can only add a refusal). IFS empty: matches are not
+    # field-split. Past 64 matches the expansion is more than this reads: refused.
+    case "$_t" in
+      *[*?[]*)
+        _bw_ifs=$IFS
+        IFS=''
+        _bw_n=0
+        for _bw_m in $_t; do
+          [ "$_bw_m" = "$_t" ] && continue
+          _bw_n=$((_bw_n + 1))
+          if [ "$_bw_n" -gt 64 ]; then
+            decide deny "deny-hook: a write target glob expands to more paths than the boundary check reads. Fail-closed: name the target."
+            exit 0
+          fi
+          bounded_one "$_bw_m"
+        done
+        IFS=$_bw_ifs ;;
+    esac
+    bounded_one "$_t"
   }
 
   # Consume typed records without splitting paths on whitespace. The here-doc

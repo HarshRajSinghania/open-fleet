@@ -2782,3 +2782,43 @@ class TestVerifySettingsRunsOnlyThisHook(unittest.TestCase):
         self.assertIn("PASS_THROUGH = (\"PATH\", \"HOME\", \"LANG\", \"TMPDIR\"", text)
         self.assertIn("never run through `sh -c`", text)
         self.assertNotIn('["sh", "-c", command]', text)
+
+
+class TestIfsSeparatedWordsKeepTheirArguments(ReviewHookBase):
+    """W1-02 (P1, 2026-10-27 audit): `rm$IFS-rf$IFS/` is one word with no blank in it, so the
+    reader kept the flags and operands inside the head word, could not resolve the head, and
+    judged each refused head with NO arguments -- the HIGH tier, the never list, the self-guard
+    (no G record at all) and the boundary all missed it, while the shell field-splits an unquoted
+    $IFS expansion into separate words."""
+
+    BOTH = (False, True)
+
+    def test_an_unquoted_ifs_expansion_separates_words_like_a_blank(self):
+        self.expect("deny", (
+            "rm$IFS-rf$IFS/", "rm${IFS}-rf${IFS}/", "rm${IFS:0:1}-rf${IFS:0:1}/",
+            "rm$IFS-rf$IFS--no-preserve-root${IFS}/tmp/x",
+            "git${IFS}push${IFS}--force${IFS}origin${IFS}main", "git push$IFS--force origin main",
+            "gh${IFS}pr${IFS}merge${IFS}34", "orca${IFS}orchestration${IFS}reset",
+        ), bounded_modes=self.BOTH)
+        self.expect("ask", ("rm${IFS}-r${IFS}-f${IFS}./build",), bounded_modes=self.BOTH)
+
+    def test_an_ifs_separator_inside_a_shell_body_is_split_there_too(self):
+        # Inside double quotes the shell drops the backslash of \$, so the body sh -c runs
+        # holds a live $IFS; the reader kept the backslash and read the body as one word.
+        self.expect("deny", ('sh -c "rm\\${IFS}-rf\\${IFS}/"', "sh -c 'rm${IFS}-rf${IFS}/'",
+                             'bash -c "git\\${IFS}push\\${IFS}--force\\${IFS}origin\\${IFS}main"'),
+                    bounded_modes=self.BOTH)
+
+    def test_ifs_separated_guard_writes_reach_the_self_guard(self):
+        self.expect("deny", ("rm$IFS-rf$IFS.claude", "cp${IFS}x${IFS}.claude/settings.json"),
+                    bounded_modes=self.BOTH, reason="own guard")
+
+    def test_an_ifs_separated_redirect_target_is_bounded(self):
+        outside = Path(tempfile.mkdtemp(prefix="dh-ifs-out-"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        self.expect("deny", (f"echo x >$IFS{outside}/f", f"echo x | tee$IFS{outside}/f"),
+                    bounded_modes=(True,))
+
+    def test_a_quoted_ifs_is_one_word_as_in_the_shell(self):
+        self.expect("allow", ('echo "rm${IFS}-rf${IFS}/"', "printf '%s' \"a${IFS}b\"",
+                              "echo $IFSX", "echo ${IFSX}"), bounded_modes=self.BOTH)

@@ -42,7 +42,8 @@
 # pass it on, and a group, loop, exec, function, xargs, read, <(...) or $(cat)
 # hands it to what it runs. Sources are unioned, as zsh (MULTIOS) reads them all.
 # printf/echo escapes (\xHH, \NNN, \n …) are decoded before the fed program is
-# read. Words are quote-removed as the shell does it, ANSI-C $'...' decoded. So a
+# read. Words are quote-removed as the shell does it, ANSI-C $'...' decoded, and an
+# unquoted $IFS/${IFS...} expansion separates words as a blank does (W1-02). So a
 # refused shape is refused wherever it sits (#297; 2026-10-23 review, P1-3, P2-10;
 # PR #648 review). An egress receipt &&-before a command arms the send it runs now
 # — including one fed to a shell by a pipe or heredoc, where every heredoc and
@@ -1054,6 +1055,10 @@ def policy_word(word):
                    else ch for ch in word) or "\\000"
 
 
+# An UNQUOTED $IFS expansion: $IFS, ${IFS}, ${IFS:0:1} and kin (W1-02, 2026-10-27 audit).
+_IFS_EXPANSION = re.compile(r"[$](?:IFS(?![A-Za-z0-9_])|[{]IFS(?:[^A-Za-z0-9_}][^}]*)?[}])")
+
+
 def shell_tokens(seg, with_fd=False):
     # Keep operator identity BEFORE quote removal: quoted/escaped > is data.
     # A descriptor is optional and may have several digits. After an operator,
@@ -1079,6 +1084,10 @@ def shell_tokens(seg, with_fd=False):
             target = True
             continue
         start, quote, ansi, dollar = i, "", False, False
+        # An unquoted $IFS expansion is field-split by the shell exactly like a blank:
+        # rm$IFS-rf$IFS/ runs rm with -rf and /. Read as one word, every argument stayed inside
+        # the head and each refused head was judged bare (W1-02). Inside quotes it is one word.
+        cuts = []
         while i < len(seg):
             ch = seg[i]
             if ch == "\\" and (quote != SQ or ansi):
@@ -1092,11 +1101,19 @@ def shell_tokens(seg, with_fd=False):
                 quote, ansi = ch, ch == SQ and dollar
             elif ch in BLANKS or ch in "<>&":
                 break
+            elif ch == "$" and _IFS_EXPANSION.match(seg, i):
+                end = _IFS_EXPANSION.match(seg, i).end()
+                cuts.append((i, end))
+                i, dollar = end, False
+                continue
             dollar = not quote and ch == "$"
             i += 1
         if i == start:
             raise ValueError("unexpected operator")
-        yield ("word", _unquote(seg[start:i])) + ((None,) if with_fd else ())
+        edges = [start] + [x for cut in cuts for x in cut] + [i]
+        pieces = [seg[edges[k]:edges[k + 1]] for k in range(0, len(edges), 2)]
+        for piece in [pc for pc in pieces if pc] or [seg[start:i]]:
+            yield ("word", _unquote(piece)) + ((None,) if with_fd else ())
         target = False
 
 
@@ -1153,7 +1170,10 @@ def _unquote(text):
             quote = "" if ch == SQ else quote
         elif quote == DQ:
             if ch == "\\" and i + 1 < n:
-                out.append(text[i:i + 2])
+                # The shell drops the backslash of \$ and of an escaped backtick inside double
+                # quotes; shlex keeps it. A body sh -c runs is read as the shell hands it over:
+                # sh -c "rm\${IFS}-rf\${IFS}/" holds a live $IFS (W1-02).
+                out.append(text[i + 1] if text[i + 1] in "$" + chr(96) else text[i:i + 2])
                 i += 2
                 continue
             quote = "" if ch == DQ else quote

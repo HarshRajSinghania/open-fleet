@@ -2568,6 +2568,54 @@
       "hook": "claude/r05-deny-hook-conformance (PR #648 review PRRT_kwDOTWxN9c6vzGqz)",
       "status": "boundary",
       "note": "zsh (MULTIOS, on by default) reads EVERY stdin source of a command -- the pipe, then each redirection, as one program -- where bash and dash read only the last. The hook does not know which shell runs the line, so a body bash discards is still judged, and a receipt arms only a program that starts with the send."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "{HEAD}${IFS}{ARGS}",
+      "original": "{HEAD}${IFS}{ARGS}",
+      "family": "review:W1-02",
+      "bash": "5.2.21(1)-release",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-02)",
+      "status": "fixed",
+      "note": "An unquoted $IFS expansion is field-split like a blank, so the words after it are arguments of the head before it; the reader kept them inside the head word and judged each refused head bare."
+    },
+    {
+      "kind": "miss",
+      "payload": "send",
+      "template": "{HEAD}${IFS}{ARGS}",
+      "original": "{HEAD}${IFS}{ARGS}",
+      "family": "review:W1-02",
+      "bash": "5.2.21(1)-release",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-02)",
+      "status": "fixed",
+      "note": "An unquoted $IFS expansion is field-split like a blank, so the words after it are arguments of the head before it; the reader kept them inside the head word and judged each refused head bare."
+    },
+    {
+      "kind": "miss",
+      "payload": "wipe",
+      "template": "{HEAD}${IFS}{ARGS}",
+      "original": "{HEAD}${IFS}{ARGS}",
+      "family": "review:W1-02",
+      "bash": "5.2.21(1)-release",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-02)",
+      "status": "fixed",
+      "note": "An unquoted $IFS expansion is field-split like a blank; read as one word the recursive delete lost its flags and was allowed."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "bash -c \"{HEAD}\\${IFS:0:1}{ARGS}\"",
+      "original": "bash -c \"{HEAD}\\${IFS:0:1}{ARGS}\"",
+      "family": "review:W1-02",
+      "bash": "5.2.21(1)-release",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-02)",
+      "status": "fixed",
+      "note": "Inside double quotes the shell drops the backslash of \\$, so the body bash -c runs holds a live ${IFS:0:1}; the reader kept the backslash and read the body as one word."
     }
   ]
 }

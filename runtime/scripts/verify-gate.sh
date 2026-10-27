@@ -140,9 +140,28 @@ PROVENANCE=$(_pick OPEN_FLEET_PROVENANCE "${OPEN_FLEET_PROVENANCE:-}" ORCA_PROVE
 # origin/HEAD at its own LOCAL branch had the gate read `.orca/dispatch-pubkey@<that branch>` — a
 # key it committed — and its self-signed record verified. A short name is also shadowable by a
 # local tag or branch of the same spelling; the full refs/remotes/… name is not.
+# W3-08: a fresh actions/checkout tree carries neither origin/HEAD nor origin/<BASE>, so with the
+# working tree refused every sound CI run blocked as half-configured. Two ref-backed sources exist
+# there: refs/remotes/origin/$GITHUB_BASE_REF when the step fetched the base, and the PR's base
+# COMMIT from the runner's own event payload — an object id, which nothing can move. (The commit
+# must be present: fetch-depth 0, or `git fetch origin <base sha>`; absent, nothing is read.)
+_gh_pr_base() {
+  [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -n "$PY_BIN" ] && [ -f "${GITHUB_EVENT_PATH:-}" ] || return 1
+  _sha=$("$PY_BIN" -I -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["base"]["sha"])
+except Exception:
+    pass' "$GITHUB_EVENT_PATH" 2>/dev/null) || return 1
+  case "$_sha" in ""|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#_sha}" -eq 40 ] || [ "${#_sha}" -eq 64 ] || return 1
+  printf '%s' "$_sha"
+}
+KEY_BASE="$BASE"
+[ -n "$KEY_BASE" ] || [ "${GITHUB_ACTIONS:-}" != "true" ] || KEY_BASE="${GITHUB_BASE_REF:-}"
 if [ -z "$PUBKEY" ] && [ -n "$GIT_BIN" ]; then
   TOP="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$TOP" ]; then
+    PR_BASE="$(_gh_pr_base || true)"
     DEF_REF="$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || echo refs/remotes/origin/HEAD)"
     case "$DEF_REF" in
       refs/remotes/?*) : ;;
@@ -151,8 +170,10 @@ if [ -z "$PUBKEY" ] && [ -n "$GIT_BIN" ]; then
     esac
     if [ -n "$DEF_REF" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$DEF_REF"
-    elif [ -n "$BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "refs/remotes/origin/$BASE:.orca/dispatch-pubkey" 2>/dev/null; then
-      PUBKEY=".orca/dispatch-pubkey@refs/remotes/origin/$BASE"
+    elif [ -n "$KEY_BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "refs/remotes/origin/$KEY_BASE:.orca/dispatch-pubkey" 2>/dev/null; then
+      PUBKEY=".orca/dispatch-pubkey@refs/remotes/origin/$KEY_BASE"
+    elif [ -n "$PR_BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$PR_BASE:.orca/dispatch-pubkey" 2>/dev/null; then
+      PUBKEY=".orca/dispatch-pubkey@$PR_BASE"
     elif [ -f "$TOP/.orca/dispatch-pubkey" ]; then
       if [ -n "$PROVENANCE" ]; then
         echo "verify-gate: NOTE — .orca/dispatch-pubkey exists only in the working tree, which the graded worker writes; a lane claiming soundness (ORCA_PROVENANCE=$PROVENANCE) does not read a key from there. Pin it on the default or base branch, or inject ORCA_DISPATCH_PUBKEY off-worker." >&2

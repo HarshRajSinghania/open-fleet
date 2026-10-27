@@ -532,6 +532,52 @@ class VerifyGateDispatchPinDiscovery(GateCase):
                             "--event", "task"], capture_output=True, text=True, cwd=self.repo, env=env)
         self.assertIn("PUBKEY=.orca/dispatch-pubkey@refs/remotes/origin/main\n", r.stderr)
 
+    def _ci_shaped(self):
+        """A fresh actions/checkout tree: the base commit pins the coordinator's key, the PR head
+        swaps the pin for the worker's, and there is no origin/HEAD and no origin/<base>."""
+        (coordinator, worker) = self.use_repo(pin_blob=True, remote_head=False)
+        base = _git_out(self.repo, "rev-parse", "HEAD")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "PR head")
+        event = self.repo.parent / f"event-{next(_SRC_SEQ)}.json"
+        event.write_text(json.dumps({"pull_request": {"base": {"sha": base, "ref": "main"}}}),
+                         encoding="utf-8")
+        self.addCleanup(event.unlink)
+        return coordinator, worker, base, event
+
+    def _run_ci(self, src, rec, event, trace=False):
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": _require_system_tools("git", "python3"), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_PROVENANCE": "ci",
+               "ORCA_DISPATCH_RECORD": rec, "GITHUB_ACTIONS": "true",
+               "GITHUB_EVENT_PATH": str(event)}
+        argv = (["sh", "-x"] if trace else ["sh"]) + [
+            str(self.repo / "runtime" / "scripts" / "verify-gate.sh"), "--event", "task"]
+        return subprocess.run(argv, capture_output=True, text=True, cwd=self.repo, env=env)
+
+    def test_a_ci_checkout_reads_the_key_at_the_pull_requests_base_commit(self):
+        # W3-08 (2026-10-27 security audit, P2): a fresh CI checkout has neither origin/HEAD nor
+        # origin/<base>, and the working-tree pin is refused on a sound lane, so EVERY signed
+        # dispatch blocked as half-configured — the sound setup could not pass. The runner's own
+        # event payload names the PR's base commit: the key is read there, at an immutable commit
+        # id the PR cannot move, and never from the PR's tree (which here carries the worker's).
+        coordinator, worker, base, event = self._ci_shaped()
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=coordinator)
+        r = self._run_ci(src, rec, event, trace=True)
+        self.assertIn(f"PUBKEY=.orca/dispatch-pubkey@{base}\n", r.stderr)
+        r = self._run_ci(src, rec, event)
+        self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("signature verified", r.stdout + r.stderr)
+        # ...and the PR's own key, the one in its tree, still verifies nothing.
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        r = self._run_ci(src, rec, event)
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("signature INVALID", r.stderr)
+
     def test_worktree_fallback_is_refused_on_a_lane_claiming_soundness(self):
         # 2026-10-26 review: a CI-shaped clone has no refs/remotes/origin/HEAD, so the blob read
         # missed and the gate fell through to the WORKING TREE — the PR's own checkout, where a

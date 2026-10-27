@@ -266,6 +266,16 @@ class LibraryAndMain(unittest.TestCase):
             with self.assertRaises(pr.PinReviewError):
                 pr.resolve(repo, "0" * 40)
 
+    def test_an_option_shaped_ref_is_refused_before_git_reads_it(self):
+        # W2-04: `--to`/`--old` reached `rev-parse --verify <ref>^{commit}` in option position.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _, _ = make_pack(Path(tmp))
+            for ref in ("--all", "-h", "--show-toplevel"):
+                with self.subTest(ref=ref):
+                    with self.assertRaises(pr.PinReviewError) as ctx:
+                        pr.resolve(repo, ref)
+                    self.assertIn("not an option", str(ctx.exception))
+
     def test_truncated_diff_stream_refuses(self):
         # A status token with no path behind it must not silently drop a
         # change from the review surface.

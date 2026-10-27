@@ -1609,6 +1609,17 @@ class CommitTrailersAreRefused(unittest.TestCase):
         self.assertEqual(self._check(base="0" * 40)[0], 2)
         self.assertEqual(self._check(head="no-such-ref")[0], 2)
 
+    def test_an_option_shaped_end_is_refused_before_git_reads_it(self):
+        # W2-04: `--base`/`--head` reached `rev-parse --verify` and `git log <base>..<head>` in
+        # option position; a `-`-leading value is refused as an option, never handed to git.
+        for base, head in (("--all", "HEAD"), (self.base, "--all"), ("-p", "HEAD")):
+            with self.subTest(base=base, head=head):
+                with self.assertRaises(ValueError) as ctx:
+                    check_trailers.commits(self.repo, base, head)
+                self.assertIn("not an option", str(ctx.exception))
+                code = check_trailers.main([f"--base={base}", f"--head={head}", "--root", str(self.repo)])
+                self.assertEqual(code, 2)
+
     def test_the_cli_fails_the_step(self):
         self._commit("fix: x\n\nCo-authored-by: Bot <bot@example.com>\n")
         r = subprocess.run([sys.executable, str(ROOT / "scripts" / "check_trailers.py"),

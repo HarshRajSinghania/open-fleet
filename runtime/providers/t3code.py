@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -40,6 +41,7 @@ from .base import (
     require_id,
 )
 from .local_state import LocalStateStore
+from .posix import checkout_worktree
 from ._external import release_claim_on_failure
 from ._external import (
     insert_dispatch,
@@ -153,7 +155,19 @@ class T3CodeProvider(RuntimeProvider):
         if os.path.exists(path):
             raise ProviderError("worktree_exists", f"t3code: worktree path {path!r} already exists; pass it as --worktree")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._git(["git", "-C", root, "worktree", "add", "-b", branch, path, base or "HEAD"])
+        # As posix.py does (W4-01 sweep): no checkout inside `worktree add`; the checkout is
+        # posix.checkout_worktree's, anchored to `root`: committed bytes written against a git dir
+        # whose config declares no driver, so none runs, and none a sibling adds mid-call (PR #720
+        # Codex round 3). `--` ends the options: a `-`-leading base is a commit-ish (W2-04).
+        self._git(["git", "-C", root, "worktree", "add", "--no-checkout", "-b", branch, "--", path, base or "HEAD"])
+        try:
+            done = checkout_worktree(root, path, branch)
+            why = None if done.returncode == 0 else os.fsdecode(done.stderr or done.stdout).strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            why = str(exc)
+        if why is not None:
+            self._git(["git", "-C", root, "worktree", "remove", "--force", "--", path])
+            raise ProviderError(f"{self.name}_cli_error", f"t3code: checkout of {path!r} failed: {why}")
         if not os.path.isdir(path):
             raise ProviderError("worktree_unresolved", f"git worktree add reported success but {path!r} does not exist")
         return {"path": os.path.realpath(path), "branch": branch, "workspaceRoot": root}

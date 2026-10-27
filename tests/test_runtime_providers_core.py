@@ -103,6 +103,117 @@ class TestBaseHarnessAndMonotonicProfile(unittest.TestCase):
         self.assertIn("--exclude-tools", pi_ro["command"])
 
 
+class TestFlagValuesAndEnvKeysStayData(unittest.TestCase):
+    """W2-01: a flag VALUE that starts with `-` must stay the value, and a bare `--` ends the
+    flags, so text is never read as an option and never silently becomes a bool. W2-02: a launch
+    env KEY lands in a shell word position (`env K=v …`, `docker run -e K=v … sh -c`), where
+    quoting the value alone makes nothing safe — a key that is not a shell identifier is refused."""
+
+    def setUp(self):
+        self.base = _load_base()
+
+    def test_key_equals_value_carries_a_dash_leading_value(self):
+        pos, flags = self.base._parse_flag_map(["--text=--hello", "--terminal=t1", "--text-x", "y"])
+        self.assertEqual(pos, [])
+        self.assertEqual(flags, {"text": "--hello", "terminal": "t1", "text-x": "y"})
+        self.assertEqual(self.base._parse_flag_map(["--text=-R"])[1], {"text": "-R"})
+        self.assertEqual(self.base._parse_flag_map(["--text="])[1], {"text": ""})
+
+    def test_a_bare_double_dash_ends_the_flags(self):
+        pos, flags = self.base._parse_flag_map(["--terminal", "t1", "--", "--text", "-R"])
+        self.assertEqual(flags, {"terminal": "t1"})
+        self.assertEqual(pos, ["--text", "-R"])
+
+    def test_text_that_parsed_as_a_bool_is_a_clean_error(self):
+        posix = _load_posix()
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s" / "runtime.db"),
+                   "OPEN_FLEET_CLI_CWD": tmp, "OPEN_FLEET_POSIX_BACKEND": "dry-run"}
+            prov = posix.PosixWorktreeProvider(env=env)
+            for argv in (["terminal", "send", "--terminal", "t1", "--text", "--"],
+                         ["terminal", "send", "--terminal", "t1", "--text"],
+                         ["terminal", "send", "--terminal", "t1", "--text", "a", "--text", "b"]):
+                with self.subTest(argv=argv):
+                    with self.assertRaises(self.base.ProviderError) as ctx:
+                        prov.dispatch(argv)
+                    self.assertEqual(ctx.exception.code, "invalid_argument")
+                    self.assertIn("--text=", ctx.exception.message)
+
+    def _sent(self, argv):
+        """What `terminal send` hands the terminal when routed through the public dispatch()."""
+        posix = _load_posix()
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s" / "runtime.db"),
+                   "OPEN_FLEET_CLI_CWD": tmp, "OPEN_FLEET_POSIX_BACKEND": "dry-run"}
+            prov = posix.PosixWorktreeProvider(env=env, runner=lambda **kw: sent.append(kw["text"]))
+            with prov.state._connect() as conn:
+                conn.execute(
+                    "INSERT INTO terminals(handle, worktree, title, command, shell, pid, backend, log_path, state, created_at) "
+                    "VALUES ('t1', '', 't', 'x', '/bin/sh', 0, 'dry-run', '', 'running', 0)")
+            prov.dispatch(argv)
+        return sent
+
+    def test_only_the_dispatchers_own_json_flag_is_consumed(self):
+        # PR #720 review (P2): dispatch() stripped EVERY `--json` before parsing, so a text whose
+        # value is `--json` lost its operand, and a `--json` after a bare `--` was deleted as well.
+        send = ["terminal", "send", "--terminal", "t1"]
+        for argv, want in (([*send, "--text", "--json"], "--json\n"),
+                           ([*send, "--text", "--", "--json"], "--json\n"),
+                           ([*send, "--", "--json"], "--json\n"),
+                           ([*send, "--text", "--hello"], "--hello\n"),
+                           (["terminal", "send", "t1", "--", "-R", "x"], "-R x\n"),
+                           (["--json", *send, "--text", "hi", "--json"], "hi\n")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self._sent(argv), [want])
+        with self.assertRaises(self.base.ProviderError) as ctx:
+            self._sent([*send, "--text", "a", "--", "b"])
+        self.assertEqual(ctx.exception.code, "invalid_argument")
+
+    def test_orca_forwards_its_json_flag_only_in_option_position(self):
+        orca = importlib.import_module("runtime.providers.orca")
+        seen = []
+
+        def run(cmd, **_kw):
+            seen.append(cmd)
+            raise OSError("recorded")
+        prov = orca.OrcaProvider(env={})
+        send = ["terminal", "send", "--terminal", "t1"]
+        with mock.patch.object(orca.OrcaProvider, "binary", return_value="/x/orca"), \
+                mock.patch.object(orca.subprocess, "run", side_effect=run):
+            for argv in ([*send, "--text", "--json"], [*send, "--", "--json"], ["--json", *send, "--text", "hi"]):
+                with self.assertRaises(self.base.ProviderError):
+                    prov.dispatch(argv)
+        self.assertEqual(seen, [["/x/orca", *send, "--text", "--json", "--json"],
+                                ["/x/orca", *send, "--json", "--", "--json"],
+                                ["/x/orca", *send, "--text", "hi", "--json"]])
+
+    def test_a_launch_env_key_must_be_a_shell_identifier(self):
+        ok = self.base.shell_launch_line({"env": {"A_1": "v w", "_B": "x"}, "argv": ["run"]})
+        self.assertEqual(ok, "env A_1='v w' _B=x run")
+        for key in ("A B", "A;touch x", "1A", "", "A-B", "A=B", "A\nB", "$(id)"):
+            with self.subTest(key=key):
+                with self.assertRaises(self.base.ProviderError) as ctx:
+                    self.base.shell_launch_line({"env": {key: "v"}, "argv": ["run"]})
+                self.assertEqual(ctx.exception.code, "invalid_env_key")
+
+    def test_a_docker_env_key_must_be_a_shell_identifier(self):
+        posix = _load_posix()
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s" / "runtime.db"),
+                   "OPEN_FLEET_CLI_CWD": tmp, "OPEN_FLEET_POSIX_BACKEND": "dry-run"}
+            prov = posix.PosixWorktreeProvider(env=env)
+            kw = dict(image="img", wt_path=tmp, inner="true", dispatch_id="d",
+                      sandbox_meta={"sandbox_git": str(Path(tmp) / "sb")})
+            cmd, _ = prov._docker_command(env={"GOOD_KEY": "v"}, **kw)
+            self.assertIn("-e GOOD_KEY=v ", cmd)
+            for key in ("A B", "A;touch x", "-v/:/host"):
+                with self.subTest(key=key):
+                    with self.assertRaises(self.base.ProviderError) as ctx:
+                        prov._docker_command(env={key: "v"}, **kw)
+                    self.assertEqual(ctx.exception.code, "invalid_env_key")
+
+
 class TestPreRenameEnvNames(unittest.TestCase):
     """orca-fleet became open-fleet: every reader takes the OPEN_FLEET_* name and still reads
     the pre-rename ORCA_FLEET_* spelling installed users export when the new one is unset;

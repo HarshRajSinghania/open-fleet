@@ -176,6 +176,8 @@ class WorktrunkProvider(RuntimeProvider):
         """True/False conflict prediction for merging `branch` into `target` (default branch if None)."""
         if target:
             # `wt list` only simulates the DEFAULT branch; simulate the explicit target the same way.
+            # The runner's git custody runs it against a git dir whose config names no merge
+            # driver, the two revisions resolved in this worktree first (posix.run_git, W4-01).
             try:
                 self._run(["git", "-C", str(item["path"]), "merge-tree", "--write-tree", "--name-only", str(target), str(branch)])
                 return False

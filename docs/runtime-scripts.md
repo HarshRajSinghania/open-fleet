@@ -499,7 +499,8 @@ shell assignments).
 
 Changed set = committed diff vs merge base + working tree + untracked files, every diff taken
 with `--no-renames` so a move counts as its delete AND its add (a file moved out of
-`db/migrate/` still earns `MIGRATIONS`). git is resolved once to an absolute path and run under
+`db/migrate/` still earns `MIGRATIONS`). git is resolved once to an absolute path (absent at
+import is a could-not-run on every call, never a bare `git` re-resolved later; W4-14) and run under
 `runtime/scripts/gitexec.py`'s whole floor, inlined (no global or system config,
 `safe.directory=*`, fsmonitor, hooks, external diff, `ext::`, replacement objects and grafts
 off), plus the diff-rendering pins of `runtime/scripts/floor_guard.py:DIFF_RENDERING` (inert
@@ -1034,12 +1035,16 @@ differs from the store) · 2 usage or store error.
 Single git resolution rule and hardened git environment for the read-side tools
 (`runtime/scripts/inventory.py`, `runtime/scripts/evidence-run.py`,
 `runtime/scripts/floor_guard.py`, `runtime/scripts/preflight.py`,
-`runtime/scripts/decisions.py` for `--pin-ref`, `runtime/scripts/hint_provenance.py`) and the
+`runtime/scripts/decisions.py` for `--pin-ref`, `runtime/scripts/hint_provenance.py`), the
 paid runners in `scripts/` (`ablation.py`, `_trajectories.py`, `wip_curve.py`,
-`live_container.py`). Import-only library — no CLI.
-Source `runtime/scripts/gitexec.py:1-65`; behavior pinned by `tests/test_inventory.py`,
+`live_container.py`), and the providers' git custody (`run_git` in `runtime/providers/posix.py`,
+through which the posix provider and the external adapters' shared CLI runners `run_cli`/
+`run_cli_text` launch every `git`), whose git runs coordinator-side over the shared `.git` a
+worker writes (W4-01). Import-only library — no CLI.
+Source `runtime/scripts/gitexec.py:1-76`; behavior pinned by `tests/test_inventory.py`,
 `tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`,
-`tests/test_diff_scope.py`, and `tests/test_gitexec_config_commands.py`.
+`tests/test_diff_scope.py`, `tests/test_gitexec_config_commands.py`,
+`tests/test_posix_provider.py`, and `tests/test_orchestrator_providers_tier1.py`.
 
 API: `argv`, `env`, `driver_blanks`.
 
@@ -1048,14 +1053,17 @@ API: `argv`, `env`, `driver_blanks`.
 environment hardened with `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE=/dev/null`,
 `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, and command-line
 config overrides (`core.fsmonitor=false`, `protocol.ext.allow=never`, `safe.directory=*`,
-`core.hooksPath=/dev/null`, `diff.external=`) while stripping `GIT_EXTERNAL_DIFF` and inherited
-`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` pairs. Those command-line overrides close every
+`core.hooksPath=/dev/null`, `diff.external=`) while stripping `GIT_EXTERNAL_DIFF`, inherited
+`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` pairs, `GIT_CONFIG_PARAMETERS` (inherited `-c` pairs,
+read after the count pairs, so they would outrank the floor) and `GIT_CONFIG` (the one file
+`git config --list` reads: inherited, it emptied `driver_blanks` while the content-reading call
+still loaded the repo's config; W4-07 sweep). Those command-line overrides close every
 command-bearing repository-config key that has a FIXED name: a worker's own `.git/config`
 `core.fsmonitor` (a program git runs on `status`/`add`), its hooks (`post-checkout` on a
 `worktree add` / `checkout <paths>` among them), its external-diff program, the `ext::`
 transport, and — with the two object-rewrite env vars — a planted `refs/replace`/graft (#629).
 
-`driver_blanks(repo)` closes the remaining channel a fixed `-c` cannot: a
+`driver_blanks(repo, git_dir=None, base=None)` closes the remaining channel a fixed `-c` cannot: a
 `filter.<driver>.clean/smudge/process`, a `diff.<driver>.textconv`/`command`, or a
 `merge.<driver>.driver` git runs when a `.gitattributes` (or `$GIT_DIR/info/attributes`, which
 outranks any `--attr-source`) line selects `<driver>`. `-c` cannot enumerate an unknown
@@ -1074,10 +1082,20 @@ working-tree bytes through as they are. A caller passes them as
 name holding `=` at its first `=` and blanks a different key. The config is read as bytes and each
 key handed back through `os.fsdecode`, which `subprocess` reverses, because a driver name is any
 bytes git accepts (`0xff`, an invalid UTF-8 sequence) and an attribute selects exactly those; a
-text decode named a different driver (PR #649 review). A read that MATERIALISES working-tree
+text decode named a different driver (PR #649 review). `git_dir` reads the config a named git
+directory resolves (`--git-dir`) instead of discovering one from `repo`, for a caller that never
+trusts a worktree's own `.git` pointer; `base` is the environment the listing runs under, which a
+caller sets to the one its git call gets (the posix provider and the adapters strip every
+repository-selecting `GIT_*` variable from both). A read that MATERIALISES working-tree
 content passes its pairs (`hint_provenance.py` on every `diff` and `log`, `_trajectories.py`'s replay
-on every call after `init`, beside attributes from the empty tree; not `live_container.py`'s `status`
-of the catalog checkout); a read of committed objects alone selects no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed` and hint_provenance.py's `ProvenanceError`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
+on every call after `init`, beside attributes from the empty tree; as a belt, every git the posix
+provider and the adapters run, read at its `-C`/cwd or `--git-dir`; not `live_container.py`'s
+`status` of the catalog checkout); a read of committed objects alone selects no filter and skips
+it. The listing and the call are two steps, so a driver a concurrent writer of that config adds
+between them runs unblanked: `driver_blanks` closes the channel only for a config no one writes
+while the call runs. The posix provider and the adapters do not rely on it (PR #720 Codex round
+3): a git of theirs that could apply a driver runs against a git dir they build, whose config
+declares none, and any other such git is refused (`docs/runtimes.md`, "`posix` git custody"). An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed`, hint_provenance.py's `ProvenanceError`, a posix provider git call that never runs (exit 127, surfacing as that verb's `ProviderError`, e.g. `worktree_create_failed` or `worktree_rm_failed`) and an adapter's `<provider>_cli_error`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
 `stdin=subprocess.DEVNULL` (or input of its own), as `driver_blanks` does, so a hook, filter or git itself never
 waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
 parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
@@ -2151,7 +2169,9 @@ touched. Source `runtime/scripts/wtree.sh:1-50`; exercised by `tests/test_eviden
 Usage: `wtree.sh [repo-dir]` (default: current directory), or `wtree.sh predict-merge <base>
 <branch> [repo-dir]` (also `wtree.sh <repo-dir> predict-merge <base> <branch>`), which execs
 `runtime/scripts/diff_scope.py --predict-merge` for the in-memory three-way conflict prediction
-and exits as it does (2 when an argument is missing).
+and exits as it does (2 when an argument is missing). It execs `python3 -I`, so no PYTHONPATH,
+`PYTHON*` variable or user site (a planted `sitecustomize.py`, a `json.py` shadowing the stdlib)
+reaches the coordinator-side run (W4-13 sweep).
 
 Flags: none — positional arguments only.
 

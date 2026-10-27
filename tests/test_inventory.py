@@ -369,6 +369,16 @@ class TestHardenedGit(InventoryBase):
         inv = self._inventory()
         self.assertEqual(inv.sha256_at("HEAD", "a.txt", repo), sha("real\n"))
 
+    def test_an_option_shaped_revision_never_reaches_git(self):
+        # W2-04: `--at` sat in option position (`cat-file blob <rev>:<path>`, `rev-parse --verify
+        # <rev>^{commit}`). An option is not a revision: refused before any git process starts.
+        inv = self._inventory()
+        with mock.patch.object(inv.subprocess, "run", side_effect=AssertionError("git was run")):
+            for rev in ("--batch", "-p", "--all"):
+                with self.subTest(rev=rev):
+                    self.assertIsNone(inv.sha256_at(rev, "a.txt", self.tmp))
+                    self.assertFalse(inv.rev_exists(rev, self.tmp))
+
     def test_git_is_absolute_and_the_env_closes_config_exec_channels(self):
         gitexec = self._inventory().gitexec
         self.assertTrue(os.path.isabs(gitexec.argv("status")[0]))

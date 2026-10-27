@@ -27,7 +27,23 @@ from typing import Callable
 
 from .base import ProviderError, fence_state, normalize_show, parse_json_strict
 from .local_state import LocalStateStore
-from .posix import HOOK_ARTIFACTS
+from .posix import HOOK_ARTIFACTS, populated_gitlinks, run_git
+
+
+def _run_git(argv: list[str], *, cwd: str | None, env: dict[str, str] | None, timeout: float,
+             input: str | None = None) -> subprocess.CompletedProcess:
+    """A `git` an adapter runs: COORDINATOR-side git over a worker's worktree (the shared
+    `.git/config` and `info/attributes`, the same-uid `~/.gitconfig`), so it runs through
+    posix.run_git's custody exactly as posix.py's own git does (W4-01): gitexec's absolute git and
+    floor plus PROVIDER_FLOOR, a repository-selecting GIT_* in `env` dropped, `status` /
+    `reset --hard` / `merge-tree` run against a coordinator-built git dir whose config declares no
+    driver (so a sibling cannot add one mid-call, PR #720 Codex round 3), and any other subcommand
+    that could apply an attribute-selected driver refused (GitCustodyRefused, an OSError), wherever
+    it runs. Output decoded byte-for-byte with os.fsdecode: a `\r`, `\r\n` or non-UTF-8 byte in a
+    path comes back as the same path (text mode turned `\r` into `\n`)."""
+    proc = run_git(argv[1:], cwd=cwd, env=env, timeout=timeout,
+                   input=os.fsencode(input) if input is not None else None)
+    return subprocess.CompletedProcess(argv, proc.returncode, os.fsdecode(proc.stdout), os.fsdecode(proc.stderr))
 
 # Files `posix.install_worktree_hooks` writes into a worktree: dirt limited to these paths is
 # ours, not the worker's, and never blocks a cleanup that has already preserved HEAD.
@@ -49,13 +65,16 @@ def real_worktree(path: Any) -> str | None:
 def run_cli(argv: list[str], *, provider: str, timeout: float = 60, cwd: str | None = None) -> dict[str, Any]:
     """Run an upstream CLI; every failure mode is a ProviderError (never a silent success)."""
     try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, check=False, timeout=timeout, cwd=cwd
-        )
+        if argv and argv[0] == "git":
+            proc = _run_git(argv, cwd=cwd, env=None, timeout=timeout)
+        else:
+            proc = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=timeout, cwd=cwd)
     except FileNotFoundError as exc:
         raise ProviderError(f"{provider}_cli_missing", f"{argv[0]!r} not found on PATH", {"argv": argv}) from exc
     except subprocess.TimeoutExpired as exc:
         raise ProviderError(f"{provider}_timeout", f"{argv[0]} timed out after {timeout}s", {"argv": argv}) from exc
+    except OSError as exc:
+        raise ProviderError(f"{provider}_cli_error", f"{argv[0]} could not be launched: {exc}", {"argv": argv}) from exc
     if proc.returncode != 0:
         raise ProviderError(
             f"{provider}_cli_error",
@@ -294,15 +313,18 @@ def run_cli_text(
 ) -> str:
     """Run an upstream CLI; any launch failure, timeout, or non-zero exit is a ProviderError."""
     try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-            env=env,
-            input=input,
-        )
+        if argv and argv[0] == "git":
+            proc = _run_git(argv, cwd=None, env=env, timeout=timeout, input=input)
+        else:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+                env=env,
+                **({"input": input} if input is not None else {}),
+            )
     except FileNotFoundError as exc:
         raise ProviderError(f"{provider}_cli_missing", f"{argv[0]!r} is not installed or not on PATH", {"argv": argv}) from exc
     except subprocess.TimeoutExpired as exc:
@@ -392,17 +414,34 @@ def foreign_dirty_paths(
     worktree: str,
     extra_ignored: tuple[str, ...] = (),
 ) -> list[str]:
-    """Uncommitted paths in `worktree` that are NOT open-fleet hook artifacts (work a removal would lose)."""
-    out = run(["git", "-C", worktree, "status", "--porcelain", "--untracked-files=all"])
+    """Uncommitted paths in `worktree` that are NOT open-fleet hook artifacts (work a removal would lose).
+
+    `-z`: every path raw, NUL-terminated, a rename's source in the field after its destination.
+    The line form C-quoted a path holding a newline and printed `x -> AGENTS.md` unquoted, which
+    the ` -> ` split read as the artifact `AGENTS.md`, so a user's unsaved file counted as clean
+    (PR #720 Codex round 2).
+
+    A checked-out submodule always counts (posix.populated_gitlinks): the custody's `status` never
+    looks inside one, because git inspects it with a child git that drops the env floor and reads
+    the submodule's own config, whose clean filter ran as the coordinator (PR #720 Codex round 3)."""
+    out = run(["git", "-C", worktree, "status", "--porcelain", "-z", "--untracked-files=all"])
+    staged = run(["git", "-C", worktree, "ls-files", "-s", "-z"])
     ignored = HOOK_ARTIFACT_PREFIXES + tuple(extra_ignored)
     dirty: list[str] = []
-    for line in out.splitlines():
-        if len(line) < 4:
+    fields = out.split("\0")
+    i = 0
+    while i < len(fields):
+        entry = fields[i]
+        i += 1
+        if len(entry) < 4:
             continue
-        path = line[3:].strip().strip('"')
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
+        status, path = entry[:2], entry[3:]
+        if "R" in status or "C" in status:
+            i += 1  # the rename/copy source: the destination is what a removal would lose
         if not any(_artifact_match(path, p) for p in ignored):
+            dirty.append(path)
+    for path in populated_gitlinks(staged, worktree):
+        if path not in dirty and not any(_artifact_match(path, p) for p in ignored):
             dirty.append(path)
     return dirty
 

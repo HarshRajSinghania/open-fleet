@@ -9,7 +9,10 @@ under the caller's whole git environment and the graded repo's own config. A
 repo-local ``core.fsmonitor`` is a command git runs on ``status``/``diff``; a
 ``refs/replace/`` ref silently swaps the object a blob hash is taken from. decisions.py
 (``--pin-ref``), hint_provenance.py and the paid runners in scripts/ (ablation.py,
-_trajectories.py, wip_curve.py, live_container.py) have since joined those four.
+_trajectories.py, wip_curve.py, live_container.py) have since joined those four, and so have the
+posix provider (runtime/providers/posix.py) and the external adapters' shared CLI runners
+(runtime/providers/_external.py), whose git runs coordinator-side over the shared ``.git`` a
+worker writes (W4-01).
 
 ``GIT`` is resolved ONCE, at import, to an absolute path (the run_report.py /
 verify.py rule, h409 R2). ``argv(*args)`` is the argv head every call uses; with no
@@ -35,7 +38,11 @@ names the cause.
   transport), and ``safe.directory=*`` in place of the one legitimate use of the dropped
   global file (CI ownership belts);
 - ``GIT_TERMINAL_PROMPT=0``; ``GIT_EXTERNAL_DIFF`` and any inherited
-  ``GIT_CONFIG_KEY_n``/``VALUE_n`` pairs are dropped so they cannot shadow these.
+  ``GIT_CONFIG_KEY_n``/``VALUE_n`` pairs are dropped so they cannot shadow these, and so are
+  ``GIT_CONFIG_PARAMETERS`` (inherited ``-c`` pairs, read AFTER the count pairs, so they would
+  outrank them) and ``GIT_CONFIG`` (the one file ``git config --list`` reads, which hid every
+  declared driver from ``driver_blanks`` while the content-reading call still loaded the repo's
+  config; W4-07 sweep).
 
 The attribute-selected channels — ``filter.<driver>.clean/smudge/process`` and
 ``diff.<driver>.textconv``/``command`` — cannot be closed by a fixed ``-c`` key (``-c``
@@ -46,7 +53,11 @@ command can come from. A worktree-materialising read (floor_guard's, diff_scope'
 hint_provenance's ``diff`` of the working tree, _trajectories.py's replay, verify.py's
 negative-control ``checkout``) passes its pairs;
 a read of committed objects alone (inventory, decisions ``--pin-ref``) never selects a
-filter and does not need them.
+filter and does not need them. The listing and the call are two steps: a driver a concurrent
+writer of that config adds between them runs unblanked, so the pairs close the channel only for
+a config nobody writes while the call runs. The providers' git custody (runtime/providers/posix.py
+``run_git``) does not rely on them: a provider git that could apply a driver runs against a git
+dir the coordinator builds, whose config declares none (PR #720 Codex round 3).
 
 Unlike verify.py the rest of the environment passes: these tools are not a verifier
 stating facts against a worker, and a coordinator's locale, HOME and PATH stay theirs.
@@ -96,6 +107,9 @@ HARDENED = {
     "GIT_CONFIG_KEY_3": "core.hooksPath", "GIT_CONFIG_VALUE_3": os.devnull,
     "GIT_CONFIG_KEY_4": "diff.external", "GIT_CONFIG_VALUE_4": "",
 }
+# Inherited variables env() never passes on (see the module docstring): each would shadow or
+# blind the floor above.
+_INHERITED_DROPPED = frozenset({"GIT_EXTERNAL_DIFF", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG"})
 
 # A config key whose VALUE is a command git runs when a .gitattributes line selects its
 # <driver>: a clean/smudge/process filter, or a textconv/command diff driver. The command
@@ -138,7 +152,7 @@ def env(base=None, blanks=()):
     pairs. An env pair carries a key and a value separately, so a key holding ``=`` (which a
     ``-c <key>=<value>`` splits at its FIRST ``=``) or any non-UTF-8 byte reaches git intact."""
     out = {k: v for k, v in (os.environ if base is None else base).items()
-           if k != "GIT_EXTERNAL_DIFF"
+           if k not in _INHERITED_DROPPED
            and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
     out.update(HARDENED)
     first = int(HARDENED["GIT_CONFIG_COUNT"])
@@ -148,11 +162,16 @@ def env(base=None, blanks=()):
     return out
 
 
-def driver_blanks(repo):
+def driver_blanks(repo, *, git_dir=None, base=None):
     """``(key, value)`` config pairs that neutralise the command of every filter/diff/merge driver
     DECLARED in ``repo``'s config — the attribute-selected exec channel a fixed ``-c`` cannot name
     (#629). Pass them as ``env(blanks=...)``; never as ``-c`` argv, which splits a key at its
-    first ``=``. Filter and diff commands are blanked to empty; a merge driver is overridden to
+    first ``=``. ``git_dir`` reads the config the git directory it names resolves (``--git-dir``)
+    instead of discovering one from ``repo``: for a caller that names its repository that way and
+    never trusts a worktree's own ``.git`` pointer (posix.py's sandbox sync, W4-01), so the
+    drivers are read where its call runs. ``base`` is the environment the listing runs under (as
+    ``env(base)``); a caller whose git call runs under a base of its own passes the same one, so
+    the listing and the call resolve the same repository (PR #720 Codex round 2). Filter and diff commands are blanked to empty; a merge driver is overridden to
     ``exit 1`` (see ``_MERGE_KEY_RE``), so a git ``merge-tree``/``revert``/``apply``/``checkout``
     that would run it reads a conflict instead and runs nothing.
 
@@ -181,15 +200,16 @@ def driver_blanks(repo):
     key is handed back through ``os.fsdecode``, which ``subprocess`` reverses with
     ``os.fsencode`` — so git receives exactly the bytes it declared, never a decoded stand-in
     that names a different driver (PR #649 review)."""
+    where = ("--git-dir", str(git_dir)) if git_dir is not None else ("-C", str(repo))
     try:
-        out = subprocess.run(argv("-C", str(repo), "config", "--list", "-z", "--name-only"),
-                             capture_output=True, timeout=30, env=env(),
+        out = subprocess.run(argv(*where, "config", "--list", "-z", "--name-only"),
+                             capture_output=True, timeout=30, env=env(base),
                              stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as err:
-        raise DriverQueryFailed(f"git config --list could not run in {repo}: {err}") from err
+        raise DriverQueryFailed(f"git config --list could not run in {where[1]}: {err}") from err
     if out.returncode != 0:
         why = out.stderr.decode("utf-8", "replace").strip()[:200]
-        raise DriverQueryFailed(f"git config --list exited {out.returncode} in {repo}: {why}")
+        raise DriverQueryFailed(f"git config --list exited {out.returncode} in {where[1]}: {why}")
     return _blank_pairs(out.stdout)
 
 

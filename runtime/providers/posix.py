@@ -20,6 +20,7 @@ import contextlib
 import fcntl
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -29,9 +30,11 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any, Callable
 
 from .base import (
@@ -39,6 +42,7 @@ from .base import (
     ProviderError,
     RuntimeProvider,
     build_harness_command,
+    check_env_keys,
     check_monotonic_profile,
     env_get,
     fence_state,
@@ -140,6 +144,17 @@ CRUSH_RO_DISABLED_TOOLS = [
 RUNTIME_DIR = Path(__file__).resolve().parent.parent
 OPEN_FLEET_ROOT = RUNTIME_DIR.parent
 CANONICAL_DENY_HOOK = RUNTIME_DIR / "scripts" / "deny-hook.sh"
+
+
+def _load_gitexec():
+    """runtime/scripts/gitexec.py: the one git resolution rule and hardened environment (W4-01)."""
+    spec = importlib.util.spec_from_file_location("open_fleet_posix_gitexec", RUNTIME_DIR / "scripts" / "gitexec.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+gitexec = _load_gitexec()
 SANDBOX_GIT_MOUNT = "/open-fleet/sandbox.git"
 # Per-worktree guard artifacts install_worktree_hooks writes. They are excluded from git (never
 # land in a PR) and deny-hook.sh refuses edits to them (a worker cannot disarm its own guard).
@@ -188,18 +203,10 @@ def _refuse_guard_links(wt: Path) -> None:
 
 def _exclude_hook_artifacts(wt: Path) -> None:
     """Append HOOK_ARTIFACTS to the worktree's `info/exclude` (shared by all linked worktrees)."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
+    proc = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=wt, timeout=15)
+    if proc.returncode != 0 or not _line(proc.stdout):
         return
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return
-    info = Path(proc.stdout.strip()) / "info"
+    info = Path(_line(proc.stdout)) / "info"
     info.mkdir(parents=True, exist_ok=True)
     exclude = info / "exclude"
     have = exclude.read_text(encoding="utf-8").splitlines() if exclude.is_file() else []
@@ -691,6 +698,14 @@ def _load_hermes_config(user_cfg: Path, env: dict[str, str]) -> dict[str, Any]:
     return loaded
 
 
+def tmux_send_keys_argv(ref: str, text: str) -> list[str]:
+    """argv for sending `text` LITERALLY to tmux pane `ref`. `--` ends tmux's options so a
+    `-`-leading payload (`-R`, `--help`) is the text, never a flag: `tmux send-keys -l -R` parsed
+    the text as -R (reset terminal), exited 0, and the send was recorded as accepted with nothing
+    delivered (W2-01)."""
+    return ["tmux", "send-keys", "-t", ref, "-l", "--", text]
+
+
 def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, str]) -> dict[str, str]:
     """A per-dispatch HERMES_HOME (outside the worktree) whose config carries our deny hook.
 
@@ -733,19 +748,537 @@ def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, 
     return {"HERMES_HOME": str(home), "HERMES_ACCEPT_HOOKS": "1", "HERMES_SAFE_MODE": "0"}
 
 
-def _git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, str] | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
-    full = ["git", *(["-C", str(cwd)] if cwd else []), *args]
+# Variables that choose the repository, worktree, index, object store or attribute source a git
+# call reads, or that inject config, templates or git's own helper programs. Handed to a provider's
+# git in a caller-supplied env, they pointed the call at a repository the custody never looked at,
+# and its smudge filter ran (PR #720 Codex round 2): `-C`/cwd/`--git-dir`/`--work-tree` is the only
+# way a provider names its repository.
+GIT_SELECTOR_ENV = frozenset({
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_ATTR_SOURCE", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_EXEC_PATH", "GIT_TEMPLATE_DIR",
+})
+
+
+def git_call_base(env: dict[str, str] | None) -> dict[str, str]:
+    """The env a provider git call starts from (os.environ when None) with GIT_SELECTOR_ENV and
+    every GIT_CONFIG_KEY_n/VALUE_n removed: the one base every step of a custody call (its
+    repository lookups, the driver listing, the git itself) runs under, so all resolve the same
+    repository. Used by run_git and checkout_worktree."""
+    return {k: v for k, v in (os.environ if env is None else env).items()
+            if k not in GIT_SELECTOR_ENV and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+
+
+def git_location(args: list[str], cwd: str | Path | None) -> tuple[str, str | None]:
+    """`(repo, git_dir)` git runs in for the arguments `args` (everything after the program name):
+    their leading `-C <dir>` options (each relative to the one before, from the launch cwd), or a
+    `--git-dir`, else the launch cwd itself. Shared with the adapters' launcher
+    (_external._run_git)."""
+    repo, git_dir, i = str(cwd or os.getcwd()), None, 0
+    while i < len(args):
+        tok = args[i]
+        if tok in ("-C", "-c", "--git-dir", "--work-tree") and i + 1 < len(args):
+            if tok == "-C":
+                repo = os.path.join(repo, args[i + 1])
+            elif tok == "--git-dir":
+                git_dir = args[i + 1]
+            i += 2
+        elif tok.startswith("--git-dir="):
+            git_dir, i = tok.split("=", 1)[1], i + 1
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            break
+    return repo, (os.path.join(repo, git_dir) if git_dir else None)
+
+
+# ---------------------------------------------------------------------------------------------
+# Coordinator git custody (W4-01; PR #720 Codex round 3)
+# ---------------------------------------------------------------------------------------------
+# Fixed config keys, on top of gitexec's floor, that name a program (or a transport that runs one)
+# for a subcommand the custody runs. A fixed key is overridden atomically on git's own command
+# line (GIT_CONFIG_COUNT pairs outrank every config file), so no read-then-use window exists:
+#   core.alternateRefsCommand - `fetch` runs it for an alternate the SHARED objects/info/alternates
+#     names (the sandbox sync's fetch did, as the coordinator);
+#   protocol.allow=never + protocol.file.allow=always - a name-indexed `url.<base>.insteadOf` in the
+#     shared config cannot turn a local path into `ssh://` (core.sshCommand), `git://`
+#     (core.gitProxy) or `<helper>::` (git-remote-<helper>): only the local file transport runs;
+#   submodule.recurse / fetch.recurseSubmodules / status.submoduleSummary - git starts a CHILD git
+#     in a submodule WITHOUT the GIT_CONFIG_COUNT floor, under the submodule's own config;
+#   log.showSignature + gpg.*.program - `log` verifying a signed HEAD runs gpg.program;
+#   maintenance.auto / gc.auto - no auto-maintenance child after a fetch.
+# The transport is pinned by PROVIDER_FLOOR_ENV (GIT_ALLOW_PROTOCOL), not a `protocol.*.allow`
+# config pair, because a worker's SPECIFIC `protocol.ssh.allow=always` beats a generic
+# `protocol.allow=never` (PR #720 Codex round 4).
+PROVIDER_FLOOR: tuple[tuple[str, str], ...] = (
+    ("core.alternateRefsCommand", "exit 0"),
+    ("submodule.recurse", "false"),
+    ("fetch.recurseSubmodules", "false"),
+    ("status.submoduleSummary", "false"),
+    ("log.showSignature", "false"),
+    ("gpg.program", os.devnull),
+    ("gpg.openpgp.program", os.devnull),
+    ("gpg.x509.program", os.devnull),
+    ("gpg.ssh.program", os.devnull),
+    ("maintenance.auto", "false"),
+    ("gc.auto", "0"),
+)
+# Environment the floor sets that no repository config can outrank:
+#   GIT_ALLOW_PROTOCOL=file - git documents it overrides ANY `protocol.*.allow`, so a worker's
+#     `protocol.ssh.allow=always` cannot re-enable ssh (and `core.sshCommand`) for a
+#     `url.ssh://....insteadOf=<sandbox>` rewrite, nor `protocol.<helper>.allow=always` an
+#     `<helper>::` remote. The provider's git only ever uses the local file transport (the sandbox
+#     clone/fetch from an absolute path), so `file` is exactly what it needs and nothing more;
+#   GIT_NO_LAZY_FETCH=1 - a worker's `extensions.partialClone` + `remote.<n>.promisor` +
+#     `remote.<n>.uploadpack=<payload>` makes even a plain `rev-parse <ref>^{commit}` lazily fetch
+#     a missing object and run the payload as the coordinator; this refuses the fetch, so a missing
+#     object is a could-not-run, never a worker command (PR #720 Codex round 4).
+PROVIDER_FLOOR_ENV: dict[str, str] = {"GIT_ALLOW_PROTOCOL": "file", "GIT_NO_LAZY_FETCH": "1"}
+
+# Data-only (never a command) core.* settings that change whether a working-tree file reads clean
+# or dirty. Without them a custody `status` can read a clean worktree as modified (a false DIRTY
+# that blocks an unforced removal): `filemode`/`symlinks` (an exec bit or a symlink the filesystem
+# cannot keep), `ignorecase`/`precomposeunicode`/`protecthfs`/`protectntfs` (name folding),
+# `sparsecheckout`/`sparsecheckoutcone` (cone matching for `info/sparse-checkout`),
+# `autocrlf`/`eol` (built-in line-ending conversion), `checkstat`/`trustctime` (which stat fields
+# count). Read from the repository and passed as the custody call's own GIT_CONFIG pairs. NOT
+# `core.excludesFile`: honouring a worker-set global ignore file could HIDE an untracked file and
+# lose its work, so the custody errs toward DIRTY there (`info/exclude`, the repo's own, is copied).
+_CUSTODY_CORE_KEYS: tuple[str, ...] = (
+    "filemode", "symlinks", "ignorecase", "precomposeunicode", "protecthfs", "protectntfs",
+    "sparsecheckout", "sparsecheckoutcone", "autocrlf", "eol", "checkstat", "trustctime",
+)
+# Repository-format extensions the custody git dir reproduces (object format is written into its
+# config; the others do not change the objects it reads through the alternate or the index it
+# copies). Any OTHER `extensions.*` - `partialClone` above all - is refused: the custody dir cannot
+# honour it, and guessing a clean/dirty verdict without it would be wrong (PR #720 Codex round 4).
+_HONOURABLE_EXTENSIONS: frozenset[bytes] = frozenset(
+    b"objectformat compatobjectformat worktreeconfig refstorage relativeworktrees".split())
+
+
+class GitCustodyRefused(OSError):
+    """A git command the custody will not run: it could apply an attribute-selected driver (or
+    otherwise run a program the repository names) and the custody has no driver-free way to run
+    it. An OSError, so every caller's could-not-run handler applies: it is refused, never run."""
+
+
+# `-c` keys a caller may put on a direct call: the sandbox sync's ownership and transport belts.
+_LEAD_CONFIG_KEYS = frozenset({"safe.directory", "protocol.file.allow"})
+
+
+def _split_git_args(args: list[str]) -> tuple[list[str], str, list[str]]:
+    """`(global options, subcommand, its arguments)`; an unknown global option is refused."""
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok in ("-C", "--git-dir", "--work-tree") and i + 1 < len(args):
+            i += 2
+        elif tok == "-c" and i + 1 < len(args):
+            if args[i + 1].split("=", 1)[0].lower() not in _LEAD_CONFIG_KEYS:
+                raise GitCustodyRefused(f"git custody: refusing `-c {args[i + 1]}`")
+            i += 2
+        elif tok.startswith(("--git-dir=", "--work-tree=")) or tok == "--no-optional-locks":
+            i += 1
+        elif tok.startswith("-"):
+            raise GitCustodyRefused(f"git custody: refusing the global option {tok!r}")
+        else:
+            return args[:i], tok, args[i + 1:]
+    raise GitCustodyRefused("git custody: no subcommand")
+
+
+def _options(rest: list[str]) -> tuple[list[str], list[str]]:
+    """`(options, positionals)` of a subcommand's arguments; everything after `--` is positional."""
+    opts: list[str] = []
+    pos: list[str] = []
+    for i, tok in enumerate(rest):
+        if tok == "--":
+            return opts, pos + rest[i + 1:]
+        (opts if tok.startswith("-") and tok != "-" else pos).append(tok)
+    return opts, pos
+
+
+def _only(opts: list[str], allowed: frozenset[str], prefixes: tuple[str, ...] = ()) -> bool:
+    return all(o in allowed or (prefixes and o.startswith(prefixes)) for o in opts)
+
+
+# Subcommands that read or write objects, refs or config and never a working-tree file's content,
+# so no attribute-selected driver (filter, textconv, external diff, merge driver) can apply.
+_REF_PLUMBING = frozenset({"rev-parse", "symbolic-ref", "update-ref", "merge-base", "show-ref", "for-each-ref"})
+_STATUS_OPTS = frozenset({"--porcelain", "--porcelain=v1", "-z", "--short", "-s", "--untracked-files=all",
+                          "--untracked-files=normal", "--untracked-files=no", "-uall", "-unormal", "-uno"})
+
+
+def _custody_kind(sub: str, rest: list[str]) -> str:
+    """How the custody runs `git <sub> <rest>`: "direct" (it applies no attribute-selected driver),
+    "status" / "merge-tree" (run against a coordinator-built git dir), or refused. A checkout is
+    never run here: checkout_worktree does it, anchored to the provider's own repository."""
+    opts, pos = _options(rest)
+    kind = ""
+    if sub in _REF_PLUMBING:
+        kind = "direct"
+    elif sub == "fetch":
+        # From an absolute path only: a remote NAME brings `remote.<name>.uploadpack`, a program the
+        # shared config names (git never reads a remote named by a path starting with `/`).
+        if pos[:1] and pos[0].startswith("/") and _only(opts, frozenset({"--quiet", "-q", "--no-tags", "--no-write-fetch-head",
+                                                                         "--no-recurse-submodules", "--no-auto-maintenance"})):
+            kind = "direct"
+    elif sub == "clone":
+        # From an absolute path, checking nothing out; `--upload-pack`/`--template`/`--recurse-submodules` refused.
+        if pos[:1] and pos[0].startswith("/") and _only(opts, frozenset({"--bare", "--mirror", "--no-checkout", "-n",
+                                                                         "--no-local", "--quiet", "-q"})):
+            kind = "direct" if {"--bare", "--mirror", "--no-checkout", "-n"} & set(opts) else ""
+    elif sub == "remote":
+        kind = "direct" if pos[:1] in (["remove"], ["rm"]) and not opts else ""
+    elif sub == "config":
+        kind = "direct" if _only(opts, frozenset({"--get", "--unset", "--list", "-l", "-z", "--null", "--name-only"})) else ""
+    elif sub == "worktree":
+        action = pos[0] if pos else ""
+        if action in ("list", "prune"):
+            kind = "direct"
+        elif action == "add" and "--no-checkout" in opts:  # checkout_worktree runs the checkout
+            kind = "direct" if _only(opts, frozenset({"--no-checkout", "-b", "--detach", "-q", "--quiet"})) else ""
+        elif action == "remove" and _only(opts, frozenset({"--force", "-f"})) and opts:
+            kind = "direct"  # only forced: an unforced remove runs `status` in the worktree
+    elif sub == "read-tree":
+        kind = "direct" if _only(opts, frozenset({"--empty"})) else ""  # no -u/-m/--reset/-i: no worktree, zero stat
+    elif sub == "ls-files":
+        kind = "direct" if _only(opts, frozenset({"-s", "--stage", "-z", "-o", "--others", "--exclude-standard",
+                                                  "--full-name", "--cached", "-c"})) else ""
+    elif sub == "log":
+        kind = "direct" if _only(opts, frozenset({"-n", "-z", "--end-of-options", "--no-show-signature"}),
+                                 ("--format=", "--pretty=", "--max-count=", "-1", "-2", "-3", "-4", "-5",
+                                  "-6", "-7", "-8", "-9")) else ""
+    elif sub == "reset":
+        if "--soft" in opts and _only(opts, frozenset({"--soft", "-q", "--quiet"})):
+            kind = "direct"  # moves HEAD only: reads no working-tree file
+    elif sub == "status":
+        kind = "status" if not pos and _only(opts, _STATUS_OPTS) else ""
+    elif sub == "merge-tree":
+        if "--write-tree" in opts and len(pos) == 2 and _only(opts, frozenset({"--write-tree", "--name-only", "-z",
+                                                                               "--messages", "--no-messages"})):
+            kind = "merge-tree"
+    if not kind:
+        raise GitCustodyRefused(
+            f"git custody: refusing `git {sub} {' '.join(rest)}`: it could run a filter, diff or merge "
+            "driver the repository names, and the coordinator runs no such command")
+    return kind
+
+
+def _direct(args: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float,
+            input: bytes | None = None, extra_blanks: list[tuple[str, str]] = []) -> subprocess.CompletedProcess:
+    """One git child: gitexec's absolute git and floor plus PROVIDER_FLOOR (config) and
+    PROVIDER_FLOOR_ENV (environment the floor sets that no config can outrank); stdin closed; output
+    captured as BYTES (never decoded here: a `\\r` or a non-UTF-8 byte in a path survives). The
+    drivers the config declares where it runs are blanked too, a belt for the direct commands
+    (which apply none) and empty for a custody git dir (which declares none). `extra_blanks` adds
+    the custody call's data-only `core.*` fidelity pairs (_custody_settings)."""
+    repo, git_dir = git_location(args, cwd)
+    blanks = [*gitexec.driver_blanks(repo, git_dir=git_dir, base=base), *PROVIDER_FLOOR, *extra_blanks]
+    feed: dict[str, Any] = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    env = gitexec.env(base, blanks=blanks)
+    env.update(PROVIDER_FLOOR_ENV)
+    return subprocess.run(gitexec.argv(*args), cwd=cwd, capture_output=True, env=env, timeout=timeout, **feed)
+
+
+def _line(out: str | bytes) -> Any:
+    """One value git printed: its trailing newline removed and nothing else (a path may end in a
+    space, `\\r` or `\\t`, which `.strip()` would cut)."""
+    return out[:-1] if out[-1:] in ("\n", b"\n") else out
+
+
+def _rev_parse(lead: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float, *args: str) -> str | None:
+    proc = _direct([*lead, "rev-parse", *args], cwd, base, timeout)
+    return os.fsdecode(_line(proc.stdout)) if proc.returncode == 0 and proc.stdout else None
+
+
+def _c_quote(raw: bytes) -> bytes:
+    """`raw` C-quoted as git reads a quoted `objects/info/alternates` line: any byte, `\\n` included."""
+    return b'"' + b"".join(bytes([c]) if 0x20 <= c < 0x7F and c not in b'"\\' else b"\\%03o" % c for c in raw) + b'"'
+
+
+def _read_regular(path: str) -> tuple[bytes, os.stat_result] | None:
+    """A worker-writable file's bytes and stat, read without following a symlink or blocking on a
+    FIFO; None if absent. Anything but a regular file is a refusal, never a guess."""
     try:
-        return subprocess.run(full, capture_output=True, text=True, env=env, timeout=timeout)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise GitCustodyRefused(f"git custody: cannot read {path!r} as a regular file: {exc}") from exc
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not S_ISREG(st.st_mode):
+            raise GitCustodyRefused(f"git custody: {path!r} is not a regular file")
+        return fh.read(), st
+
+
+def _copy_regular(src: str, dst: str) -> None:
+    """Copy `src` (bytes + mtime) to `dst` if it is a regular file; a missing one is skipped, a
+    non-regular one refuses (so a worker FIFO or symlink at an expected path is never followed)."""
+    got = _read_regular(src)
+    if got is not None:
+        with open(dst, "wb") as fh:
+            fh.write(got[0])
+        os.utime(dst, ns=(got[1].st_atime_ns, got[1].st_mtime_ns))
+
+
+@contextlib.contextmanager
+def _custody_git_dir(common: str, object_format: str, head: str | None, gitdir: str | None):
+    """A git dir the coordinator builds and no worker can name: its own config (no filter, diff or
+    merge driver, so none can be added between a check and a use), the shared object store as a
+    read-only alternate, HEAD pinned to `head`, and copies of what a `status`/`read-tree` there must
+    read to match the repository's own verdict: the common `info/exclude` and `shallow`, and - when
+    `gitdir` names the per-worktree admin dir - its `index` (mtime kept, so racy-git reads it as the
+    repository does), every `sharedindex.<hash>` the index references (a split index, PR #720 Codex
+    round 4) and `info/sparse-checkout`. The data-only `core.*` settings (filemode, ignorecase,
+    sparse, ...) ride as the custody call's own GIT_CONFIG pairs (_custody_settings), not this file.
+    Removed on exit."""
+    if object_format not in ("sha1", "sha256"):
+        raise GitCustodyRefused(f"git custody: unknown object format {object_format!r}")
+    root = tempfile.mkdtemp(prefix="open-fleet-git-custody-")
+    try:
+        for sub in ("objects/info", "refs/heads", "refs/tags", "info"):
+            os.makedirs(os.path.join(root, sub))
+        cfg = "[core]\n\trepositoryformatversion = {v}\n\tbare = true\n".format(v=0 if object_format == "sha1" else 1)
+        if object_format != "sha1":
+            cfg += f"[extensions]\n\tobjectformat = {object_format}\n"
+        with open(os.path.join(root, "config"), "w", encoding="utf-8") as fh:
+            fh.write(cfg)
+        with open(os.path.join(root, "HEAD"), "w", encoding="utf-8") as fh:
+            fh.write(f"{head}\n" if head else "ref: refs/heads/open-fleet-unborn\n")
+        with open(os.path.join(root, "objects", "info", "alternates"), "wb") as fh:
+            fh.write(_c_quote(os.fsencode(os.path.join(common, "objects"))) + b"\n")
+        _copy_regular(os.path.join(common, "info", "exclude"), os.path.join(root, "info", "exclude"))
+        _copy_regular(os.path.join(common, "shallow"), os.path.join(root, "shallow"))
+        if gitdir is not None:
+            _copy_regular(os.path.join(gitdir, "index"), os.path.join(root, "index"))
+            _copy_regular(os.path.join(gitdir, "info", "sparse-checkout"), os.path.join(root, "info", "sparse-checkout"))
+            for name in (sorted(os.listdir(gitdir)) if os.path.isdir(gitdir) else []):
+                if name.startswith("sharedindex."):
+                    _copy_regular(os.path.join(gitdir, name), os.path.join(root, name))
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _custody_settings(lead: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float) -> list[tuple[str, str]]:
+    """The data-only `core.*` pairs (_CUSTODY_CORE_KEYS) the repository the call names declares,
+    read effectively (`config --get`, honouring `includeIf` and `extensions.worktreeConfig`), to
+    pass as the custody call's own GIT_CONFIG pairs so its `status`/`read-tree` matches the repo's
+    clean/dirty verdict. Refuses first if the repository declares any `extensions.*` the custody
+    git dir cannot honour (a partial clone above all): the verdict would be wrong (PR #720 Codex
+    round 4). Reads bytes; never runs a config VALUE (these keys are data, not commands)."""
+    ext = _direct([*lead, "config", "-z", "--get-regexp", r"^extensions\."], cwd, base, timeout)
+    if ext.returncode not in (0, 1):
+        raise GitCustodyRefused(f"git custody: cannot read the repository's extensions: {os.fsdecode(ext.stderr).strip()[:200]}")
+    for record in ext.stdout.split(b"\0"):
+        if not record:
+            continue
+        name = record.split(b"\n", 1)[0].split(b".", 1)[1].lower()
+        if name not in _HONOURABLE_EXTENSIONS:
+            raise GitCustodyRefused(f"git custody: the repository declares extensions.{os.fsdecode(name)}, "
+                                    "which the custody git dir cannot honour")
+    pairs: list[tuple[str, str]] = []
+    for key in _CUSTODY_CORE_KEYS:
+        got = _direct([*lead, "config", "-z", "--get", f"core.{key}"], cwd, base, timeout)
+        if got.returncode == 0 and got.stdout:
+            pairs.append((f"core.{key}", os.fsdecode(got.stdout.split(b"\0")[0])))
+    return pairs
+
+
+def _repo_facts(lead: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float) -> dict[str, str | None]:
+    facts = {
+        "gitdir": _rev_parse(lead, cwd, base, timeout, "--absolute-git-dir"),
+        "common": _rev_parse(lead, cwd, base, timeout, "--path-format=absolute", "--git-common-dir"),
+        "format": _rev_parse(lead, cwd, base, timeout, "--show-object-format"),
+        "top": _rev_parse(lead, cwd, base, timeout, "--show-toplevel"),
+        "head": _rev_parse(lead, cwd, base, timeout, "--verify", "-q", "HEAD^{commit}"),
+    }
+    if not (facts["gitdir"] and facts["common"] and facts["format"]):
+        raise GitCustodyRefused("git custody: cannot resolve the repository this call names")
+    return facts
+
+
+def registered_admin_dir(common: str, wt: str | Path) -> str:
+    """The one admin entry under `<common>/worktrees/` whose `gitdir` back-pointer (written by
+    `git worktree add`) names `<wt>/.git`: the repository's own record of a linked worktree, found
+    from the repository the provider names, never through the worktree's own `.git` pointer (the
+    worker's to rewrite, W4-08). None or several is a refusal."""
+    want = os.path.realpath(os.path.join(str(wt), ".git"))
+    base = os.path.join(common, "worktrees")
+    found = []
+    for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        entry = os.path.join(base, name)
+        if os.path.islink(entry) or not os.path.isdir(entry):
+            continue
+        try:
+            back = _read_regular(os.path.join(entry, "gitdir"))
+        except GitCustodyRefused:
+            continue  # not a record git wrote; it cannot vouch for anything
+        if back is not None and os.path.realpath(os.fsdecode(_line(back[0]))) == want:
+            found.append(entry)
+    if len(found) != 1:
+        raise GitCustodyRefused(f"git custody: {len(found)} admin entries in {base!r} record {str(wt)!r}")
+    return found[0]
+
+
+def _install_index(src: str, gitdir: str) -> None:
+    """Replace `<gitdir>/index` with `src` under git's own `index.lock` protocol, mtime kept."""
+    got = _read_regular(src)
+    if got is None:
+        raise GitCustodyRefused("git custody: the checkout wrote no index")
+    lock = os.path.join(gitdir, "index.lock")
+    fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(got[0])
+        os.utime(lock, ns=(got[1].st_atime_ns, got[1].st_mtime_ns))
+        os.replace(lock, os.path.join(gitdir, "index"))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(lock)
+        raise
+
+
+def run_git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, str] | None = None,
+            timeout: float = 120, input: bytes | None = None) -> subprocess.CompletedProcess:
+    """Every coordinator-side git the providers run (posix `_git`, the adapters' run_cli/run_cli_text),
+    and the only way they run one (W4-01). Output is BYTES; decode with os.fsdecode.
+
+    The coordinator runs git over a repository a worker writes: linked worktrees share one
+    `.git/config` and `info/attributes`, and the same-uid `~/.gitconfig` is the worker's too. A
+    fixed command key (core.hooksPath, core.fsmonitor, diff.external, PROVIDER_FLOOR's) is
+    overridden atomically on git's command line. A name-indexed driver (`filter.<n>.*`,
+    `diff.<n>.*`, `merge.<n>.driver`) cannot be: listing the declared names and blanking them
+    leaves a window in which a sibling adds a new one (PR #720 Codex round 3). So no command that
+    could apply such a driver ever reads the repository's config:
+
+    - direct: plumbing that reads no working-tree content (`_custody_kind`), run as is;
+    - `status`, `merge-tree --write-tree`: run against `_custody_git_dir` (the repository's
+      objects and index, a config the coordinator wrote); same output, nothing written back;
+    - a checkout: checkout_worktree only;
+    - anything else (`commit`, `checkout`, `reset --hard`, `diff`, `add`, ...): GitCustodyRefused,
+      never run.
+
+    A non-direct command carries NO leading `-c`, including the `safe.directory` /
+    `protocol.file.allow` pairs `_split_git_args` lets a direct call pass: the custody runs its
+    `status`/`read-tree`/`merge-tree` against the dir it builds, with its own settings, so a caller
+    `-c` there is refused. No caller passes one today (the sandbox sync's `-c` pairs ride only its
+    direct `rev-parse`/`fetch`/`update-ref`).
+
+    The env the call is handed loses every repository-selecting GIT_* variable (git_call_base)."""
+    base = git_call_base(env)
+    lead, sub, rest = _split_git_args(list(args))
+    kind = _custody_kind(sub, rest)
+    if kind == "direct":
+        return _direct(list(args), cwd, base, timeout, input)
+    if any(tok == "-c" for tok in lead):
+        raise GitCustodyRefused(f"git custody: refusing `-c` on the non-direct `git {sub}`")
+    facts = _repo_facts(lead, cwd, base, timeout)
+    opts, pos = _options(rest)
+    if kind == "merge-tree":
+        shas = []
+        for rev in pos:
+            sha = _rev_parse(lead, cwd, base, timeout, "--verify", "-q", "--end-of-options", f"{rev}^{{commit}}")
+            if not sha:
+                return subprocess.CompletedProcess(args, 128, b"", os.fsencode(f"fatal: {rev!r} is not a commit\n"))
+            shas.append(sha)
+        _custody_settings(lead, cwd, base, timeout)  # refuse an extension the custody dir cannot honour
+        with _custody_git_dir(str(facts["common"]), str(facts["format"]), None, None) as gd:
+            proc = _direct(["--git-dir", gd, "merge-tree", *opts, *shas], None, base, timeout)
+        return subprocess.CompletedProcess(args, proc.returncode, proc.stdout, proc.stderr)
+    named = next((lead[i + 1] for i, tok in enumerate(lead[:-1]) if tok == "--work-tree"), None)
+    named = os.path.join(git_location(lead, cwd)[0], named) if named else git_location(lead, cwd)[0]
+    if not facts["top"] or os.path.realpath(str(facts["top"])) != os.path.realpath(named):
+        # The work tree the call names, never one config (`core.worktree`) redirects it to.
+        raise GitCustodyRefused(f"git custody: `git {sub}` runs at the top of the work tree it names ({named!r})")
+    settings = _custody_settings(lead, cwd, base, timeout)
+    with _custody_git_dir(str(facts["common"]), str(facts["format"]), facts["head"], str(facts["gitdir"])) as gd:
+        # `dirty`: a submodule's recorded commit is compared, its work tree never inspected (that
+        # inspection is a child git without the floor, under the submodule's own config).
+        proc = _direct(["--git-dir", gd, "--work-tree", str(facts["top"]), "--no-optional-locks", "status",
+                        *opts, "--ignore-submodules=dirty"], facts["top"], base, timeout, extra_blanks=settings)
+    return subprocess.CompletedProcess(args, proc.returncode, proc.stdout, proc.stderr)
+
+
+def checkout_worktree(root: str | Path, wt: str | Path, branch: str, *, timeout: float = 120) -> subprocess.CompletedProcess:
+    """The checkout a `git worktree add --no-checkout` left out, done by the custody (W4-01): the
+    tracked files of `refs/heads/<branch>` written into `wt` and its index installed, as the
+    `reset --hard` git would run there, but by `read-tree -u --reset` against `_custody_git_dir`,
+    so no filter, hook or driver of any name runs, and none a sibling adds mid-call (PR #720
+    Codex round 3). Committed bytes: an LFS or git-crypt file is checked out as its stored pointer
+    or ciphertext. Anchored to `root`, the repository the provider names: the common dir, the
+    commit and the admin entry (registered_admin_dir) all come from there, never from the new
+    worktree's `.git` pointer. Output is bytes; raises GitCustodyRefused (an OSError) when
+    anything does not resolve."""
+    base = git_call_base(None)
+    at_root = ["-C", str(root)]
+    common = _rev_parse(at_root, None, base, timeout, "--path-format=absolute", "--git-common-dir")
+    fmt = _rev_parse(at_root, None, base, timeout, "--show-object-format")
+    head = _rev_parse(at_root, None, base, timeout, "--verify", "-q", "--end-of-options", f"refs/heads/{branch}^{{commit}}")
+    if not (common and fmt and head):
+        raise GitCustodyRefused(f"git custody: cannot resolve refs/heads/{branch} in {str(root)!r}")
+    if os.path.islink(str(wt)) or not os.path.isdir(str(wt)):
+        raise GitCustodyRefused(f"git custody: {str(wt)!r} is not a directory to check out into")
+    admin = registered_admin_dir(common, wt)
+    settings = _custody_settings(at_root, None, base, timeout)
+    with _custody_git_dir(common, fmt, head, admin) as gd:
+        proc = _direct(["--git-dir", gd, "--work-tree", str(wt), "read-tree", "-u", "--reset", head],
+                       str(wt), base, timeout, extra_blanks=settings)
+        if proc.returncode == 0:
+            _install_index(os.path.join(gd, "index"), admin)
+    return proc
+
+
+def _git(
+    args: list[str],
+    *,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: int = 120,
+) -> subprocess.CompletedProcess:
+    """Every git the provider runs, and the only way it runs one: run_git's custody (W4-01), its
+    output decoded byte-for-byte (os.fsdecode: a `\\r`, `\\r\\n` or non-UTF-8 byte in a path comes
+    back as the same path). A refused or unrunnable call is exit 127 with the reason; gitexec's git
+    absent at import is exit 127 too, never a PATH re-resolution."""
+    full = [*(["-C", str(cwd)] if cwd else []), *args]
+    try:
+        proc = run_git(full, env=env, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(full, 127, "", str(exc))
+    return subprocess.CompletedProcess(full, proc.returncode, os.fsdecode(proc.stdout), os.fsdecode(proc.stderr))
+
+
+def _parse_worktree_list(out: str) -> list[tuple[str, str]]:
+    """`[(path, branch ref or "")]` from `git worktree list --porcelain -z`: NUL-terminated
+    `attribute value` fields, a worktree per `worktree <path>` field, paths raw (never quoted)."""
+    entries: list[tuple[str, str]] = []
+    for field in out.split("\0"):
+        if field.startswith("worktree "):
+            entries.append((field[len("worktree "):], ""))
+        elif field.startswith("branch ") and entries:
+            entries[-1] = (entries[-1][0], field[len("branch "):])
+    return entries
+
+
+def populated_gitlinks(stage_listing: str, worktree: str) -> list[str]:
+    """Paths of the submodules (index mode 160000, from `ls-files -s -z`) that are checked out in
+    `worktree`, i.e. hold a `.git`. The custody never looks inside one (that is a child git without
+    the floor, under the submodule's own config), so a caller counts each as uncommitted work."""
+    out = []
+    for entry in stage_listing.split("\0"):
+        meta, tab, path = entry.partition("\t")
+        if tab and meta.startswith("160000 ") and os.path.lexists(os.path.join(worktree, path, ".git")):
+            out.append(path)
+    return out
 
 
 def _git_ok(args: list[str], what: str, **kw: Any) -> str:
     proc = _git(args, **kw)
     if proc.returncode != 0:
         raise ProviderError("sandbox_git_failed", f"{what}: {(proc.stderr or proc.stdout or 'git failed').strip()[:300]}")
-    return proc.stdout.strip()
+    return _line(proc.stdout)
 
 
 def prepare_sandbox_git(wt_path: str, lane_dir: Path) -> dict[str, str]:
@@ -781,9 +1314,12 @@ def prepare_sandbox_git(wt_path: str, lane_dir: Path) -> dict[str, str]:
         _git_ok(sb + ["symbolic-ref", "HEAD", branch], "point sandbox HEAD at branch")
     else:
         _git_ok(sb + ["update-ref", "--no-deref", "HEAD", head], "pin sandbox detached HEAD")
-    # Index = HEAD; the worktree's uncommitted edits stay as working-tree modifications.
+    # Index = HEAD; the worktree's uncommitted edits stay as working-tree modifications. A plain
+    # `read-tree` (no -m/-u) touches no worktree file and writes zero stat data, so writing it runs
+    # no clean filter. The coordinator never refreshes it: a refresh re-hashes worktree files
+    # through whatever filter the config names. The worker's own first `git status`, inside the
+    # container, refreshes it (W4-01, PR #720 Codex round 3).
     _git_ok(sb + ["--work-tree", str(wt), "read-tree", "HEAD"], "seed sandbox index")
-    _git(sb + ["--work-tree", str(wt), "update-index", "-q", "--refresh"])
     meta = {
         "sandbox_git": str(sandbox),
         "common_dir": str(common),
@@ -838,8 +1374,10 @@ def sync_sandbox_git(meta: dict[str, str], dispatch_id: str) -> dict[str, Any]:
 
     Always records `refs/open-fleet/sandbox/<dispatch>` (the coordinator verifies that SHA); the
     worker's branch is only fast-forwarded, never rewritten, and the host worktree's index is
-    refreshed so `git status` there reflects the new HEAD. A non-fast-forward (the worker
-    rewrote history) leaves the branch untouched and reports `nonFastForward`.
+    reset to the new HEAD (`read-tree`, zero stat data) so `git status` there reflects it. A
+    non-fast-forward (the worker rewrote history) leaves the branch untouched and reports
+    `nonFastForward`. The fetch runs only the local file transport (PROVIDER_FLOOR), so a
+    shared-config `url.<base>.insteadOf` that rewrites the sandbox path fails the sync closed.
     """
     _sanitize_sandbox_git(meta)
     sandbox = meta["sandbox_git"]
@@ -869,8 +1407,11 @@ def sync_sandbox_git(meta: dict[str, str], dispatch_id: str) -> dict[str, Any]:
         res["nonFastForward"] = True
         return res
     _git_ok(["--git-dir", common, "update-ref", branch, new_head, old], "fast-forward host branch")
-    # Explicit git dir: never trust the (container-writable) worktree's `.git` pointer.
-    _git(["--git-dir", meta["wt_gitdir"], "--work-tree", meta["worktree"], "reset", "-q"])
+    # Explicit git dir: never trust the (container-writable) worktree's `.git` pointer. The index
+    # becomes the new HEAD by a plain `read-tree`: zero stat data, no worktree file read, so no
+    # clean filter the SHARED config names can run (a mixed `reset` refreshed through one, W4-01).
+    # Best-effort: a failure leaves the index stale, and the worker's next `git status` shows it.
+    _git(["--git-dir", meta["wt_gitdir"], "read-tree", new_head])
     res["branchUpdated"] = True
     return res
 
@@ -899,8 +1440,8 @@ class PosixWorktreeProvider(RuntimeProvider):
         if repo_root is None and not self.env.get("OPEN_FLEET_REPO_ROOT"):
             # Invoked from a subdirectory: the repository is the git top-level, not the cwd.
             top = _git(["rev-parse", "--show-toplevel"], cwd=start) if start.is_dir() else None
-            if top is not None and top.returncode == 0 and top.stdout.strip():
-                start = Path(top.stdout.strip()).resolve()
+            if top is not None and top.returncode == 0 and _line(top.stdout):
+                start = Path(_line(top.stdout)).resolve()
         self.repo_root = start
         self.runner = runner
         self.backend = self._resolve_backend(backend)
@@ -977,8 +1518,8 @@ class PosixWorktreeProvider(RuntimeProvider):
                 root_common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=root)
                 if (
                     top.returncode != 0
-                    or Path(top.stdout.strip()).resolve() != wt_path.resolve()
-                    or common.stdout.strip() != root_common.stdout.strip()
+                    or Path(_line(top.stdout)).resolve() != wt_path.resolve()
+                    or _line(common.stdout) != _line(root_common.stdout)
                 ):
                     raise ProviderError(
                         "worktree_create_failed",
@@ -987,17 +1528,30 @@ class PosixWorktreeProvider(RuntimeProvider):
         elif is_git:
             _git(["worktree", "prune"], cwd=root)
             exists = _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=root).returncode == 0
+            # `--` ends the options: a `--base` that starts with `-` is a commit-ish, never a flag (W2-04).
             if exists:
                 # Never `-B`: resetting an existing branch silently discards its unmerged commits.
-                cmd = ["worktree", "add", str(wt_path), branch]
+                cmd = ["worktree", "add", "--no-checkout", "--", str(wt_path), branch]
             else:
-                cmd = ["worktree", "add", "-b", branch, str(wt_path)] + ([base] if base else [])
+                cmd = ["worktree", "add", "--no-checkout", "-b", branch, "--", str(wt_path)] + ([base] if base else [])
             proc = _git(cmd, cwd=root)
             if proc.returncode != 0:
                 raise ProviderError(
                     "worktree_create_failed",
                     (proc.stderr or proc.stdout or f"git worktree add failed for {slug}").strip(),
                 )
+            # The checkout `worktree add` would run (its `reset --hard`) is checkout_worktree's:
+            # `read-tree -u --reset` against a git dir the coordinator built (the shared objects, a
+            # config with no driver), the index installed into the admin entry the repository
+            # records for this path. Committed bytes; no filter, hook or driver of any name (W4-01).
+            try:
+                done = checkout_worktree(root, wt_path, branch)
+                why = None if done.returncode == 0 else os.fsdecode(done.stderr or done.stdout).strip()
+            except (OSError, subprocess.SubprocessError) as exc:
+                why = str(exc)
+            if why is not None:
+                _git(["worktree", "remove", "--force", "--", str(wt_path)], cwd=root)
+                raise ProviderError("worktree_create_failed", why or f"checkout of {slug} failed")
         else:
             wt_path.mkdir(parents=True, exist_ok=True)
         wt_id = f"{root.name}::{wt_path}"
@@ -1014,20 +1568,14 @@ class PosixWorktreeProvider(RuntimeProvider):
         root = Path(repo).resolve() if repo else self.repo_root
         rows: list[dict[str, Any]] = []
         if (root / ".git").exists():
-            proc = _git(["worktree", "list", "--porcelain"], cwd=root)
+            proc = _git(["worktree", "list", "--porcelain", "-z"], cwd=root)
             if proc.returncode == 0:
-                for line in proc.stdout.splitlines():
-                    if line.startswith("worktree "):
-                        current_path = line.split(" ", 1)[1].strip()
-                        rows.append(
-                            {
-                                "id": f"{root.name}::{current_path}",
-                                "displayName": Path(current_path).name,
-                                "path": current_path,
-                            }
-                        )
-                    elif line.startswith("branch ") and rows:
-                        rows[-1]["branch"] = line.split(" ", 1)[1].strip().removeprefix("refs/heads/")
+                for current_path, branch in _parse_worktree_list(proc.stdout):
+                    row = {"id": f"{root.name}::{current_path}", "displayName": Path(current_path).name,
+                           "path": current_path}
+                    if branch:
+                        row["branch"] = branch.removeprefix("refs/heads/")
+                    rows.append(row)
         for child in sorted(self._worktree_base_dir().iterdir()):
             if child.is_dir() and not any(r.get("path") == str(child) for r in rows):
                 rows.append(
@@ -1063,13 +1611,54 @@ class PosixWorktreeProvider(RuntimeProvider):
             }
         }
 
+    @staticmethod
+    def _linked_worktrees(root: Path) -> set[Path]:
+        """Resolved paths of `root`'s LINKED worktrees, from the repository's own admin entries
+        (`worktree list`; the first entry is the main checkout); empty for a root with no `.git`.
+        A list git cannot produce (a malformed shared config makes it die; a git older than 2.36
+        has no `-z`) is a refusal, never "none registered": that answer sent a registered worktree
+        with a deleted pointer to rmtree, its admin entry left behind (W4-08, PR #720 review).
+        `-z` because without it a path holding a newline or another character git quotes came back
+        split or quoted, matched nothing, and read as unregistered (PR #720 Codex round 2)."""
+        if not (root / ".git").exists():
+            return set()
+        proc = _git(["worktree", "list", "--porcelain", "-z"], cwd=root)
+        if proc.returncode != 0:
+            raise ProviderError(
+                "worktree_list_unreadable",
+                f"cannot read {root}'s worktree list, so whether the target is a registered worktree "
+                f"is unknown; refusing to remove anything: {(proc.stderr or proc.stdout).strip()[:300]}",
+            )
+        return {Path(path).resolve() for path, _ in _parse_worktree_list(proc.stdout)[1:]}
+
+    @staticmethod
+    def _refuse_unclean(wt_path: Path, common: str) -> None:
+        """`worktree_dirty` unless `wt_path` is clean the way git's own `worktree remove` check
+        reads it: no populated submodule (git refuses those outright), and an empty `status` with
+        untracked files. Both run against the worktree's admin entry as the repository records it
+        (its `gitdir` back-pointer), never discovered through the tree's own `.git` pointer."""
+        try:
+            admin = registered_admin_dir(common, wt_path)
+        except GitCustodyRefused as exc:
+            raise ProviderError("worktree_rm_failed", f"cannot tell whether {wt_path} is clean: {exc}") from exc
+        where = ["--git-dir", admin, "--work-tree", str(wt_path)]
+        staged = _git([*where, "ls-files", "-s", "-z"])
+        status = _git([*where, "status", "--porcelain", "-z", "--untracked-files=all"])
+        for proc in (staged, status):
+            if proc.returncode != 0:
+                raise ProviderError("worktree_rm_failed", f"cannot read {wt_path}'s state: {(proc.stderr or proc.stdout).strip()[:300]}")
+        if populated_gitlinks(staged.stdout, str(wt_path)):
+            raise ProviderError("worktree_dirty", f"{wt_path}: working trees containing submodules cannot be moved or removed")
+        if status.stdout:
+            raise ProviderError("worktree_dirty", f"'{wt_path}' contains modified or untracked files, use --force to delete it")
+
     def worktree_rm(self, selector: str, force: bool = False) -> dict[str, Any]:
         if not selector:
             raise ProviderError("invalid_argument", "worktree rm needs a worktree selector")
         shown = self.worktree_show(selector)["worktree"]
         wt_path = Path(shown["path"]).resolve()
         repo_root = self.repo_root.resolve()
-        common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo_root).stdout.strip()
+        common = _line(_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo_root).stdout)
         protected = {repo_root, Path.home().resolve(), Path("/").resolve()}
         if common:
             protected.add(Path(common).resolve())
@@ -1078,10 +1667,21 @@ class PosixWorktreeProvider(RuntimeProvider):
             raise ProviderError("worktree_protected", f"refusing to remove {wt_path}: it is (or contains) the main checkout")
         if not wt_path.exists():
             return {"removed": False, "id": shown["id"], "reason": "absent"}
-        is_linked = (wt_path / ".git").is_file()
+        # W4-08: whether this is a linked worktree is the REPOSITORY's record, read once from its
+        # own admin entries — never the `.git` pointer inside the tree, which the worker rewrites
+        # at will (deleted, it steered a forced removal onto the rmtree branch below and left the
+        # admin entry and branch registered to a tree that was gone). A registered worktree is
+        # git's to remove: `worktree remove` checks that pointer against its own admin entry and
+        # refuses a missing or foreign one. Anything unregistered takes the plain-directory branch.
+        is_linked = wt_path in self._linked_worktrees(repo_root)
         if is_linked:
-            cmd = ["worktree", "remove"] + (["--force"] if force else []) + [str(wt_path)]
-            proc = _git(cmd, cwd=repo_root)
+            if not force:
+                self._refuse_unclean(wt_path, common)
+            # Always `--force` to git: an unforced `worktree remove` runs its own clean check as a
+            # `status` child under the repository's config, so the check above (run_git's custody
+            # `status`, no driver of any name) is the one that decides. git still refuses a locked
+            # worktree and a pointer that does not match its admin entry (W4-01, W4-08).
+            proc = _git(["worktree", "remove", "--force", "--", str(wt_path)], cwd=repo_root)
             if proc.returncode != 0:
                 # Never fall back to rmtree: git refused for a reason (dirty tree, main worktree,
                 # locked) and deleting anyway discards the unit's unsaved work (#591 review).
@@ -1225,7 +1825,9 @@ if SANDBOX_META:
         _log({{"type": "sandbox_git_sync_failed", "error": str(exc)[:500]}})
 else:
     try:
-        head = subprocess.run(["git", "-C", {repr(wt_path)}, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15).stdout.strip()
+        # The provider's own git (gitexec's absolute git and floor, W4-01), never a bare `git`.
+        from providers.posix import _git
+        head = _git(["rev-parse", "HEAD"], cwd={repr(wt_path)}, timeout=15).stdout.strip()
     except Exception:
         head = ""
 try:
@@ -1351,6 +1953,8 @@ if {repr(self.backend)} == "cmux":
         dispatch_id: str,
         sandbox_meta: dict[str, str],
     ) -> tuple[str, str]:
+        # `-e K=v` is a word in a `sh -c` line: a key that is not a shell identifier is refused (W2-02).
+        check_env_keys(env)
         container = f"openfleet-{dispatch_id}"
         user = self.env.get("OPEN_FLEET_SANDBOX_USER")
         if user is None:
@@ -3081,7 +3685,7 @@ if {repr(self.backend)} == "cmux":
             )
         elif backend == "tmux":
             ref = term_row["backend_ref"] or f"openfleet-{handle}"
-            proc = subprocess.run(["tmux", "send-keys", "-t", ref, "-l", text], capture_output=True, text=True)
+            proc = subprocess.run(tmux_send_keys_argv(ref, text), capture_output=True, text=True)
             if proc.returncode == 0 and enter:
                 proc = subprocess.run(["tmux", "send-keys", "-t", ref, "Enter"], capture_output=True, text=True)
             if proc.returncode != 0:
@@ -3089,8 +3693,12 @@ if {repr(self.backend)} == "cmux":
         elif backend == "cmux":
             if not term_row["backend_ref"]:
                 raise ProviderError("terminal_send_failed", f"terminal {handle!r} has no cmux workspace id")
+            # The text is cmux's last positional, so a `-`-leading one rides after `--` (W2-01).
+            # Only then: cmux's `--` handling is UNVERIFIED here (no cmux on the audit host), and
+            # every other payload keeps the argv it has always had.
+            end_opts = ["--"] if payload.startswith("-") else []
             proc = subprocess.run(
-                ["cmux", "send", "--workspace", term_row["backend_ref"], payload],
+                ["cmux", "send", "--workspace", term_row["backend_ref"], *end_opts, payload],
                 capture_output=True,
                 text=True,
             )

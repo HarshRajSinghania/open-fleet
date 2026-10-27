@@ -8,7 +8,7 @@ import platform
 import subprocess
 from typing import Any
 
-from .base import ProviderError, RuntimeProvider, env_get
+from .base import ProviderError, RuntimeProvider, env_get, split_output_flag
 
 LINUX_COMMAND = "orca-ide"
 DEFAULT_COMMAND = "orca"
@@ -42,7 +42,10 @@ class OrcaProvider(RuntimeProvider):
         return resolve_orca_binary(self.env, self.system)
 
     def dispatch(self, argv: list[str], *, timeout: int = 120, env: dict[str, str] | None = None) -> dict[str, Any]:
-        cmd = [self.binary(), *[a for a in argv if a != "--json"], "--json"]
+        # Our `--json` goes where it is an option: before any bare `--`, never in place of a text
+        # flag's value or an operand after `--` (W2-01, PR #720 review).
+        options, tail = split_output_flag(argv)
+        cmd = [self.binary(), *options, "--json", *tail]
         try:
             proc = subprocess.run(
                 cmd,

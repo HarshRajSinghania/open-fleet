@@ -366,6 +366,16 @@ class TheBoundRegistrationIsFrozen(unittest.TestCase):
                 self.assertEqual((env.get("GIT_NO_REPLACE_OBJECTS"), env.get("GIT_GRAFT_FILE")),
                                  ("1", os.devnull))
 
+    def test_an_option_shaped_run_commit_never_reaches_git_archive(self):
+        # W2-04: `git archive --format=tar <commit> -- <paths>` took the commit in option position
+        # (`--remote=<repo>` reads another repository's tree); bound_status reaches it directly.
+        with mock.patch.object(ablation, "_git", side_effect=AssertionError("git archive ran")):
+            for commit in ("--remote=/elsewhere", "-o", "--output=/tmp/x"):
+                with self.subTest(commit=commit):
+                    with self.assertRaises(ablation.AblationError) as ctx:
+                        ablation._prereg_at(commit)
+                    self.assertIn("full 40-hex commit", str(ctx.exception))
+
     def results_read_as(self, change):
         """bound_errors with the run's results.json read back changed in memory, never on disk."""
         real = ablation.read

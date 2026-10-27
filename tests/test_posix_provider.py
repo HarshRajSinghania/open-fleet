@@ -11,6 +11,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -45,6 +47,19 @@ def _group_alive(pid):
         return True
     except OSError:
         return False
+
+
+def _process_gone(pid):
+    """True once `pid` has exited. A zombie counts: its fds, a listening socket among them, are
+    closed, and an un-reaped daemon is a zombie wherever pid 1 does not reap."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return stat == "" or stat.startswith("Z")
 
 
 def _wait_for(pred, timeout=15.0, step=0.05):
@@ -426,6 +441,28 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
             self.prov.terminal_send(res["agentTerminalHandle"], "hello")
         self.assertEqual(ctx.exception.code, "unsupported_operation")
 
+    def test_cmux_send_ends_its_options_before_a_dash_leading_payload(self):
+        # W2-01, cmux leg: `cmux send --workspace <id> <text>` puts the text in the last
+        # positional, so a `-`-leading one is read as a flag. Recorded by a stand-in `cmux` (no
+        # cmux here): a dash-leading payload rides after `--`; any other payload is unchanged.
+        argv_log = Path(self.tmp.name) / "cmux-argv.jsonl"
+        fake = self.bin / "cmux"
+        fake.write_text(f"#!{sys.executable}\nimport json, sys\n"
+                        f"open({str(argv_log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n",
+                        encoding="utf-8")
+        fake.chmod(0o755)
+        with self.prov.state._connect() as conn:
+            conn.execute(
+                "INSERT INTO terminals(handle, worktree, title, command, shell, pid, backend, backend_ref, log_path, state, created_at) "
+                "VALUES ('term_cmux', '', 't', 'x', '/bin/sh', 0, 'cmux', 'ws1', '', 'running', 0)")
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            for text in ("-R", "--help", "hello"):
+                self.assertTrue(self.prov.terminal_send("term_cmux", text)["send"]["accepted"])
+        sent = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sent, [["send", "--workspace", "ws1", "--", "-R\n"],
+                                ["send", "--workspace", "ws1", "--", "--help\n"],
+                                ["send", "--workspace", "ws1", "hello\n"]])
+
     def _hermes_user_home(self, config_text):
         user_home = Path(self.tmp.name) / "hermes-user"
         user_home.mkdir(exist_ok=True)
@@ -516,6 +553,10 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
 
     def setUp(self):
         super().setUp()
+        # The leak test reads OPENCODE_CONFIG_CONTENT, so only a WORKER's launch may put it there.
+        # A shell that already exports it (a coordinator running inside OpenCode) hands it to every
+        # worker as part of the coordinator's env, by design, and that read as "leaked" (2026-10-27).
+        self.env.pop("OPENCODE_CONFIG_CONTENT", None)
         self.has_tmux = bool(shutil.which("tmux"))
         if not self.has_tmux:
             # No tmux on this host: exercise the same env-file mechanism through setsid.
@@ -550,6 +591,16 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
             self.addCleanup(lambda: subprocess.run(["tmux", "kill-server"], env=self.server_env, capture_output=True))
         self.prov = self.providers.get_provider("posix", env=self.env)
 
+    def kill_tmux_server_and_wait(self):
+        """`tmux kill-server` returns before the server has exited, and a client that connects in
+        that window gets "server exited unexpectedly" (CI shard 6; 27 of 200 kill-then-new-session
+        rounds under CPU load here, 0 of 200 once the old pid is awaited). Wait until it is gone."""
+        pid = subprocess.run(["tmux", "display-message", "-p", "#{pid}"], env=self.server_env,
+                             capture_output=True, text=True).stdout.strip()
+        subprocess.run(["tmux", "kill-server"], env=self.server_env, capture_output=True)
+        if pid.isdigit():
+            self.assertTrue(_wait_for(lambda: _process_gone(int(pid))), "the old tmux server never exited")
+
     def test_env_survives_preexisting_tmux_server_and_stop_kills(self):
         out = Path(self.tmp.name) / "env.txt"
         self.fake_agent(
@@ -577,11 +628,36 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
         self.assertEqual(self.prov.worker_show(res["dispatchId"])["worker"]["state"], "stopped")
         self.assertEqual(out.stat().st_mtime, stamp)
 
+    def test_the_tmux_send_argv_ends_options_before_a_dash_leading_payload(self):
+        # W2-01, tmux-free half (re-attack P3): the provider's own send argv must put `--` before
+        # the text, so a `-R`/`--help` payload is never read as a tmux flag. This fails on revert
+        # even where tmux is absent, unlike the delivery half below.
+        for text in ("-R", "--help", "plain"):
+            self.assertEqual(self.posix.tmux_send_keys_argv("pane", text),
+                             ["tmux", "send-keys", "-t", "pane", "-l", "--", text])
+            argv = self.posix.tmux_send_keys_argv("pane", text)
+            self.assertEqual(argv[argv.index("--") + 1], text, "the payload rides after `--`")
+
+    def test_a_dash_leading_payload_arrives_and_is_never_read_as_a_flag(self):
+        # W2-01: `tmux send-keys -l -R` parsed the text as -R (reset terminal), exited 0, and the
+        # send was recorded as accepted with nothing delivered. This half needs a real pane; where
+        # tmux is absent the revert-failing coverage is the argv test above (a floor_guard waiver
+        # would be needed to skipUnless here, and the argv test already fails on revert everywhere).
+        if not self.has_tmux:
+            return
+        got = Path(self.tmp.name) / "got.txt"
+        reader = f"IFS= read -r line; printf '%s' \"$line\" > {shlex.quote(str(got))}"
+        handle = self.prov.terminal_create(worktree="current", title="reader", command=reader)["terminal"]["handle"]
+        sent = self.prov.dispatch(["terminal", "send", "--terminal", handle, "--text=-R"])
+        self.assertTrue(sent["send"]["accepted"])
+        self.assertTrue(_wait_for(got.is_file), "the reader never got a line")
+        self.assertEqual(got.read_text(encoding="utf-8"), "-R", "the payload was eaten as a tmux flag")
+
     def test_a_server_the_spawn_starts_never_hands_one_workers_launch_env_to_the_next(self):
         """The first spawn into NO server starts one, and that client's env becomes the server's
         global env for every later session (2026-10-23 review, P1-11)."""
         if self.has_tmux:
-            subprocess.run(["tmux", "kill-server"], env=self.server_env, capture_output=True)
+            self.kill_tmux_server_and_wait()
         first = Path(self.tmp.name) / "first-up"
         out = Path(self.tmp.name) / "second.txt"
         self.fake_agent("opencode", f'touch "{first}"; trap "" HUP TERM; while :; do sleep 0.1; done')
@@ -637,6 +713,108 @@ class TestWorktreeSafety(PosixRealProcessBase):
         self.assertNotIn(".claude/CLAUDE.md", dirty)
         self.assertNotIn(".claude/settings.local.json", dirty)
 
+    def test_rm_decides_linkedness_from_the_repo_not_the_worktree_pointer(self):
+        # W4-08: `.git` inside the worktree is the worker's to rewrite. Deleted, it once steered a
+        # forced removal onto the plain-directory rmtree branch, past the `git worktree remove` that
+        # refuses it, leaving the repository's admin entry and branch registered to a tree that was
+        # gone. The repository's own worktree list decides; git then refuses the broken pointer.
+        wt = Path(self.prov.worktree_create("ptr")["worktree"]["path"])
+        (wt / ".git").unlink()
+        (wt / "junk.txt").write_text("x", encoding="utf-8")
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            self.prov.worktree_rm(f"path:{wt}", force=True)
+        self.assertEqual(ctx.exception.code, "worktree_rm_failed")
+        self.assertTrue((wt / "junk.txt").is_file(), "no rmtree fallback for a registered worktree")
+        listed = _git("worktree", "list", "--porcelain", cwd=self.repo).stdout
+        self.assertIn(f"worktree {wt}", listed)
+        # A pointer rewritten to ANOTHER worktree's admin entry is refused by git's back-pointer
+        # check, and neither worktree loses its registration (the finding's stated exploit).
+        a = Path(self.prov.worktree_create("ptr-a")["worktree"]["path"])
+        b = Path(self.prov.worktree_create("ptr-b")["worktree"]["path"])
+        (a / ".git").write_text((b / ".git").read_text(encoding="utf-8"), encoding="utf-8")
+        with self.assertRaises(self.providers.ProviderError):
+            self.prov.worktree_rm(f"path:{a}", force=True)
+        listed = _git("worktree", "list", "--porcelain", cwd=self.repo).stdout
+        self.assertIn(f"worktree {a}", listed)
+        self.assertIn(f"worktree {b}", listed)
+        self.assertTrue(b.is_dir())
+
+    def test_a_registered_worktree_under_a_quoted_path_is_still_recognised(self):
+        # Codex round 2 (P1): `worktree list --porcelain` without -z C-quotes a path holding a
+        # newline or backslash, so the parsed path matched nothing, the registered worktree looked
+        # unregistered, and a forced removal of one with a deleted pointer reached rmtree again.
+        odd = Path(self.tmp.name) / "st\nate\\x"
+        prov = self.providers.get_provider("posix", env={**self.env, "OPEN_FLEET_STATE_DB": str(odd / "runtime.db")})
+        wt = Path(prov.worktree_create("odd")["worktree"]["path"])
+        self.assertIn("\n", str(wt))
+        # A git-reported row carries its branch; the base-dir fallback row for the same dir does not.
+        rows = prov.worktree_list()["worktrees"]
+        self.assertTrue(any(Path(r["path"]) == wt and r.get("branch") == "fleet/odd" for r in rows),
+                        f"worktree list reported a quoted path: {rows}")
+        (wt / ".git").unlink()
+        (wt / "junk.txt").write_text("x", encoding="utf-8")
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            prov.worktree_rm(f"path:{wt}", force=True)
+        self.assertEqual(ctx.exception.code, "worktree_rm_failed")
+        self.assertTrue((wt / "junk.txt").is_file(), "a registered worktree went to rmtree")
+
+    def test_a_registered_worktree_under_any_byte_path_is_still_recognised(self):
+        # Codex round 3 (P1): `-z` kept the list raw, but _git decoded it as text, which turns a
+        # `\r` or `\r\n` into `\n` (and dies on a non-UTF-8 byte), so the parsed path matched
+        # nothing and a forced removal of a registered worktree with a deleted pointer reached
+        # rmtree. Every byte a POSIX path may hold must come back as the same path.
+        for name in ("cr\rstate", "crlf\r\nstate", os.fsdecode(b"bytes\xff\xfestate"), "tab\tback\\slash"):
+            with self.subTest(name=name):
+                odd = Path(self.tmp.name) / name
+                prov = self.providers.get_provider("posix", env={**self.env, "OPEN_FLEET_STATE_DB": str(odd / "runtime.db")})
+                wt = Path(prov.worktree_create(f"odd{len(name)}")["worktree"]["path"])
+                rows = prov.worktree_list()["worktrees"]
+                self.assertTrue(any(Path(r["path"]) == wt and r.get("branch") == f"fleet/odd{len(name)}" for r in rows),
+                                f"worktree list reported a mangled path: {rows}")
+                (wt / ".git").unlink()
+                (wt / "junk.txt").write_text("x", encoding="utf-8")
+                with self.assertRaises(self.providers.ProviderError) as ctx:
+                    prov.worktree_rm(f"path:{wt}", force=True)
+                self.assertEqual(ctx.exception.code, "worktree_rm_failed")
+                self.assertTrue((wt / "junk.txt").is_file(), "a registered worktree went to rmtree")
+
+    def test_rm_keeps_a_worktree_holding_a_checked_out_submodule(self):
+        # Codex round 3: the clean check is no longer git's own (an unforced `worktree remove` runs
+        # `status` under the repository's config), so its refusal of a checked-out submodule, whose
+        # unsaved work no coordinator `status` inspects, is the custody's to keep.
+        sub = Path(self.tmp.name) / "sub"
+        sub.mkdir()
+        _git("init", "-q", "-b", "main", cwd=sub)
+        _git("-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "s", cwd=sub)
+        wt = Path(self.prov.worktree_create("withsub")["worktree"]["path"])
+        _git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "sm", cwd=wt)
+        _git("commit", "-qm", "sm", cwd=wt)
+        (wt / "sm" / "unsaved.txt").write_text("work", encoding="utf-8")
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            self.prov.worktree_rm(f"path:{wt}")
+        self.assertEqual(ctx.exception.code, "worktree_dirty")
+        self.assertIn("submodules", ctx.exception.message)
+        self.assertTrue((wt / "sm" / "unsaved.txt").is_file())
+        self.assertTrue(self.prov.worktree_rm(f"path:{wt}", force=True)["removed"])
+        self.assertFalse(wt.exists())
+
+    def test_rm_refuses_when_the_worktree_list_cannot_be_read(self):
+        # W4-08 review (PR #720): with the repository's worktree list unreadable (a malformed shared
+        # config makes git die), an empty answer read as "not registered" and a registered worktree
+        # whose pointer was deleted went to rmtree again. Unreadable is a refusal, forced or not.
+        wt = Path(self.prov.worktree_create("unreadable")["worktree"]["path"])
+        (wt / ".git").unlink()
+        (wt / "junk.txt").write_text("x", encoding="utf-8")
+        with open(self.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+            fh.write("[core\n\tbroken = = =\n")
+        for force in (False, True):
+            with self.subTest(force=force):
+                with self.assertRaises(self.providers.ProviderError) as ctx:
+                    self.prov.worktree_rm(f"path:{wt}", force=force)
+                self.assertEqual(ctx.exception.code, "worktree_list_unreadable")
+                self.assertTrue((wt / "junk.txt").is_file(), "the tree went to rmtree")
+        self.assertTrue((self.repo / ".git" / "worktrees" / "unreadable").is_dir(), "admin entry kept")
+
     def test_rm_refuses_paths_outside_provider_base(self):
         stray = Path(self.tmp.name) / "stray"
         stray.mkdir()
@@ -665,6 +843,365 @@ class TestWorktreeSafety(PosixRealProcessBase):
         with self.assertRaises(self.providers.ProviderError) as ctx:
             self.prov.worktree_create("bad", base="no-such-ref")
         self.assertEqual(ctx.exception.code, "worktree_create_failed")
+
+    def test_a_dash_leading_base_is_a_commit_ish_never_an_option(self):
+        # W2-04: `worktree add -b <br> <path> --force` read the base as a flag and created the
+        # worktree at HEAD — the requested base silently became a different answer.
+        for base in ("--force", "--lock"):
+            with self.subTest(base=base):
+                with self.assertRaises(self.providers.ProviderError) as ctx:
+                    self.prov.worktree_create(f"dash{base}", base=base)
+                self.assertEqual(ctx.exception.code, "worktree_create_failed")
+                self.assertIn("invalid reference", ctx.exception.message)
+                self.assertFalse((self.prov._worktree_base_dir() / f"dash{base}").exists())
+
+
+class TestCoordinatorGitRunsNothingTheRepoNames(PosixRealProcessBase):
+    """W4-01 (P0): the provider's own git — `worktree add`/`remove`, the sandbox seed and sync —
+    runs as the COORDINATOR over the shared `.git/config` a worker writes with one plain
+    `git config` (linked worktrees share it), and over the same-uid `~/.gitconfig`. No hook,
+    fsmonitor or attribute-selected filter planted there may run. Every probe only appends its
+    channel name to a marker in this test's temp dir; GREEN = the marker never appears."""
+
+    def setUp(self):
+        super().setUp()
+        self.base = Path(self.tmp.name)
+        self.marker = self.base / "pwned"
+        (self.repo / "a.txt").write_text("a\n", encoding="utf-8")
+        _git("add", "a.txt", cwd=self.repo)
+        _git("commit", "-qm", "a", cwd=self.repo)
+
+    def probe(self, channel, passthrough=True):
+        return f"sh -c 'echo {channel} >> {shlex.quote(str(self.marker))}" + ("; cat'" if passthrough else "'")
+
+    def hooks_dir(self, name):
+        hooks = self.base / name
+        hooks.mkdir()
+        for hook in ("post-checkout", "reference-transaction", "post-index-change"):
+            (hooks / hook).write_text(f"#!/bin/sh\necho hook-{hook} >> {shlex.quote(str(self.marker))}\n",
+                                      encoding="utf-8")
+            (hooks / hook).chmod(0o755)
+        return hooks
+
+    def config_file(self, name, pairs):
+        """A standalone config file, written by `git config -f` so each value is quoted as git
+        reads it back (a hand-written `;` would start a comment and cut the probe short)."""
+        path = self.base / name
+        for key, value in pairs:
+            _git("config", "-f", str(path), key, value, cwd=self.base)
+        return path
+
+    def plant_repo(self):
+        """What a worker does in its own worktree: config lands in the SHARED `.git/config`. The
+        test's own git never touches the repo after this (a bare `git` would run the plants)."""
+        inc = self.config_file("linked-only.gitconfig", (("filter.inc.smudge", self.probe("inc-smudge")),
+                                                         ("filter.inc.clean", self.probe("inc-clean"))))
+        for key, value in (("core.hooksPath", str(self.hooks_dir("evilhooks"))),
+                           ("core.fsmonitor", self.probe("fsmonitor", passthrough=False)),
+                           ("filter.evil.smudge", self.probe("smudge")),
+                           ("filter.evil.clean", self.probe("clean")),
+                           # Declared only where git runs IN a linked worktree: the drivers must
+                           # be read there, not in the main checkout.
+                           ("includeIf.gitdir:**/worktrees/**.path", str(inc))):
+            _git("config", key, value, cwd=self.repo)
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("* filter=evil\nREADME.md filter=inc\n",
+                                                                 encoding="utf-8")
+
+    def fired(self):
+        return sorted(set(self.marker.read_text().split())) if self.marker.exists() else []
+
+    def test_worktree_create_runs_no_planted_hook_fsmonitor_or_filter(self):
+        self.plant_repo()
+        wt = Path(self.prov.worktree_create("victim")["worktree"]["path"])
+        self.assertEqual(self.fired(), [], "the coordinator's worktree add ran a repo-planted command")
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "a\n", "checked out raw, unsmudged")
+        self.assertEqual((wt / "README.md").read_text(encoding="utf-8"), "# r\n")
+        self.assertTrue((wt / ".git").is_file())
+
+    def test_worktree_rm_runs_no_planted_fsmonitor_or_clean_filter(self):
+        wt = Path(self.prov.worktree_create("victim")["worktree"]["path"])
+        self.plant_repo()
+        later = time.time() + 5
+        os.utime(wt / "a.txt", (later, later))  # stat changed: the clean check re-reads it
+        self.assertTrue(self.prov.worktree_rm(f"path:{wt}")["removed"])
+        self.assertEqual(self.fired(), [], "the coordinator's worktree remove ran a repo-planted command")
+        self.assertFalse(wt.exists())
+
+    def test_the_same_uid_global_config_is_never_read(self):
+        (self.repo / ".gitattributes").write_text("a.txt filter=glob\n", encoding="utf-8")
+        _git("add", ".gitattributes", cwd=self.repo)
+        _git("commit", "-qm", "attrs", cwd=self.repo)
+        glob = self.config_file("worker-written.gitconfig", (
+            ("core.hooksPath", str(self.hooks_dir("globalhooks"))),
+            ("filter.glob.smudge", self.probe("global-smudge")),
+            ("filter.glob.clean", self.probe("global-clean"))))
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(glob)}):
+            wt = Path(self.prov.worktree_create("victim")["worktree"]["path"])
+            self.assertEqual(self.fired(), [], "worktree add read the worker-writable global config")
+            lane = self.base / "lane"
+            lane.mkdir()
+            self.posix.prepare_sandbox_git(str(wt), lane)
+        self.assertEqual(self.fired(), [], "the sandbox seed's index refresh ran a global clean filter")
+
+    def test_a_git_call_made_without_blanks_still_runs_no_planted_filter(self):
+        # A future content call written without `blanks=` must not reopen W4-01. A content call
+        # the custody runs in its own git dir (`status`, located by `-C`/cwd or by
+        # `--git-dir`/`--work-tree`) runs nothing; one it does not (`commit -a`, `checkout`,
+        # `reset --hard`) is refused, never run (Codex round 3: blanking enumerated names left a race).
+        wt = Path(self.prov.worktree_create("noblanks")["worktree"]["path"])
+        admin = self.repo / ".git" / "worktrees" / "noblanks"
+        for key, value in (("user.email", "t@e"), ("user.name", "t")):
+            _git("config", key, value, cwd=self.repo)
+        self.plant_repo()
+        (wt / "a.txt").write_text("changed\n", encoding="utf-8")
+        calls = ((["commit", "-qam", "w"], {"cwd": wt}, False),
+                 (["checkout", "--", "a.txt"], {"cwd": wt}, False),
+                 (["--git-dir", str(admin), "--work-tree", str(wt), "reset", "--hard", "-q"], {}, False),
+                 (["status", "--porcelain"], {"cwd": wt}, True),
+                 (["--git-dir", str(admin), "--work-tree", str(wt), "status", "--porcelain"], {}, True))
+        for args, kw, runs in calls:
+            with self.subTest(args=args[:3]):
+                proc = self.posix._git(args, **kw)
+                self.assertEqual(proc.returncode == 0, runs, proc.stderr)
+                self.assertEqual(proc.stdout, " M a.txt\n" if runs else "")
+                self.assertEqual(self.fired(), [], f"_git {args[0]} ran a planted command without blanks=")
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "changed\n")
+
+    def test_a_supplied_env_cannot_point_git_at_a_repository_never_enumerated(self):
+        # Codex round 2 (P2): the drivers were listed where `-C`/cwd/`--git-dir` points, but a
+        # caller-supplied GIT_DIR (or GIT_WORK_TREE, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_CONFIG*)
+        # made the call read ANOTHER repository, whose smudge filter then ran unblanked.
+        wt = Path(self.prov.worktree_create("envsel")["worktree"]["path"])
+        other = self.base / "other"
+        other.mkdir()
+        _git("init", "-q", "-b", "main", cwd=other)
+        (other / "a.txt").write_text("other\n", encoding="utf-8")
+        _git("add", "a.txt", cwd=other)
+        _git("-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "o", cwd=other)
+        _git("config", "filter.evil.smudge", self.probe("other-smudge"), cwd=other)
+        (other / ".git" / "info").mkdir(exist_ok=True)
+        (other / ".git" / "info" / "attributes").write_text("* filter=evil\n", encoding="utf-8")
+        for var, value in (("GIT_DIR", str(other / ".git")), ("GIT_COMMON_DIR", str(other / ".git")),
+                           ("GIT_INDEX_FILE", str(other / ".git" / "index"))):
+            with self.subTest(var=var):
+                later = time.time() + 5
+                os.utime(wt / "a.txt", (later, later))  # stat changed: the status re-reads it
+                proc = self.posix._git(["status", "--porcelain"], cwd=wt, env={**os.environ, var: value})
+                self.assertEqual(self.fired(), [], f"a supplied {var} ran another repository's filter")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                # Clean against wt's own HEAD ("a\n"); against `other` it would be ` M a.txt`.
+                self.assertEqual(proc.stdout, "", "read from wt's own repo")
+                self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "a\n")
+
+    def test_no_bare_git_argv_is_left_in_the_provider(self):
+        # Every git the provider (and the monitor script it generates) runs goes through _git, so
+        # through gitexec's absolute git and floor; a literal `["git", ...]` argv is the bypass.
+        src = Path(self.posix.__file__).read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'\[\s*"git"\s*,', src), [])
+
+
+def racing_sibling(case, repo, git):
+    """Patch subprocess.run so that a sibling worker adds a NEVER-SEEN driver to the shared config,
+    and selects it for every path through the shared `info/attributes`, immediately before EVERY
+    launch of `git` (the custody's absolute git): after any listing of the declared drivers and
+    before the command reads its config. Codex round 3 (P1): enumerating names cannot close this."""
+    real = subprocess.run
+    seq = case.__dict__.setdefault("_race_seq", [0])  # a name no earlier race declared either
+    common = repo / ".git"
+    (common / "info").mkdir(exist_ok=True)
+
+    def quoted(cmd):
+        return '"' + cmd.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def run(argv, *a, **kw):
+        if isinstance(argv, (list, tuple)) and argv and argv[0] == git:
+            seq[0] += 1
+            name = f"fresh{seq[0]}"
+            with open(common / "config", "a", encoding="utf-8") as fh:
+                fh.write(f'[filter "{name}"]\n\tsmudge = {quoted(case.probe(name + "-smudge"))}\n'
+                         f'\tclean = {quoted(case.probe(name + "-clean"))}\n'
+                         f'[diff "{name}"]\n\ttextconv = {quoted(case.probe(name + "-textconv", passthrough=False))}\n'
+                         f'[merge "{name}"]\n\tdriver = {quoted(case.probe(name + "-merge", passthrough=False))}\n')
+            with open(common / "info" / "attributes", "a", encoding="utf-8") as fh:
+                fh.write(f"* filter={name} diff={name} merge={name}\n")
+        return real(argv, *a, **kw)
+
+    return mock.patch.object(subprocess, "run", run)
+
+
+class TestCoordinatorGitRunsNoDriverAddedMidCall(PosixRealProcessBase):
+    """Codex round 3 (P1): the drivers were listed, then the command ran, and a sibling worker that
+    adds a NEW `filter.<name>.smudge` in between (selected through the shared `info/attributes`)
+    had it run as the coordinator. Every coordinator git that could apply an attribute-selected
+    driver must read a config no worker can write; anything else is refused. Each scenario ends
+    with a bare-git control under the same race, which DOES fire: the plant is live."""
+
+    probe = TestCoordinatorGitRunsNothingTheRepoNames.probe
+    fired = TestCoordinatorGitRunsNothingTheRepoNames.fired
+
+    def setUp(self):
+        super().setUp()
+        self.base = Path(self.tmp.name)
+        self.marker = self.base / "pwned"
+        (self.repo / "a.txt").write_text("a\n", encoding="utf-8")
+        _git("add", "a.txt", cwd=self.repo)
+        _git("commit", "-qm", "a", cwd=self.repo)
+        self.clean_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def race(self):
+        return racing_sibling(self, self.repo, self.posix.gitexec.GIT)
+
+    def control(self, *args, cwd):
+        """The same kind of call with a bare git, under the race: the planted driver runs."""
+        with self.race():
+            subprocess.run([self.posix.gitexec.GIT, *args], cwd=cwd, env=self.clean_env, capture_output=True)
+        self.assertNotEqual(self.fired(), [], f"control `git {' '.join(args)}` ran no planted driver: the race is not live")
+
+    def test_worktree_create_runs_no_driver_added_after_any_listing(self):
+        with self.race():
+            wt = Path(self.prov.worktree_create("race")["worktree"]["path"])
+        self.assertEqual(self.fired(), [], "the coordinator's checkout ran a driver a sibling added mid-call")
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "a\n")
+        self.assertEqual(_git("status", "--porcelain", cwd=wt, env=self.clean_env).stdout, "", "index matches the checkout")
+        self.marker.unlink(missing_ok=True)
+        (wt / "a.txt").unlink()
+        self.control("reset", "--hard", "-q", cwd=wt)
+
+    def test_worktree_rm_runs_no_driver_added_after_any_listing(self):
+        wt = Path(self.prov.worktree_create("race-rm")["worktree"]["path"])
+        other = Path(self.prov.worktree_create("race-ctl")["worktree"]["path"])
+        later = time.time() + 5
+        for tree in (wt, other):
+            os.utime(tree / "a.txt", (later, later))  # stat changed: a clean check re-reads it
+        with self.race():
+            self.assertTrue(self.prov.worktree_rm(f"path:{wt}")["removed"])
+        self.assertEqual(self.fired(), [], "the coordinator's clean check ran a driver a sibling added mid-call")
+        self.assertFalse(wt.exists())
+        self.control("status", "--porcelain", cwd=other)
+
+    def test_a_dirty_worktree_is_still_refused_under_the_race(self):
+        wt = Path(self.prov.worktree_create("race-dirty")["worktree"]["path"])
+        (wt / "a.txt").write_text("unsaved\n", encoding="utf-8")
+        with self.race():
+            with self.assertRaises(self.providers.ProviderError) as ctx:
+                self.prov.worktree_rm(f"path:{wt}")
+        self.assertEqual(ctx.exception.code, "worktree_dirty")
+        self.assertEqual(self.fired(), [])
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "unsaved\n")
+
+    def test_sandbox_seed_and_sync_run_no_driver_added_after_any_listing(self):
+        wt = Path(self.prov.worktree_create("race-sbx")["worktree"]["path"])
+        lane = self.base / "lane"
+        lane.mkdir()
+        later = time.time() + 5
+        os.utime(wt / "a.txt", (later, later))
+        with self.race():
+            meta = self.posix.prepare_sandbox_git(str(wt), lane)
+        self.assertEqual(self.fired(), [], "the sandbox seed ran a driver a sibling added mid-call")
+        cenv = {**self.clean_env, "GIT_DIR": meta["sandbox_git"], "GIT_WORK_TREE": str(wt),
+                "GIT_AUTHOR_NAME": "w", "GIT_AUTHOR_EMAIL": "w@x", "GIT_COMMITTER_NAME": "w", "GIT_COMMITTER_EMAIL": "w@x"}
+        (wt / "feature.txt").write_text("done\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature.txt"], cwd=wt, env=cenv, check=True)
+        subprocess.run(["git", "commit", "-qm", "feature"], cwd=wt, env=cenv, check=True)
+        os.utime(wt / "a.txt", (later + 5, later + 5))
+        with self.race():
+            res = self.posix.sync_sandbox_git(meta, "disp_race")
+        self.assertTrue(res["branchUpdated"])
+        self.assertEqual(self.fired(), [], "the host-side sync ran a driver a sibling added mid-call")
+        self.control("status", "--porcelain", cwd=wt)
+
+    def test_a_driver_applying_command_outside_the_custody_is_refused(self):
+        # Fail closed: a subcommand that could apply a driver and that the custody does not run in
+        # its own git dir is refused, not run; a future `commit`/`checkout`/`diff` cannot reopen it.
+        wt = Path(self.prov.worktree_create("race-refuse")["worktree"]["path"])
+        (wt / "a.txt").write_text("unsaved\n", encoding="utf-8")
+        refused = (["commit", "-qam", "w"], ["checkout", "--", "a.txt"], ["diff"], ["reset", "-q"], ["reset", "--hard"],
+                   ["add", "-A"], ["stash"], ["update-index", "-q", "--refresh"], ["read-tree", "-m", "-u", "HEAD"],
+                   ["checkout-index", "-a", "-f"], ["archive", "HEAD"], ["cat-file", "--filters", "HEAD:a.txt"],
+                   ["worktree", "add", str(self.base / "full"), "HEAD"], ["worktree", "remove", "--", str(wt)],
+                   ["clone", str(self.repo), str(self.base / "clone")], ["log", "-p", "-1"], ["-c", "x.y=z", "status"])
+        with self.race():
+            for args in refused:
+                with self.subTest(args=args):
+                    proc = self.posix._git(args, cwd=wt)
+                    self.assertNotEqual(proc.returncode, 0, f"`git {' '.join(args)}` ran")
+                    self.assertIn("custody", proc.stderr)
+        self.assertEqual(self.fired(), [], "a refused command ran a planted driver")
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "unsaved\n")
+        self.assertFalse((self.base / "full").exists())
+        self.assertTrue(wt.is_dir())
+
+
+class TestCustodyStatusMatchesTheRepo(PosixRealProcessBase):
+    """Codex round 4 (P2): the custody git dir must give the repository's own clean/dirty verdict,
+    so a clean worktree removes without --force. It copies the shared index, honours the repo's
+    data-only settings (filemode, ignorecase, sparse, object format) and its `info/exclude`, and
+    refuses an `extensions.*` it cannot honour (a planted partial clone) rather than guess."""
+
+    def _provider_on(self, repo):
+        db = Path(self.tmp.name) / f"state-{repo.name}" / "runtime.db"
+        return self.providers.get_provider("posix", env={**self.env, "OPEN_FLEET_CLI_CWD": str(repo),
+                                                         "OPEN_FLEET_REPO_ROOT": str(repo), "OPEN_FLEET_STATE_DB": str(db)})
+
+    def _clean_removes(self, prov, name, prepare):
+        wt = Path(prov.worktree_create(name)["worktree"]["path"])
+        prepare(wt)
+        self.assertEqual(_git("status", "--porcelain", cwd=wt).stdout, "", f"{name}: the tree really is clean to git")
+        self.assertTrue(prov.worktree_rm(f"path:{wt}")["removed"], f"{name}: a clean worktree read dirty")
+
+    def test_a_split_index_worktree_reads_clean(self):
+        def prep(wt):
+            _git("update-index", "--split-index", cwd=wt)
+            self.assertTrue(any(c.name.startswith("sharedindex.")
+                                for c in (self.repo / ".git" / "worktrees" / "split").iterdir()))
+            later = time.time() + 5
+            os.utime(wt / "README.md", (later, later))  # stat dirty: a status that cannot load the shared index dies
+        self._clean_removes(self.prov, "split", prep)
+
+    def test_a_filemode_false_worktree_ignores_an_exec_bit_change(self):
+        _git("config", "core.filemode", "false", cwd=self.repo)
+        self._clean_removes(self.prov, "fmode", lambda wt: os.chmod(wt / "README.md", 0o755))
+
+    def test_an_info_exclude_ignored_untracked_file_reads_clean(self):
+        with open(self.repo / ".git" / "info" / "exclude", "a", encoding="utf-8") as fh:
+            fh.write("ignored-*.tmp\n")
+        self._clean_removes(self.prov, "excl", lambda wt: (wt / "ignored-1.tmp").write_text("x", encoding="utf-8"))
+
+    def test_a_sparse_checkout_worktree_reads_clean(self):
+        for d in ("keep", "drop"):
+            (self.repo / d).mkdir()
+            (self.repo / d / "f.txt").write_text(f"{d}\n", encoding="utf-8")
+        _git("add", "-A", cwd=self.repo)
+        _git("commit", "-qm", "two", cwd=self.repo)
+
+        def prep(wt):
+            _git("sparse-checkout", "init", "--cone", cwd=wt)
+            _git("sparse-checkout", "set", "keep", cwd=wt)
+            self.assertFalse((wt / "drop").exists(), "sparse really dropped the directory")
+        self._clean_removes(self.prov, "sparse", prep)
+
+    def test_a_sha256_worktree_reads_clean(self):
+        repo = Path(self.tmp.name) / "repo256"
+        _git("init", "-q", "-b", "main", "--object-format=sha256", str(repo), cwd=Path(self.tmp.name))
+        _git("config", "user.email", "t@e", cwd=repo)
+        _git("config", "user.name", "t", cwd=repo)
+        (repo / "a.txt").write_text("a\n", encoding="utf-8")
+        _git("add", "a.txt", cwd=repo)
+        _git("commit", "-qm", "init", cwd=repo)
+        prov = self._provider_on(repo)
+        wt = Path(prov.worktree_create("s256")["worktree"]["path"])
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "a\n", "sha256 worktree checked out")
+        self.assertTrue(prov.worktree_rm(f"path:{wt}")["removed"], "a clean sha256 worktree read dirty")
+
+    def test_a_planted_unhonourable_extension_is_refused_not_guessed(self):
+        wt = Path(self.prov.worktree_create("pc")["worktree"]["path"])
+        _git("config", "extensions.partialClone", "origin", cwd=self.repo)
+        _git("config", "core.repositoryformatversion", "1", cwd=self.repo)
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            self.prov.worktree_rm(f"path:{wt}")
+        self.assertEqual(ctx.exception.code, "worktree_rm_failed")
+        self.assertTrue(wt.is_dir(), "the worktree was neither removed nor its state guessed")
 
 
 class TestSandboxGitRoundTrip(PosixRealProcessBase):
@@ -707,6 +1244,93 @@ class TestSandboxGitRoundTrip(PosixRealProcessBase):
         self.posix.sync_sandbox_git(meta, "disp_y")
         self.assertFalse(pwned.exists(), "host git executed sandbox-planted code")
         self.assertFalse((sb / "hooks").exists())
+
+    def test_sync_runs_nothing_the_shared_host_config_plants(self):
+        # W4-01: the sync's host-side `reset` reads the SHARED `.git/config` (the worktree's admin
+        # dir resolves to it), which the worker can write from its own worktree.
+        wt, meta, cenv = self._sandbox()
+        (wt / "feature.txt").write_text("done\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature.txt"], cwd=wt, env=cenv, check=True)
+        subprocess.run(["git", "commit", "-qm", "feature"], cwd=wt, env=cenv, check=True)
+        pwned = Path(self.tmp.name) / "pwned"
+        probe = f"sh -c 'echo x >> {shlex.quote(str(pwned))}; cat'"
+        for key, value in (("core.fsmonitor", f"sh -c 'echo x >> {shlex.quote(str(pwned))}'"),
+                           ("filter.evil.clean", probe), ("filter.evil.smudge", probe)):
+            _git("config", key, value, cwd=self.repo)
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("* filter=evil\n", encoding="utf-8")
+        later = time.time() + 5
+        os.utime(wt / "README.md", (later, later))
+        res = self.posix.sync_sandbox_git(meta, "disp_p")
+        self.assertTrue(res["branchUpdated"])
+        self.assertFalse(pwned.exists(), "the host-side sync ran a command the shared config names")
+
+    def test_sync_fetch_runs_no_command_the_shared_config_names_for_its_transport(self):
+        # Codex round 3 sweep: the sync's `fetch` reads the SHARED config. A fixed key the floor did
+        # not override (`core.alternateRefsCommand`, run for an alternate the worker plants) ran as
+        # the coordinator, and so did a name-indexed `url.<base>.insteadOf` that turned the
+        # sandbox path into `ssh://` (running `core.sshCommand`) or `<helper>::` (`git-remote-*`).
+        pwned = Path(self.tmp.name) / "pwned"
+        probe = f"sh -c 'echo x >> {shlex.quote(str(pwned))}; exit 1'"
+        alt = Path(self.tmp.name) / "alt"
+        _git("init", "-q", "--bare", str(alt), cwd=Path(self.tmp.name))
+        helper = self.bin / "git-remote-evil"
+        helper.write_text(f"#!/bin/sh\necho helper >> {shlex.quote(str(pwned))}\nexit 1\n", encoding="utf-8")
+        helper.chmod(0o755)
+        wt, meta, cenv = self._sandbox()
+        for n, plant in enumerate(("alternates", "ssh", "helper")):
+            with self.subTest(plant=plant):
+                (wt / f"f{n}.txt").write_text("done\n", encoding="utf-8")
+                subprocess.run(["git", "add", f"f{n}.txt"], cwd=wt, env=cenv, check=True)
+                subprocess.run(["git", "commit", "-qm", f"f{n}"], cwd=wt, env=cenv, check=True)
+                if plant == "alternates":
+                    (self.repo / ".git" / "objects" / "info" / "alternates").write_text(f"{alt}/objects\n", encoding="utf-8")
+                    _git("config", "core.alternateRefsCommand", probe, cwd=self.repo)
+                else:
+                    target = "ssh://evil.invalid/x" if plant == "ssh" else "evil::x"
+                    scheme = "ssh" if plant == "ssh" else "evil"
+                    _git("config", f"url.{target}.insteadOf", meta["sandbox_git"], cwd=self.repo)
+                    _git("config", "core.sshCommand", probe, cwd=self.repo)
+                    # Codex round 4: a per-protocol allow beats the generic `protocol.allow=never`,
+                    # so the floor must not rely on config precedence (GIT_ALLOW_PROTOCOL does not).
+                    _git("config", f"protocol.{scheme}.allow", "always", cwd=self.repo)
+                with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+                    try:
+                        res = self.posix.sync_sandbox_git(meta, f"disp_t{n}")
+                    except self.providers.ProviderError as exc:
+                        # A rewritten sandbox URL fails closed (no transport but `file` is allowed),
+                        # and the host branch is left where it was.
+                        self.assertNotEqual(plant, "alternates", exc.message)
+                        self.assertEqual(exc.code, "sandbox_git_failed")
+                        res = None
+                self.assertFalse(pwned.exists(), f"the sync's fetch ran a {plant} command the shared config names")
+                if res is not None:
+                    self.assertTrue(res["branchUpdated"])
+                if plant != "alternates":
+                    _git("config", "--unset", f"url.{target}.insteadOf", cwd=self.repo)
+                    _git("config", "--unset", f"protocol.{scheme}.allow", cwd=self.repo)
+
+    def test_a_planted_promisor_remote_never_lazily_fetches_through_the_coordinator(self):
+        # Codex round 4 class sweep: `extensions.partialClone=x` + `remote.x.promisor` +
+        # `remote.x.uploadpack=<payload>` makes even a plain `rev-parse <ref>^{commit}` lazily
+        # fetch a missing object and run the payload as the coordinator (GIT_ALLOW_PROTOCOL=file
+        # does not stop it, the fetch target being a file remote). GIT_NO_LAZY_FETCH does.
+        pwned = Path(self.tmp.name) / "pwned"
+        donor = Path(self.tmp.name) / "donor.git"
+        _git("init", "-q", "--bare", str(donor), cwd=Path(self.tmp.name))
+        _git("config", "remote.x.url", str(donor), cwd=self.repo)
+        _git("config", "remote.x.promisor", "true", cwd=self.repo)
+        _git("config", "remote.x.uploadpack", f"sh -c 'echo up >> {shlex.quote(str(pwned))}; exit 1'", cwd=self.repo)
+        _git("config", "extensions.partialClone", "x", cwd=self.repo)
+        _git("config", "core.repositoryformatversion", "1", cwd=self.repo)
+        (self.repo / ".git" / "refs" / "heads" / "ghost").write_text("1" * 40 + "\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            proc = self.posix._git(["rev-parse", "--verify", "-q", "ghost^{commit}"], cwd=self.repo)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertFalse(pwned.exists(), "a coordinator rev-parse lazily fetched through a planted promisor")
+            subprocess.run([self.posix.gitexec.GIT, "-C", str(self.repo), "rev-parse", "--verify", "-q", "ghost^{commit}"],
+                           env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}, capture_output=True)
+        self.assertTrue(pwned.exists(), "control: a bare git never lazily fetched; the exploit is not set up")
 
     def test_symlink_planted_in_sandbox_is_refused_and_host_untouched(self):
         wt, meta, cenv = self._sandbox()

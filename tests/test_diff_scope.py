@@ -198,6 +198,28 @@ class TestHardenedGit(ScopeBase):
     def test_git_is_resolved_to_an_absolute_path(self):
         self.assertTrue(Path(diff_scope.GIT).is_absolute(), diff_scope.GIT)
 
+    def test_git_absent_at_import_fails_closed_and_never_resolves_later(self):
+        # W4-14: `shutil.which("git") or "git"` made "not found at import" fall back to a bare
+        # name, so every later call re-resolved against whatever PATH said then — the class
+        # gitexec.py raises GitAbsent to avoid. Absent at import is now a could-not-run.
+        with mock.patch("shutil.which", return_value=None):
+            spec = importlib.util.spec_from_file_location("diff_scope_gitless", SCOPE)
+            gitless = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gitless)
+        self.assertIsNone(gitless.GIT)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        marker = tmp / "late-git-ran"
+        (tmp / "git").write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 0\n', encoding="utf-8")
+        (tmp / "git").chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{tmp}{os.pathsep}{os.environ.get('PATH', '')}"}):
+            self.assertIsNone(gitless.git(self.repo, "rev-parse", "HEAD"))
+            with self.assertRaises(gitless.ScopeError):
+                gitless._driver_blanks(self.repo)
+            with self.assertRaises(gitless.ScopeError):
+                gitless.predict_merge(self.repo, "main", "main")
+        self.assertFalse(marker.exists(), "a git found on PATH after import answered the call")
+
     def test_replace_refs_do_not_swap_the_compared_base(self):
         # A `refs/replace/` ref pointing main's commit at one carrying tests/ would make the
         # diff against main hide a test change; GIT_NO_REPLACE_OBJECTS reads the real commit.
@@ -550,6 +572,24 @@ class PredictMergeContract(ScopeBase):
         self.assertIn("shared.txt", json.loads(conflict.stdout)["conflicts"])
         self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout, head)
         self.assertEqual(git(self.repo, "status", "--porcelain").stdout, status)
+
+    def test_the_wtree_entry_runs_diff_scope_isolated(self):
+        # W4-13 class: `wtree.sh predict-merge` exec'd a plain `python3`, which honours PYTHONPATH,
+        # so a planted sitecustomize.py (run at startup) or json.py (shadowing the stdlib diff_scope
+        # imports) ran in the coordinator. `-I` ignores PYTHONPATH and the user site.
+        plant = Path(self.tmp) / "plant"
+        plant.mkdir()
+        marker = Path(self.tmp) / "pwned"
+        for mod in ("sitecustomize", "usercustomize", "json"):
+            (plant / f"{mod}.py").write_text(f"open({str(marker)!r}, 'a').write('{mod} ')\n", encoding="utf-8")
+        wtree = ROOT / "runtime" / "scripts" / "wtree.sh"
+        for argv in (["sh", str(wtree), "predict-merge", "main", "clean", str(self.repo)],
+                     ["sh", str(wtree), str(self.repo), "predict-merge", "main", "clean"]):
+            with self.subTest(argv=argv[2:4]):
+                r = subprocess.run(argv, cwd=plant, capture_output=True, text=True, timeout=120,
+                                   env={**os.environ, "PYTHONPATH": f"{plant}{os.pathsep}."})
+                self.assertFalse(marker.exists(), f"planted modules ran: {marker.read_text() if marker.exists() else ''}")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_unknown_ref_is_no_base_not_a_conflict(self):
         for refs in (("no-such-base", "work"), ("main", "no-such-branch")):

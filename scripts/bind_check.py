@@ -68,10 +68,13 @@ def changed_entries(root, base):
 
     `base` is the merge-base ref (CI passes origin/<base_ref>); the diff is
     merge-base..HEAD, i.e. exactly what the PR adds. Raises ValueError when
-    the base does not resolve.
+    the base does not resolve, or is option-shaped: `merge-base HEAD --fork-point`
+    answered HEAD itself and made the PR range empty (W2-04).
     """
+    if not base or base.startswith("-"):
+        raise ValueError(f"base ref {base!r} must name a git ref, not an option")
     mb = subprocess.run(
-        ["git", "merge-base", "HEAD", base],
+        ["git", "merge-base", "HEAD", "--", base],
         cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
     )
     if mb.returncode != 0 or not mb.stdout.strip():

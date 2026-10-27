@@ -29,7 +29,10 @@ codex, opencode, omp, pi, jcode, goose, hermes, crush, openhands — each throug
 reader that follows its upstream on-disk format (see the per-reader comments).
 It is a token scan, not an index: every query re-reads the stores, each file up to
 MAX_FILE_BYTES and the whole scan up to MAX_RUN_BYTES (a skip is said on stderr; the
-episodic hint's manifests too), regular files only, SQLite tables never views. One hit per
+episodic hint's manifests too), regular files only (a link, FIFO or device is said and
+never opened), a SQLite store's plain tables' stored columns only (never a view, a virtual
+table or a computed column), every whole frame of a .zst (each frame charged; a damaged
+tail is said), and a record nested past the parser's depth skipped, never fatal. One hit per
 session; --since drops undated records; --path matches the session's cwd;
 --cursor pages with the ``local:<offset>`` NEXT_CURSOR it printed (any other
 cursor is refused). On EVERY path (Orca results included) every untrusted
@@ -57,6 +60,7 @@ if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sy
 
 import argparse
 import datetime
+import errno
 import fnmatch
 import hashlib
 import importlib.machinery
@@ -115,11 +119,12 @@ class _ReadBudget:
     def omit(self, path, why):
         if why not in self.said:
             self.said.add(why)
-            limit = MAX_FILE_BYTES if why == "file" else MAX_RUN_BYTES
-            what = ("a file over the per-file cap" if why == "file"
-                    else "files past the scan's byte budget")
-            print(f"search_sessions: skipped {what} ({limit} bytes), first {path}: recall is partial",
-                  file=sys.stderr)
+            what = {"file": f"a file over the per-file cap ({MAX_FILE_BYTES} bytes)",
+                    "run": f"files past the scan's byte budget ({MAX_RUN_BYTES} bytes)",
+                    "irregular": "a link or a file that is not a regular file (never followed or read)",
+                    "damaged": "the rest of a damaged or truncated compressed transcript",
+                    "zstd": "compressed transcripts (a .zst needs Python 3.14's compression.zstd)"}[why]
+            print(f"search_sessions: skipped {what}, first {path}: recall is partial", file=sys.stderr)
 
 
 _BUDGET = _ReadBudget()
@@ -162,11 +167,16 @@ def _read_capped(fp, follow=False):
     flags = _READ_FLAGS | (0 if follow else getattr(os, "O_NOFOLLOW", 0))
     try:
         fd = os.open(fp, flags)
-    except OSError:
+    except OSError as err:
+        if err.errno == errno.ELOOP:
+            _BUDGET.omit(fp, "irregular")
         return None
     try:
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or not _fits(fp, st.st_size):
+        if not stat.S_ISREG(st.st_mode):
+            _BUDGET.omit(fp, "irregular")
+            return None
+        if not _fits(fp, st.st_size):
             return None
         chunks, size = [], 0
         while size <= MAX_FILE_BYTES and (chunk := os.read(fd, min(1 << 20, MAX_FILE_BYTES + 1 - size))):
@@ -444,8 +454,8 @@ def _prior_hints(clean_paths, rdir):
             continue
         try:
             data = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            continue
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            continue  # RecursionError: nested past the parser's depth (W5-21)
         digest = hashlib.sha256(raw_bytes).hexdigest()
         run_id = mf.parent.name if mf.parent != rdir else mf.stem
         for idx, unit in enumerate(_extract_unit_records(data)):
@@ -918,8 +928,14 @@ def _norm_agent(name):
     return _AGENT_ALIASES.get(raw, raw)
 
 
-def _extract_text(val):
-    if val is None:
+# How deep _extract_text descends into a record. A transcript's text sits a few levels down; a
+# 1 400-deep list the JSON parser accepts recursed once per level and aborted the whole recall
+# with a RecursionError (2026-10-27 re-check, W5-21). Deeper than this is not conversation text.
+MAX_NESTING = 64
+
+
+def _extract_text(val, depth=0):
+    if val is None or depth > MAX_NESTING:
         return ""
     if isinstance(val, str):
         stripped = val.strip()
@@ -928,14 +944,14 @@ def _extract_text(val):
         ):
             try:
                 parsed = json.loads(stripped)
-                inner = _extract_text(parsed)
+                inner = _extract_text(parsed, depth + 1)
                 if inner:
                     return inner
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 pass
         return val
     if isinstance(val, list):
-        parts = [_extract_text(item) for item in val]
+        parts = [_extract_text(item, depth + 1) for item in val]
         return " ".join(p for p in parts if p)
     if isinstance(val, dict):
         btype = val.get("type")
@@ -946,12 +962,12 @@ def _extract_text(val):
         if btype and isinstance(val.get("data"), dict):
             # crush's {"type": "text"|"tool_result", "data": {...}} part wrapper.
             data = val["data"]
-            return _extract_text({k: data[k] for k in ("text", "content") if k in data})
+            return _extract_text({k: data[k] for k in ("text", "content") if k in data}, depth + 1)
         parts = []
         for k in ("text", "content", "message", "body", "parts",
                   "observation", "summary", "output"):
             if k in val and val[k] is not None:
-                sub = _extract_text(val[k])
+                sub = _extract_text(val[k], depth + 1)
                 if sub:
                     parts.append(sub)
         return " ".join(parts)
@@ -1021,8 +1037,8 @@ def _read_jsonl(fp):
             continue
         try:
             rec = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
+        except (json.JSONDecodeError, RecursionError):
+            continue  # one record nested past the parser's depth is skipped, never fatal (W5-21)
         if isinstance(rec, dict):
             out.append(rec)
     return out
@@ -1034,7 +1050,7 @@ def _read_json(fp):
         return None
     try:
         return json.loads(raw.decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return None
 
 
@@ -1060,6 +1076,9 @@ def _sqlite_ro(path):
       replayed, so rows still only in that WAL stay invisible until the harness
       checkpoints — never writing beside a harness's data wins over them.
     """
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        _BUDGET.omit(path, "irregular")  # a store is read as the regular file it is, like a transcript
+        return None
     if not path.is_file():
         return None
     resolved = path.resolve()
@@ -1086,10 +1105,24 @@ def _sqlite_ro(path):
 
 
 def _tables(conn):
-    """The store's TABLES. Never its views: a view is any query, and a 4 KiB file can hold one that
-    yields gigabytes (2026-10-27 re-attack, W5-21)."""
+    """The store's plain TABLES. Never its views: a view is any query, and a 4 KiB file can hold one
+    that yields gigabytes (2026-10-27 re-attack, W5-21). Never a VIRTUAL table either: sqlite_master
+    calls it a 'table', but its rows are whatever its module computes, and an fts5 table's external
+    content can be a view -- one that never yields held recall forever (re-check of 50b2615e)."""
     return {row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE TABLE%'").fetchall()}
+
+
+def _quoted(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _stored_columns(conn, table):
+    """`table`'s columns that hold stored data: a VIRTUAL generated column (table_xinfo hidden=2)
+    is any expression, computed on each read -- hex(zeroblob(450000000)) in a 12 KiB store took
+    recall to 5.7 GB before a row could be charged -- so it is never selected."""
+    return [row[1] for row in conn.execute(f"PRAGMA table_xinfo({_quoted(table)})").fetchall()
+            if row[6] in (0, 3)]
 
 
 class _Store(sqlite3.Connection):
@@ -1105,7 +1138,10 @@ def _rows(conn, table):
     try:
         if table not in _tables(conn):
             return []
-        cursor = conn.execute(f'SELECT * FROM "{table}"')
+        columns = _stored_columns(conn, table)
+        if not columns:
+            return []
+        cursor = conn.execute(f"SELECT {', '.join(map(_quoted, columns))} FROM {_quoted(table)}")
         while batch := cursor.fetchmany(8):
             for row in batch:
                 cost = sum(len(v) if isinstance(v, (str, bytes)) else 8 for v in tuple(row))
@@ -1130,7 +1166,7 @@ def _json_col(value):
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return value
     return value
 
@@ -1165,29 +1201,52 @@ def _iter_claude():
 _UUID_TAIL = re.compile(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 
 
-def _unzstd_capped(zstd, packed, fp):
-    """Every frame of a .zst, decompressed up to MAX_FILE_BYTES in all (W5-21), or None.
+# What a .zst frame costs against the per-file cap on top of what it decodes to: an empty or
+# skippable frame decodes to nothing, so without it 8-byte frames are millions of walks for free.
+ZSTD_FRAME_COST = 512
+_ZSTD_WINDOW = 512
 
-    One ZstdDecompressor decodes ONE frame and leaves the rest in `unused_data`, so a stream of
-    concatenated frames is walked frame by frame (the one-shot `zstd.decompress` did that, but
-    had no output cap). Past the cap is a skip that is said; a damaged or truncated stream is
-    unreadable, as before."""
-    out, total, rest = [], 0, packed
-    while rest:
-        unpacker = zstd.ZstdDecompressor()
-        try:
-            chunk = unpacker.decompress(rest, max_length=MAX_FILE_BYTES + 1 - total)
-        except Exception:
+
+def _unzstd_capped(zstd, packed, fp):
+    """(every whole frame of a .zst decoded, what it cost), or None past MAX_FILE_BYTES (W5-21).
+
+    One ZstdDecompressor decodes ONE frame and leaves what follows in `unused_data`, so frames
+    are walked one at a time (the one-shot `zstd.decompress` did that, with no output cap). Each
+    is fed from a window that starts at _ZSTD_WINDOW and doubles while the frame lasts, so
+    `unused_data` copies about one window per frame and the walk is linear in the file: handing
+    every frame the whole rest of it was quadratic, and a 2.5 MB file of empty frames held recall
+    for 23 s. Each frame also costs ZSTD_FRAME_COST. Past the cap is a skip that is said; a
+    damaged or truncated frame ends the walk, the whole frames before it are kept, and that skip
+    is said too."""
+    view, pos, out, cost = memoryview(packed), 0, [], 0
+    while pos < len(view):
+        cost += ZSTD_FRAME_COST
+        if cost > MAX_FILE_BYTES:
+            _BUDGET.omit(fp, "file")
             return None
-        total += len(chunk)
-        out.append(chunk)
-        if total > MAX_FILE_BYTES or (not unpacker.eof and not unpacker.needs_input):
-            _BUDGET.omit(fp, "file")  # the output reached the cap before the frame ended
-            return None
-        if not unpacker.eof:
-            return None  # a truncated frame
-        rest = unpacker.unused_data
-    return b"".join(out)
+        unpacker, window, frame = zstd.ZstdDecompressor(), _ZSTD_WINDOW, []
+        while True:
+            piece = view[pos:pos + window]
+            try:
+                chunk = unpacker.decompress(piece, max_length=MAX_FILE_BYTES + 1 - cost)
+            except Exception:
+                _BUDGET.omit(fp, "damaged")
+                return b"".join(out), cost
+            cost += len(chunk)
+            frame.append(chunk)
+            if cost > MAX_FILE_BYTES or (not unpacker.eof and not unpacker.needs_input):
+                _BUDGET.omit(fp, "file")  # the output reached the cap before the frame ended
+                return None
+            if unpacker.eof:
+                pos += len(piece) - len(unpacker.unused_data)
+                out += frame
+                break
+            pos += len(piece)
+            if pos >= len(view):  # the stream ends inside this frame
+                _BUDGET.omit(fp, "damaged")
+                return b"".join(out), cost
+            window = min(window * 2, 1 << 20)
+    return b"".join(out), cost
 
 
 def _codex_lines(fp):
@@ -1195,19 +1254,20 @@ def _codex_lines(fp):
         try:
             from compression import zstd  # Python 3.14+ stdlib
         except ImportError:
+            _BUDGET.omit(fp, "zstd")
             return []
         packed = _read_capped(fp)
         if packed is None:
             return []
-        plain = _unzstd_capped(zstd, packed, fp)
-        if plain is None or not _charge(fp, len(plain)):
+        walked = _unzstd_capped(zstd, packed, fp)
+        if walked is None or not _charge(fp, walked[1]):
             return []
-        raw = plain.decode("utf-8", errors="replace")
+        raw = walked[0].decode("utf-8", errors="replace")
         out = []
         for line in raw.splitlines():
             try:
                 rec = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 continue
             if isinstance(rec, dict):
                 out.append(rec)
@@ -1474,7 +1534,7 @@ def _hermes_content(value):
     if isinstance(value, str) and value.startswith(_HERMES_JSON_PREFIX):
         try:
             return _extract_text(json.loads(value[len(_HERMES_JSON_PREFIX):]))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return ""
     return value if isinstance(value, str) else _extract_text(value)
 
@@ -1776,7 +1836,7 @@ def main(argv=None):
                                       f"not a regular file, or over {MAX_FILE_BYTES} bytes")
                     evidence = json.loads(raw.decode("utf-8"))
                     hp.load_observations(evidence)
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError, hp.ProvenanceError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError, hp.ProvenanceError) as exc:
                 raise Refused(f"episodic hint: {exc}")
             hits = None
             if has_query:

@@ -743,17 +743,23 @@ class _FrameZstd:
     frames (here b"ZF" + 4-byte repeat count + 4-byte length + chunk, decoding to chunk * count,
     so a small frame can expand like a real one); one ZstdDecompressor decodes ONE frame, sets
     `eof` at its end and leaves what follows in `unused_data`; `max_length` caps the output, and
-    a truncated frame leaves `needs_input` set."""
+    a truncated frame leaves `needs_input` set, holding what it was given until the frame is whole."""
 
     class ZstdError(Exception):
         pass
 
+    # Every byte handed to any decompressor, so a test can see the input a walk re-feeds.
+    fed = 0
+
     class ZstdDecompressor:
         def __init__(self):
-            self.eof, self.needs_input, self.unused_data = False, True, b""
+            self.eof, self.needs_input, self.unused_data, self._held = False, True, b"", b""
 
         def decompress(self, data, max_length=-1):
-            if data[:2] != b"ZF":
+            # Like the real one, input is held across calls until its frame is whole.
+            _FrameZstd.fed += len(data)
+            data = self._held = self._held + bytes(data)
+            if data[:2] != b"ZF"[:len(data)]:
                 raise _FrameZstd.ZstdError("not a frame")
             if len(data) < 10:
                 return b""  # truncated: needs more input
@@ -827,6 +833,200 @@ class TestMultiFrameZstdTranscripts(_Base):
             hits, err = self.scan("kappa_token", env)
         self.assertEqual(hits, [], "the frames together passed the per-file cap")
         self.assertIn(f"skipped a file over the per-file cap ({path.stat().st_size + 4096} bytes), first {path}", err)
+
+
+
+class TestZstdFramesAreWalkedInBoundedWork(_Base):
+    """Re-check of c9d8ffa1 (W5-21): the frame walk handed each new decompressor the WHOLE rest of
+    the file, and `unused_data` copied it back, so a 2.5 MB .jsonl.zst of 320 000 empty skippable
+    frames held a recall for 23 s on 3.14 (quadratic: a 64 MiB one runs for hours). And a stream
+    whose later frame was truncated or followed by junk dropped every record of the frames before
+    it, with nothing said; without 3.14's compression.zstd, every .zst was skipped in silence."""
+
+    SID = TestMultiFrameZstdTranscripts.SID
+    zst_session = TestMultiFrameZstdTranscripts.zst_session
+    records = TestMultiFrameZstdTranscripts.records
+    scan = TestMultiFrameZstdTranscripts.scan
+    session = TestMultiFrameZstdTranscripts.session
+
+    def setUp(self):
+        super().setUp()
+        _FrameZstd.fed = 0
+
+    def test_many_tiny_frames_cost_linear_input(self):
+        empties = 2000
+        tail = {"timestamp": "2026-10-11T09:00:02Z", "type": "response_item",
+                "payload": {"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "mu_token after the empties"}]}}
+        meta = {"timestamp": "2026-10-11T09:00:00Z", "type": "session_meta",
+                "payload": {"id": self.SID, "cwd": "/workspace/zst"}}
+        path = self.zst_session([_FrameZstd.frame(self.records(meta))] + [_FrameZstd.frame(b"")] * empties
+                                + [_FrameZstd.frame(self.records(tail))])
+        hits, _err = self.scan("mu_token")
+        self.assertEqual(len(hits), 1, "the frame after the empty ones was not read")
+        size = path.stat().st_size
+        self.assertLess(_FrameZstd.fed, 4 * size + empties * 1024,
+                        f"the walk re-fed {_FrameZstd.fed} bytes for a {size}-byte file: quadratic in frames")
+
+    def test_every_frame_costs_against_the_per_file_cap(self):
+        # Empty frames decode to nothing, so only a per-frame charge bounds how many are walked.
+        path = self.zst_session([_FrameZstd.frame(b"")] * 400 + [_FrameZstd.frame(self.records(
+            {"timestamp": "2026-10-11T09:00:02Z", "type": "event_msg",
+             "payload": {"type": "agent_message", "message": "nu_token"}}))])
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 100 * 1024, create=True):
+            hits, err = self.scan("nu_token")
+        self.assertEqual(hits, [], "400 empty frames were walked for free past a cap they cost more than")
+        self.assertIn(f"skipped a file over the per-file cap (102400 bytes), first {path}", err)
+
+    def test_a_truncated_later_frame_keeps_the_whole_frames_and_says_so(self):
+        meta = {"timestamp": "2026-10-11T09:00:00Z", "type": "session_meta",
+                "payload": {"id": self.SID, "cwd": "/workspace/zst"}}
+        first = {"timestamp": "2026-10-11T09:00:01Z", "type": "event_msg",
+                 "payload": {"type": "user_message", "message": "xi_token in the whole frame"}}
+        second = _FrameZstd.frame(self.records({"timestamp": "2026-10-11T09:00:02Z", "type": "event_msg",
+                                                "payload": {"type": "agent_message", "message": "lost"}}))
+        for damage in (second[:-3], b"not a frame at all"):
+            with self.subTest(damage=damage[:12]):
+                path = self.zst_session([_FrameZstd.frame(self.records(meta, first)), damage])
+                hits, err = self.scan("xi_token")
+                self.assertEqual(len(hits), 1, "the records of the whole first frame were dropped")
+                self.assertIn(f"first {path}: recall is partial", err)
+                self.assertIn("damaged", err)
+
+    def test_without_the_zstd_module_a_compressed_transcript_is_said(self):
+        path = self.session()
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {"compression": None, "compression.zstd": None}), \
+                mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args(["kappa_token", "--local-harnesses", "--agent", "codex"])
+            self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
+        self.assertIn(f"first {path}: recall is partial", err.getvalue())
+        self.assertIn("compression.zstd", err.getvalue())
+
+
+class TestStoresAreReadAsStoredData(_Base):
+    """Re-check of 50b2615e (W5-21): `type = 'table'` also lists a VIRTUAL table, and an fts5 table
+    whose external content is a recursive view read the view through it -- a 24 KiB goose store
+    yielded hits from the view's rows, and one over a view that never yields held recall forever.
+    A VIRTUAL generated column is computed on read: a 12 KiB store whose content_json was
+    hex(zeroblob(450000000)) took recall to 5.7 GB RSS before a single row was charged."""
+
+    goose_db = TestSqliteAndManifestReadsAreBounded.goose_db
+    scan = TestSqliteAndManifestReadsAreBounded.scan
+
+    def test_a_virtual_table_over_a_view_is_never_read(self):
+        def build(conn):
+            conn.execute("CREATE VIEW v AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) "
+                         "SELECT i AS rowid, 's1' AS session_id, 'user' AS role, '2026-10-10T12:00:00Z' AS "
+                         "created_timestamp, json_array(json_object('type', 'text', 'text', 'omicron_token ' || i)) "
+                         "AS content_json FROM n")
+            conn.execute("CREATE VIRTUAL TABLE messages USING fts5(session_id, role, created_timestamp, "
+                         "content_json, content='v')")
+        hits, _err = self.scan("omicron_token", self.goose_db(build))
+        self.assertEqual(hits, [], "a VIRTUAL table (here fts5 over a view) was read as a store")
+
+    def test_a_generated_column_is_never_computed(self):
+        def build(conn):
+            conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, "
+                         "content_json TEXT GENERATED ALWAYS AS (json_array(json_object('type', 'text', "
+                         "'text', 'pi_token ' || session_id))) VIRTUAL)")
+            conn.execute("INSERT INTO messages (session_id, role, created_timestamp) "
+                         "VALUES ('s1', 'user', '2026-10-10T12:00:00Z')")
+        hits, _err = self.scan("pi_token", self.goose_db(build))
+        self.assertEqual(hits, [], "a VIRTUAL generated column (any expression, computed per read) was read")
+
+    def test_stored_rows_are_still_read(self):
+        def build(conn):
+            conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, content_json TEXT)")
+            conn.execute("INSERT INTO messages VALUES ('s1', 'user', '2026-10-10T12:00:00Z', "
+                         "json_array(json_object('type', 'text', 'text', 'rho_token stored')))")
+        hits, _err = self.scan("rho_token", self.goose_db(build))
+        self.assertEqual(len(hits), 1)
+
+
+class TestNestingNeverAbortsTheScan(_Base):
+    """Re-check of W5-21: json.loads raises RecursionError, not JSONDecodeError, on a line nested
+    100 000 deep, and _extract_text recursed once per level of a 1 400-deep list the parser
+    accepts -- either one record in one transcript, or one manifest under --runs-dir, aborted
+    every recall with a traceback."""
+
+    def scan(self, query, *argv):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args([query, "--local-harnesses", "--limit", "50", *argv])
+            return self.mod.search_local_harnesses(ns)["hits"]
+
+    def test_a_deeply_nested_record_is_skipped_not_fatal(self):
+        path = self.tmp / "claude" / "projects" / "-workspace-deep" / "deep-session.jsonl"
+        ok = json.dumps({"type": "user", "sessionId": "deep-ok", "cwd": "/workspace/deep",
+                         "timestamp": "2026-10-10T12:00:00Z", "message": {"role": "user", "content": "sigma_token"}})
+        head = ('{"type": "user", "sessionId": "deep-bad", "cwd": "/workspace/deep", '
+                '"timestamp": "2026-10-10T12:00:00Z", "message": {"role": "user", "content": ')
+        lines = [ok, head + "[" * 1400 + "]" * 1400 + "}}", head + "[" * 100_000 + "]" * 100_000 + "}}",
+                 head + json.dumps("[" * 100_000 + "]" * 100_000) + "}}"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        hits = self.scan("sigma_token", "--agent", "claude-code")
+        self.assertEqual(len(hits), 1, "one deeply nested record aborted or emptied the scan")
+
+    def test_a_deeply_nested_manifest_is_skipped_not_fatal(self):
+        runs = self.tmp / "runs"
+        (runs / "deep").mkdir(parents=True)
+        (runs / "deep" / "manifest.json").write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+        (runs / "real").mkdir()
+        (runs / "real" / "manifest.json").write_text(json.dumps(
+            {"units": [{"id": "U-1", "status": "merged", "files_touched": ["src/app.py"], "head_sha": "a" * 40}]}),
+            encoding="utf-8")
+        self.assertEqual(len(self.mod._prior_hints(["src/app.py"], runs)), 1)
+
+
+
+class TestARefusedFileIsSaid(_Base):
+    """Re-check of 50b2615e (W5-21): a transcript that is a symlink (to a real transcript) and a
+    FIFO named *manifest*.json were refused -- and nothing said so, while the module promises a
+    partial recall is never silent."""
+
+    def test_a_linked_transcript_and_a_fifo_manifest_are_said(self):
+        real = self.tmp / "elsewhere" / "real-session.jsonl"
+        _jsonl(real, [{"type": "user", "sessionId": "linked", "cwd": "/workspace/l",
+                       "timestamp": "2026-10-10T12:00:00Z", "message": {"role": "user", "content": "tau_token"}}])
+        link = self.tmp / "claude" / "projects" / "-workspace-l" / "linked.jsonl"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(real)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args(["tau_token", "--local-harnesses", "--agent", "claude-code"])
+            self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
+        self.assertIn(f"first {link}: recall is partial", err.getvalue())
+        runs = self.tmp / "runs" / "fifo"
+        runs.mkdir(parents=True)
+        os.mkfifo(runs / "x-manifest.json")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            self.assertEqual(self.mod._prior_hints(["src/app.py"], runs.parent), [])
+        self.assertIn(f"first {runs / 'x-manifest.json'}: recall is partial", err.getvalue())
+
+    def test_a_linked_store_is_never_opened_and_is_said(self):
+        real = self.tmp / "elsewhere" / "sessions.db"
+        real.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(real)) as conn:
+            conn.execute("CREATE TABLE sessions (id TEXT, name TEXT, working_dir TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('s1', 'Goose', '/w')")
+            conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, content_json TEXT)")
+            conn.execute("INSERT INTO messages VALUES ('s1', 'user', '2026-10-10T12:00:00Z', "
+                         "json_array(json_object('type', 'text', 'text', 'upsilon_token')))")
+            conn.commit()
+        link = self.tmp / "only-goose" / "data" / "sessions" / "sessions.db"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(real)
+        env = {"HOME": str(self.tmp / "only-goose"), "GOOSE_PATH_ROOT": str(link.parents[2]),
+               "PATH": os.environ.get("PATH", "")}
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args(["upsilon_token", "--local-harnesses", "--agent", "goose"])
+            self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
+        self.assertIn(f"first {link}: recall is partial", err.getvalue())
 
 
 if __name__ == "__main__":

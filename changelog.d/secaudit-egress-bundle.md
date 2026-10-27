@@ -5,17 +5,21 @@
   ledger through the descriptor it holds locked, refuses (exit 3, before the send) one the
   verifier would refuse, fsyncs, and prints an id that `verify --expect-ancestor` (now repeatable)
   accepts as an anchor, which binds a receipt written since the last close. The default ledger is
-  the repository root's `.orca/egress.jsonl`, a routed ledger is reported, a missing one is not
-  "intact", and `grants` verifies first. Pre-v2 ledgers keep verifying in the exact v1 form, as a
-  prefix ([runtime-scripts](../docs/runtime-scripts.md#egresspy)). `bundle.py` records the sha256
-  of every file it writes and deletes only what still matches, refuses a marker naming anything a
-  build does not write or that is a symlink, and fails a mission that ships `.gitignore`,
-  `.gitattributes`, `.gitmodules` or `.git`; a `--out` built before digests refuses once
+  the repository root's `.orca/egress.jsonl`, a routed ledger is reported, `grants` verifies
+  first, and `verify` finding no receipts exits 4 unless the run declares it sent nothing
+  (`--allow-empty`). Pre-v2 ledgers keep verifying in the exact v1 form, as a prefix
+  ([runtime-scripts](../docs/runtime-scripts.md#egresspy)). `bundle.py`'s ownership marker only
+  names candidates: outside a mission directory the build writes whole, a stale file is deleted
+  only when the source repository committed its exact bytes at the path the build copies it from,
+  and is otherwise left in place and reported; a marker naming anything a build does not write or
+  that is a symlink refuses, and a mission that ships `.gitignore`, `.gitattributes`,
+  `.gitmodules` or `.git` fails the build; a `--out` built before digests refuses once
   ([install](../docs/install.md)). `external-ci-monitor.py` never re-sends `GITHUB_TOKEN` on a
   redirect, refuses a foreign origin and an oversized body, and shape-checks `--repo`. The live
   harness's broker bounds idle connections and `count_tokens`, settles every call and records
-  faults in its ledger; the launcher refuses an image not built from the committed Dockerfile
-  unless `--allow-foreign-image` is passed, refuses any `--mount` path docker would split, and the
-  image pins the Claude Code installer and binary by sha256
+  every fault in its ledger, upstream resets included; the launcher refuses an image not built
+  from the committed Dockerfile unless `--allow-foreign-image` is passed, refuses any `--mount`
+  path docker would split, and the image pins the Claude Code installer and binary by sha256
   ([live harness](../docs/guides/live-harness.md)). `search_sessions.py` caps recall reads per
-  file and per scan. The arm's direct network egress (W5-15) is documented, not yet closed.
+  file and per scan, every frame of a `.zst` transcript included. The arm's direct network egress
+  (W5-15) is documented, not yet closed.

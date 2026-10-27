@@ -830,8 +830,20 @@ class TheImageIsBuiltFromTheCommittedDockerfile(Harness):
         self.assertEqual(len(froms), 1)
         self.assertRegex(froms[0], r"^FROM python:3\.13\.15-slim@sha256:[0-9a-f]{64}$")
         self.assertIn("git", re.search(r"apt-get install[^\n]*", text).group(0))
-        install = f"curl -fsSL https://claude.ai/install.sh | bash -s {lc.CLAUDE_CODE}"
+        # The installer runs from a file whose sha256 is pinned and checked first, never piped
+        # into a shell, and the binary it leaves must have the release's own pinned sha256
+        # (2026-10-27 audit, W5-12: a version argument is not a pin).
+        install = f"bash /tmp/claude-install.sh {lc.CLAUDE_CODE}"
         self.assertIn(install, text)
+        self.assertNotRegex(text, r"\|\s*(?:ba)?sh\b", "a downloaded script is piped into a shell")
+        pinned = re.search(r'echo "[0-9a-f]{64}  /tmp/claude-install\.sh" \| sha256sum -c -', text)
+        self.assertIsNotNone(pinned, "the installer runs without a pinned digest")
+        self.assertLess(text.index(pinned.group(0)), text.index(install), "the digest is checked after it ran")
+        real = f"/home/runner/.local/share/claude/versions/{lc.CLAUDE_CODE}"
+        for arch in ("x86_64", "aarch64"):
+            self.assertRegex(text, rf"\b{arch}\) want=[0-9a-f]{{64}} ;;", f"no pinned binary digest for {arch}")
+        self.assertIn(f'echo "$want  {real}" | sha256sum -c -', text)
+        self.assertLess(text.index(install), text.index(f'echo "$want  {real}"'))
         users = [i for i, ln in enumerate(lines) if ln.startswith("USER ")]
         at = next(i for i, ln in enumerate(lines) if install in ln)
         self.assertTrue(users and users[-1] < at and lines[users[-1]] == "USER runner", "installed as root")

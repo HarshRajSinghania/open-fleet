@@ -140,7 +140,11 @@ python3 scripts/live_container.py build
 This builds `open-fleet-live:claude-2.1.304` from
 [`scripts/live_container.Dockerfile`](../../scripts/live_container.Dockerfile). The base,
 `python:3.13.15-slim`, is pinned by digest. The image adds git, and installs Claude Code 2.1.304
-with its official installer as the non-root user. The build fails on any other version. This is
+with its official installer as the non-root user. The installer is saved to a file and runs only
+when its sha256 is the pinned one, and the build fails unless the installed binary has the sha256
+the 2.1.304 release manifest gives for the platform (x86_64 or aarch64) and reports that version.
+A version bump re-pins both digests. The apt packages (git, curl, certificates) are the base's
+distribution's current ones, not pinned. This is
 the only step that downloads anything. The image carries the Dockerfile's sha256 as a label. A
 launch refuses an image whose label is not the committed Dockerfile's sha256, unless you pass
 `--allow-foreign-image`, and the receipt records both facts (`from_committed_dockerfile`,

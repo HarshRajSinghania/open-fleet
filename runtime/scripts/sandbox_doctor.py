@@ -602,7 +602,9 @@ def main(argv=None):
         return 1
     clear, reason, exposes_host = assess(raw, recipe)
     if not clear:
-        print(reason, file=sys.stderr)
+        # Inert and on one line (Codex round 2, swept): a reason can quote a transcript key raw,
+        # and _norm folds whitespace out of keys, so a line break in one reached stderr.
+        print("".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in reason), file=sys.stderr)
         return 2 if exposes_host else 1
     if require_placement and not placement_bound(raw):
         print("no portable sandbox backend in this transcript binds the worker's placement "

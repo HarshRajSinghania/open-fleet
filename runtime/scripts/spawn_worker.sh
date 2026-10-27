@@ -186,6 +186,14 @@ if ! ORCA_BIN="$(python3 "$HERE/orca_cli.py")"; then
 fi
 step=parse-args
 
+# inert_text: stdin as ONE inert line, every unprintable character (line breaks, ESC, CR, bidi)
+# escaped, for runtime text spliced into a SPAWN= line (W4-11 class, Codex round 2 sweep).
+inert_text() {
+  python3 -I -c 'import sys
+t = sys.stdin.buffer.read().decode("utf-8", "replace")
+sys.stdout.write("".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in t))'
+}
+
 # orca_json <outfile> <orca-args...> — run orca with --json, fail on nonzero exit
 # OR on an exit-0 error envelope ({"error": ...}); fail-closed for every step.
 orca_json() {
@@ -824,12 +832,12 @@ if [ "$PROFILE" = "danger" ]; then
     "$ORCA_BIN" vm recipe doctor "$recipe" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} > "$doctor_out" 2> "$doctor_out.stderr" || doctor_rc=$?
   fi
   if [ "$doctor_rc" -ne 0 ]; then
-    echo "SPAWN=REFUSED task=${task} \`${ORCA_BIN} vm recipe doctor ${recipe}\` exited ${doctor_rc} — the sandbox did not come up clean: $(cat "$doctor_out" "$doctor_out.stderr" | head -c 300 | tr '\n' ' ')" >&2
+    echo "SPAWN=REFUSED task=${task} \`${ORCA_BIN} vm recipe doctor ${recipe}\` exited ${doctor_rc} — the sandbox did not come up clean: $(cat "$doctor_out" "$doctor_out.stderr" | head -c 300 | inert_text)" >&2
     rm -f "$doctor_out"
     exit 2
   fi
   if ! python3 -I "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>/dev/null; then
-    echo "SPAWN=REFUSED task=${task} recipe doctor for '${recipe}' is not clear — sandbox-policy.md: clear means no fail AND no warn (ok:true alone proves nothing): $(python3 -I "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>&1 >/dev/null | head -c 200)" >&2
+    echo "SPAWN=REFUSED task=${task} recipe doctor for '${recipe}' is not clear — sandbox-policy.md: clear means no fail AND no warn (ok:true alone proves nothing): $(python3 -I "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>&1 >/dev/null | head -c 200 | inert_text)" >&2
     rm -f "$doctor_out"
     exit 2
   fi

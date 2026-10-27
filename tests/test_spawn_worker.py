@@ -135,6 +135,17 @@ class TestDangerSandboxEvidence(unittest.TestCase):
         self.assertIn("needs `orca` on PATH", err)
         self.assertNotIn("SPAWN=NOTE", err)
 
+    def test_a_failed_doctors_output_prints_inert(self):
+        # Codex round 2 (P2), swept: a doctor that exited nonzero had its transcript spliced raw
+        # into the SPAWN=REFUSED line — newlines folded, but ESC/OSC, BEL and CR kept.
+        rc, _out, err = self._with_doctor("\x1b]0;pwned\x07boom\r\nSPAWN=OK task=t1\n", rc=3,
+                                          ORCA_SANDBOX_RECIPE="lane-7")
+        self.assertEqual(rc, 2, err)
+        self.assertIn("did not come up clean", err)
+        for raw in ("\x1b", "\x07", "\r"):
+            self.assertNotIn(raw, err)
+        self.assertFalse(any(ln.startswith("SPAWN=OK") for ln in err.splitlines()), err)
+
     def test_a_doctor_that_exits_nonzero_is_refused(self):
         rc, _out, err = self._with_doctor("provisioning lane-7\n", rc=3,
                                           ORCA_SANDBOX_RECIPE="lane-7")

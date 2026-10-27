@@ -545,6 +545,21 @@ class ExitCodes(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
 
+    def test_a_reason_prints_inert_on_one_line(self):
+        # Codex round 2 (P2), swept: a reason quoted a transcript KEY raw, and _norm folds
+        # whitespace out of keys, so `"\u2028recipe\r"` is a recipe field whose reason printed a
+        # line break into the coordinator's stderr — spawn_worker.sh splices it into SPAWN=REFUSED.
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "doctor.json"
+            f.write_text(json.dumps({"\u2028recipe\r\x85": 5, "failures": []}))
+            r = subprocess.run([sys.executable, str(ROOT / "runtime" / "scripts" / "sandbox_doctor.py"),
+                                str(f), "lane-7"], capture_output=True)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(b"malformed recipe field", r.stderr)
+        reason = r.stderr.removesuffix(b"\n")
+        for raw in (b"\r", b"\n", "\u2028".encode(), "\x85".encode()):
+            self.assertNotIn(raw, reason)
+
 
 if __name__ == "__main__":
     unittest.main()

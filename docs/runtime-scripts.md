@@ -1783,7 +1783,8 @@ resolved. Called by
 `runtime/scripts/spawn_worker.sh`, which runs the doctor itself and passes its own output
 here — a transcript the caller names is not evidence.
 
-Exits: 0 clear · 1 not clear (reason on stderr), an unreadable transcript, or no placement
+Exits: 0 clear · 1 not clear (reason on stderr, escaped onto one line: a reason can quote a
+transcript key, and `spawn_worker.sh` splices it into its refusal), an unreadable transcript, or no placement
 under `--require-placement` · 2 a credential or isolation finding (the sandbox would expose the
 host), or usage.
 

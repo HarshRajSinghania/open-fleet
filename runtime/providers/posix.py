@@ -202,9 +202,9 @@ def _refuse_guard_links(wt: Path) -> None:
 def _exclude_hook_artifacts(wt: Path) -> None:
     """Append HOOK_ARTIFACTS to the worktree's `info/exclude` (shared by all linked worktrees)."""
     proc = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=wt, timeout=15)
-    if proc.returncode != 0 or not proc.stdout.strip():
+    if proc.returncode != 0 or not _line(proc.stdout):
         return
-    info = Path(proc.stdout.strip()) / "info"
+    info = Path(_line(proc.stdout)) / "info"
     info.mkdir(parents=True, exist_ok=True)
     exclude = info / "exclude"
     have = exclude.read_text(encoding="utf-8").splitlines() if exclude.is_file() else []
@@ -811,10 +811,20 @@ def _git(
         if blanks is None:
             repo, git_dir = git_location(full, None)
             blanks = gitexec.driver_blanks(repo, git_dir=git_dir, base=base)
-        return subprocess.run(gitexec.argv(*full), capture_output=True, text=True,
+        proc = subprocess.run(gitexec.argv(*full), capture_output=True,
                               env=gitexec.env(base, blanks=blanks), timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(full, 127, "", str(exc))
+    # Bytes, decoded with os.fsdecode: text mode turned a `\r` or `\r\n` in a path into `\n` (and
+    # died on a non-UTF-8 byte), so a registered worktree's path matched nothing (PR #720 Codex
+    # round 3); os.fsencode gives git back exactly the bytes it printed.
+    return subprocess.CompletedProcess(full, proc.returncode, os.fsdecode(proc.stdout), os.fsdecode(proc.stderr))
+
+
+def _line(out: str | bytes) -> Any:
+    """One value git printed: its trailing newline removed and nothing else (a path may end in a
+    space, `\r` or `\t`, which `.strip()` would cut)."""
+    return out[:-1] if out[-1:] in ("\n", b"\n") else out
 
 
 def _parse_worktree_list(out: str) -> list[tuple[str, str]]:
@@ -843,7 +853,7 @@ def _git_ok(args: list[str], what: str, **kw: Any) -> str:
     proc = _git(args, **kw)
     if proc.returncode != 0:
         raise ProviderError("sandbox_git_failed", f"{what}: {(proc.stderr or proc.stdout or 'git failed').strip()[:300]}")
-    return proc.stdout.strip()
+    return _line(proc.stdout)
 
 
 def prepare_sandbox_git(wt_path: str, lane_dir: Path) -> dict[str, str]:
@@ -1002,8 +1012,8 @@ class PosixWorktreeProvider(RuntimeProvider):
         if repo_root is None and not self.env.get("OPEN_FLEET_REPO_ROOT"):
             # Invoked from a subdirectory: the repository is the git top-level, not the cwd.
             top = _git(["rev-parse", "--show-toplevel"], cwd=start) if start.is_dir() else None
-            if top is not None and top.returncode == 0 and top.stdout.strip():
-                start = Path(top.stdout.strip()).resolve()
+            if top is not None and top.returncode == 0 and _line(top.stdout):
+                start = Path(_line(top.stdout)).resolve()
         self.repo_root = start
         self.runner = runner
         self.backend = self._resolve_backend(backend)
@@ -1080,8 +1090,8 @@ class PosixWorktreeProvider(RuntimeProvider):
                 root_common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=root)
                 if (
                     top.returncode != 0
-                    or Path(top.stdout.strip()).resolve() != wt_path.resolve()
-                    or common.stdout.strip() != root_common.stdout.strip()
+                    or Path(_line(top.stdout)).resolve() != wt_path.resolve()
+                    or _line(common.stdout) != _line(root_common.stdout)
                 ):
                     raise ProviderError(
                         "worktree_create_failed",
@@ -1198,7 +1208,7 @@ class PosixWorktreeProvider(RuntimeProvider):
         shown = self.worktree_show(selector)["worktree"]
         wt_path = Path(shown["path"]).resolve()
         repo_root = self.repo_root.resolve()
-        common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo_root).stdout.strip()
+        common = _line(_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo_root).stdout)
         protected = {repo_root, Path.home().resolve(), Path("/").resolve()}
         if common:
             protected.add(Path(common).resolve())

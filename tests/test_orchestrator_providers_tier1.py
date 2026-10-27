@@ -577,6 +577,25 @@ class TestAdapterGitRunsNothingTheRepoNames(_Base):
         self.assertEqual((self.wt / "a.txt").read_text(encoding="utf-8"), "changed\n")
         self.assertEqual(self.fired(), [], "a cwd-launched checkout ran the planted smudge filter")
 
+    def test_the_head_pin_and_dirty_check_read_cr_and_non_utf8_paths_raw(self) -> None:
+        # Codex round 3 (P1), adapters: run_cli/run_cli_text decoded git output as text, which
+        # turns `\r`/`\r\n` into `\n` and dies on a non-UTF-8 byte. The HEAD pin's "does the ref's
+        # git dir live inside the worktree" test then compared a path that did not exist and let a
+        # plain repository's own `.git` pass as surviving the cleanup that deletes it.
+        clean = {**GIT_ENV, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        for name in ("cr\rrepo", "crlf\r\nrepo", os.fsdecode(b"bytes\xffrepo")):
+            with self.subTest(name=name):
+                plain = self.tmp / name
+                subprocess.run(["git", "init", "-q", "-b", "main", str(plain)], check=True, env=clean)
+                subprocess.run(["git", "-C", str(plain), "commit", "-q", "--allow-empty", "-m", "p"], check=True,
+                               env=clean)
+                odd = os.fsdecode(b"un\rsaved\r\n\xfe")
+                (plain / odd).write_text("x\n", encoding="utf-8")
+                self.assertEqual(self.ext.foreign_dirty_paths(self.text_runner, str(plain)), [odd])
+                with self.assertRaises(ProviderError) as ctx:
+                    self.ext.preserve_worker_head(self.text_runner, str(plain), "disp-odd")
+                self.assertEqual(ctx.exception.code, "preserve_failed")
+
     def test_the_same_uid_global_config_is_never_read(self) -> None:
         glob = self.config_file("worker-written.gitconfig", (
             ("core.hooksPath", str(self.hooks_dir("globalhooks"))),

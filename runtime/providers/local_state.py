@@ -44,17 +44,19 @@ def _repo_state_id(start: str | None = None) -> str:
         proc = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
-            text=True,
             timeout=10,
         )
-        if proc.returncode == 0 and proc.stdout.strip():
-            root = str(Path(proc.stdout.strip()).resolve())
+        # Bytes, minus the one trailing newline: a `\r`, a trailing space or a non-UTF-8 byte in
+        # the path is the path (text mode turned `\r` into `\n`, and died on the byte).
+        out = proc.stdout[:-1] if proc.stdout.endswith(b"\n") else proc.stdout
+        if proc.returncode == 0 and out:
+            root = str(Path(os.fsdecode(out)).resolve())
     except (OSError, subprocess.SubprocessError):
         root = ""
     root = root or str(Path(cwd).resolve())
     name = Path(root).parent.name if Path(root).name == ".git" else Path(root).name
     slug = "".join(c if c.isalnum() or c in "._-" else "-" for c in name).strip("-") or "repo"
-    return f"{slug}-{hashlib.sha256(root.encode()).hexdigest()[:12]}"
+    return f"{slug}-{hashlib.sha256(os.fsencode(root)).hexdigest()[:12]}"
 
 
 def default_db_path(env: dict[str, str] | None = None) -> Path:

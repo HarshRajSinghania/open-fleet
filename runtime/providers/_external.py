@@ -48,6 +48,15 @@ def _git_launch(argv: list[str], env: dict[str, str] | None, cwd: str | None = N
     blanks = gitexec.driver_blanks(repo, git_dir=git_dir, base=base)
     return gitexec.argv(*argv[1:]), gitexec.env(base, blanks=blanks), {"stdin": subprocess.DEVNULL}
 
+def _decoded(argv: list[str], proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
+    """A git launch's bytes, decoded with os.fsdecode: text mode turned a `\r` or `\r\n` in a path
+    into `\n` (and died on a non-UTF-8 byte), so the HEAD pin's "inside the worktree" test compared
+    a path that did not exist (PR #720 Codex round 3). Anything else is already text."""
+    if argv and argv[0] == "git":
+        return subprocess.CompletedProcess(proc.args, proc.returncode, os.fsdecode(proc.stdout), os.fsdecode(proc.stderr))
+    return proc
+
+
 # Files `posix.install_worktree_hooks` writes into a worktree: dirt limited to these paths is
 # ours, not the worker's, and never blocks a cleanup that has already preserved HEAD.
 HOOK_ARTIFACT_PREFIXES = HOOK_ARTIFACTS
@@ -69,9 +78,9 @@ def run_cli(argv: list[str], *, provider: str, timeout: float = 60, cwd: str | N
     """Run an upstream CLI; every failure mode is a ProviderError (never a silent success)."""
     try:
         launch, env, stdin = _git_launch(argv, None, cwd)
-        proc = subprocess.run(
-            launch, capture_output=True, text=True, check=False, timeout=timeout, cwd=cwd, env=env, **stdin
-        )
+        proc = _decoded(argv, subprocess.run(
+            launch, capture_output=True, text=not stdin, check=False, timeout=timeout, cwd=cwd, env=env, **stdin
+        ))
     except FileNotFoundError as exc:
         raise ProviderError(f"{provider}_cli_missing", f"{argv[0]!r} not found on PATH", {"argv": argv}) from exc
     except subprocess.TimeoutExpired as exc:
@@ -317,15 +326,15 @@ def run_cli_text(
     """Run an upstream CLI; any launch failure, timeout, or non-zero exit is a ProviderError."""
     try:
         launch, env, stdin = _git_launch(argv, env)
-        proc = subprocess.run(
+        proc = _decoded(argv, subprocess.run(
             launch,
             capture_output=True,
-            text=True,
+            text=not stdin,
             check=False,
             timeout=timeout,
             env=env,
-            **({"input": input} if input is not None else stdin),
-        )
+            **({"input": os.fsencode(input) if stdin else input} if input is not None else stdin),
+        ))
     except FileNotFoundError as exc:
         raise ProviderError(f"{provider}_cli_missing", f"{argv[0]!r} is not installed or not on PATH", {"argv": argv}) from exc
     except subprocess.TimeoutExpired as exc:

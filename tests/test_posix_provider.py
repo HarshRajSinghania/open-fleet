@@ -750,6 +750,26 @@ class TestWorktreeSafety(PosixRealProcessBase):
         self.assertEqual(ctx.exception.code, "worktree_rm_failed")
         self.assertTrue((wt / "junk.txt").is_file(), "a registered worktree went to rmtree")
 
+    def test_a_registered_worktree_under_any_byte_path_is_still_recognised(self):
+        # Codex round 3 (P1): `-z` kept the list raw, but _git decoded it as text, which turns a
+        # `\r` or `\r\n` into `\n` (and dies on a non-UTF-8 byte), so the parsed path matched
+        # nothing and a forced removal of a registered worktree with a deleted pointer reached
+        # rmtree. Every byte a POSIX path may hold must come back as the same path.
+        for name in ("cr\rstate", "crlf\r\nstate", os.fsdecode(b"bytes\xff\xfestate"), "tab\tback\\slash"):
+            with self.subTest(name=name):
+                odd = Path(self.tmp.name) / name
+                prov = self.providers.get_provider("posix", env={**self.env, "OPEN_FLEET_STATE_DB": str(odd / "runtime.db")})
+                wt = Path(prov.worktree_create(f"odd{len(name)}")["worktree"]["path"])
+                rows = prov.worktree_list()["worktrees"]
+                self.assertTrue(any(Path(r["path"]) == wt and r.get("branch") == f"fleet/odd{len(name)}" for r in rows),
+                                f"worktree list reported a mangled path: {rows}")
+                (wt / ".git").unlink()
+                (wt / "junk.txt").write_text("x", encoding="utf-8")
+                with self.assertRaises(self.providers.ProviderError) as ctx:
+                    prov.worktree_rm(f"path:{wt}", force=True)
+                self.assertEqual(ctx.exception.code, "worktree_rm_failed")
+                self.assertTrue((wt / "junk.txt").is_file(), "a registered worktree went to rmtree")
+
     def test_rm_refuses_when_the_worktree_list_cannot_be_read(self):
         # W4-08 review (PR #720): with the repository's worktree list unreadable (a malformed shared
         # config makes git die), an empty answer read as "not registered" and a registered worktree

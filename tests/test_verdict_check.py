@@ -296,7 +296,9 @@ class PostStatusGate(unittest.TestCase):
             if path.startswith("pulls?"):
                 return pulls or []
             if path == "pulls/7":
-                return {"number": 7, "head": {"sha": HEAD}, "user": {"login": "coord"}}
+                return {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "o/r"}},
+                        "base": {"sha": OTHER, "repo": {"full_name": "o/r"}},
+                        "user": {"login": "coord"}}
             return reviews
 
         def fake_run(cmd, **_kw):

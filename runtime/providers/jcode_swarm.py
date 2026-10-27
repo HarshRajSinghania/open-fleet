@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from ._external import release_claim_on_failure
 from ._external import ExternalDispatchMixin, env_lookup, real_worktree
 from .base import (
     ProviderError,
@@ -174,6 +175,7 @@ class JCodeSwarmProvider(ExternalDispatchMixin, RuntimeProvider):
         return self.state.task_list(**kwargs)
 
     # --- Worker dispatch (`comm_spawn`) ---
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

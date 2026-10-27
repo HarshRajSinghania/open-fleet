@@ -305,3 +305,64 @@ class OneCompositionGrammar(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheReaderRefusesWhatSkillsRefRefuses(unittest.TestCase):
+    """2026-10-26 review (tooling track): shapes the local validator passed that the CI reference
+    validator (skills-ref) refuses, or that read as a string they are not — a YAML sequence under a
+    string field became the `<object>` sentinel and passed every length check; a duplicate key was
+    last-wins; a top-level line the key grammar could not read was skipped; a BOM priced the whole
+    frontmatter as body."""
+
+    def _skill(self, tmp, edit):
+        d = make_skill(tmp, "Composes `diagnose`.\n", name="demo-skill")
+        md = d / "SKILL.md"
+        md.write_text(edit(md.read_text(encoding="utf-8")), encoding="utf-8")
+        return d
+
+    def test_a_sequence_under_a_metadata_key_is_not_a_string(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._skill(tmp, lambda t: t.replace("  unit: one fixture item\n",
+                                                     "  unit:\n    - one\n    - two\n"))
+            errs = validate.validate_skill(d, PROTOCOLS)
+        self.assertIn("metadata.unit must be a non-empty string", errs)
+        self.assertFalse(any("<object>" in e and "length" in e for e in errs), errs)
+
+    def test_a_sequence_as_the_description_is_not_a_string(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._skill(tmp, lambda t: t.replace("description: A fixture. Use when testing.\n",
+                                                     "description:\n  - a\n  - b\n"))
+            errs = validate.validate_skill(d, PROTOCOLS)
+        self.assertTrue(any("description must be a string" in e for e in errs), errs)
+
+    def test_a_mapping_as_the_description_is_not_a_string(self):
+        # PR #707 review: a nested mapping comes back as a dict, which is not the sequence
+        # sentinel and has a length, so it passed as a string.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._skill(tmp, lambda t: t.replace("description: A fixture. Use when testing.\n",
+                                                     "description:\n  key: value\n"))
+            errs = validate.validate_skill(d, PROTOCOLS)
+        self.assertTrue(any("description must be a string" in e for e in errs), errs)
+
+    def test_a_duplicate_key_is_an_error_not_last_wins(self):
+        data, err = validate.parse_frontmatter(
+            "---\nname: x\nname: y\ndescription: d\nmetadata:\n  proof: self-run\n---\nbody\n")
+        self.assertIsNone(data)
+        self.assertIn("duplicate frontmatter key 'name'", err)
+        data, err = validate.parse_frontmatter(
+            "---\nname: x\ndescription: d\nmetadata:\n  proof: a\n  proof: b\n---\nbody\n")
+        self.assertIsNone(data)
+        self.assertIn("duplicate frontmatter key 'proof'", err)
+
+    def test_an_unreadable_top_level_line_is_an_error_not_silence(self):
+        for line in ('"quoted key": x', "foo.bar: x", "- item"):
+            with self.subTest(line=line):
+                data, err = validate.parse_frontmatter(
+                    f"---\nname: x\n{line}\ndescription: d\n---\nbody\n")
+                self.assertIsNone(data, line)
+                self.assertIn("unreadable top-level frontmatter line", err)
+
+    def test_a_bom_does_not_price_the_frontmatter_as_body(self):
+        text = "---\nname: x\ndescription: d\n---\nbody line\n"
+        self.assertEqual(validate.split_budget("﻿" + text), validate.split_budget(text))
+        self.assertEqual(validate.split_budget(text), (4, 1))

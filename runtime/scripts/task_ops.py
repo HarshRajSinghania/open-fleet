@@ -5,7 +5,7 @@ Upstream argv (pinned specs/orchestration.ts, handlers/orchestration/task-handle
 
 * ``task-create --spec <text> [--task-title …] [--display-name …] [--deps <json_array>]
   [--parent …] [--run …] [--from …] [--retry-request …]``
-* ``task-update --id … --status <status> [--result <text>] [--run …] [--from …]
+* ``task-update --id … --status <status> [--result <json>] [--run …] [--from …]
   [--retry-request …]`` with status ∈ pending|ready|dispatched|completed|failed|blocked.
 
 Every flag is validated before any orca call: empty ids/specs, an unknown

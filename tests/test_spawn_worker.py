@@ -288,10 +288,51 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
     def test_valid_registration_passes_the_arming_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._armed_settings(tmp)
-            _rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+            # The spawn names the worktree the registration bounds (2026-10-26 review: the gate
+            # now checks the registration is about THIS tree, so the selector must match).
+            _rc, _, err = run_spawn(["task_test", f"path:{Path(tmp) / 'wt'}", "t"], env_extra={
                 **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
             self.assertNotIn("not armed", err)
             self.assertNotIn("UNVERIFIED", err)
+
+    def test_a_registration_bounding_another_worktree_is_not_armed_for_this_spawn(self):
+        # 2026-10-26 review (dispatch track, P2): the gate verified a registration bounding some
+        # other directory and the spawn went ahead. The spawn's own `path:` selector is the
+        # boundary the registration must name.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            other = Path(tmp) / "other"
+            other.mkdir()
+            rc, _, err = run_spawn(["task_test", f"path:{other}", "t"], env_extra={
+                **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assert_refused(rc, err, "not the worktree this spawn is about")
+
+    def test_the_arming_gate_is_told_which_harness_launches(self):
+        # A claude registration proves nothing for a codex worker: the gate now learns the agent
+        # and refuses when the registration does not cover that harness's tools.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            rc, _, err = run_spawn(["task_test", f"path:{Path(tmp) / 'wt'}", "t", "codex"],
+                                   env_extra={**self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assert_refused(rc, err, "not armed")
+            self.assertIn("codex", err)
+
+    def test_the_harness_defaults_from_the_environment_and_the_positional_wins(self):
+        # OPEN_FLEET_HARNESS was documented as the harness selector and read nowhere
+        # (2026-10-26 review). The positional [agent] still wins over it.
+        rc, _, err = run_spawn(self.BASE_ARGS, env_extra={"OPEN_FLEET_HARNESS": "bogus"})
+        self.assert_refused(rc, err, "unknown agent 'bogus'")
+        _rc, _, err = run_spawn(self.BASE_ARGS + ["claude"], env_extra={"OPEN_FLEET_HARNESS": "bogus"})
+        self.assertNotIn("unknown agent", err)
+
+    def test_an_unknown_flag_is_refused_not_read_as_a_task_id(self):
+        rc, _, err = run_spawn(["--mark-redy", *self.BASE_ARGS])
+        self.assert_refused(rc, err, "unknown flag '--mark-redy'")
+
+    def test_a_value_opening_with_a_colon_is_a_value(self):
+        # `--run :abc` used to be refused as empty: the validation split the VALUE on ':'.
+        _rc, _, err = run_spawn(self.BASE_ARGS + ["--run", ":abc"], env_extra=dict(self.RW))
+        self.assertNotIn("--run needs a non-empty value", err)
 
     def test_registered_command_that_never_denies_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -301,7 +342,7 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
                 for hook in entry["hooks"]:
                     hook["command"] = "true # deny-hook.sh"
             settings.write_text(json.dumps(data))
-            rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+            rc, _, err = run_spawn(["task_test", f"path:{Path(tmp) / 'wt'}", "t"], env_extra={
                 **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
             self.assert_refused(rc, err, "not armed")
 
@@ -514,6 +555,36 @@ esac
 
     def test_parallel_same_title_tasks_and_retries_keep_supervised_receipts(self):
         self._parallel_scratch_attempts(self.RW, "ws-*.json")
+
+    def test_a_stderr_line_beside_the_receipt_does_not_change_the_verdict(self):
+        # 2026-10-26 review (dispatch track, P1): worker-start and terminal wait captured stderr
+        # INTO the receipt file, so one keepalive or deprecation-warning line made a READY receipt
+        # unparseable (OUTCOME_UNKNOWN, a live worker's handle lost) and a wait receipt
+        # "unreadable", which the lane then read as satisfied. stdout is the receipt; stderr is
+        # kept beside it.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp)
+            stub = Path(tmp) / "orca"
+            stub.write_text(stub.read_text().replace(
+                '*worker-start*)       cat', '*worker-start*)       echo \'{"_keepalive":true}\' >&2; cat').replace(
+                '*terminal\\ wait*)     cat', '*terminal\\ wait*)     echo \'(node) DeprecationWarning\' >&2; cat'))
+            for profile, receipt_glob in ((self.RW, "ws-*.json.stderr"), (self.RO, "tw-*.json.stderr")):
+                with self.subTest(profile=profile["PROFILE"]):
+                    r = self._run(tmp, self.ARGS, profile)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertIn("HANDLE=term_", r.stdout)
+                    self.assertNotIn("OUTCOME_UNKNOWN", r.stdout + r.stderr)
+                    self.assertNotIn("UNPARSEABLE_RECEIPT", r.stdout + r.stderr)
+                    self.assertTrue(list(Path(tmp).rglob(receipt_glob)), "stderr kept beside the receipt")
+
+    def test_an_unreadable_wait_receipt_stops_the_lane_before_injecting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._stub(tmp)
+            (Path(tmp) / "wait.json").write_text("not json at all")
+            r = self._run(tmp, self.ARGS, self.RO)  # the Orca ro lane is the one that waits for idle
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("terminal wait unsatisfied (wait.satisfied=unreadable", r.stderr)
+            self.assertNotIn("--inject", log.read_text())
 
     def test_parallel_same_title_tasks_and_retries_keep_custom_lane_receipts(self):
         self._parallel_scratch_attempts(self.RO, "dispatch-*.json")

@@ -619,6 +619,166 @@ class TestGuardSurfaceHit(unittest.TestCase):
         self.assertIsNone(floor_guard.guard_surface_hit(None, "select = []"))
 
 
+class TestGuardSurfaceCarveOuts(unittest.TestCase):
+    """2026-10-26 review: only the ruff `select` and the coverage `fail_under` were keyed, so an
+    `ignore = [...]`, a per-file-ignores table, an `exclude`, a coverage `omit` or a narrowed
+    `include` lowered the bar beside the guarded key in silence."""
+
+    def test_every_carve_out_trips(self):
+        cases = [
+            ("ruff.toml", 'ignore = ["F821"]'),
+            ("ruff.toml", 'extend-ignore = ["F7"]'),
+            ("ruff.toml", 'extend-select = ["E9"]'),
+            ("ruff.toml", 'exclude = ["runtime/scripts"]'),
+            ("ruff.toml", "[lint.per-file-ignores]"),
+            ("ruff.toml", "[per-file-ignores]"),
+            ("ruff.toml", '"tests/*" = ["F401"]'),
+            ("ruff.toml", '    "F401",'),
+            (".coveragerc", "omit = runtime/scripts/*"),
+            (".coveragerc", "exclude_lines = .*"),
+            (".coveragerc", "source = scripts"),
+            (".coveragerc", "include ="),
+            (".coveragerc", "    runtime/scripts/*"),
+        ]
+        for path, line in cases:
+            with self.subTest(path=path, line=line):
+                self.assertEqual(floor_guard.guard_surface_hit(path, line), path)
+
+    def test_any_toml_quoting_of_an_entry_trips(self):
+        # #707 review: only double-quoted entries matched, so a later
+        # `'runtime/scripts/*' = ['F401', 'F841']` under an existing table disabled frozen rules.
+        cases = [
+            "'runtime/scripts/*' = ['F401', 'F841']",
+            "'tests/*' = [\"F401\"]",
+            "    'F841',",
+            "scripts = ['F401']",
+            'tests = ["F401", "F841"]',
+        ]
+        for line in cases:
+            with self.subTest(line=line):
+                self.assertEqual(floor_guard.guard_surface_hit("ruff.toml", line), "ruff.toml")
+
+    def test_the_rest_of_those_files_stays_silent(self):
+        cases = [
+            ("ruff.toml", 'target-version = "py311"'),
+            ("ruff.toml", "line-length = 120"),
+            ("ruff.toml", "preview = true"),
+            ("ruff.toml", "[lint]"),
+            ("ruff.toml", "# F401 / F841 unused imports and locals"),
+            (".coveragerc", "[run]"),
+            (".coveragerc", "# No excludes: the bar is the raw line number."),
+            (".coveragerc", ""),
+        ]
+        for path, line in cases:
+            with self.subTest(path=path, line=line):
+                self.assertIsNone(floor_guard.guard_surface_hit(path, line))
+
+
+class TestThresholdEvasions(unittest.TestCase):
+    """2026-10-26 review: compared as one flat list of numbers, a constraints row read unchanged
+    when its criterion was reworded around the old number, when a lower number was appended in a
+    later cell, or when a bullet note that shared its id paired with the removed table row."""
+
+    D5 = ("| D5 | routing-eval | score >= 1.0 | `python3 scripts/eval.py run --suite routing "
+          "--threshold 1.0` | validate.yml | 94/94 (100%) | FROZEN+PROVEN |")
+    D9 = ("| D9 | coverage | line >= 80% on `runtime/scripts` + `scripts` | `coverage report` "
+          "| validate.yml | **75% (6058 stmts, 1541 missed) — BELOW BAR** | FROZEN-BELOW-BAR |")
+
+    def run_rows(self, removed, added, repo=None):
+        out = []
+
+        def pairs(rows):
+            return [("CONSTRAINTS.md", 10 + i, t) for i, t in enumerate(rows)]
+
+        floor_guard._flag_lowered_rows(pairs(added), pairs(removed), "CONSTRAINTS.md",
+                                       lambda rule, _p, _l, detail: out.append((rule, detail)), repo)
+        return out
+
+    def test_the_in_place_lowering_still_reads(self):
+        self.assertEqual(self.run_rows([self.D5], [self.D5.replace("score >= 1.0", "score >= 0.9")]),
+                         [("threshold-lowered", "1 -> 0.9")])
+
+    def test_a_criterion_reworded_around_the_old_number_is_flagged(self):
+        out = self.run_rows([self.D5], [self.D5.replace("score >= 1.0", "score >= nine tenths (frozen at 1.0)")])
+        self.assertEqual(out, [("threshold-lowered", "criterion no longer compares against a number")])
+
+    def test_a_lower_floor_appended_in_a_later_cell_is_flagged(self):
+        out = self.run_rows([self.D5], [self.D5.replace("FROZEN+PROVEN", "FROZEN+PROVEN; effective floor 0.9 while flaky")])
+        self.assertEqual(out, [("threshold-lowered", "a floor-shaped number was added: 0.9")])
+
+    def test_a_full_width_digit_is_the_same_number(self):
+        self.assertEqual(self.run_rows([self.D9], [self.D9.replace("80%", "８０%")]), [])
+        self.assertEqual(self.run_rows([self.D9], [self.D9.replace("80%", "７０%")]),
+                         [("threshold-lowered", "80 -> 70")])
+
+    def test_a_measurement_that_rises_is_silent_and_one_that_falls_is_not(self):
+        # Every downward number in a frozen row needs a waiver, a measurement included (as before);
+        # cell-scoping only stops the positions of one cell from being read against another's.
+        self.assertEqual(self.run_rows([self.D9], [self.D9.replace("75% (6058 stmts, 1541 missed)",
+                                                                   "76% (6100 stmts, 1600 missed)")]), [])
+        self.assertEqual(self.run_rows([self.D9], [self.D9.replace("75% (6058 stmts, 1541 missed)",
+                                                                   "74% (6100 stmts, 1600 missed)")]),
+                         [("threshold-lowered", "75 -> 74")])
+
+    def test_a_re_dated_note_pairs_with_itself_and_is_silent(self):
+        before = "- D9: the human froze 80% against an UNMEASURED dimension"
+        after = "- D9 (re-read 2026-10-26, 7 cases): the human froze 80% against an UNMEASURED dimension"
+        self.assertEqual(self.run_rows([before], [after]), [])
+        self.assertEqual(self.run_rows([before], [before.replace("80%", "70%")]),
+                         [("threshold-lowered", "80 -> 70")])
+
+    def test_a_note_never_pairs_with_a_table_row_that_shares_its_id(self):
+        note = "- D9: the human froze 80% against"
+        out = self.run_rows([self.D9, note], [note + " (note first in diff)", self.D9])
+        self.assertEqual(out, [])
+        out = self.run_rows([self.D9, note], [note + " (edited)"])
+        self.assertEqual(out, [("threshold-lowered", "row removed or re-keyed")])
+
+    def test_a_raised_prose_number_is_a_tightening_not_a_lowering(self):
+        # PR #707 review: the prose branch flagged any vanished number, a raise included.
+        before = "- D9: the human froze 80% against an UNMEASURED dimension"
+        self.assertEqual(self.run_rows([before], [before.replace("80%", "90%")]), [])
+        self.assertEqual(self.run_rows([before], [before.replace("80%", "70%")]),
+                         [("threshold-lowered", "80 -> 70")])
+        self.assertEqual(self.run_rows([before], [before.replace("80%", "the floor")]),
+                         [("threshold-lowered", "80 -> (no number)")])
+        two = "- D9: 80% line coverage over 5 modules"
+        self.assertEqual(self.run_rows([two], [two.replace("80%", "90%").replace("5 modules", "4 modules")]),
+                         [("threshold-lowered", "5 -> 4")])
+
+    def test_an_unrelated_higher_number_does_not_hide_a_lowered_floor(self):
+        # #707 review: `gone=[80]`, `fresh=[70, 100]` passed because 100 >= 80. A vanished value
+        # is matched to the new values that carry its unit; any of them lower is a lowering.
+        before = "- D9: the human froze 80% against an UNMEASURED dimension"
+        lowered = before.replace("80%", "70%") + " (100 cases checked)"
+        self.assertEqual(self.run_rows([before], [lowered]), [("threshold-lowered", "80 -> 70")])
+        raised = "- D9: the human froze 85% against an UNMEASURED dimension (3 modules)"
+        self.assertEqual(self.run_rows([before], [raised]), [], "a raise beside an unrelated count is silent")
+        unitless = "- D9: at most 3 retries"
+        self.assertEqual(self.run_rows([unitless], ["- D9: at most 2 retries in 10 runs"]),
+                         [("threshold-lowered", "3 -> 2")])
+
+    def test_an_edited_twin_does_not_hide_an_appended_duplicate(self):
+        # PR #707 review: a wording edit to the original row paired it, and the appended
+        # duplicate at a lower number was skipped as that key's "already paired" row.
+        with tempfile.TemporaryDirectory() as tmp:
+            edited = self.D9.replace("FROZEN-BELOW-BAR", "FROZEN-BELOW-BAR (reworded)")
+            lower = self.D9.replace("80%", "70%")
+            Path(tmp, "CONSTRAINTS.md").write_text(
+                "| id | dim |\n|---|---|\n" + edited + "\n" + lower + "\n", encoding="utf-8")
+            out = self.run_rows([self.D9], [edited, lower], repo=tmp)
+            self.assertIn(("threshold-lowered", "duplicate row for d9"), out)
+
+    def test_a_duplicate_row_for_a_key_the_file_keeps_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lower = self.D9.replace("80%", "70%")
+            Path(tmp, "CONSTRAINTS.md").write_text(
+                "| id | dim |\n|---|---|\n" + self.D9 + "\n" + lower + "\n", encoding="utf-8")
+            self.assertEqual(self.run_rows([], [lower], repo=tmp), [("threshold-lowered", "duplicate row for d9")])
+            Path(tmp, "CONSTRAINTS.md").write_text("| id | dim |\n|---|---|\n" + lower + "\n", encoding="utf-8")
+            self.assertEqual(self.run_rows([], [lower], repo=tmp), [], "a new floor with no twin is silent")
+
+
 class TestGuardSurfaceEndToEnd(FloorGuardBase):
     def _surface_repo(self, path, content, name="surface"):
         repo = Path(self.tmp) / name

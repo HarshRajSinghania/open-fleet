@@ -42,6 +42,7 @@ from .base import (
     require_id,
 )
 from .local_state import LocalStateStore
+from ._external import release_claim_on_failure
 from ._external import insert_dispatch, load_dispatch, local_worker_list, record_fence, show_from_row
 
 RO_ALLOWED_TOOLS = ["glob", "grep", "planning_file_editor"]
@@ -229,6 +230,7 @@ class OpenHandsProvider(RuntimeProvider):
             llm["base_url"] = base_url
         return llm
 
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

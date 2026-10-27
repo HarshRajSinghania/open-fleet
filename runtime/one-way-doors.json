@@ -181,6 +181,48 @@
         "close the freeze gate",
         "sign off the freeze"
       ]
+    },
+    {
+      "id": "close-without-landing",
+      "title": "Close someone's contribution or issue without landing it",
+      "why": "A refuted, duplicate or won't-fix close ends another person's work on the fleet's say-so, and reopening does not bring the contributor back; absorb-it and clean-sweep name it a human gate, and the registry owns the enumeration.",
+      "keywords": [
+        "close as refuted",
+        "close as duplicate",
+        "close as not planned",
+        "close as wontfix",
+        "close as won't fix",
+        "close as invalid",
+        "close as stale",
+        "close without landing",
+        "close without merging",
+        "close the pr without",
+        "close the pull request without",
+        "close the contribution",
+        "reject the contribution",
+        "decline the contribution",
+        "close the issue as refuted",
+        "close the issue as duplicate"
+      ]
+    },
+    {
+      "id": "review-verdict",
+      "title": "Post a review verdict on someone else's change",
+      "why": "An approval or a changes-requested verdict speaks for the project to its contributor and unlocks or blocks a merge outside the fleet's authority; review-it names posting it a human gate, and the registry owns the enumeration.",
+      "keywords": [
+        "post the verdict",
+        "post the review verdict",
+        "post verdict go",
+        "post verdict no-go",
+        "approve the pr",
+        "approve the pull request",
+        "approve the merge request",
+        "submit an approving review",
+        "request changes on the pr",
+        "request changes on the pull request",
+        "mark the pr approved",
+        "lgtm the pr"
+      ]
     }
   ]
 }

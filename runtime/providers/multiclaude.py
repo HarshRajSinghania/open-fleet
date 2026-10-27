@@ -48,6 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ._external import release_claim_on_failure
 from ._external import (
     ExternalDispatchMixin,
     env_lookup,
@@ -215,6 +216,7 @@ class MulticlaudeProvider(ExternalDispatchMixin, RuntimeProvider):
         return str(res or "")
 
     # --- worker dispatch ---------------------------------------------------------------
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

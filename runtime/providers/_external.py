@@ -11,6 +11,8 @@ Private helpers used by every non-Orca, non-POSIX adapter so they all fail the s
 """
 from __future__ import annotations
 
+import contextvars
+import functools
 import json
 import os
 import subprocess
@@ -104,6 +106,62 @@ def http_json(
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         raise ProviderError(f"{provider}_unreachable", f"{method} {url}: {exc}", {"path": path}) from exc
     return parse_json_strict(text, provider, allow_empty=allow_empty)
+
+
+# Set once a `worker_start` call has handed anything to its runtime (#707 review): from then on a
+# worker may exist, so a failure keeps the request's claim. A ContextVar, so concurrent calls on
+# one adapter each read their own.
+_REACHED_RUNTIME: contextvars.ContextVar[bool] = contextvars.ContextVar("reached_runtime", default=False)
+
+
+def _marking_runtime_contact(runner):
+    """`runner` that records the runtime was reached. A binary that was never found ran nothing."""
+
+    @functools.wraps(runner)
+    def marked(*args, **kwargs):
+        before = _REACHED_RUNTIME.get()
+        _REACHED_RUNTIME.set(True)
+        try:
+            return runner(*args, **kwargs)
+        except FileNotFoundError:
+            _REACHED_RUNTIME.set(before)
+            raise
+
+    marked._marks_runtime_contact = True
+    return marked
+
+
+def release_claim_on_failure(worker_start):
+    """Decorator for an adapter's `worker_start`: a `--retry-request` claim this call took is
+    released when the call fails BEFORE it reached the runtime, so a retry acts instead of reading
+    the pending marker for PENDING_STALE_S (PR #707 review: a refusal before any launch left a
+    long-running coordinator locked out of the id for ten minutes). Every adapter reaches its
+    runtime through `self._runner`; once that is called a worker may have started (`ov sling` ran
+    and its reply was lost or malformed), so the claim stays until the launch is checked or
+    stopped, and a retry gets the pending marker, never a second worker (#707 review). Only this
+    process's own pending claim is released; a completed row, or another caller's claim, never is."""
+
+    @functools.wraps(worker_start)
+    def wrapper(self, *args, **kwargs):
+        retry_request = kwargs.get("retry_request")
+        runner = getattr(self, "_runner", None)
+        if callable(runner) and getattr(runner, "_marks_runtime_contact", False) is not True:
+            self._runner = _marking_runtime_contact(runner)
+        # An adapter with no `_runner` cannot say whether it launched: its claim is kept.
+        token = _REACHED_RUNTIME.set(not callable(runner))
+        try:
+            return worker_start(self, *args, **kwargs)
+        except BaseException:
+            if retry_request and not _REACHED_RUNTIME.get():
+                row = self.state.request_row(retry_request)
+                if (row and row.get("state") == "pending" and not row.get("response_json")
+                        and int(row.get("claim_pid") or 0) == os.getpid()):
+                    self.state.release_request(retry_request)
+            raise
+        finally:
+            _REACHED_RUNTIME.reset(token)
+
+    return wrapper
 
 
 class ExternalDispatchMixin:

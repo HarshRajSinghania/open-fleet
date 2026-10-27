@@ -101,6 +101,11 @@ def _value(inline, block, top):
     return " ".join(_plain(line) for line in children)
 
 
+class FrontmatterError(ValueError):
+    """A frontmatter shape the reference validator (skills-ref) refuses: raised so a local
+    `validate.py` pass never contradicts the CI step (2026-10-26 review)."""
+
+
 def _mapping(lines, top):
     data = {}
     i = 0
@@ -111,7 +116,12 @@ def _mapping(lines, top):
             continue
         m = _KEY_RE.match(line.rstrip())
         if not m:
+            if top:
+                raise FrontmatterError(f"unreadable top-level frontmatter line: {line.strip()[:60]!r}")
             continue
+        if m.group(1) in data:
+            raise FrontmatterError(f"duplicate frontmatter key {m.group(1)!r} (last-wins would hide "
+                                   "the first value; skills-ref refuses it too)")
         start = i
         while i < len(lines) and (not lines[i].strip() or _indent(lines[i]) > 0
                                   or _is_comment(lines[i])):
@@ -148,7 +158,10 @@ def parse_frontmatter(text):
     lines, err = frontmatter_lines(text)
     if err:
         return None, err
-    return _mapping(lines, top=True), None
+    try:
+        return _mapping(lines, top=True), None
+    except FrontmatterError as exc:
+        return None, str(exc)
 
 
 # --- composition ----------------------------------------------------------------------------

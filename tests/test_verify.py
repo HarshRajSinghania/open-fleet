@@ -4626,6 +4626,7 @@ class ReviewAuthorityPinnedBeforeTheControl(MutationFixture):
         self.head_sha = self.commit("head: proof command that plants a gh")
         head_file.write_text(self.head_sha + "\n")
         self.head_tree = self.git("rev-parse", "HEAD^{tree}")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")  # the base the lane names
         self._env = {"PATH": f"{self.droppable}{os.pathsep}{realgh}{os.pathsep}{os.environ['PATH']}"}
         # The SECOND startup state (G-1): no gh anywhere on PATH when the authority is pinned.
         # The stand-in above hid the round-1 hole — an absent gh was "unresolved", and the review
@@ -4651,9 +4652,11 @@ class ReviewAuthorityPinnedBeforeTheControl(MutationFixture):
             self.addCleanup(patcher.stop)
 
     def _attack(self, *extra, env=None):
+        # --base main: a lane claiming soundness that executes the control must name the branch
+        # its base_sha is bound to (2026-10-26 review); setUp pins refs/remotes/origin/main.
         path = self._manifest(nc=self._revert_nc())
         with mock.patch.dict(os.environ, env or self._env):
-            return self._run_main(path, "--repo", "o/r", "--execute-nc",
+            return self._run_main(path, "--repo", "o/r", "--execute-nc", "--base", "main",
                                   "--nc-command", self.proof_cmd, *extra)
 
     def _assert_absent_at_startup_never_looked_again(self, rc, out, err):
@@ -6438,3 +6441,108 @@ class TrackedArtifactPinsAreChecked(RepoCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
+    """2026-10-26 review (P0): the executed control restores production files from base_sha and
+    the changed-production denominator is base_sha..head_sha, yet nothing bound base_sha to
+    coordinator state. A worker that declares a poison commit (production code failing under any
+    call) as base_sha turns any test RED under the revert and passes a head that is wrong for the
+    criterion. Named a base, base_sha must now be an ancestor of refs/remotes/origin/<base>."""
+
+    def setUp(self):
+        self._tmp = _temp_repo()
+        self.repo = Path(self._tmp.name)
+
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        git("init", "-q", "-b", "main")
+        Path(self.repo, "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        git("add", "app.py")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "honest base")
+        self.honest_base = git("rev-parse", "HEAD")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        # The poison: a real commit on a side line the integration branch never held.
+        Path(self.repo, "app.py").write_text("def f():\n    raise AssertionError('expected 2')\n",
+                                             encoding="utf-8")
+        git("add", "app.py")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "poison")
+        self.poison = git("rev-parse", "HEAD")
+        self.addCleanup(verify._Authority.reset)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @contextlib.contextmanager
+    def _inside_repo(self):
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            yield
+        finally:
+            os.chdir(cwd)
+
+    def test_an_honest_base_on_the_branch_passes(self):
+        with self._inside_repo():
+            self.assertEqual(verify.check_base_binding({"base_sha": self.honest_base}, "main", True), [])
+
+    def test_a_worker_chosen_base_off_the_branch_is_fatal(self):
+        with self._inside_repo():
+            errs = verify.check_base_binding({"base_sha": self.poison}, "main", True)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertNotIn("NOTE:", errs[0])
+        self.assertIn("not an ancestor of origin/main", errs[0])
+        self.assertIn("worker chose its own base", errs[0])
+
+    def test_without_a_base_the_native_lane_notes_and_a_sound_lane_refuses(self):
+        with self._inside_repo():
+            res = verify.check_base_binding({"base_sha": self.poison}, None, True)
+            self.assertTrue(res and all(e.startswith("NOTE:") for e in res), res)
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, None, False), [])
+            verify._Authority.lane = "provenance=ci"
+            res = verify.check_base_binding({"base_sha": self.poison}, None, True)
+            self.assertTrue(res and not any(e.startswith("NOTE:") for e in res), res)
+            self.assertIn("name --base", res[0])
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, None, False), [])
+
+    def test_a_missing_base_ref_is_left_to_the_ancestry_check(self):
+        with self._inside_repo():
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, "no-such", True), [])
+
+    def test_an_unpinned_base_sha_is_left_to_the_sha_checks(self):
+        with self._inside_repo():
+            self.assertEqual(verify.check_base_binding({"base_sha": "HEAD"}, "main", True), [])
+
+    def test_a_tag_named_like_the_remote_branch_cannot_stand_in_for_it(self):
+        # The ancestry legs resolve the FULL ref name now: a pushable tag `origin/main` used to
+        # shadow the remote-tracking branch under gitrevisions' lookup order.
+        with self._inside_repo():
+            subprocess.run(["git", "-c", "tag.gpgSign=false", "tag", "origin/main", self.poison],
+                           cwd=self.repo, check=True)
+            errs = verify.check_base_binding({"base_sha": self.poison}, "main", True)
+            self.assertTrue(errs and "not an ancestor" in errs[0], errs)
+            errs = verify.check_ancestry({"head_sha": self.poison}, "main")
+            self.assertTrue(errs and "not an ancestor" in errs[0], errs)
+
+    def test_a_signed_base_sha_the_manifest_moved_is_a_substitution(self):
+        # check_dispatch_provenance: optional like the NC pins; signed, the manifest may not swap it.
+        verify._Authority.reset()
+        sign = verify._Transcript.signer()
+        seed = bytes(range(32))
+        record = {"manifest_id": "u1", "contract_digest": "sha256:" + "a" * 64,
+                  "unit_class": "mutation", "base_sha": self.honest_base}
+        envelope = sign.envelope(seed, record)
+        (self.repo / "rec.json").write_text(json.dumps(envelope), encoding="utf-8")
+        (self.repo / "pub").write_text(verify._load_ed25519().publickey(seed).hex() + "\n",
+                                       encoding="utf-8")
+        with self._inside_repo():  # evidence paths are repo-relative (#267)
+            ok = verify.check_dispatch_provenance(
+                {"unit": "u1", "base_sha": self.honest_base}, "sha256:" + "a" * 64, "mutation",
+                None, "rec.json", "pub")
+            self.assertTrue(ok and ok[0].startswith("NOTE:"), ok)
+            bad = verify.check_dispatch_provenance(
+                {"unit": "u1", "base_sha": self.poison}, "sha256:" + "a" * 64, "mutation",
+                None, "rec.json", "pub")
+            self.assertTrue(bad and "pre-fix content was swapped" in bad[0], bad)

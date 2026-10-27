@@ -547,3 +547,25 @@ class OneSignedFieldRule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BaseShaIsASignableDispatchInput(unittest.TestCase):
+    """2026-10-26 review: the commit the executed negative control restores from is now a signable
+    dispatch field, optional like the control's own inputs, so a coordinator that knows the fork
+    point pins it and the gate refuses a manifest that moved it."""
+
+    def test_sign_records_the_base_sha_when_given_and_omits_it_otherwise(self):
+        with tempfile.TemporaryDirectory() as d:
+            key = Path(d) / "dispatch-key"
+            key.write_text(bytes(range(1, 33)).hex() + "\n")
+            os.chmod(key, 0o600)
+            for extra, want in ((["--base-sha", "f" * 40], {"base_sha": "f" * 40}), ([], {})):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = dispatch_sign.main(["sign", "--key", str(key), "--manifest-id", "u",
+                                             "--contract-digest", "sha256:a", "--unit-class",
+                                             "mutation", *extra])
+                self.assertEqual(rc, 0, err.getvalue())
+                record = json.loads(out.getvalue())["record"]
+                self.assertEqual({k: v for k, v in record.items() if k == "base_sha"}, want)
+        self.assertIn("base_sha", dispatch_sign._RECORD_FIELDS)

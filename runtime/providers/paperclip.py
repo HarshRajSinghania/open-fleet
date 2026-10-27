@@ -39,6 +39,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
+from ._external import release_claim_on_failure
 from ._external import ExternalDispatchMixin, env_lookup, http_json, real_worktree
 from .base import (
     ProviderError,
@@ -156,6 +157,7 @@ class PaperclipProvider(ExternalDispatchMixin, RuntimeProvider):
             )
         return cfg
 
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

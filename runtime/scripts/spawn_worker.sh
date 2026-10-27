@@ -174,11 +174,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # sibling scripts (sandbox
 # The CLI command name, resolved the way upstream documents it (#510): ORCA_CLI_COMMAND when set,
 # else orca-dev in a dev checkout, else orca-ide on Linux (bare `orca` there is the GNOME screen
 # reader), else orca. One resolver for every fleet script: runtime/scripts/orca_cli.py.
-ORCA_BIN="$(python3 "$HERE/orca_cli.py")"
-
-step=parse-args
+step=resolve-cli
 task="?"
 trap 'rc=$?; echo "SPAWN=FAILED task=${task} step=${step} rc=${rc}" >&2; exit "${rc}"' ERR
+if ! ORCA_BIN="$(python3 "$HERE/orca_cli.py")"; then
+  echo "SPAWN=REFUSED task=? the runtime CLI could not be resolved (OPEN_FLEET_RUNTIME / ORCA_CLI_COMMAND; see runtime/scripts/orca_cli.py)" >&2
+  exit 2
+fi
+step=parse-args
 
 # orca_json <outfile> <orca-args...> — run orca with --json, fail on nonzero exit
 # OR on an exit-0 error envelope ({"error": ...}); fail-closed for every step.
@@ -250,6 +253,10 @@ while [ $# -gt 0 ]; do
         --parent-profile) PARENT_PROFILE_GIVEN=1; PARENT_PROFILE="$2" ;;
       esac
       shift 2 ;;
+    --) shift; while [ $# -gt 0 ]; do args+=("$1"); shift; done ;;
+    -*)
+      echo "SPAWN=REFUSED task=? unknown flag '$1' (it is not a task id; see the Options in this script's header)" >&2
+      exit 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -262,10 +269,13 @@ spawn_usage() {
 # positionals is what the bad flag caused. Inline creation (--spec) has no positional task id:
 # positionals are <worktree_selector> <title> [agent] [effort], and the created id fills
 # `task` at the task-create step, before any verification reads it.
+# The harness: the positional [agent], else OPEN_FLEET_HARNESS (the knob README and
+# docs/concepts.md name; it was documented but read nowhere, 2026-10-26 review), else claude.
+default_agent="${OPEN_FLEET_HARNESS:-claude}"
 if [ "$SPEC_GIVEN" = "1" ]; then
-  task=""; sel="${args[0]:-}"; title="${args[1]:-}"; agent="${args[2]:-claude}"; effort="${args[3]:-xhigh}"
+  task=""; sel="${args[0]:-}"; title="${args[1]:-}"; agent="${args[2]:-$default_agent}"; effort="${args[3]:-xhigh}"
 else
-  task="${args[0]:-}"; sel="${args[1]:-}"; title="${args[2]:-}"; agent="${args[3]:-claude}"; effort="${args[4]:-xhigh}"
+  task="${args[0]:-}"; sel="${args[1]:-}"; title="${args[2]:-}"; agent="${args[3]:-$default_agent}"; effort="${args[4]:-xhigh}"
 fi
 # Every new flag is validated HERE, before scratch allocation or any orca call: a refusal
 # below must leave zero side effects (the tests assert an empty orca call log).
@@ -312,12 +322,13 @@ if [ "$TIMEOUT_GIVEN" = "1" ]; then
     exit 2
   fi
 fi
-for pair in "RUN_GIVEN:$RUN_ID:--run" "FROM_GIVEN:$FROM_HANDLE:--from" \
-            "RETRY_OF_GIVEN:$RETRY_OF:--retry-of" "RETRY_REQ_GIVEN:$RETRY_REQUEST:--retry-request" \
-            "ON_GIVEN:$ON_ENV:--on" "ENV_GIVEN:$ROUTE_ENV:--environment" \
-            "PAIRING_GIVEN:$ROUTE_PAIRING:--pairing-code"; do
-  flagvar="${pair%%:*}"; rest="${pair#*:}"; val="${rest%%:*}"; name="${rest##*:}"
-  given="${!flagvar}"
+for pair in "RUN_GIVEN:RUN_ID:--run" "FROM_GIVEN:FROM_HANDLE:--from" \
+            "RETRY_OF_GIVEN:RETRY_OF:--retry-of" "RETRY_REQ_GIVEN:RETRY_REQUEST:--retry-request" \
+            "ON_GIVEN:ON_ENV:--on" "ENV_GIVEN:ROUTE_ENV:--environment" \
+            "PAIRING_GIVEN:ROUTE_PAIRING:--pairing-code"; do
+  # Variable NAMES, dereferenced: splitting the value itself on ':' read `--run :abc` as empty.
+  flagvar="${pair%%:*}"; rest="${pair#*:}"; valvar="${rest%%:*}"; name="${rest##*:}"
+  given="${!flagvar}"; val="${!valvar}"
   if [ "$given" = "1" ] && [ -z "$val" ]; then
     echo "SPAWN=REFUSED task=${tname} ${name} needs a non-empty value" >&2
     exit 2
@@ -643,13 +654,16 @@ if [ "$PROFILE" = "danger" ]; then
   # health check itself is cheap and stays, because what it proves — and what it does NOT prove
   # about placement — is the whole point of the refusal. `--provision` goes back when placement
   # binding exists for it to gate; `vm.ts:6-9` documents the bare form as valid.
-  "$ORCA_BIN" vm recipe doctor "$recipe" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$doctor_out" 2>&1 || doctor_rc=$?
-  if [ "$doctor_rc" -ne 0 ] && grep -qiE "unknown (option|flag|argument)|unrecognized|invalid option" "$doctor_out"; then
+  # stdout is the receipt the verdict reader parses; stderr is kept beside it for forensics
+  # (dispatch-lifecycle.md: keepalives go to stderr, pipe stdout only into parsers). Merged, one
+  # warning line made every receipt unparseable (2026-10-26 review).
+  "$ORCA_BIN" vm recipe doctor "$recipe" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$doctor_out" 2> "$doctor_out.stderr" || doctor_rc=$?
+  if [ "$doctor_rc" -ne 0 ] && cat "$doctor_out" "$doctor_out.stderr" | grep -qiE "unknown (option|flag|argument)|unrecognized|invalid option"; then
     doctor_rc=0
-    "$ORCA_BIN" vm recipe doctor "$recipe" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} > "$doctor_out" 2>&1 || doctor_rc=$?
+    "$ORCA_BIN" vm recipe doctor "$recipe" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} > "$doctor_out" 2> "$doctor_out.stderr" || doctor_rc=$?
   fi
   if [ "$doctor_rc" -ne 0 ]; then
-    echo "SPAWN=REFUSED task=${task} \`${ORCA_BIN} vm recipe doctor ${recipe}\` exited ${doctor_rc} — the sandbox did not come up clean: $(head -c 300 "$doctor_out" | tr '\n' ' ')" >&2
+    echo "SPAWN=REFUSED task=${task} \`${ORCA_BIN} vm recipe doctor ${recipe}\` exited ${doctor_rc} — the sandbox did not come up clean: $(cat "$doctor_out" "$doctor_out.stderr" | head -c 300 | tr '\n' ' ')" >&2
     rm -f "$doctor_out"
     exit 2
   fi
@@ -921,7 +935,16 @@ if [ "$PROFILE" != "ro" ]; then
     # The hook verifies its own registration: parses the settings, then runs
     # the REGISTERED command (not this repo's copy) under its configured env
     # against deny/allow probes. A mention of the filename is not arming.
-    if ! _arming=$(sh "$HERE/deny-hook.sh" --verify-settings "$DENY_HOOK_SETTINGS" 2>&1); then
+    # The gate verifies the HARNESS this spawn launches and the worktree it launches into
+    # (2026-10-26 review): a claude registration bounding another tree armed nothing for a codex
+    # worker here, and the gate used to be told neither. Harness names the hook does not know
+    # (gemini, antigravity, …) stay inferred from the settings path, as before.
+    _vs_args=()
+    case "$agent" in
+      claude|codex|openhands|goose|crush|hermes|opencode|omp|pi|jcode) _vs_args+=(--harness "$agent") ;;
+    esac
+    case "$sel" in path:*) _vs_args+=(--boundary "${sel#path:}") ;; esac
+    if ! _arming=$(sh "$HERE/deny-hook.sh" --verify-settings "$DENY_HOOK_SETTINGS" ${_vs_args[@]+"${_vs_args[@]}"} 2>&1); then
       echo "SPAWN=REFUSED task=${task} deny-hook not armed: ${_arming} — wire it (deny-hook.sh --settings <worktree>) or unset ORCA_DENY_HOOK_SETTINGS to proceed UNVERIFIED" >&2
       exit 2
     fi
@@ -1077,7 +1100,10 @@ if [ "$custom_lane" = "0" ]; then
   # The call's own exit status is NOT the verdict: a typed refusal, a hard failure, and an
   # UNPROVEN outcome (state: outcome_unknown) all exit nonzero. The receipt is the verdict.
   ws_rc=0
-  "$ORCA_BIN" orchestration worker-start --task "$task" --worktree "$sel" ${name_args[@]+"${name_args[@]}"} --agent "$agent" ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} ${WS_ARGS[@]+"${WS_ARGS[@]}"} --json > "$ws" 2>&1 || ws_rc=$?
+  # stdout only into the receipt: a keepalive or warning line on stderr turned a READY receipt
+  # into UNPARSEABLE_RECEIPT / OUTCOME_UNKNOWN and lost a live worker's handle (2026-10-26 review).
+  # stderr is kept beside it ($ws.stderr) for forensics.
+  "$ORCA_BIN" orchestration worker-start --task "$task" --worktree "$sel" ${name_args[@]+"${name_args[@]}"} --agent "$agent" ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} ${WS_ARGS[@]+"${WS_ARGS[@]}"} --json > "$ws" 2> "$ws.stderr" || ws_rc=$?
 
   # The flag the requested PROFILE implies, read back out of the map above so the two cannot
   # drift: worker-start takes its args from the HOST, so this is what the host must have used.
@@ -1282,7 +1308,7 @@ PY
       step=triage-request
       rq="$SP/rq-$safe_title.json"
       rq_rc=0
-      "$ORCA_BIN" orchestration request-show --request "$RETRY_REQUEST" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$rq" 2>&1 || rq_rc=$?
+      "$ORCA_BIN" orchestration request-show --request "$RETRY_REQUEST" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$rq" 2> "$rq.stderr" || rq_rc=$?
       rq_state=$(python3 -I - "$rq" <<'PY'
 import json, sys
 try:
@@ -1381,12 +1407,14 @@ PY
   # field is an older host, not a false — do not invent a verdict from absence.
   tw="$SP/tw-$safe_title.json"
   wait_rc=0
-  "$ORCA_BIN" terminal wait --terminal "$h" --for tui-idle --timeout-ms 90000 ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$tw" 2>&1 || wait_rc=$?
+  "$ORCA_BIN" terminal wait --terminal "$h" --for tui-idle --timeout-ms 90000 ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$tw" 2> "$tw.stderr" || wait_rc=$?
   satisfied=$(python3 -I - "$tw" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
+    # An unreadable wait receipt is NOT "absent": nothing proves the pane is idle, so it is
+    # judged as unsatisfied and the lane stops before injecting (2026-10-26 review).
     print("unreadable")
     raise SystemExit(0)
 r = d.get("result", d) if isinstance(d, dict) else {}
@@ -1397,7 +1425,7 @@ s = w.get("satisfied") if isinstance(w, dict) else None
 print("true" if s is True else "false" if s is False else "absent")
 PY
 )
-  if [ "$satisfied" = "false" ] || [ "$wait_rc" != "0" ]; then
+  if [ "$satisfied" = "false" ] || [ "$satisfied" = "unreadable" ] || [ "$wait_rc" != "0" ]; then
     # Orca names the prompt an agent stopped at (`wait.blockedReason`): say it, and never answer
     # it for the operator. A trust prompt is a grant only the operator gives (#596).
     blocked=$(python3 -I - "$tw" <<'PY'

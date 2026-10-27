@@ -136,7 +136,7 @@ def make_fixture(root, *, harden_proof="self-run", witness="live", witnessed="20
                     question="still owed?")
         if not owed:
             gb.transition(data, "G1", "answered", "answered in the fixture",
-                          answered="2026-09-16")
+                          answered="2026-09-16", source="human:lia")
         gb.save_batch(path, data)
     return root
 

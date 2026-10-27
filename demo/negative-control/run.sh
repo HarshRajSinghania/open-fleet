@@ -4,9 +4,9 @@
 # reported only 1). A self-scorer grades the self-reported list and goes GREEN; open-fleet's
 # verify.py re-derives the FROZEN denominator and goes RED. Anyone can re-run this.
 #
-# Reproduce against a real self-scorer too: point step [1] at that gate instead of selfscore.py,
-# e.g. `ruflo verify` (Truth Verification System) — it self-scores and has no frozen denominator,
-# so it exhibits the same GREEN on this trap.
+# The trap is gate-agnostic: any gate that grades the unit's own claims without a frozen
+# denominator held outside the unit exhibits the same GREEN. bench/vf-bench/README.md records
+# which shipping tools were measured against it, and which take no unit manifest at all.
 set -u
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)

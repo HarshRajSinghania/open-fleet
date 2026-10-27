@@ -87,7 +87,7 @@ python3 runtime/scripts/run_report.py         # every claimed tier binds to arti
 ## Gate 3 — verifier moat held by CI (epic DoD 3)
 
 ```bash
-python3 bench/vf-bench/gate.py               # exit 0: corpus pinned, no trap skipped, verify.py false-done 0/53, controls green
+python3 bench/vf-bench/gate.py               # exit 0: corpus pinned, no trap skipped, verify.py false-done 0 over every trap, controls green
 sh demo/negative-control/run.sh | tail -2    # PASS: self-scorer GREEN ... RED (exit 0 overall)
 grep -rlE 'vfbench\.py|vf-bench/gate\.py' .github/workflows/   # non-empty: #412 landed
 grep -rl 'negative-control' .github/workflows/                 # non-empty: #413 landed

@@ -193,8 +193,14 @@ def write_receipt(path, sink, host, payload_class, consent, nbytes=0, payload_sh
         raise EgressError("payload_sha256 must be 64 lowercase hex characters or absent")
     try:
         path.parent.mkdir(mode=stat.S_IRWXU, parents=True, exist_ok=True)
+        # O_NOFOLLOW: a ledger path that is a symlink is refused rather than followed, so a
+        # planted link cannot redirect receipts into another file (2026-10-26 review); the
+        # opened inode must be a regular file for the same reason.
         with open(path, "a", encoding="utf-8",
-                  opener=lambda name, flags: os.open(name, flags, stat.S_IRUSR | stat.S_IWUSR)) as fh:
+                  opener=lambda name, flags: os.open(name, flags | getattr(os, "O_NOFOLLOW", 0),
+                                                     stat.S_IRUSR | stat.S_IWUSR)) as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                raise EgressError(f"receipt ledger {path} is not a regular file")
             # All cooperating writers hold this inode's lock through the flush;
             # the next tail reader must see the complete preceding receipt.
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)

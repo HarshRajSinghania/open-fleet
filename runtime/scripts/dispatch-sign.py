@@ -101,7 +101,7 @@ def _load_ed25519():
 # the record did not sign is refused, and a signed value the run contradicts is a substitution.
 _RECORD_FIELDS = ("manifest_id", "contract_digest", "unit_class", "lighting",
                   "nc_paths", "nc_command", "nc_artifact_sha256",
-                  "no_gh", "lane", "execute_nc")
+                  "no_gh", "lane", "execute_nc", "base_sha")
 _PROFILE_FIELDS = ("profile", "parent_profile")
 PROFILE_RANK = {"ro": 0, "rw": 1, "danger": 2}
 
@@ -502,6 +502,11 @@ def main(argv=None) -> int:
     s.add_argument("--execute-nc", action="store_const", const=True, default=None,
                    dest="execute_nc",
                    help="require the gate to EXECUTE the negative control (optional)")
+    # 2026-10-26 review: the commit the executed control restores from. Optional; signed, the
+    # gate refuses a manifest whose base_sha differs (a worker-chosen base is the one input the
+    # negative control cannot otherwise bind without --base).
+    s.add_argument("--base-sha", default=None, dest="base_sha", metavar="SHA",
+                   help="the 40-hex integration-branch commit the unit forks from (optional)")
     s.add_argument("--profile", default=None,
                    help="child execution profile (ro | rw | danger) (#590)")
     s.add_argument("--parent-profile", default=None, dest="parent_profile",
@@ -553,6 +558,7 @@ def main(argv=None) -> int:
         "no_gh": args.no_gh,
         "lane": args.lane,
         "execute_nc": args.execute_nc,
+        "base_sha": args.base_sha,
         "profile": args.profile,
         "parent_profile": args.parent_profile,
     }

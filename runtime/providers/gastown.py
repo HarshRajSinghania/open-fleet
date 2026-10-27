@@ -49,6 +49,7 @@ from .base import (
     require_id,
 )
 from .local_state import LocalStateStore
+from ._external import release_claim_on_failure
 from ._external import (
     call_runner,
     foreign_dirty_paths,
@@ -276,6 +277,7 @@ class GastownProvider(RuntimeProvider):
             )
         return cmd
 
+    @release_claim_on_failure
     def worker_start(
         self,
         *,

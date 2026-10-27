@@ -49,5 +49,5 @@ inside the noise band is no difference. Do not restate it here.
   rank, or questions 4 or 5 unchecked. Name the gap. An inconclusive number is `unmeasured`.
   It is not a baseline, not a keep, and not a regression finding.
 
-Record the verdict, the run count, the spread, and the limiter on the attempt-ledger line
-(evidence-manifest.md). One primary number in a PR body. The runs live in the artifact.
+Record the verdict, the run count, the spread, and the limiter on the mission's attempt-ledger
+line (speed-it defines it; the manifest carries the artifact path, evidence-manifest.md). One primary number in a PR body. The runs live in the artifact.

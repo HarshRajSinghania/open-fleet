@@ -27,8 +27,8 @@ points at `references/README.md`, the generated index naming each protocol's loc
 copy. Bare names in the Composes/rides clause are left alone — they are the
 mission's vocabulary, not paths — and that index is what resolves them.
 
-`dist/` is generated, never committed: vendoring 21 copies of the doctrine tree
-into git would make every runtime edit a 21-file diff and the copies would rot
+`dist/` is generated, never committed: vendoring one copy of the doctrine tree per mission
+into git would make every runtime edit a many-file diff and the copies would rot
 between edits. Build it at release time, or before running a copy installer.
 
     python3 scripts/bundle.py                 # build dist/

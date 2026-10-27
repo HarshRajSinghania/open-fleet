@@ -67,6 +67,59 @@ class ProviderTestBase(unittest.TestCase):
         self._tmp.cleanup()
 
 
+class AFailedLaunchReleasesItsClaim(ProviderTestBase):
+    """PR #707 review: get_or_record_request claims the request id inside its transaction, and an
+    adapter whose worker_start then refused (an unsupported profile, a service error) left the
+    claim pending, so a coordinator retrying the same id read the pending marker for ten minutes."""
+
+    def test_a_refused_launch_leaves_no_pending_claim_and_a_retry_acts(self):
+        prov = ComposioAOProvider(state=self.state, runner=lambda call: {"ok": True}, project="orca-proj")
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                with self.assertRaises(ProviderError) as ctx:
+                    prov.worker_start(task_id="t1", agent="pi", profile="ro", prompt="Audit",
+                                      retry_request="req-refused")
+                self.assertEqual(ctx.exception.code, "unsupported_profile",
+                                 "the second attempt must be refused again, not answered with a pending marker")
+        self.assertIsNone(self.state.request_row("req-refused"), "a refused launch keeps no claim")
+
+    def test_a_launch_that_may_have_started_keeps_its_claim(self):
+        # #707 review: the claim was released on EVERY exception, so a launch whose reply was
+        # lost or malformed freed the id and the retry slung a second worker beside the first.
+        # Once worker_start has reached the runtime the claim stays until it is checked or stopped.
+        slings = []
+
+        def runner(argv, **_kw):
+            if argv[:3] == ["ov", "spec", "write"]:
+                return {"success": True, "path": "/repo/.overstory/specs/t1.md"}
+            if argv[:2] == ["ov", "sling"]:
+                slings.append(argv)
+                return {"success": True}  # the worker launched; the reply names no agent
+            raise AssertionError(argv)
+
+        prov = OverstoryProvider(state=self.state, runner=runner, env={})
+        with self.assertRaises(ProviderError):
+            prov.worker_start(task_id="t1", agent="claude", profile="rw", prompt="Build",
+                              retry_request="req-lost")
+        self.assertEqual(self.state.request_row("req-lost")["state"], "pending")
+        again = prov.worker_start(task_id="t1", agent="claude", profile="rw", prompt="Build",
+                                  retry_request="req-lost")
+        self.assertEqual(again, {"state": "pending", "requestId": "req-lost"})
+        self.assertEqual(len(slings), 1, "a retry must not launch a second worker")
+
+    def test_a_cli_that_is_not_installed_releases_the_claim(self):
+        # Nothing ran: the binary was never found, so no worker can exist and a retry may act.
+        def runner(argv, **_kw):
+            raise FileNotFoundError(argv[0])
+
+        prov = OverstoryProvider(state=self.state, runner=runner, env={})
+        with self.assertRaises(ProviderError) as ctx:
+            prov.worker_start(task_id="t1", agent="claude", profile="rw", prompt="Build",
+                              retry_request="req-nocli")
+        self.assertEqual(ctx.exception.code, "overstory_cli_missing")
+        self.assertIsNone(self.state.request_row("req-nocli"))
+
+
 class TestSupersetProvider(ProviderTestBase):
     """#582: SupersetProvider (`superset-sh/superset`) CLI adapter (full suite: test_superset_provider.py)."""
 

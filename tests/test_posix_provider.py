@@ -348,6 +348,20 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
         self.assertTrue(_wait_for(out.is_file))
         self.assertEqual(out.read_text().strip(), "[][]")
 
+    def test_the_operator_denylist_and_custody_tokens_never_reach_a_worker(self):
+        # 2026-10-26 review: a worker inherits the coordinator's environment (harness credentials
+        # live there), so the coordinator's own custody tokens are stripped by name and the
+        # operator strips anything else with OPEN_FLEET_WORKER_ENV_DENY (names or globs).
+        out = Path(self.tmp.name) / "deny.txt"
+        self.env.update(GH_TOKEN="ghp_coordinator", AWS_SECRET_ACCESS_KEY="aws_coordinator",
+                        ORCA_CLOUD_AUTH_TOKEN="orca_cloud", KEEP_ME="kept",
+                        OPEN_FLEET_WORKER_ENV_DENY="GH_TOKEN, AWS_*")
+        self.prov = self.providers.get_provider("posix", env=self.env)
+        self.fake_agent("claude", f'echo "[$GH_TOKEN][$AWS_SECRET_ACCESS_KEY][$ORCA_CLOUD_AUTH_TOKEN][$KEEP_ME]" > "{out}"')
+        self.start()
+        self.assertTrue(_wait_for(out.is_file))
+        self.assertEqual(out.read_text().strip(), "[][][][kept]")
+
     def test_retain_during_startup_does_not_cancel_the_launch(self):
         ran = Path(self.tmp.name) / "retained-ran"
         self.fake_agent("claude", f'touch "{ran}"')

@@ -958,7 +958,9 @@ export default function register(pi: any) {
             {"matcher": "Bash|Edit|Write", "hooks": [{"type": "command", "command": f"sh {stale}"}]}]}}))
         r = self.verify(f)
         self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertIn("own config", r.stderr)
+        # 2026-10-26 review: a copy that is not this hook byte for byte is refused before it is
+        # run at all — the stale guard-less copy never gets to answer a probe.
+        self.assertIn("is not this hook", r.stderr)
         f.write_text(f.read_text().replace(str(stale), str(HOOK)))
         self.assertEqual(self.verify(f).returncode, 0)
 

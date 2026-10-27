@@ -80,7 +80,7 @@ not completion).
 
 `preflight.py --base <BASE>` before the first PR: BASE must NOT equal the default branch (canonical refs — `origin/main` can't alias past it), must be a real
 branch, and must fork from the default's history. Every per-unit PR merges into BASE; if BASE is the default, fixes land straight on production and bypass the
-human promotion review. Report-only fleets use `--mode readonly`.
+human promotion review. Report-only fleets use `--mode readonly` — and so does a mutation mission that lands nothing on a BASE of its own (`oss-contribute` pushes to forks: `BASE=-`).
 
 ## Third-party review bots — wait → ingest → reconcile
 

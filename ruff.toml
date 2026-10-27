@@ -11,7 +11,9 @@
 #   B905                  zip() without strict= truncates silently: a fixture
 #                         table one row short passes instead of failing
 #   PLE                   pylint errors (0 hits today; kept so none arrive)
-target-version = "py313"
+# The floor README/CONTRIBUTING declare and the CI `floor` matrix proves (3.11), not the newest
+# interpreter CI pins: a rule that reasons about the target must reason about the floor.
+target-version = "py311"
 
 [lint]
 select = ["E9", "F63", "F7", "F82", "F401", "F841", "B023", "B905", "PLE"]

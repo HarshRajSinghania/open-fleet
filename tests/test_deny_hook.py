@@ -1738,7 +1738,10 @@ class TestScriptShape(unittest.TestCase):
         ]
         r = self._verify(block)
         self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertIn("shell redirect", r.stderr)
+        # 2026-10-26 review: a registration is `[VAR=value …] [sh] <path>/deny-hook.sh` and
+        # nothing else, so `env -u` is refused before any probe runs — a stripped boundary is
+        # still refused, one step earlier.
+        self.assertIn("nothing else", r.stderr)
 
     def test_verify_settings_accepts_an_inline_boundary(self):
         # A command that binds the boundary itself
@@ -1805,7 +1808,10 @@ class TestScriptShape(unittest.TestCase):
         }
         r = self._verify(settings)
         self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertIn("did not deny", r.stderr)
+        # 2026-10-26 review: a registered file that is not THIS hook (byte for byte) is refused
+        # before it is ever run — the gate no longer executes an unknown script to find out
+        # whether it denies.
+        self.assertIn("is not this hook", r.stderr)
 
 
 class TestSymlinkSnippetPrinter(unittest.TestCase):
@@ -2501,3 +2507,213 @@ class TestUnresolvedReadsFailClosed(ReviewHookBase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestBraceExpansionAndInlineAliasesCannotLaunder(ReviewHookBase):
+    """2026-10-26 review (deny-hook track, P0 x2): bash performs brace expansion before every other
+    expansion, and resolves a `-c alias.X=Y` before the subcommand runs; the hook modelled
+    neither, so a force-push spelled through either shape was ALLOWED while bash ran it. The
+    reader now expands braces the way bash does before anything is judged, and an alias defined
+    in the same command is refused outright (a worker has no use for one)."""
+
+    BOTH = (False, True)
+
+    def test_brace_expanded_force_pushes_are_denied(self):
+        self.expect("deny", (
+            "git push --force{,} origin main",
+            "git push {--force,} origin main",
+            "git push --fo{rce,rce} origin feature",
+            "git push origin --force{,} main",
+            "git push --force{,} origin feature",
+        ), self.BOTH, reason="HIGH")
+
+    def test_a_brace_expanded_root_delete_is_high_not_a_never_list_ask(self):
+        self.expect("deny", ("rm -rf /{,}", "rm -r{,}f /", "rm -rf {/,/}"), reason="HIGH")
+
+    def test_inline_git_alias_definitions_are_refused(self):
+        self.expect("deny", (
+            "git -c alias.p=push p --force origin main",
+            "git -c 'alias.p=push' p --force origin main",
+            "git -c Alias.P=push p -f origin topic",
+            "git --config-env=alias.p=PUSHCMD p --force origin main",
+            "GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0=push GIT_CONFIG_COUNT=1 git p --force origin main",
+            "git config alias.p push && git p --force origin main",
+            "git config --global alias.co checkout",
+            "cd sub && git -c alias.x=push x --force origin main",
+        ), self.BOTH, reason="alias")
+
+    def test_benign_brace_and_config_shapes_stay_allowed(self):
+        self.expect("allow", (
+            "touch file{1,2}.txt",
+            "cp notes.{md,bak}",
+            "mkdir -p out/{a,b,c}",
+            "echo {1..3} {a..e} {01..10}",
+            r'find . -name "*.py" -exec wc -l {} \;',
+            "find . -type f -exec ls {} +",
+            "[[ $v =~ ^[0-9]{1,3}$ ]] && echo ok",
+            "echo '{a,b}' \"{c,d}\" \\{e,f}",
+            "echo ${x} ${y:-z} ${arr[0]}",
+            "echo $(printf '%s ' {a,b})",
+            "echo `echo {a,b}`",
+            "git config --get alias.p",
+            "git config --unset alias.p",
+            "git config user.name me",
+            "git -c core.pager=cat log -1",
+            "git push --force-with-lease origin topic",
+        ))
+
+    def test_an_expansion_past_the_cap_is_refused_rather_than_read_as_one_word(self):
+        self.expect("deny", ("echo {1..100000}", "ls {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}"),
+                    reason="brace expansion")
+
+    def test_the_reader_expands_braces_the_way_bash_does(self):
+        # Differential: the expander lifted out of the reader against bash's own printf, word
+        # by word, on the shapes the grammar has (alternatives, sequences, padding, nesting,
+        # quoting, escapes, non-expansions).
+        src = HOOK.read_text(encoding="utf-8")
+        code = src[src.index("_BRACE_CAP = 512"):src.index("cmd_val = ti.get(")]
+        ns = {"re": re, "SQ": "'", "DQ": '"', "BLANKS": " \t"}
+        exec(code, ns)  # the reader's own text, not an input
+        words = ["a{b,c}d", "x{,}", "{a,}", "{a}", "{}", "{a,b{1,2}}", "{1..3}", "{3..1}",
+                 "{a..e}", "{e..a}", "{01..10}", "{-2..2}", "{1..10..3}", "{a..i..3}",
+                 "{a,b}{1,2}", "pre{a,b}post", "{a,'b,c'}", "\\{a,b}", "{a,b\\}c}",
+                 "{a,{b,c},d}", "a{,,}b", "{1}", "{1.2}", "{..}", "{a..}", "{10..1..4}",
+                 "x{a,b}y{1..2}z"]
+        for word in words:
+            with self.subTest(word=word):
+                bash = subprocess.run(["bash", "-c", "printf '%s\\n' " + word],
+                                      capture_output=True, text=True, check=True).stdout.split("\n")[:-1]
+                ours = shlex.split(ns["_brace_expand_text"](word))
+                self.assertEqual(ours, bash, word)
+
+    def test_the_header_names_both_closed_holes(self):
+        text = HOOK.read_text(encoding="utf-8")
+        self.assertIn("brace expansion", text)
+        self.assertIn("alias defined in the command itself", text)
+
+
+class TestVerifySettingsRunsOnlyThisHook(unittest.TestCase):
+    """2026-10-26 review (dispatch track, P1/P0 under per-worktree wiring): --verify-settings ran
+    whatever command the settings file registered, through `sh -c`, under the coordinator's whole
+    environment plus the file's own `env` block, checking only that "deny-hook.sh" appeared
+    somewhere. A worker that can write its worktree's .claude/settings.json could plant a command
+    the coordinator would execute at the next spawn. Now a registration may name only this hook,
+    carries only the hook's own switches, and is probed under a scrubbed environment."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="arm-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.wt = self.tmp / "wt"
+        self.wt.mkdir()
+        self.block = json.loads(subprocess.run(["sh", str(HOOK), "--settings", str(self.wt)],
+                                               capture_output=True, text=True, check=True).stdout)
+
+    def _verify(self, block, *extra, env_extra=None):
+        f = self.tmp / "settings.json"
+        f.write_text(json.dumps(block), encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if k not in ("ORCA_UNIT_WORKTREE",)}
+        env.update(env_extra or {})
+        return subprocess.run(["sh", str(HOOK), "--verify-settings", str(f), *extra],
+                              capture_output=True, text=True, timeout=120, env=env)
+
+    def _with_command(self, command):
+        block = json.loads(json.dumps(self.block))
+        for entry in block["hooks"]["PreToolUse"]:
+            for hook in entry["hooks"]:
+                hook["command"] = command
+        return block
+
+    def test_the_generated_registration_is_armed(self):
+        r = self._verify(self.block)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_command_beside_the_hook_is_never_run(self):
+        marker = self.tmp / "PWNED"
+        for shape in (f"touch {marker}; exec sh {HOOK} # deny-hook.sh",
+                      f"sh {HOOK}; touch {marker}",
+                      f"sh {HOOK} && touch {marker}",
+                      f"$(touch {marker}) sh {HOOK}",
+                      f"sh {HOOK} --help"):
+            with self.subTest(shape=shape):
+                r = self._verify(self._with_command(shape))
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("nothing else", r.stderr)
+                self.assertFalse(marker.exists(), "the registered command ran in the coordinator")
+
+    def test_only_a_byte_identical_hook_counts(self):
+        other = self.tmp / "other" / "deny-hook.sh"
+        other.parent.mkdir()
+        other.write_text(HOOK.read_text(encoding="utf-8") + "\n# one byte more\n", encoding="utf-8")
+        other.chmod(0o755)
+        r = self._verify(self._with_command(f"sh {other}"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("is not this hook", r.stderr)
+        twin = self.tmp / "twin" / "deny-hook.sh"
+        twin.parent.mkdir()
+        shutil.copy(HOOK, twin)
+        self.assertEqual(self._verify(self._with_command(f"sh {twin}")).returncode, 0)
+        link = self.tmp / "link" / "deny-hook.sh"
+        link.parent.mkdir()
+        link.symlink_to(HOOK)
+        self.assertEqual(self._verify(self._with_command(f"sh {link}")).returncode, 0)
+
+    def test_the_registered_shell_is_the_shell_the_probes_run(self):
+        # PR #707 review (security): the shell token kept only its basename, so a registration
+        # naming an interpreter INSIDE the worktree passed the hook's byte check while the probes
+        # ran the coordinator's shell and the harness later ran the worker's. An explicit path is
+        # probed as registered, and may not lie in the boundary or be anything but an executable.
+        inside = self.wt / "sh"
+        inside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        inside.chmod(0o755)
+        r = self._verify(self._with_command(f"{inside} {HOOK}"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("inside the worktree boundary", r.stderr)
+        missing = self.tmp / "nowhere" / "bash"
+        r = self._verify(self._with_command(f"{missing} {HOOK}"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("not an executable file", r.stderr)
+        r = self._verify(self._with_command(f"/bin/sh {HOOK}"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_registration_assigns_only_the_hooks_own_switches(self):
+        ok = self._verify(self._with_command(
+            f"ORCA_UNIT_WORKTREE={shlex.quote(str(self.wt))} ORCA_HOOK_STRICT_EXIT=1 sh {HOOK}"))
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        bad = self._verify(self._with_command(f"PATH=/tmp/evil:/usr/bin LD_PRELOAD=/tmp/x.so sh {HOOK}"))
+        self.assertEqual(bad.returncode, 2, bad.stderr)
+        self.assertIn("which the hook does not read", bad.stderr)
+
+    def test_a_settings_env_that_steers_execution_is_refused(self):
+        for key in ("PATH", "LD_PRELOAD", "PYTHONPATH", "BASH_ENV"):
+            with self.subTest(key=key):
+                block = json.loads(json.dumps(self.block))
+                block["env"][key] = "/tmp/evil"
+                r = self._verify(block)
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("would steer what the probes execute", r.stderr)
+
+    def test_the_boundary_the_spawn_names_must_be_the_registered_one(self):
+        self.assertEqual(self._verify(self.block, "--boundary", str(self.wt)).returncode, 0)
+        other = self.tmp / "other-wt"
+        other.mkdir()
+        r = self._verify(self.block, "--boundary", str(other))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("not the worktree this spawn is about", r.stderr)
+
+    def test_the_named_harness_decides_what_the_registration_must_cover(self):
+        # A claude registration covers Bash/Edit/Write; codex writes through apply_patch, which
+        # it does not cover — told the harness, the gate refuses instead of arming the wrong tools.
+        r = self._verify(self.block, "--harness", "codex")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("codex", r.stderr)
+        self.assertEqual(self._verify(self.block, "--harness", "claude").returncode, 0)
+
+    def test_the_probes_do_not_inherit_the_coordinators_secrets(self):
+        # The hook's own self-check: a twin registration whose boundary assignment is honoured
+        # proves the registration's switches reach the probes, while an unrelated secret in the
+        # coordinator environment is not something the registration can read back. Asserted on
+        # the gate's text: it names the scrubbed set.
+        text = HOOK.read_text(encoding="utf-8")
+        self.assertIn("PASS_THROUGH = (\"PATH\", \"HOME\", \"LANG\", \"TMPDIR\"", text)
+        self.assertIn("never run through `sh -c`", text)
+        self.assertNotIn('["sh", "-c", command]', text)

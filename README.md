@@ -167,7 +167,7 @@ Understand the operational boundary before dispatching workers on a repository:
 - **Unattended worker permissions:** Workers run your coding agent with interactive prompts disabled (`--dangerously-skip-permissions` or harness equivalent) so unattended runs do not hang. A git worktree is checkout isolation, not an OS security sandbox.
 - **Integration branch isolation:** Workers open pull requests against a fleet-managed integration `BASE` branch, never your default branch (`main`). Promoting `BASE` to your default branch is always a human gate.
 - **Off-worker verification is authoritative:** Inside a worker's own session, the completion gate is advisory, and in the global settings snippet `deny-hook.sh` is unregistered by construction (worktree dispatch wires `deny-hook.sh` per-worktree where supported). Authoritative verification happens off-worker (via the coordinator, CI, or subprocess).
-- **Start safely:** For your first run, use a disposable repository, a VM, or an [`offload-it`](docs/missions/offload-it.md) sandbox recipe. See [Verify gate & trust boundary](docs/verify-gate.md#trust-boundary) and [`runtime/sandbox-policy.md`](runtime/sandbox-policy.md).
+- **Start safely:** For your first run, use a disposable repository, a VM, or an [`offload-it`](docs/missions/offload-it.md) sandbox recipe. See [Verify gate & trust boundary](docs/verify-gate.md#trust-boundary), [`runtime/threat-model.md`](runtime/threat-model.md) (the deny-hook boundary) and [`runtime/sandbox-policy.md`](runtime/sandbox-policy.md).
 
 ## Requirements
 
@@ -386,7 +386,7 @@ Full setup, per-host coordinator paths, verification, update, and removal steps 
 <details>
 <summary><b>Do I need the Orca desktop app to run missions?</b></summary>
 
-Not for most missions. Every mission except `pin-it` (which audits the Orca binary itself) passes preflight without the Orca desktop app by setting `export OPEN_FLEET_RUNTIME=posix` (or `auto`), provided its fallback tooling is on `PATH`: `field-test-it` needs `adb` or `xcrun`, and `offload-it` needs `docker` (preflight refuses otherwise). Two missions still lean on the Orca CLI inside their pipelines: `offload-it` builds an Orca per-workspace environment recipe (`orca.yaml`, checked by `orca vm recipe doctor`), and `field-test-it` loads its emulator guides with `orca skills get`. In `posix` mode, `open-fleet` manages state in a zero-daemon SQLite WAL store and dispatches workers in local git worktrees via `tmux`, `cmux`, or `setsid`. See the [Multi-runtime & harness guide](docs/runtimes.md).
+Not for most missions. Every mission except `pin-it` (which audits the Orca binary itself) passes preflight without the Orca desktop app by setting `export OPEN_FLEET_RUNTIME=posix` (or `auto`), provided its fallback tooling is on `PATH`: `field-test-it` needs `adb` or `xcrun`, and `offload-it` needs `docker` (preflight refuses otherwise). Some steps still use Orca itself: `offload-it` builds an Orca per-workspace environment recipe (`orca.yaml`, checked by `orca vm recipe doctor`), `field-test-it`'s `DEVICE`/`EMULATOR` tiers load the Orca emulator skills with `orca skills get` and its `DESKTOP` tier drives `orca computer`, and `access-it`'s Design Mode captures come from Orca's browser. In `posix` mode, `open-fleet` manages state in a zero-daemon SQLite WAL store and dispatches workers in local git worktrees via `tmux`, `cmux`, or `setsid`. See the [Multi-runtime & harness guide](docs/runtimes.md).
 
 </details>
 

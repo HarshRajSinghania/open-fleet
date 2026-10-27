@@ -45,7 +45,8 @@ Usage:
               [--execute-nc --nc-command <cmd>] [--base <branch>] [--symbol <tok>]
               [--transcript-out <path> [--transcript-key <seed>]]
               [--retention-pubkey <path|path@ref>]
-    # exit 0 = all REQUIRED checks pass · 1 = usage/dependency · 2 = a REQUIRED invariant FAILED
+    # exit 0 = all REQUIRED checks pass · 2 = a REQUIRED invariant FAILED, or an argparse usage
+    # error · 1 = a dependency or internal failure (verify-gate.sh blocks on any non-zero)
     # --transcript-out writes the verdict as a machine-readable object; with --transcript-key it
     # is the coordinator-SIGNED envelope run_report.py requires against .orca/dispatch-pubkey
     # (#281/#386). Without the pair, behaviour is unchanged: stdout + exit code. A requested
@@ -1270,7 +1271,10 @@ def _fresh_command_records(m):
         return [], ("commands ledger: cannot resolve the tree of head_sha — the recorded run cannot "
                     "be bound to content; fail-closed")
     records = [c for c in (m.get("commands") or []) if isinstance(c, dict)]
-    return [c for c in records if c.get("exit") == 0 and c.get("wtree") == want], None
+    # `exit` must be the integer 0: False == 0 in Python, and a hand-written `"exit": false` read
+    # as a clean run (2026-10-26 review).
+    return [c for c in records
+            if type(c.get("exit")) is int and c.get("exit") == 0 and c.get("wtree") == want], None
 
 
 @functools.lru_cache(maxsize=1)
@@ -1794,6 +1798,8 @@ def check_oracle_scope(m, source, digest):
     authorizes a reviewed hand control for test-only characterization or documentation work;
     ordinary mutations retain their changed-production binding.
     """
+    if not (source and digest):
+        return []  # check_scope already refuses a manifest with no authoritative contract
     raw, err = read_source(source)
     if err or sha256_of(raw) != _norm_digest(digest):
         return ["oracle scope: authoritative contract unreadable or digest mismatch"]
@@ -1851,8 +1857,14 @@ def check_oracle_scope(m, source, digest):
 
 def _diff_records(diff):
     """One hunk-state grammar for both endpoint inventory and edited coordinates."""
+    # split("\n"), never splitlines(): the latter also splits on \r, form feeds and Unicode
+    # separators INSIDE a content line, which miscounts the hunk — diffparse.py's grammar, which
+    # this is one copy of (2026-10-26 review). A trailing newline yields one empty tail line.
     old_left = new_left = 0
-    for line in diff.splitlines():
+    lines = diff.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    for line in lines:
         if line == r"\ No newline at end of file":
             continue
         if old_left or new_left:
@@ -2782,14 +2794,17 @@ def check_ancestry(m, base):
     skipped one (review P2)."""
     if not base:
         return ["NOTE: --base not given — ancestry check skipped (pre-merge/offline)"]
-    ref = f"origin/{base}"
+    # The FULL ref name: gitrevisions resolves a short `origin/<base>` through refs/tags first, so
+    # a tag (or local branch) named origin/<base> that a worker can push shadowed the
+    # remote-tracking branch and put any commit "on base" (2026-10-26 review).
+    ref, shown = f"refs/remotes/origin/{base}", f"origin/{base}"
     if _git(["rev-parse", "--verify", ref])[0] != 0:
         if _Authority.lane:
-            return [f"ancestry: {ref} not found — a lane claiming soundness ({_Authority.lane}) "
+            return [f"ancestry: {shown} not found — a lane claiming soundness ({_Authority.lane}) "
                     "named --base and cannot skip the ancestry proof it asked for; fail-closed"]
-        return [f"NOTE: {ref} not found — ancestry check skipped"]
+        return [f"NOTE: {shown} not found — ancestry check skipped"]
     if _git(["merge-base", "--is-ancestor", m.get("head_sha", ""), ref])[0] != 0:
-        return [f"head_sha is not an ancestor of {ref} (not merged / wrong base)"]
+        return [f"head_sha is not an ancestor of {shown} (not merged / wrong base)"]
     return []
 
 
@@ -2801,9 +2816,43 @@ def check_symbol_on_base(symbol, base):
     # call _run, whose default is 20s; routing it through _git for the SHA root (#442) silently
     # halved the budget to _git's 10s default, and a grep that took 11s turned a symbol that IS
     # on base into a fatal "not found". The root selection was the change; the clock was not.
-    code, out = _git(["grep", "-l", "-e", symbol, f"origin/{base}"], timeout=20)
+    code, out = _git(["grep", "-l", "-e", symbol, f"refs/remotes/origin/{base}"], timeout=20)
     if code != 0 or not out.strip():
         return [f"symbol '{symbol}' not found on origin/{base} (change may not be on base)"]
+    return []
+
+
+def check_base_binding(m, base, execute_nc):
+    """7b. base_sha is a commit the integration branch holds (2026-10-26 review, P0).
+
+    The executed control restores `negative_control.paths` from base_sha and the changed-production
+    denominator is base_sha..head_sha, yet nothing bound base_sha to coordinator state: a worker
+    that inserts a poison commit (production code that fails under any call) and declares it as
+    base_sha turns any test RED under the revert and GREEN at a head that is wrong for the
+    criterion — a complete bypass on the lanes where the control is the only oracle. Named a
+    base, the gate now requires base_sha to be an ancestor of refs/remotes/origin/<base>: a commit
+    the worker could not have put there. Without --base the control's pre-fix content is unbound:
+    a NOTE on the advisory native lane, fatal where a lane claims soundness and executes the
+    control. A signed dispatch record may also pin base_sha outright (check_dispatch_provenance)."""
+    base_sha = str(m.get("base_sha") or "")
+    if not HEX40_RE.match(base_sha):
+        return []  # check_shas_present / check_real_commits name that defect
+    if not base:
+        if execute_nc and _Authority.lane:
+            return [f"base binding: a lane claiming soundness ({_Authority.lane}) executes the "
+                    "control without --base, so base_sha — the content the control restores — is "
+                    "bound to no branch the coordinator owns; name --base (fail-closed)"]
+        if execute_nc:
+            return ["NOTE: --base not given — base_sha, the content the executed control restores, "
+                    "is bound to no branch (worker-chosen on this lane)"]
+        return []
+    ref = f"refs/remotes/origin/{base}"
+    if _git(["rev-parse", "--verify", ref])[0] != 0:
+        return []  # check_ancestry reports the missing ref (a NOTE or fatal by lane)
+    if _git(["merge-base", "--is-ancestor", base_sha, ref])[0] != 0:
+        return [f"base_sha {base_sha[:12]} is not an ancestor of origin/{base} — the control would restore "
+                "content the integration branch never held, so the worker chose its own base "
+                "(2026-10-26 review)"]
     return []
 
 
@@ -2998,15 +3047,15 @@ def check_retention_receipt(m, pubkey_ref=None):
 # a record carrying the signer's _PROFILE_FIELDS (#590) verifies too (2026-10-23 review, P2-2).
 _DISPATCH_FIELDS = ("manifest_id", "contract_digest", "unit_class", "lighting",
                     "nc_paths", "nc_command", "nc_artifact_sha256",
-                    "no_gh", "lane", "execute_nc")
+                    "no_gh", "lane", "execute_nc", "base_sha")
 # The LANE flags (review P2): --no-gh waives the GitHub review, --lane decides Lane-0 refusal and
 # dark-eligibility's Lane-A requirement, and --execute-nc is what turns the control from text into
 # a fact. All three reach verify.py through argv / the worker-settable ORCA_* env, so on a
 # signed-record lane they are bound like lighting is. Signed only when set — an old record without
 # them keeps its exact canonical bytes and still verifies.
 # The negative-control inputs among them (#311) are read from the MANIFEST, not from argv, so they
-# are compared separately from the CLI-supplied fields above.
-_DISPATCH_NC_FIELDS = ("nc_paths", "nc_command", "nc_artifact_sha256")
+# are compared separately from the CLI-supplied fields above — check_dispatch_provenance names
+# them (nc_paths, nc_command, nc_artifact_sha256) at its one comparison.
 
 
 def _load_ed25519():
@@ -3248,7 +3297,7 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
     # dispatch time signs none, and they stay bound by base_sha..head_sha alone (#280). Signed,
     # they are the oracle the coordinator chose, and the manifest does not get to swap it.
     claimed = _manifest_nc_values(m)
-    for field in _DISPATCH_NC_FIELDS:
+    for field in ("nc_paths", "nc_command", "nc_artifact_sha256"):
         signed = record.get(field)
         if signed is None:
             continue
@@ -3261,6 +3310,12 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
         if signed != claimed[field]:
             return [f"dispatch substitution: the manifest's {field}={claimed[field]!r} but the "
                     f"coordinator signed {signed!r} — the worker chose its own oracle (#311)"]
+    # base_sha (2026-10-26 review): optional, like the control's inputs; signed, the content the
+    # control restores is the coordinator's choice and the manifest does not get to move it.
+    signed_base = record.get("base_sha")
+    if signed_base is not None and signed_base != m.get("base_sha"):
+        return [f"dispatch substitution: the manifest's base_sha={m.get('base_sha')!r} but the "
+                f"coordinator signed {signed_base!r} — the control's pre-fix content was swapped"]
     return ["NOTE: dispatch record signature verified against the supplied key (#135) — a soundness "
             "boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor)"]
 
@@ -3394,6 +3449,7 @@ def verify(manifest_path, contract_source=None, contract_digest=None, repo=None,
         lambda: check_shas_present(m),
         lambda: check_real_commits(m, is_mut),
         lambda: check_ancestry(m, base),
+        lambda: check_base_binding(m, base, execute_nc),
         lambda: check_dispatch_provenance(m, contract_digest, unit_class, lighting,
                                           dispatch_record, dispatch_pubkey,
                                           no_gh=no_gh, lane=lane, execute_nc=execute_nc),

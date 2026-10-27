@@ -440,6 +440,68 @@ class Freshness(QueueCase):
         self.assertEqual((rc, out["treeMatchesTested"]), (0, True), out)
 
 
+class ReviewedCommitMustBeAtHand(QueueCase):
+    """2026-10-26 review: a payload naming a reviewed_sha that exists nowhere, beside the tree of the
+    real (unreviewed) head, planned and merged as `content_equivalent` — the payload's tree was the
+    only witness to what was reviewed. The reviewed commit is fetched on boarding, and a head is
+    content-equivalent only to a tree recomputed from that commit."""
+
+    def test_a_reviewed_sha_the_queue_cannot_see_never_rides_on_the_payloads_tree(self):
+        u = self.w.unit("alpha")
+        phantom = hashlib.sha1(b"never reviewed, never existed").hexdigest()
+        token = self.acquire()
+        (entry,) = self.board(token, {**u, "reviewed_sha": phantom})
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([(p["result"], p.get("reason")) for p in out["planned"]],
+                         [("bounce", "reviewed_sha_unavailable")], out)
+        self.assertEqual(self.state_of(entry), "bounced")
+        self.assertEqual(self.w.merged_heads(), [], "an unreviewed head rode on a fabricated reviewed_sha")
+
+    def test_boarding_fetches_the_reviewed_commit_so_a_later_identical_move_still_rides(self):
+        a = self.w.unit("alpha")
+        token = self.acquire()
+        (entry,) = self.board(token, a)
+        moved = self.w.amend_same_tree(a)  # the reviewed commit is now unreachable at the remote
+        rc, out = self.w.cli("plan", "--token", token)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([(p["result"], p.get("acceptedHead"), p.get("how")) for p in out["planned"]],
+                         [("tested", moved, "content_equivalent")], out)
+
+
+class GateRunsIsolated(QueueCase):
+    """2026-10-26 review: `--gate-cmd` ran the unit's own test code with the conductor's whole
+    environment (GH_TOKEN, SSH_AUTH_SOCK) in a worktree sharing the conductor's `.git`, whose
+    config and hooks it could rewrite. It now runs in its own `--shared` clone under the
+    process-hygiene floor plus MQ_GATE_ENV_KEEP."""
+
+    def _gate_tail(self, gate):
+        token = self.acquire()
+        self.board(token, self.w.unit("alpha"))
+        rc, out = self.w.cli("plan", "--token", token, "--gate-cmd", gate)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["planned"][0]["result"], "tested", out)
+        return out["planned"][0]["gate"]["tail"]
+
+    def test_the_conductors_credentials_never_reach_the_gate(self):
+        self.w.env["GH_TOKEN"] = "ghp_SENTINEL_CONDUCTOR_TOKEN"
+        self.w.env["SSH_AUTH_SOCK"] = "/run/user/1000/keyring/ssh-SENTINEL"
+        self.w.env["KEEP_ME"] = "kept"
+        self.w.env["MQ_GATE_ENV_KEEP"] = "KEEP_ME"
+        tail = self._gate_tail('echo "gh=[$GH_TOKEN] sock=[$SSH_AUTH_SOCK] keep=[$KEEP_ME] unit=[$MQ_UNIT]"')
+        self.assertIn("gh=[] sock=[] keep=[kept] unit=[alpha]", tail)
+
+    def test_the_gate_never_holds_the_conductors_git_dir(self):
+        tail = self._gate_tail('echo "common=$(git rev-parse --path-format=absolute --git-common-dir)"; '
+                               'echo "head=$(git rev-parse HEAD)"')
+        common = [ln for ln in tail.splitlines() if ln.startswith("common=")][0][len("common="):]
+        self.assertNotEqual(Path(common).resolve(), (Path(self.w.conductor) / ".git").resolve(),
+                            "the gate shares the conductor's .git: its config and hooks are the gate's to rewrite")
+        self.assertNotIn("worktrees", common)
+        self.assertEqual(self.w.git(self.w.conductor, "worktree", "list").count("\n") + 1, 1,
+                         "a gate worktree was left in the conductor's clone")
+
+
 class GitLaneFreshness(Freshness):
     mode = "git"
 

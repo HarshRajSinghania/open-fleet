@@ -22,6 +22,7 @@ Usage:
   python3 orca_cli.py            # print the resolved command name
   python3 orca_cli.py --path     # print the resolved absolute path; exit 1 when not on PATH
   python3 orca_cli.py --version  # print `open-fleet-rpi <runtime/pins.json orca.version>`
+                                 # (`unknown` when the pin cannot be read)
   python3 orca_cli.py <domain> ARGS...
       # hand `<domain> ARGS` (minus --json) to the active runtime provider's dispatch and print
       # a JSON envelope ({"ok": true, "result": ...} or the error); <domain> is orchestration,
@@ -154,12 +155,15 @@ def run_json(argv, *, timeout, error, nonzero="strict"):
 
 
 def _pinned_version() -> str:
+    """The Orca version runtime/pins.json pins, or "unknown" when the pin cannot be read: a
+    literal fallback here reported a stale pin as current once the file moved on
+    (2026-10-26 review); "unknown" lets spawn_worker.sh's drift NOTE fire instead."""
     pins_path = Path(__file__).resolve().parent.parent / "pins.json"
     try:
         data = json.loads(pins_path.read_text(encoding="utf-8"))
-        return (data.get("orca") or {}).get("version") or "v1.4.239"
-    except Exception:
-        return "v1.4.239"
+        return (data.get("orca") or {}).get("version") or "unknown"
+    except (OSError, ValueError, AttributeError):
+        return "unknown"
 
 
 def main(argv=None) -> int:

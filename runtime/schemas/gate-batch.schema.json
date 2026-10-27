@@ -115,6 +115,14 @@
           "description": "The full ask, verbatim prose (may span lines). Rendered verbatim under the gate heading.",
           "$ref": "#/$defs/prose"
         },
+        "source": {
+          "description": "Who answered or waived, as the CLI records it: human:<name> (the shape decisions.py gives a human grant). Absent on records written before the field existed and never present while owed; optional on overtaken gates.",
+          "pattern": "^human:[^\\s]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "related": {
           "description": "Related issues/PRs (refs as written, e.g. \"#397\"). Store-only: never rendered into the .md view.",
           "items": {

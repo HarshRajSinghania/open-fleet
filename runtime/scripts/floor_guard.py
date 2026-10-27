@@ -45,6 +45,9 @@ new-exception        an added constraints row shaped ``| W123 |`` / ``| E45 |``,
                      an added line under an ``## Exceptions`` heading
 guard-surface        an added/removed line touching CONSTRAINTS.md's frozen guard
                      surface (whole files: any line; keyed files: the key's
+                     assignment — for ruff.toml the rule selection and every key
+                     that carves it back, for .coveragerc fail_under, the scope
+                     keys and their continuation lines —
                      assignment only — a use-site or comment stays silent)
 ===================  ============================================================
 
@@ -102,6 +105,7 @@ How to wire
 import argparse
 import importlib.util
 import re
+import unicodedata
 import subprocess
 import sys
 from collections import Counter
@@ -196,11 +200,23 @@ GUARD_SURFACE_FILES = (
 )
 GUARD_SURFACE_DIRS = ("bench/vf-bench/traps/",)
 GUARD_SURFACE_KEYS = (
-    # (path, assignment regex): the ruff select, the coverage fail_under, the
-    # routing floor, and the vf-bench pins (VERSION + CANARY + traps digest as
-    # enforced in gate.py — a corpus bump moves them in the same PR, explicitly).
-    ("ruff.toml", re.compile(r"^\s*select\s*=")),
-    (".coveragerc", re.compile(r"^\s*fail_under\s*=")),
+    # (path, assignment regex): the ruff rule selection AND everything that carves it back
+    # (ignore, extend-*, exclude, per-file-ignores and their entries, a rule code on its own
+    # line in a multi-line list — 2026-10-26 review: `ignore = ["F821"]` beside the guarded
+    # select lowered the bar in silence), the coverage fail_under AND its scope (source, include,
+    # omit, exclude_lines and the indented continuation lines those INI values are written on),
+    # the routing floor, and the vf-bench pins (VERSION + CANARY + traps digest as enforced in
+    # gate.py — a corpus bump moves them in the same PR, explicitly).
+    ("ruff.toml", re.compile(r"^\s*(extend-)?(select|ignore|exclude|fixable|unfixable)\s*=")),
+    ("ruff.toml", re.compile(r"^\s*\[[^\]]*per-file-ignores")),
+    # A table entry and a rule code on its own line, in either TOML quote style, and a bare key
+    # assigned a list of rule codes (#707 review: `'runtime/scripts/*' = ['F401']` matched none).
+    ("ruff.toml", re.compile(r"^\s*(\"[^\"]+\"|'[^']+')\s*=")),
+    ("ruff.toml", re.compile(r"^\s*(\"[A-Z]+[0-9]*\"|'[A-Z]+[0-9]*')\s*,?\s*$")),
+    ("ruff.toml", re.compile(r"^\s*[A-Za-z0-9_.*/-]+\s*=\s*\[\s*[\"'][A-Z]+[0-9]*[\"']")),
+    (".coveragerc", re.compile(r"^\s*(fail_under|source|include|omit|exclude_lines|exclude_also|"
+                               r"skip_covered|skip_empty|ignore_errors|partial_branches|plugins)\s*=")),
+    (".coveragerc", re.compile(r"^\s+[^\s#;]")),
     ("tests/test_evals.py", re.compile(r"\bROUTING_MIN_SCORE\s*=")),
     ("bench/vf-bench/gate.py", re.compile(r"\bEXPECTED_VERSION\s*=")),
     ("bench/vf-bench/gate.py", re.compile(r"\bEXPECTED_CANARY_GUID\s*=")),
@@ -432,8 +448,40 @@ def is_constraints(path, constraints_name):
     return bool(path) and Path(path).name == Path(constraints_name).name
 
 
+# Not thresholds: ISO dates, issue refs and upper-case row ids (D9, G1, P1-7, W101) — counted as
+# numbers they made a re-dated note read as a lowered floor and an edited id as a dropped one.
+# A lower-case prefix (v1.2) stays a number: version pins are compared like any other value.
+_NOT_A_THRESHOLD = re.compile(r"\d{4}-\d{2}-\d{2}(?:T[\d:]+Z?)?|#\d+|\b[A-Z]+\d+(?:[.-][A-Za-z0-9]+)*")
+# A cell that states a floor: a comparator, or the words a floor is stated with.
+_FLOOR_WORDS = re.compile(r">=|<=|≥|≤|\bfloor\b|\bthreshold\b|\beffective\b|\bminimum\b|\bat least\b|"
+                          r"\bno (?:lower|less|fewer)\b", re.IGNORECASE)
+_COMPARATOR_NUMERIC = re.compile(r"(?:>=|<=|≥|≤|>|<)\s*=?\s*\d")
+_COMPARATOR = re.compile(r">=|<=|≥|≤|>|<")
+
+
 def numbers(text):
-    return [float(n) for n in NUMBER.findall(text)]
+    """The threshold-shaped numbers of a line: NFKC-folded (a full-width ８０ is 80), with dates,
+    issue refs and letter-prefixed identifiers set aside (2026-10-26 review)."""
+    folded = unicodedata.normalize("NFKC", text)
+    return [float(n) for n in NUMBER.findall(_NOT_A_THRESHOLD.sub(" ", folded))]
+
+
+# A number and the unit written right after it (`80%`, `200 ms`, `100 cases`), or "".
+_NUMBER_UNIT = re.compile(r"(\d+(?:\.\d+)?)\s?(%|[A-Za-z]+)?")
+
+
+def numbers_with_units(text):
+    """`numbers(text)`, each paired with the unit that follows it (#707 review)."""
+    folded = unicodedata.normalize("NFKC", text)
+    return [(float(n), unit.lower()) for n, unit in _NUMBER_UNIT.findall(_NOT_A_THRESHOLD.sub(" ", folded))]
+
+
+def cells(text):
+    """A table row's cells (the outer pipes stripped), or the whole line as one cell."""
+    folded = unicodedata.normalize("NFKC", text).strip()
+    if folded.startswith("|"):
+        return [c.strip() for c in folded.strip("|").split("|")]
+    return [folded]
 
 
 def guard_surface_hit(path, text):
@@ -462,11 +510,77 @@ def row_key(text):
     delimiter, so splitting naively yields an empty first field and every row
     keys the same, which silently disables the comparison.
     """
-    for token in re.split(r"[|:]", text.strip()):
+    folded = unicodedata.normalize("NFKC", text).strip()
+    if not folded.startswith("|"):
+        # A bullet or sentence keys on its first word (`- D9 (re-read …): …` and `- D9: …` are
+        # the same note), not on everything before the first colon (2026-10-26 review).
+        match = re.match(r"[-*#\s]*([A-Za-z0-9_.][A-Za-z0-9_.-]*)", folded)
+        return match.group(1).lower() if match else ""
+    for token in folded.split("|"):
         cleaned = token.strip().strip("-*# ").lower()
         if cleaned:
             return cleaned
     return ""
+
+
+def shape_key(text):
+    """row_key plus the line's SHAPE: a table row and a bullet that share an id never pair
+    (2026-10-26 review: an edited note paired with a removed table row and hid its removal)."""
+    key = row_key(text)
+    if not key:
+        return ""
+    return ("row:" if text.strip().startswith("|") else "line:") + key
+
+
+def lowering(before_text, after_text):
+    """How `after_text` lowers `before_text` (same-key constraints lines), or None.
+
+    Cell by cell for table rows (2026-10-26 review): compared as one flat list of numbers, a
+    row read the same when its criterion was reworded around the old number, when a lower
+    number was appended in a later cell, or when a criterion lost its number. A prose line is
+    one cell, where a number that no longer appears anywhere is the one that was dropped."""
+    b_cells, a_cells = cells(before_text), cells(after_text)
+    if len(b_cells) == 1 and len(a_cells) == 1:
+        b_units, a_units = numbers_with_units(b_cells[0]), numbers_with_units(a_cells[0])
+        before, after = [v for v, _ in b_units], [v for v, _ in a_units]
+        gone = [(v, u) for v, u in b_units if v not in after]
+        fresh = [(v, u) for v, u in a_units if v not in before]
+        if not gone:
+            return None
+        if not fresh:
+            return f"{gone[0][0]:g} -> (no number)"
+        # The numbers that moved, paired in order when the counts agree (a line that restates
+        # two values); a raise is a tightening and reads as one (PR #707 review).
+        if len(fresh) == len(gone):
+            for (old, _), (new, _) in zip(gone, fresh, strict=True):
+                if new < old:
+                    return f"{old:g} -> {new:g}"
+            return None
+        # Otherwise a vanished value is matched to the new values written with its unit, or to
+        # every new value when none is: an unrelated higher number beside a lowered floor
+        # (`80%` -> `70% … (100 cases)`) no longer reads as its replacement (#707 review).
+        for old, unit in gone:
+            candidates = [new for new, u in fresh if u == unit] or [new for new, _ in fresh]
+            lower = [new for new in candidates if new < old]
+            if lower:
+                return f"{old:g} -> {max(lower):g}"
+        return None
+    for i, bcell in enumerate(b_cells):
+        acell = a_cells[i] if i < len(a_cells) else ""
+        before, after = numbers(bcell), numbers(acell)
+        for j, value in enumerate(before):
+            if j >= len(after):
+                return f"{value:g} -> (no number)"
+            if after[j] < value:
+                return f"{value:g} -> {after[j]:g}"
+        if before and _COMPARATOR.search(bcell) and _COMPARATOR.search(acell) and not _COMPARATOR_NUMERIC.search(acell):
+            return "criterion no longer compares against a number"
+        if len(after) > len(before) and _FLOOR_WORDS.search(acell):
+            return f"a floor-shaped number was added: {after[len(before)]:g}"
+    for acell in a_cells[len(b_cells):]:
+        if numbers(acell) and _FLOOR_WORDS.search(acell):
+            return f"a floor-shaped number was added: {numbers(acell)[0]:g}"
+    return None
 
 
 def scan(added, removed, constraints_name, repo):
@@ -545,7 +659,7 @@ def scan(added, removed, constraints_name, repo):
     removed = [row for row in removed if not media(row[0])]
     _charge_moved_assertions(in_deleted_files, added, removed, flag)
     _flag_undiscoverable_renames(added, removed, flag)
-    _flag_lowered_rows(added, removed, constraints_name, flag)
+    _flag_lowered_rows(added, removed, constraints_name, flag, repo)
     return findings
 
 
@@ -631,7 +745,7 @@ def _flag_undiscoverable_renames(added, removed, flag):
                     break
 
 
-def _flag_lowered_rows(added, removed, constraints_name, flag):
+def _flag_lowered_rows(added, removed, constraints_name, flag, repo=None):
     """threshold-lowered: a numbered constraints row must come back no lower (P2-5).
 
     Rows pair in order within their key (`row_key`), path by path. The in-place edit was the
@@ -643,25 +757,42 @@ def _flag_lowered_rows(added, removed, constraints_name, flag):
     partners = {}
     for path, _line, text in added:
         if is_constraints(path, constraints_name):
-            partners.setdefault((path, row_key(text)), []).append(text)
+            partners.setdefault((path, shape_key(text)), []).append(text)
     for path, line, text in removed:
         if not is_constraints(path, constraints_name):
             continue
-        key, before = row_key(text), numbers(text)
+        key, before = shape_key(text), numbers(text)
         if not key or not before:
             continue
         pool = partners.get((path, key))
         if not pool:
             flag("threshold-lowered", path, line, "row removed or re-keyed")
             continue
-        after = numbers(pool.pop(0))
-        for i, value in enumerate(before):
-            if i >= len(after):
-                flag("threshold-lowered", path, line, f"{value:g} -> (no number)")
-                break
-            if after[i] < value:
-                flag("threshold-lowered", path, line, f"{value:g} -> {after[i]:g}")
-                break
+        detail = lowering(text, pool.pop(0))
+        if detail:
+            flag("threshold-lowered", path, line, detail)
+    # A SECOND numbered row for a key the file already carries (2026-10-26 review): the old row
+    # stays, a duplicate at a lower number is added, and a reader takes either for the floor. Read
+    # off the final file for every added row, an edited twin included: a wording edit to the
+    # original beside the appended duplicate used to hide the duplicate (PR #707 review).
+    for path, line, text in added:
+        key = shape_key(text)
+        if not (is_constraints(path, constraints_name) and key.startswith("row:") and numbers(text)):
+            continue
+        others = [t for t in _file_rows(repo, path) if shape_key(t) == key]
+        if len(others) > 1:
+            flag("threshold-lowered", path, line, f"duplicate row for {key[4:]}")
+
+
+def _file_rows(repo, path):
+    """The table rows of `path` as it stands in the tree under review ([] when unreadable)."""
+    if repo is None:
+        return []
+    try:
+        text = Path(repo, path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return [ln for ln in text.splitlines() if ln.strip().startswith("|")]
 
 
 def load_waivers(path):

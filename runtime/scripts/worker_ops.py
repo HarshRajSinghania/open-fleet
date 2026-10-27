@@ -301,10 +301,10 @@ def main(argv=None):
         print("\n".join(lines))
         return EXIT_OK
     except Refused as exc:
-        print(f"worker_ops: REFUSED: {exc}", file=sys.stderr)
+        print(f"worker_ops: REFUSED: {_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_REFUSED
     except Failed as exc:
-        print(f"worker_ops: FAILED: {exc}", file=sys.stderr)
+        print(f"worker_ops: FAILED: {_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_FAILED
 
 

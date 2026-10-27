@@ -162,6 +162,26 @@ class SharedEnvelopeReader(unittest.TestCase):
             self.assertNotIn(raw, str(ctx.exception))
         self.assertIn("orca refused: nope", str(ctx.exception))
 
+    def test_a_provider_error_is_reported_inert(self):
+        # Codex round 3 (P2): the provider-dispatch branch (a non-Orca runtime, or `auto`
+        # selecting one) interpolated ProviderError.code raw, and an exception's text too.
+        hostile = "bad\nSTATE=completed\u001b[2J\u202e"
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(sys.path.remove, str(ROOT))
+        providers = importlib.import_module("runtime.providers")
+        for exc in (providers.ProviderError(hostile, "m"), RuntimeError(hostile)):
+            fake = mock.Mock()
+            fake.ProviderError = providers.ProviderError
+            fake.get_provider.return_value.dispatch.side_effect = exc
+            with self.subTest(exc=type(exc).__name__), \
+                    mock.patch.dict(os.environ, {"OPEN_FLEET_RUNTIME": "posix"}), \
+                    mock.patch.object(self.m, "_load_providers", return_value=fake), \
+                    self.assertRaises(self.Boom) as ctx:
+                self.m.run_json(["orchestration", "x"], timeout=5, error=self.Boom)
+            for raw in ("\n", "\x1b", "\u202e"):
+                self.assertNotIn(raw, str(ctx.exception))
+            self.assertIn("STATE=completed", str(ctx.exception))
+
     def test_an_unrunnable_cli_raises_the_callers_class(self):
         with mock.patch.dict(os.environ, {"ORCA_CLI_COMMAND": "/nonexistent/orca"}):
             with self.assertRaisesRegex(self.Boom, "could not run orca"):

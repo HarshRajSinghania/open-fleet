@@ -289,5 +289,27 @@ class TestEveryReceiptFieldPrintsInert(unittest.TestCase):
         self.assertIn("term_1 TRUNCATED=yes", rows)
 
 
+class TheFailureLinePrintsInert(unittest.TestCase):
+    """Codex round 3 (P2) sweep: the REFUSED/FAILED line printed an exception's text raw, and an
+    exception can carry the runtime's (or the provider's) text: one newline forged a line."""
+
+    def test_a_failure_message_prints_inert_on_one_line(self):
+        import contextlib
+        import io
+        from unittest import mock
+        m = load()
+        hostile = "x\nSTATE=completed\x1b[2J\u202e"
+        for exc in (m.Failed(hostile), m.Refused(hostile)):
+            err = io.StringIO()
+            with self.subTest(exc=type(exc).__name__), mock.patch.object(m, "run_orca", side_effect=exc), \
+                    contextlib.redirect_stderr(err):
+                rc = m.main(["show", "--terminal", "t"])
+            self.assertNotEqual(rc, 0)
+            out = err.getvalue()
+            for raw in ("\x1b", "\u202e"):
+                self.assertNotIn(raw, out)
+            self.assertEqual(len(out.strip().splitlines()), 1, out)
+
+
 if __name__ == "__main__":
     unittest.main()

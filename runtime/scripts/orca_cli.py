@@ -212,6 +212,13 @@ def resolve(env=None, system=None) -> str:
     return resolve_orca(env, system)
 
 
+def _inert(value) -> str:
+    """Any text in a message every tool prints to the coordinator's terminal (a runtime's error
+    code, an exception's text, a configured value): non-printable characters (controls,
+    newlines, bidi) escaped, so it stays one inert line (W4-11; Codex round 3)."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(value))
+
+
 def run_json(argv, *, timeout, error, nonzero="strict"):
     """Run `<resolved cli> *argv --json`; return the envelope's result object or raise `error`."""
     if _active_non_orca_runtime():
@@ -221,22 +228,22 @@ def run_json(argv, *, timeout, error, nonzero="strict"):
             res = providers.get_provider().dispatch(clean, timeout=timeout)
             return res if isinstance(res, dict) else {}
         except providers.ProviderError as exc:
-            raise error(f"orca refused: {exc.code}")
+            raise error(f"orca refused: {_inert(exc.code)}")
         except Exception as exc:
-            raise error(f"could not run orca: {exc}")
+            raise error(f"could not run orca: {_inert(exc)}")
     try:
         cli = resolve()
     except CliCommandError as exc:
-        raise error(f"could not run orca: {exc}")
+        raise error(f"could not run orca: {_inert(exc)}")
     var, configured = configured_command(os.environ)
     problem = cli_command_problem(configured, var, shutil.which) if configured else None
     if problem:
-        raise error(f"could not run orca: {problem}")
+        raise error(f"could not run orca: {_inert(problem)}")
     try:
         proc = subprocess.run([cli, *argv, "--json"],
                               capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
-        raise error(f"could not run orca: {exc}")
+        raise error(f"could not run orca: {_inert(exc)}")
     try:
         doc = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -249,8 +256,7 @@ def run_json(argv, *, timeout, error, nonzero="strict"):
         code = err.get("code") if isinstance(err, dict) else err
         # The code is the runtime's text and every tool prints this line to the coordinator's
         # terminal: anything non-printable (controls, newlines, bidi) is escaped (W4-11).
-        inert = "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(code))
-        raise error(f"orca refused: {inert}")
+        raise error(f"orca refused: {_inert(code)}")
     if nonzero == "strict" and proc.returncode != 0:
         raise error(f"orca exited {proc.returncode} with no error envelope")
     if nonzero == "no-receipt" and not result and proc.returncode != 0:
@@ -274,13 +280,13 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     bad_runtime = _validate_runtime()
     if bad_runtime:
-        print(f"orca_cli: {bad_runtime}", file=sys.stderr)
+        print(f"orca_cli: {_inert(bad_runtime)}", file=sys.stderr)
         return 2
     if argv in ([], ["--path"]):
         try:
             name = resolve()
         except CliCommandError as exc:
-            print(f"orca_cli: {exc}", file=sys.stderr)
+            print(f"orca_cli: {_inert(exc)}", file=sys.stderr)
             return 2
     if argv == []:
         print(name)
@@ -289,7 +295,7 @@ def main(argv=None) -> int:
         found = (name if (os.path.isabs(name) and os.path.isfile(name) and os.access(name, os.X_OK))
                  else shutil.which(name))
         if not found:
-            print(f"orca_cli: `{name}` is not on PATH", file=sys.stderr)
+            print(f"orca_cli: `{_inert(name)}` is not on PATH", file=sys.stderr)
             return 1
         print(found)
         return 0

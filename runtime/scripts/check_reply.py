@@ -211,10 +211,10 @@ def main(argv=None, env=None):
             print(f"REPLIED={_visible_line(reported)} FOR={_visible_line(ns.msg_id)}")
         return EXIT_OK
     except Refused as exc:
-        print(f"check_reply: REFUSED: {exc}", file=sys.stderr)
+        print(f"check_reply: REFUSED: {_visible_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_REFUSED
     except Failed as exc:
-        print(f"check_reply: FAILED: {exc}", file=sys.stderr)
+        print(f"check_reply: FAILED: {_visible_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_FAILED
 
 

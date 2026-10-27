@@ -111,7 +111,7 @@ class _ReadBudget:
     def __init__(self):
         self.used, self.said = 0, set()
 
-    def skip(self, path, why):
+    def omit(self, path, why):
         if why not in self.said:
             self.said.add(why)
             limit = MAX_FILE_BYTES if why == "file" else MAX_RUN_BYTES
@@ -133,10 +133,10 @@ def _new_scan():
 def _charge(fp, size):
     """True when `size` more bytes of `fp` fit both caps (and are now counted), else False."""
     if size > MAX_FILE_BYTES:
-        _BUDGET.skip(fp, "file")
+        _BUDGET.omit(fp, "file")
         return False
     if _BUDGET.used + size > MAX_RUN_BYTES:
-        _BUDGET.skip(fp, "run")
+        _BUDGET.omit(fp, "run")
         return False
     _BUDGET.used += size
     return True
@@ -152,7 +152,7 @@ def _read_capped(fp):
     except OSError:
         return None
     if len(data) > MAX_FILE_BYTES:  # it grew while being read
-        _BUDGET.skip(fp, "file")
+        _BUDGET.omit(fp, "file")
         return None
     return data
 
@@ -1134,7 +1134,7 @@ def _codex_lines(fp):
             return []
         if len(plain) > MAX_FILE_BYTES or not unpacker.eof or not _charge(fp, len(plain)):
             if len(plain) > MAX_FILE_BYTES or not unpacker.eof:
-                _BUDGET.skip(fp, "file")
+                _BUDGET.omit(fp, "file")
             return []
         raw = plain.decode("utf-8", errors="replace")
         out = []

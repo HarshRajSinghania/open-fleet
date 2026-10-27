@@ -14,7 +14,7 @@ missions already have those.
 | GitHub | `ravidsrk` | [ravidsrk/open-fleet](https://github.com/ravidsrk/open-fleet) | source of truth, Actions (`validate` gates + `negative-control-demo` pinned-demo gate; `alert-on-failure` files a `ci-failure` issue when either fails on `main`), private vulnerability reporting |
 | GitHub peer review | `agentsalpha` (designated second maintainer) | [Repository invitations](https://github.com/ravidsrk/open-fleet/invitations) | write invitation `335422854` sent 2026-09-30, never accepted; OpenAI Codex is the second reviewer instead (#595, below); role boundaries below |
 | Claude plugin marketplace | GitHub self-host + buildwithclaude auto-index | [`.claude-plugin/`](../.claude-plugin/plugin.json) | `/plugin marketplace add ravidsrk/open-fleet`; external listing history and submission status are in [distribution](distribution.md) |
-| greptile | maintainer CLI | [greptile.com](https://greptile.com/) | pre-push review on the maintainer machine; GitHub check on PRs |
+| greptile | removed 2026-10-27 | [greptile.com](https://greptile.com/) | no longer a GitHub check on PRs, a required context on `main`, or part of the review loop; Codex is the second reviewer (#595, below) |
 | agentskills.io listing | not submitted | local `uvx --from skills-ref agentskills validate` | repository claims (`proof`, `autonomy`, `proof_evidence`) live under `metadata:` — [CONTRIBUTING](../CONTRIBUTING.md) |
 | Maintainer email | `ravidsrk@gmail.com` | [SECURITY.md](../SECURITY.md) | security reports (72h ack) and ops contact |
 
@@ -41,12 +41,12 @@ instead by the owner's disposition (#595, below).
 
 ## Merge gate
 
-Required contexts on `main` (API read-back, 2026-10-24): `gates`, `guard` and `pinned-demo` from
-GitHub Actions (app 15368), `Greptile Review` (app 867647), and `verdict-gate` from the dedicated
-app `open-fleet-verdict-gate` (app 5451539). Branches must be up to date (strict), admins are
-enforced, and every conversation must be resolved. `pinned-demo` became required on 2026-10-23 so
-the demo gate the table above names actually blocks. `verdict` is no longer required (#594); it
-still runs as fast feedback.
+Required contexts on `main` (API read-back, 2026-10-27): `gates`, `guard` and `pinned-demo` from
+GitHub Actions (app 15368), and `verdict-gate` from the dedicated app `open-fleet-verdict-gate`
+(app 5451539). Branches must be up to date (strict), admins are enforced, and every conversation
+must be resolved. `pinned-demo` became required on 2026-10-23 so the demo gate the table above
+names actually blocks. `verdict` is no longer required (#594); it still runs as fast feedback.
+`Greptile Review` (app 867647) was required until 2026-10-27, when Greptile was removed.
 No approving review is required: the owner is the only collaborator, and GitHub does not let an
 author approve their own PR, so requiring one would block every merge.
 

@@ -3,12 +3,12 @@
 This file is a pointer, not a backlog. Open work lives where it is machine-checked or
 issue-tracked, so this surface cannot drift into "nothing open" while gaps stand:
 
-- **Product roadmap (done 2026-10-25)** — [the October 20 roadmap](roadmap.md) reconciles
+- **Product roadmap (done 2026-10-25)** — [the October 20 roadmap](docs/roadmap.md) reconciles
   the release epic with the runtime expansion and new GitHub/paper research.
   It links the detailed work packages and distinguishes proposed experiments from
   existing release gates; dated reviews below remain historical evidence.
 - **The 2026-09-28 release-readiness review** —
-  [`docs/reviews/2026-09-28-release-readiness-review.md`](reviews/2026-09-28-release-readiness-review.md):
+  [`docs/reviews/2026-09-28-release-readiness-review.md`](docs/reviews/2026-09-28-release-readiness-review.md):
   four P0 findings (the runtime scripts hardcode `orca` where Linux ships `orca-ide`; the published
   version is 1,372 commits behind with no GitHub Releases; five stale hand-typed pin and proof
   sentences; a schema line the 2026-09-28 re-pin missed), eight P1 findings, and a three-tier
@@ -19,17 +19,17 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
   [#515](https://github.com/ravidsrk/open-fleet/issues/515) and
   [#518](https://github.com/ravidsrk/open-fleet/issues/518) were still open; the ordered path past
   the 0.7.0 cut is the road-to-1.0 epic [#526](https://github.com/ravidsrk/open-fleet/issues/526).
-- **Standing gaps** — [`docs/completion/GAPS.md`](completion/GAPS.md): every finding
+- **Standing gaps** — [`docs/completion/GAPS.md`](docs/completion/GAPS.md): every finding
   between HEAD and the completion definition with a FINISH / CUT / DEFER decision (a dated
   snapshot; live proof counts are in the README's generated proof-status sentence). G-09
   (field proof) is the open DEFER row. Its tracking issue (#212) is closed; the register row
   stays open deliberately — a closed tracker is not a closed gap, and `docs/runs/README.md`'s
   field-proof plan is G-09's live tracker.
-- **Field-proof plan** — [`docs/runs/README.md`](runs/README.md#field-proof-plan-212):
+- **Field-proof plan** — [`docs/runs/README.md`](docs/runs/README.md#field-proof-plan-212):
   per-mission targets, tiers, terminals, and blockers for advancing `doctrine-only` missions.
   A tier moves only through a recorded mission run, never a relabel.
 - **The 2026-09-11 deep review** —
-  [`docs/reviews/2026-09-11-review.md`](reviews/2026-09-11-review.md) (moved from the root
+  [`docs/reviews/2026-09-11-review.md`](docs/reviews/2026-09-11-review.md) (moved from the root
   `REVIEW.md` on 2026-10-14) and issues
   [#279–#307](https://github.com/ravidsrk/open-fleet/issues?q=label%3Adeep-review-2026-09-11) (plus
   #309–#318 from a second review of the same base). **Closed** — every finding landed in #308; #307
@@ -38,10 +38,10 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
 - **The 2026-09-12 release audit** — issues and PRs #321–#338: `deny-hook.sh` word and redirect
   parsing, verifier evidence binding, `egress.py` receipt writes, `bundle.py` vendored protocols,
   `spawn_worker.sh` launch refusals, and the migration/governance mission contracts. Its evidence
-  is under [`docs/reports/release-20260912/`](reports/release-20260912/).
+  is under [`docs/reports/release-20260912/`](docs/reports/release-20260912/).
 - **The 2026-09-10 deep review**, its predecessor, archived at
-  [`docs/reviews/2026-09-10-review.md`](reviews/2026-09-10-review.md) and issues
+  [`docs/reviews/2026-09-10-review.md`](docs/reviews/2026-09-10-review.md) and issues
   [#255–#276](https://github.com/ravidsrk/open-fleet/issues?q=label%3Adeep-review-2026-09-10).
   Older code comments and fixtures citing "REVIEW.md §N" mean THAT document (#295).
 
-Completed items are recorded in [`CHANGELOG.md`](../CHANGELOG.md), not here.
+Completed items are recorded in [`CHANGELOG.md`](CHANGELOG.md), not here.

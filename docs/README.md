@@ -70,7 +70,6 @@ Guides for developing `open-fleet`, cutting releases, and inspecting retained ru
 - **[Security policy](../.github/SECURITY.md)** — Vulnerability disclosure process and secret-handling rules.
 - **[Maintainer ops](ops.md)** — Account inventory, maintainer roles, the merge gate, release cut and publishing, and incident response. (Weekly pin probes: [`runtime/orca-pin.md`](../runtime/orca-pin.md); component quarantine: [`quarantine_check.py`](runtime-scripts.md#quarantine_checkpy).)
 - **[1.0 release checklist](release-1.0-checklist.md)** & **[Product roadmap](roadmap.md)** — Exit criteria for 1.0 and prioritized engineering roadmap.
-- **[Open-work pointers](TODOS.md)** — Where open work is tracked (issue queries, the field-proof plan, dated reviews); a pointer, not a backlog.
 - **[Live experiment harness](guides/live-harness.md)** — Running controlled live experiment arms in disposable containers ([WIP-curve experiment](experiments/wip-curve-prereg.md): mutation-wave caps measured and kept · [Instruction-load ablation pre-registration](experiments/ablation-prereg.md): current activation load kept).
 - **[Repository metadata](about.md)** — Canonical GitHub repository description and topics.
 

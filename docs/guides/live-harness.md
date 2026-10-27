@@ -94,9 +94,15 @@ The launcher starts both containers with these properties:
   exception's type and frames only), and a call whose usage it cannot price settles its whole
   reservation. `count_tokens` is free but bounded (5,000 calls, 2 GiB of bodies per launch), with
   a running tally every 100 calls and on every later line. A connection that sends nothing is cut
-  off after 60 s, its request line and headers must arrive within 30 s in all (a byte at a time
-  does not extend it), at most 32 are served at once, and every connection closed unanswered is
-  counted as a `drop` line;
+  off after 60 s, its request line and headers must arrive within 30 s in all and its body within
+  120 s (a byte at a time extends neither), and at most 32 are served at once. When all 32 are
+  taken, a new connection evicts the one that has waited longest for its own request to arrive,
+  so connections trickling requests, however many a process reopens, never keep the arm's own
+  model calls out; a call already read in full keeps its slot. Every connection closed unanswered
+  (evicted, past the bound, timed out, malformed, a body cut short) is counted as a `drop`. Drops
+  and faults are counted per kind and written at most once a second per kind, with the running
+  counts on every line and a `tally` line a second after the last one not written, so a client
+  resetting connections in a loop cannot grow this file without bound;
 - the arm sees the launcher's attestation, read-only. The attestation holds a fresh nonce, the
   commit, the arm, the image and the host's name, hashed (`host_sha256`), which names the machine
   across launches. The broker's container has the hostname `of-live-<nonce>`, and the arm's

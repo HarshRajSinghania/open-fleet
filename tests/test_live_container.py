@@ -1209,17 +1209,18 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
             sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
             self.addCleanup(sock.close)
             idle.append(sock)
-        # The connection past the bound is closed at once, never parked beside the others.
-        idle[2].settimeout(1.0)
+        # The connection past the bound evicts the idle one that has waited longest, at once: idle
+        # connections never keep a new one out (re-attack of 4b24dfde).
+        idle[0].settimeout(1.0)
         try:
-            self.assertEqual(idle[2].recv(1), b"", "a connection past the bound was parked")
+            self.assertEqual(idle[0].recv(1), b"", "idle connections kept the one past the bound out")
         except TimeoutError:
-            self.fail("a connection past the bound was parked")
+            self.fail("idle connections kept the one past the bound out")
         # And a connection that sends nothing is closed after the handler timeout.
-        idle[0].settimeout(5)
+        idle[1].settimeout(5)
         started = time.monotonic()
         try:
-            self.assertEqual(idle[0].recv(1), b"")
+            self.assertEqual(idle[1].recv(1), b"")
         except TimeoutError:
             self.fail("a silent connection held its thread past the handler timeout")
         self.assertLess(time.monotonic() - started, 4)
@@ -1229,7 +1230,8 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
     def test_a_trickling_request_is_cut_off_by_a_total_deadline_and_every_drop_is_recorded(self):
         # Re-attack of 82a2d00c (W5-16): the handler timeout restarts with every byte, so 32 clients
         # each sending one byte of the request line every 20 s held every slot; and a dropped or
-        # expired connection left no trace in the ledger.
+        # expired connection left no trace in the ledger. Since the re-attack of 4b24dfde the
+        # connection past the slots evicts the trickling one, and is itself cut at its deadline.
         with mock.patch.object(lb, "HANDLER_TIMEOUT_S", 5, create=True), \
                 mock.patch.object(lb, "REQUEST_DEADLINE_S", 1.0, create=True), \
                 mock.patch.object(lb, "MAX_CONNECTIONS", 1, create=True):
@@ -1250,7 +1252,7 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
             time.sleep(0.2)
             extra = socket.create_connection(("127.0.0.1", self.port), timeout=5)
             self.addCleanup(extra.close)
-            self.assertEqual(extra.recv(1), b"", "a connection past the slots was parked")
+            self.assertEqual(extra.recv(1), b"", "a connection that sends nothing outlived its deadline")
             started = time.monotonic()
             try:
                 closed = sock.recv(1) == b""
@@ -1265,7 +1267,7 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
             while time.monotonic() < deadline and len([e for e in self.events() if e["event"] == "drop"]) < 2:
                 time.sleep(0.05)
         drops = {e["why"] for e in self.events() if e["event"] == "drop"}
-        self.assertIn("connection slots full", drops)
+        self.assertIn("stalled request evicted", drops)  # "connection slots full": test_slots_busy_with_calls_in_flight_*
         self.assertIn("request timed out", drops)
 
     def test_count_tokens_is_bounded_and_recorded(self):
@@ -1372,6 +1374,179 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
                 self.assertTrue(faults[0]["frames"])
                 self.assertEqual([e["event"] for e in events].count("settle"), 1, "the call was not settled")
                 self.assertNotIn(self.token, self.ledger_path.read_text(encoding="utf-8"))
+
+    def served_broker(self, upstream=None):
+        """lb.serve with the module's constants as patched now; the server itself, for its slots."""
+        server, ledger = lb.serve(self.token, self.ledger_path, 5.0, port=0, upstream=upstream or self.api.url)
+        self.addCleanup(ledger.fh.close)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.port = server.server_address[1]
+        return server
+
+    def wait_slots_taken(self, server, n):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and server.slots._value != server.slots._initial_value - n:
+            time.sleep(0.01)
+        self.assertEqual(server.slots._value, server.slots._initial_value - n, "the connections were not served")
+
+    def test_trickling_requests_cannot_keep_the_arms_own_calls_out(self):
+        # Re-attack of 4b24dfde (W5-16): the total deadline bounds ONE connection, but a client
+        # reopening them kept every slot: four connections, each trickling its request line or its
+        # body under the real deadlines (30 s, 120 s), and the arm's own count_tokens call was
+        # closed unanswered every time. A request still arriving gives its slot to a new connection.
+        with mock.patch.object(lb, "MAX_CONNECTIONS", 4, create=True):
+            server = self.served_broker()
+        held = []
+        for i in range(4):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            self.addCleanup(sock.close)
+            sock.sendall(b"P" if i % 2 else b"POST /v1/messages/count_tokens HTTP/1.1\r\nContent-Length: 1000\r\n\r\nx")
+            held.append(sock)
+        self.wait_slots_taken(server, 4)
+        for _ in range(3):
+            self.api.replies.append((200, "application/json", b'{"input_tokens": 12}'))
+            status, _data = self.post(path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})
+            self.assertEqual(status, 200, "a stalled request kept the arm's own call out")
+        held[0].settimeout(5)  # the one that had waited longest
+        try:
+            self.assertEqual(held[0].recv(1), b"", "a stalled request was answered")
+        except ConnectionResetError:
+            pass
+        drops = [e for e in self.events() if e["event"] == "drop"]
+        self.assertIn("stalled request evicted", {e["why"] for e in drops})
+        self.assertNotIn("fault", [e["event"] for e in self.events()], "an eviction was recorded as a fault")
+
+    def test_slots_busy_with_calls_in_flight_still_close_a_connection_past_them(self):
+        # Only a request still arriving is evicted: a call already relayed keeps its slot, and the
+        # connection past the bound is closed unanswered and counted, as before.
+        release, relayed = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def slow_api():
+            conn, _ = listener.accept()
+            with conn:
+                conn.recv(1 << 16)
+                relayed.set()
+                release.wait(10)
+                data = b'{"input_tokens": 12}'
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+                             % (len(data), data))
+        threading.Thread(target=slow_api, daemon=True).start()
+        with mock.patch.object(lb, "MAX_CONNECTIONS", 1, create=True):
+            server = self.served_broker(f"http://127.0.0.1:{listener.getsockname()[1]}")
+        result = {}
+        call = threading.Thread(target=lambda: result.update(status=self.post(
+            path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})[0]), daemon=True)
+        call.start()
+        self.wait_slots_taken(server, 1)
+        self.assertTrue(relayed.wait(5), "the call never reached the API")
+        extra = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(extra.close)
+        self.assertEqual(extra.recv(1), b"", "a connection past the slots was parked")
+        release.set()
+        call.join(10)
+        self.assertEqual(result.get("status"), 200, "the call in flight lost its slot")
+        self.assertIn("connection slots full", {e["why"] for e in self.events() if e["event"] == "drop"})
+
+    def test_a_request_trickled_a_byte_at_a_time_is_cut_off_at_its_total_deadline(self):
+        for phase in ("request line", "body"):
+            with self.subTest(phase=phase):
+                self.ledger_path = self.tmp / f"spend-{phase[0]}.jsonl"
+                with mock.patch.object(lb, "HANDLER_TIMEOUT_S", 5, create=True), \
+                        mock.patch.object(lb, "REQUEST_DEADLINE_S", 1.0, create=True), \
+                        mock.patch.object(lb, "BODY_DEADLINE_S", 1.0, create=True):
+                    self.served_broker()
+                    sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+                    self.addCleanup(sock.close)
+                    if phase == "body":
+                        sock.sendall(b"POST /v1/messages HTTP/1.1\r\nContent-Length: 1000\r\n\r\n")
+                    stop = threading.Event()
+                    self.addCleanup(stop.set)
+
+                    def trickle(sock=sock, stop=stop, byte=b"P" if phase == "request line" else b"x"):
+                        while not stop.wait(0.3):
+                            with contextlib.suppress(OSError):
+                                sock.sendall(byte)
+
+                    threading.Thread(target=trickle, daemon=True).start()
+                    started, answer = time.monotonic(), b""
+                    with contextlib.suppress(ConnectionResetError, TimeoutError):
+                        while chunk := sock.recv(4096):
+                            answer += chunk
+                    stop.set()
+                    self.assertLess(time.monotonic() - started, 4, f"a {phase} trickled a byte at a time outlived its deadline")
+                    if phase == "body":
+                        self.assertIn(b" 408 ", answer.split(b"\r\n", 1)[0])
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline and "drop" not in [e["event"] for e in self.events()]:
+                        time.sleep(0.05)
+                    whys = {e["why"] for e in self.events() if e["event"] == "drop"}
+                    self.assertIn("request timed out" if phase == "request line" else "body did not arrive", whys)
+
+    def test_a_client_that_leaves_mid_answer_is_recorded_as_a_fault(self):
+        # Codex review of 82a2d00c, its second case: the client disconnects while the broker is
+        # still relaying the API's answer. The broker's write fails inside relay(); that is a fault.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def streaming_api():
+            conn, _ = listener.accept()
+            with conn, contextlib.suppress(OSError):
+                conn.recv(1 << 16)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+                for _ in range(100):
+                    chunk = b'data: {"type": "ping"}\n\n' * 400
+                    conn.sendall(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                    time.sleep(0.02)
+                conn.sendall(b"0\r\n\r\n")
+        threading.Thread(target=streaming_api, daemon=True).start()
+        self.served_broker(f"http://127.0.0.1:{listener.getsockname()[1]}")
+        body = json.dumps(self.body()).encode()
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        sock.sendall(b"POST /v1/messages HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+                     % (len(body), body))
+        self.assertTrue(sock.recv(64).startswith(b"HTTP/1.0 200"))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.close()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and "settle" not in [e["event"] for e in self.events()]:
+            time.sleep(0.05)
+        events = self.events()
+        faults = [e for e in events if e["event"] == "fault"]
+        self.assertEqual([(f["where"], bool(f["frames"])) for f in faults][:1], [("relay", True)],
+                         f"a client that left mid-answer left no fault in the ledger: {events}")
+        self.assertEqual([e["event"] for e in events].count("settle"), 1, "the call was not settled")
+
+    def test_a_flood_of_faults_cannot_flood_the_ledger(self):
+        # Recording every fault made each one a ledger write and an fsync: a client resetting its
+        # connection mid-body in a loop grew the host's ledger without bound. Faults are counted,
+        # and written per kind at most once a DROP_RECORD_S, like drops; the count rides every line.
+        server = self.served_broker()
+        n = 200
+        for _ in range(n):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            sock.sendall(b"POST /v1/messages HTTP/1.1\r\nContent-Length: 100\r\n\r\nx")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            sock.close()
+        self.wait_slots_taken(server, 0)
+        self.api.replies.append((200, "application/json", b'{"input_tokens": 12}'))
+        self.assertEqual(self.post(path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})[0],
+                         200)
+        counted = lambda e: sum((e.get("faults") or {}).values()) + sum((e.get("dropped") or {}).values())
+        deadline = time.monotonic() + 5  # no later event is needed: a tally line catches the count up
+        while time.monotonic() < deadline and counted(self.events()[-1]) < n:
+            time.sleep(0.05)
+        events = self.events()
+        lines = [e for e in events if e["event"] in ("fault", "drop", "tally")]
+        self.assertLess(len(lines), 20, f"{n} resets wrote {len(lines)} ledger lines")
+        self.assertGreaterEqual(counted(events[-1]), n, f"the resets are not all counted on the ledger's last line: {events[-1]}")
 
     def test_a_body_whose_fields_have_the_wrong_type_is_refused_not_crashed_on(self):
         self.broker()

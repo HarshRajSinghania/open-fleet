@@ -16,21 +16,28 @@ host without passing through the broker, and nothing here sees, caps or records 
 refuses requests made TO it; it does not stand between the arm and the network.
 
 Every connection has a socket timeout (HANDLER_TIMEOUT_S), one deadline for its request line and
-headers (REQUEST_DEADLINE_S, which a byte at a time never extends) and one for its body, every
-connection closed unanswered is counted in the ledger as a "drop", and at most
-MAX_CONNECTIONS are served at once, so a client that connects and sends nothing cannot park the
-threads the arm's model calls need (W5-16). count_tokens is free but bounded: FREE_CALLS_MAX
-calls and FREE_BYTES_MAX body bytes per broker, a "free" tally every FREE_RECORD_EVERY calls and
-the tally on every later event, and a refusal past the bound (W5-17). The container keeps no log,
-so every exception in a request is a "fault" line in the ledger (where, the exception type and
-the frames; never a message, a request, a response or the token): one escaping a handler, a body
-that never arrived, an upstream or client failure caught while relaying (and the 502 that could
-not be sent), and a usage report settle cannot price. The exceptions that are not faults are a
-malformed request's own (a non-integer Content-Length answered 411, a body that is not JSON
-answered 400 and recorded as a refusal), a stream line that is not JSON, which is skipped, and a
-whole answer that is not JSON, which settles its call's whole reservation.
-A call's settle always runs, settling the whole reservation when its usage cannot be priced
-(W5-18).
+headers (REQUEST_DEADLINE_S, which a byte at a time never extends) and one for its body
+(BODY_DEADLINE_S), and at most MAX_CONNECTIONS are served at once. A deadline bounds one
+connection, not a client that keeps opening them, so when every slot is taken a new connection
+evicts the one that has waited longest for its own request to arrive: a request still arriving
+holds its slot only until someone else needs it, and only calls already read in full (relayed to
+the API, or being refused) keep theirs. A connection past the bound with none to evict is closed
+unanswered. Every connection closed without an answer (evicted, past the bound, timed out,
+malformed, a body cut short, or closed before its request) is counted as a "drop" (W5-16).
+count_tokens is free but bounded: FREE_CALLS_MAX calls and FREE_BYTES_MAX body bytes per broker,
+a "free" tally every FREE_RECORD_EVERY calls and the tally on every later event, and a refusal
+past the bound (W5-17). The container keeps no log, so every exception in a request is a "fault"
+in the ledger (where, the exception type and the frames; never a message, a request, a response
+or the token): one escaping a handler, a body that never arrived, an upstream or client failure
+caught while relaying (and the 502 that could not be sent), and a usage report settle cannot
+price. The exceptions that are not faults are a malformed request's own (a non-integer
+Content-Length answered 411, a body that is not JSON answered 400 and recorded as a refusal), a
+stream line that is not JSON, which is skipped, a whole answer that is not JSON, which settles its
+call's whole reservation, and the socket errors of a connection the broker itself evicted. Drops
+and faults are counted per kind and written at most once a DROP_RECORD_S per kind, with the
+running counts on every line, so a client that resets connections in a loop cannot grow the
+ledger without bound. A call's settle always runs, settling the whole reservation when its usage
+cannot be priced (W5-18).
 
 The cap is a reservation ledger. A call starts only when the settled spend, the reservations of
 the calls still in flight and its own reservation fit under --cap-usd. Its reservation is its
@@ -56,11 +63,13 @@ containers are destroyed, into the receipt.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import http.client
 import io
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -107,8 +116,9 @@ UPSTREAM_TIMEOUT_S = 900
 HANDLER_TIMEOUT_S = 60  # each read or write on a client connection (W5-16)
 REQUEST_DEADLINE_S = 30  # the request line and headers, in all: a byte at a time never extends it
 BODY_DEADLINE_S = 120  # the whole request body, however slowly it trickles
-DROP_RECORD_S = 1.0  # a "drop" line per reason at most this often; the running count rides every line
+DROP_RECORD_S = 1.0  # a "drop" or "fault" line per kind at most this often; the counts ride every line
 MAX_CONNECTIONS = 32  # served at once: the broker's --pids-limit is 64
+EVICT_WAIT_S = 5  # how long a new connection waits for the slot an evicted one gives up
 FREE_CALLS_MAX, FREE_BYTES_MAX = 5000, 2 << 30  # count_tokens per broker (W5-17)
 FREE_RECORD_EVERY = 100  # a "free" tally event every this many count_tokens calls
 PRICED_PATH, FREE_PATH = "/v1/messages", "/v1/messages/count_tokens"
@@ -263,7 +273,7 @@ class Ledger:
     def __init__(self, path, cap_usd):
         self.cap, self.settled, self.inflight, self.n = cap_usd, 0.0, {}, 0
         self.free_calls = self.free_bytes = 0
-        self.dropped, self.drop_written = {}, {}
+        self.dropped, self.faults, self.written, self.catch_up = {}, {}, {}, None
         self.lock = threading.Lock()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         self.fh = os.fdopen(fd, "a", encoding="utf-8")
@@ -275,6 +285,8 @@ class Ledger:
         tally = {"free_calls": self.free_calls, "free_bytes": self.free_bytes} if self.free_calls else {}
         if self.dropped:
             tally["dropped"] = dict(self.dropped)
+        if self.faults:
+            tally["faults"] = dict(self.faults)
         self.fh.write(json.dumps({"at": now(), **entry, **tally}, sort_keys=True) + "\n")
         self.fh.flush()
         os.fsync(self.fh.fileno())
@@ -293,23 +305,48 @@ class Ledger:
                 self.write({"event": "free", "calls": self.free_calls, "bytes": self.free_bytes})
             return True
 
+    def _due(self, kind):
+        """True when a line of `kind` may be written now: the first, then one a DROP_RECORD_S. One
+        not written now is still counted, and a "tally" line DROP_RECORD_S later carries it, so
+        no count waits for a later event that may never come (the container is destroyed, not
+        stopped). Called with the lock held."""
+        if time.monotonic() - self.written.get(kind, float("-inf")) < DROP_RECORD_S:
+            if self.catch_up is None:
+                self.catch_up = threading.Timer(DROP_RECORD_S, self._tally)
+                self.catch_up.daemon = True
+                self.catch_up.start()
+            return False
+        self.written[kind] = time.monotonic()
+        return True
+
+    def _tally(self):
+        with self.lock:
+            self.catch_up = None
+            if not self.fh.closed:  # a broker shut down in-process (the tests) has closed it
+                self.write({"event": "tally"})
+
     def drop(self, why):
-        """A connection closed without an answer (slots full, a request past its deadline, a
-        malformed one): counted, and written as a "drop" line at most every DROP_RECORD_S per reason,
-        so a flood of them cannot flood the ledger (2026-10-27 re-attack, W5-16)."""
+        """A connection closed without an answer (evicted, slots full, a request past its deadline,
+        a malformed one): counted, and written as a "drop" line at most every DROP_RECORD_S per
+        reason, so a flood of them cannot flood the ledger (2026-10-27 re-attack, W5-16)."""
         with self.lock:
             self.dropped[why] = self.dropped.get(why, 0) + 1
-            if time.monotonic() - self.drop_written.get(why, float("-inf")) >= DROP_RECORD_S:
-                self.drop_written[why] = time.monotonic()
+            if self._due(("drop", why)):
                 self.write({"event": "drop", "why": why, "count": self.dropped[why]})
 
     def fault(self, where, err):
         """A fault, recorded where it is kept: the exception's type and frames, never its message
-        (which may quote a request), a request, a response or the token (W5-18)."""
+        (which may quote a request), a request, a response or the token (W5-18). Counted per
+        where and type, and written like a drop: the first, then at most one a DROP_RECORD_S, so a
+        client resetting connections in a loop cannot grow the ledger, and an fsync, per reset."""
         frames = [f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}"
                   for f in traceback.extract_tb(err.__traceback__)][-12:] if err is not None else []
+        kind = f"{where}:{type(err).__name__}"
         with self.lock:
-            self.write({"event": "fault", "where": where, "error": type(err).__name__, "frames": frames})
+            self.faults[kind] = self.faults.get(kind, 0) + 1
+            if self._due(("fault", kind)):
+                self.write({"event": "fault", "where": where, "error": type(err).__name__, "frames": frames,
+                            "count": self.faults[kind]})
 
     def reserve(self, model, usd):
         """A call id when the call fits under the cap with every call in flight, else None."""
@@ -376,7 +413,22 @@ class Broker(BaseHTTPRequestHandler):
 
     def log_error(self, format, *args):
         # http.server reports a timed-out or malformed request here; record its kind, never its text.
+        if self.server.was_evicted(self.connection):
+            return  # its eviction is the drop already counted
         self.ledger.drop("request timed out" if format.startswith("Request timed out") else "malformed request")
+
+    def handle(self):
+        """One request (http.server's HTTP/1.0: never a second on the same connection). A
+        connection closed before its request line is a drop; an evicted one's socket errors are
+        the eviction's, already counted, never a fault."""
+        try:
+            super().handle()
+        except OSError:
+            if not self.server.was_evicted(self.connection):
+                raise
+            return
+        if not getattr(self, "raw_requestline", b"") and not self.server.was_evicted(self.connection):
+            self.ledger.drop("closed before a request")
 
     def fail(self, status, kind, why):
         data = json.dumps({"type": "error", "error": {"type": kind, "message": f"open-fleet live broker: {why}"}})
@@ -388,6 +440,8 @@ class Broker(BaseHTTPRequestHandler):
         self.wfile.write(data.encode())
 
     def do_GET(self):
+        if not self.server.request_read(self.connection):
+            return  # evicted while it stalled: closed unanswered, and counted
         if self.path == "/health":
             data = json.dumps({"ok": True, "cap_usd": self.ledger.cap}).encode()
             self.send_response(200)
@@ -414,9 +468,15 @@ class Broker(BaseHTTPRequestHandler):
             return self.fail(413, "invalid_request_error", f"a body over {MAX_BODY} bytes")
         self.reader.deadline = time.monotonic() + BODY_DEADLINE_S
         body = self.read_body(length)
+        if not self.server.request_read(self.connection):
+            return  # evicted while it stalled: closed unanswered, and counted (W5-16)
         self.connection.settimeout(self.timeout)  # the answer's writes get the plain per-call timeout
         if body is None:
-            return self.fail(408, "invalid_request_error", f"the body did not arrive within {BODY_DEADLINE_S:g} s")
+            # Already counted (a "body" fault, or a "body did not arrive" drop): a client that is
+            # gone cannot be told, and that is not a second fault.
+            with contextlib.suppress(OSError):
+                self.fail(408, "invalid_request_error", f"the body did not arrive within {BODY_DEADLINE_S:g} s")
+            return
         if path == FREE_PATH:
             if not self.ledger.free(len(body)):
                 return self.fail(403, "permission_error", "the count_tokens bound would be passed")
@@ -441,16 +501,23 @@ class Broker(BaseHTTPRequestHandler):
         chunks, left, deadline = [], length, time.monotonic() + BODY_DEADLINE_S
         while left:
             if time.monotonic() > deadline:
-                return None
+                break
             try:
                 chunk = self.rfile.read1(min(left, 1 << 20))
-            except OSError as err:  # the handler's socket timeout, or the client left
-                self.ledger.fault("body", err)
+            except TimeoutError:  # the body's deadline, or the per-read timeout: not a fault
+                break
+            except OSError as err:  # the client's connection failed
+                if not self.server.was_evicted(self.connection):
+                    self.ledger.fault("body", err)
                 return None
             if not chunk:
-                return None
+                break
             chunks.append(chunk)
             left -= len(chunk)
+        if left:
+            if not self.server.was_evicted(self.connection):
+                self.ledger.drop("body did not arrive")
+            return None
         return b"".join(chunks)
 
     def relay(self, body, call, model, fast):
@@ -546,34 +613,79 @@ def read_token(path):
 
 
 class BrokerServer(ThreadingHTTPServer):
-    """At most `slots` connections served at once (one past it is closed unanswered), and a fault
-    in any of them recorded in the ledger rather than printed to a log nobody keeps (W5-16, W5-18)."""
+    """At most `slots` connections served at once, and a fault in any of them recorded in the
+    ledger rather than printed to a log nobody keeps (W5-16, W5-18).
+
+    A connection is READING until its whole request has arrived. When every slot is taken, a new
+    connection evicts the reading one that has waited longest (its socket is shut, so its thread
+    ends at once) and takes the slot it gives up; a call already read in full is never evicted,
+    and with none reading the new connection is closed unanswered. So a client trickling requests,
+    however many connections it reopens, holds a slot only until the arm's own call needs it: that
+    call's request is in the socket when its thread starts, and is read in full at once (2026-10-27
+    re-attack of 4b24dfde, W5-16)."""
 
     daemon_threads = True
 
     def __init__(self, address, handler, ledger, slots):
         self.ledger, self.slots = ledger, threading.BoundedSemaphore(slots)
+        self.reading, self.evicted, self.state = {}, set(), threading.Lock()
         super().__init__(address, handler)
 
     def process_request(self, request, client_address):
-        if not self.slots.acquire(blocking=False):
+        if not self.slots.acquire(blocking=False) and not (self.evict() and self.slots.acquire(timeout=EVICT_WAIT_S)):
             self.ledger.drop("connection slots full")
             self.shutdown_request(request)
             return
+        with self.state:
+            self.reading[request] = time.monotonic()
         try:
             super().process_request(request, client_address)
         except BaseException:
+            self.done(request)
             self.slots.release()
             raise
+
+    def evict(self):
+        """Shut the reading connection that has waited longest; False when none is reading."""
+        with self.state:
+            if not self.reading:
+                return False
+            victim = min(self.reading, key=self.reading.get)
+            del self.reading[victim]
+            self.evicted.add(victim)
+        with contextlib.suppress(OSError):
+            victim.shutdown(socket.SHUT_RDWR)
+        self.ledger.drop("stalled request evicted")
+        return True
+
+    def request_read(self, request):
+        """`request`'s whole request has arrived: from here it keeps its slot. False when it was
+        evicted first, and must then end without an answer."""
+        with self.state:
+            self.reading.pop(request, None)
+            return request not in self.evicted
+
+    def was_evicted(self, request):
+        with self.state:
+            return request in self.evicted
+
+    def done(self, request):
+        with self.state:
+            self.reading.pop(request, None)
+            self.evicted.discard(request)
 
     def process_request_thread(self, request, client_address):
         try:
             super().process_request_thread(request, client_address)
         finally:
+            self.done(request)
             self.slots.release()
 
     def handle_error(self, request, client_address):
-        self.ledger.fault("handler", sys.exc_info()[1])
+        err = sys.exc_info()[1]
+        if isinstance(err, OSError) and self.was_evicted(request):
+            return  # the eviction's own consequence, already counted as a drop
+        self.ledger.fault("handler", err)
 
 
 def serve(token, ledger_path, cap_usd, port=PORT, upstream=UPSTREAM, host="127.0.0.1"):

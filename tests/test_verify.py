@@ -6702,6 +6702,44 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         self.assertIn("working-tree file .orca/dispatch-pubkey", out[0])
         self.assertIn("the graded worker can write it", out[0])
 
+    ENFORCEMENT = "enforcement (signed dispatch record + pubkey)"
+
+    def test_the_enforcement_lane_refuses_a_worker_writable_key_too(self):
+        # PR #719 review round 2 (P1): the restriction keyed on `provenance=` only, while the
+        # enforcement lane is sound for every other authority check. One rule: no lane claiming
+        # soundness accepts a worker-writable key.
+        for ref in (".orca/dispatch-pubkey", ".orca/dispatch-pubkey@main"):
+            with self.subTest(ref=ref):
+                out = self._check(ref, lane=self.ENFORCEMENT)
+                self.assertEqual(len(out), 1, out)
+                self.assertFalse(out[0].startswith("NOTE:"), out)
+                self.assertIn("W3-03", out[0])
+        out = self._check(f".orca/dispatch-pubkey@{self.pinned}", lane=self.ENFORCEMENT)
+        self.assertTrue(out and out[0].startswith("NOTE:"), out)
+
+    def _main_lane(self, pubkey):
+        self.write("m.json", json.dumps({"unit": "u"}))
+        buf, errbuf = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(errbuf):
+            verify.main(["--manifest", "m.json", "--unit-class", "mutation",  # what the record signs
+                         "--dispatch-record", ".orca/dispatch-record.json",
+                         "--dispatch-pubkey", pubkey])
+        return verify._Authority.lane, buf.getvalue() + errbuf.getvalue()
+
+    def test_a_record_with_a_working_tree_key_opens_no_enforcement_lane(self):
+        # The documented native flow (verify-gate's working-tree pin, an in-session env key)
+        # keeps working — the signature is still checked — but a key the worker can swap no
+        # longer makes the run claim soundness, and the verdict says so.
+        lane, out = self._main_lane(".orca/dispatch-pubkey")
+        self.assertIsNone(lane, out)
+        self.assertIn("signature verified", out)
+        self.assertIn("no soundness claim", out)
+
+    def test_a_record_with_a_pinned_key_still_opens_the_enforcement_lane(self):
+        lane, out = self._main_lane(f".orca/dispatch-pubkey@{self.pinned}")
+        self.assertEqual(lane, self.ENFORCEMENT, out)
+        self.assertIn("signature verified", out)
+
     def test_a_pinned_key_note_says_where_the_pin_is_trustworthy(self):
         # PR #719 re-attack: `git update-ref refs/remotes/origin/main <own commit>` succeeds in a
         # worker's own clone, and a commit id names whatever the caller chose — the verdict must

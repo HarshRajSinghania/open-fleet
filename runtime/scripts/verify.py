@@ -738,7 +738,7 @@ class _Authority:
     user-writable dir that is not a standard system bin dir, it is one the graded worker could
     have replaced, and the review leg is ADVISORY-ONLY — on a lane that claims soundness (the
     ci|mcp|sdk|dispatch provenance classes, or an enforcement-mode run with a signed dispatch
-    record + pubkey) it FAILS CLOSED; on the native advisory lane the verdict records it.
+    record + a PINNED pubkey) it FAILS CLOSED; on the native advisory lane the verdict records it.
     The review REPOSITORY is the same story (C1): inferred from `origin` — a remote the worker
     (and every sibling worktree) can rewrite — it is advisory; a sound lane requires --repo.
     Resolution happens EXACTLY ONCE: main() pins at startup; a library caller that never ran
@@ -850,15 +850,17 @@ class _Authority:
 
     @classmethod
     def key_source(cls, source, what):
-        """(where, the source to READ, refusal or None) for trust material named `path` or
-        `path@ref` (W3-03).
+        """(where, the source to READ, pinned, refusal or None) for trust material named `path`
+        or `path@ref` (W3-03).
 
         A bare path is read from the WORKING TREE — the graded worker's to write — and `path@main`,
         `@HEAD` or any other local name is a ref the same worker can move (W3-02's class). Both
         were accepted on a lane claiming soundness with a NOTE that said only "the supplied key",
-        so the rule "pass path@<reviewed ref>" lived in prose. On a provenance lane a trust key is
+        so the rule "pass path@<reviewed ref>" lived in prose. On ANY lane claiming soundness —
+        `cls.lane`, the one predicate git, gh and gitleaks custody also answer to — a trust key is
         now read only at a commit id or a remote-tracking ref; elsewhere the read stands and
-        `where` says which kind it was, so the verdict and the transcript tell them apart.
+        `where` says which kind it was, so the verdict and the transcript tell them apart. A
+        dispatch record with an unpinned key does not open the enforcement lane at all (main()).
 
         The class is decided by what the ref RESOLVES to, never by its spelling (PR #719 review):
         a `refs/remotes/…` name may be a symbolic ref to a local branch. The ref is followed
@@ -871,12 +873,12 @@ class _Authority:
         graded change did not write it. On a worker's own machine `git update-ref refs/remotes/…`
         works like any other ref write, which is why the in-session lane stays advisory."""
         path, sep, ref = (source or "").partition("@")
-        sound = (cls.lane or "").startswith("provenance=")
+        sound = bool(cls.lane)  # PR #719 review round 2: provenance AND enforcement lanes
         if not (sep and ref):
             where = f"the working-tree file {path} (the graded worker can write it)"
             read, pinned = source, False
         elif ref.startswith("-"):
-            return f"{path} at {ref!r}", source, None  # read_source refuses option-shaped refs
+            return f"{path} at {ref!r}", source, False, None  # read_source refuses it
         else:
             target = ref
             if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref):
@@ -896,7 +898,7 @@ class _Authority:
                          if pinned else f"{path} at {ref!r}{via} = commit {commit[:12]}, a "
                          "local name the graded worker can move")
         if not pinned and sound:
-            return where, read, (f"{what} {source!r} is {where} — a lane claiming soundness "
+            return where, read, False, (f"{what} {source!r} is {where} — a lane claiming soundness "
                                  f"({cls.lane}) reads trust material only at a commit id or a ref "
                                  "whose final target is remote-tracking (what the coordinator's own "
                                  "fetch wrote): path@refs/remotes/… or path@<commit id>; "
@@ -907,7 +909,7 @@ class _Authority:
             # names whatever the caller chose.
             where += (" — trustworthy only where the worker cannot write refs (the coordinator's "
                       "own fetch, a CI checkout); in the worker's own clone this lane is advisory")
-        return where, read, None
+        return where, read, pinned, None
 
     @classmethod
     def ensure(cls, explicit_repo=None):
@@ -2872,7 +2874,7 @@ def check_ancestry(m, base):
     A coordinator that NAMES a base asked for this fact. On the advisory native lane a missing
     origin/<base> is still a NOTE (pre-merge, offline, a clone that never fetched). On a lane
     claiming soundness (_Authority.lane: --provenance ci|mcp|sdk|dispatch, or a signed dispatch
-    record + pubkey) it is FATAL, as every other authority leg is there: the ref lives in the
+    record + a pinned pubkey) it is FATAL, as every other authority leg is there: the ref lives in the
     clone the worker controls, and deleting it must not turn a requested ancestry proof into a
     skipped one (review P2)."""
     if not base:
@@ -3060,7 +3062,7 @@ def check_retention_receipt(m, pubkey_ref=None):
         return [f"provenance claims the {claim} retention binding, but no trust material was supplied "
                 "(--retention-pubkey) — a key inside a receipt never establishes trust, so there is "
                 "nothing to verify it against; fail-closed (#608)"]
-    key_where, key_read, refused = _Authority.key_source(pubkey_ref, "--retention-pubkey")
+    key_where, key_read, _pinned, refused = _Authority.key_source(pubkey_ref, "--retention-pubkey")
     if refused:
         return [refused]
     pub_text, err = read_source(key_read)  # the commit key_source resolved, once
@@ -3354,7 +3356,7 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
         return [f"dispatch provenance half-configured (missing {missing}) — cannot verify; fail-closed (#135)"]
     # W3-03: the KEY's location is what makes the signature mean anything; the record's is named
     # (it is authenticated by that signature, so where it is read from cannot raise its trust).
-    key_where, key_read, refused = _Authority.key_source(pubkey_ref, "--dispatch-pubkey")
+    key_where, key_read, key_pinned, refused = _Authority.key_source(pubkey_ref, "--dispatch-pubkey")
     if refused:
         return [refused]
     record_where = _Authority.key_source(record_ref, "--dispatch-record")[0]
@@ -3439,9 +3441,12 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
     if signed_base is not None and signed_base != m.get("base_sha"):
         return [f"dispatch substitution: the manifest's base_sha={m.get('base_sha')!r} but the "
                 f"coordinator signed {signed_base!r} — the control's pre-fix content was swapped"]
+    advisory = ("" if key_pinned else
+                " — ADVISORY: a key the graded worker can swap opens no enforcement lane; the "
+                "signature is checked, with no soundness claim (PR #719 review)")
     return ["NOTE: dispatch record signature verified against the supplied key (#135) — a soundness "
             "boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor); key: "
-            f"{key_where}; record: {record_where} (W3-03)"]
+            f"{key_where}; record: {record_where} (W3-03){advisory}"]
 
 
 def check_class_downgrade(m, unit_class, record_ref, pubkey_ref):
@@ -3630,7 +3635,7 @@ def main(argv=None):
     ap.add_argument("--contract-digest", default=None, help="AUTHORITATIVE sha256 of the frozen contract")
     ap.add_argument("--repo", default=None,
                     help="owner/name for the review lookup. REQUIRED on a lane claiming soundness "
-                         "(--provenance ci|mcp|sdk|dispatch, or a signed dispatch record + pubkey); "
+                         "(--provenance ci|mcp|sdk|dispatch, or a signed dispatch record + a pinned pubkey); "
                          "elsewhere inferred from origin and recorded as ADVISORY — origin is a "
                          "remote the worker can rewrite (h409 F-2)")
     ap.add_argument("--provenance", default=None,
@@ -3751,8 +3756,14 @@ def main(argv=None):
     _is_oracle_path.discovery.clear()  # the same: test discovery is read before the control
     # h409 F-1: the review authority is pinned HERE, before any check runs and long before the
     # executed negative control runs worker code — never looked up lazily after it.
-    repo = _Authority.resolve(args.provenance,
-                              bool(args.dispatch_record and args.dispatch_pubkey), args.repo)
+    # PR #719 review round 2: a record + key opens the ENFORCEMENT lane (sound, like a provenance
+    # lane) only when the key is pinned — a commit id or a ref whose final target is
+    # remote-tracking. With a working-tree or local-ref key the worker could have swapped, the run
+    # stays on the advisory lane: the signature is still checked, and nothing claims soundness.
+    # The documented in-session flows (verify-gate's working-tree pin, an env key) keep working.
+    enforcement = bool(args.dispatch_record and args.dispatch_pubkey) and \
+        _Authority.key_source(args.dispatch_pubkey, "--dispatch-pubkey")[2]
+    repo = _Authority.resolve(args.provenance, enforcement, args.repo)
     # W3-11: the toolchain is hashed BEFORE verify() — before the executed control runs worker
     # code — and again after; a sibling that changed in between is not the verifier that judged.
     toolchain = _Transcript.hash_files()

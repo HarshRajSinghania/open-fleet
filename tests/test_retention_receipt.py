@@ -588,6 +588,11 @@ class SoundLaneTrustKey(ReceiptCase):
         verify._Authority.lane = "provenance=ci"
         self.assertRefused(self.check(TRUSTED), "working-tree file", "W3-03")
 
+    def test_the_enforcement_lane_refuses_a_bare_path_trust_key_too(self):
+        # PR #719 review round 2 (P1): one predicate for every lane claiming soundness.
+        verify._Authority.lane = "enforcement (signed dispatch record + pubkey)"
+        self.assertRefused(self.check(TRUSTED), "working-tree file", "W3-03")
+
     def test_a_trust_key_at_a_local_name_is_refused_on_a_lane_claiming_soundness(self):
         self._pin()
         verify._Authority.lane = "provenance=ci"

@@ -1006,10 +1006,13 @@ Subcommands: `init`, `add`, `answer`, `waive`, `overtake`, `list`, `stale`, `sho
 `sign-answer`.
 
 Flags: `--run` (run directory under docs/runs) or `--file` (explicit batch path, for
-tests and scratch); `--pin-ref REF` (read the human grant key at that git ref through
-`decisions.py --pin-ref`; pass a commit id or a full `refs/remotes/…` name, and only in a clone
-the checked change cannot write refs in — the coordinator's own fetch or a CI checkout; in a
-worker's own clone any ref, `refs/remotes/*` included, is the worker's to move). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,
+tests and scratch); `--pin-ref REF` (the trust anchor, before or after the subcommand: a commit
+id or a ref whose final target, through any symbolic chain, is remote-tracking — a local branch,
+tag, `HEAD`, short name or a `refs/remotes/…` name symbolic to a local branch exits 2 — resolved
+once; the human grant key, through `decisions.py --pin-ref`, and the batch at this path are both
+read at that commit. Use it only in a clone the checked change cannot write refs in — the
+coordinator's own fetch or a CI checkout; in a worker's own clone any ref, `refs/remotes/*`
+included, is the worker's to move). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,
 `--resolved`, `--resolved-file`, `--force-init-over-md`; `add` takes `--id`, `--title`,
 `--question`, `--question-file`, `--asked`, `--related`, `--blocking`; `answer` takes a
 gate id plus `--answer`, `--source human:<name>` (who answered; required), `--date`; `waive`
@@ -1023,10 +1026,11 @@ Gates move `owed` to exactly one of `answered`, `waived`, `overtaken` — re-tra
 is an error. Gate ids look like `G1`. `stale` reports gates owed N or more days (`--days`,
 default 7) and never notifies; `render --check` verifies the view matches the store, and the
 release gate (`scripts/release_check.py` gate 1) runs it whenever the `.md` exists. Gate 1 reads
-the human grant key with `--pin-ref` at `refs/remotes/origin/main` resolved once to a commit —
-what the release clone's fetch of the reviewed default branch wrote — never at the tree being
-released, and FAILs when that ref names no remote-tracking commit (a missing key cannot be told
-from a deleted one). `related`/`blocking` are
+the human grant key and the set of gates with `--pin-ref` at `refs/remotes/origin/main` resolved
+once to a commit — what the release clone's fetch of the reviewed default branch wrote — never at
+the tree being released, and FAILs when that ref names no remote-tracking commit (a missing key
+cannot be told from a deleted one), when that commit carries no store for the run, and when it
+carries the `.md` view the release tree deleted. `related`/`blocking` are
 store-only and never render.
 
 Who closed a gate (W3-06, 2026-10-27 audit): `source` is shape-checked only and the store is
@@ -1039,6 +1043,19 @@ terminal gate whose signature does not verify as **owed** (`[owed]`, with the re
 named). On a lane claiming soundness (`ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` set) `--pin-ref`
 is required and, with no key pinned, no answer verifies. With no key and no sound lane — this
 repository today, which commits no key (W3-09) — behaviour is unchanged.
+
+Which gates are owed (PR #719 review): a signature protects each answer, not the set, so
+`"gates": []` with a re-rendered view used to owe nothing. With `--pin-ref`, every gate the batch
+at the anchor commit carries must be in this one with the same title, question and asked date;
+one missing (deleted, renamed) or altered is listed **owed** from the anchor's record, the reason
+named on its line, and a gate blocks every ref either record names — so `list --status owed
+--blocking <unit>` still shows it after a blocked ref is dropped. A batch claiming another run id owes every
+anchored gate; a duplicate id is a store error (exit 2), as are an anchored batch that is not a
+valid store and a batch path that reaches its file through a symlink inside the repository.
+`list`, `stale` and `show` read this view. A batch the anchor commit does not carry (a run newer
+than the anchor) is judged by its own records, with a stderr NOTE saying so. Without `--pin-ref`
+every batch is; once a key is pinned, a stderr NOTE says the set is unanchored. What the anchor
+never carried it cannot hold: a gate added and dropped on one branch leaves no trace.
 
 Exits: 0 ok (stale/list report exit 0 either way) · 1 `render --check` drift (the view
 differs from the store) · 2 usage or store error.

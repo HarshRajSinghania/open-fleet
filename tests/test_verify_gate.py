@@ -892,3 +892,33 @@ class TheGateBoundsTheVerifierItself(GateCase):
                     for hook in matcher["hooks"]:
                         self.assertGreater(hook["timeout"], default, name)
                         self.assertGreater(hook["timeout"], 600, "the host default fails open")
+
+
+class TheGateRunsTheVerifierIsolated(GateCase):
+    """W3-01 (2026-10-27 security audit, P0): the gate ran `python3 $HERE/verify.py`, so $HERE —
+    the graded worktree's runtime/scripts — sat at sys.path[0] ahead of the stdlib, and a committed
+    json.py there was the verifier's `json`. verify.py now drops that entry itself
+    (tests/test_verify.py SiblingNamedLikeTheStdlibNeverLoads); the gate ALSO runs it under -I, so
+    PYTHON* env and the user site stay out of the verdict too. Asserted from inside the verifier
+    the gate starts — the flags it really ran under — and with a planted json.py beside it."""
+
+    def test_the_verifier_runs_under_isolated_mode_and_a_planted_json_never_loads(self):
+        scripts = Path(tempfile.mkdtemp(prefix="iso-gate-")) / "runtime" / "scripts"
+        scripts.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, scripts.parent.parent, True)
+        shutil.copy(GATE, scripts / "verify-gate.sh")
+        (scripts / "verify.py").write_text(
+            "import sys\nimport json\n"
+            "print('isolated', sys.flags.isolated, 'json-from', json.__file__)\n",
+            encoding="utf-8")
+        (scripts / "json.py").write_text("raise SystemExit('PLANTED json loaded')\n",
+                                         encoding="utf-8")
+        m = Path(self.repo) / "m.json"
+        m.write_text("{}", encoding="utf-8")
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": str(m)}
+        r = subprocess.run(["sh", str(scripts / "verify-gate.sh"), "--event", "task"],
+                           capture_output=True, text=True, cwd=self.repo, env=env, timeout=60)
+        self.assertNotIn("PLANTED", r.stdout + r.stderr)
+        self.assertIn("isolated 1", r.stdout, r.stderr)
+        self.assertNotIn(str(scripts), r.stdout.split("json-from", 1)[-1])
+        self.assertEqual(r.returncode, 0, r.stderr)

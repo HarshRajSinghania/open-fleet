@@ -221,7 +221,11 @@ fi
 # (up to 3 × 600 s) when the host gave up let the turn end: fail-OPEN. The gate therefore bounds
 # the verifier itself, below the host's limit (hooks/hooks.json and the snippet set 2400 s): at
 # the deadline the verifier is stopped and the gate BLOCKS (2026-10-26 review).
-"$PY_BIN" "$HERE/verify.py" "$@" &
+# -I (W3-01): without it the interpreter puts $HERE at sys.path[0], ahead of the stdlib, and a
+# committed runtime/scripts/json.py became the verifier's `json` — a RED verdict turned GREEN,
+# bound by no toolchain hash. verify.py drops that entry itself too; -I also keeps PYTHON* env
+# and the user site out of the verdict.
+"$PY_BIN" -I "$HERE/verify.py" "$@" &
 _vpid=$!
 _waited=0
 while kill -0 "$_vpid" 2>/dev/null; do

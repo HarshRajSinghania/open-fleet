@@ -1,0 +1,9 @@
+{
+  "seconds": 3.2,
+  "measured": "2026-10-27: one local run of tests.test_entrypoint_guard (6 tests, Python 3.12.3), x2 to the CI lane",
+  "classes": {
+    "EveryEntryPointCarriesTheGuard": 0.8,
+    "NoPlantedStdlibNameLoads": 2.4
+  },
+  "fixture_seconds": 0.5
+}

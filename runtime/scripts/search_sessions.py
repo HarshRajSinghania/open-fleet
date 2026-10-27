@@ -41,23 +41,48 @@ source revision, artifact digest and currency against the live source
 
 Exit: 0 ok · 1 runtime/refusal/receipt failure · 2 usage/precheck refusal.
 """
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
+
 import argparse
 import datetime
 import fnmatch
 import hashlib
+import importlib.machinery
 import json
 import os
 from pathlib import Path
 import re
 import sqlite3
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-try:
-    import orca_cli
-except ImportError:  # loaded by file path (tests): the resolver sits beside this script
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import orca_cli
+
+class _Siblings:
+    """W3-01: the first-party siblings below are imported by NAME, so they must resolve — but this
+    directory never goes on sys.path, at ANY position. The stdlib itself probes for modules that do
+    not exist on this platform (`subprocess` imports `msvcrt`, `shutil` imports `_winapi`), so even
+    an appended entry lets a sibling file of that name answer. This finder sits after the stdlib's
+    and resolves exactly these names, from this directory, and nothing else."""
+    NAMES = frozenset(("orca_cli", "guard_text", "hint_provenance", "pm", "gitexec", "diff_scope"))
+    HERE = os.path.dirname(os.path.abspath(__file__))
+
+    @classmethod
+    def find_spec(cls, name, path=None, target=None):
+        if path is None and name in cls.NAMES:
+            return importlib.machinery.PathFinder.find_spec(name, [cls.HERE])
+        return None
+
+
+sys.meta_path.append(_Siblings)
+import orca_cli
 import guard_text
 import hint_provenance as hp
 from pm import _visible

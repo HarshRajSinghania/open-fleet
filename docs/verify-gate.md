@@ -93,7 +93,7 @@ In enterprise environments where `allowManagedHooksOnly` disables user or plugin
    - name: Verify unit evidence manifest
      run: |
        git fetch origin "${ORCA_BASE:?set ORCA_BASE to the integration branch}"
-       python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
+       python3 -I runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
          --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
          --repo "$GITHUB_REPOSITORY" --base "$ORCA_BASE" \
          --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci
@@ -111,6 +111,7 @@ In enterprise environments where `allowManagedHooksOnly` disables user or plugin
 - **In-session native hooks (`Stop` / `TaskCompleted`) are ADVISORY:** Because native hooks execute inside the worker's own shell environment, a compromised or adversarial worker could alter `ORCA_*` variables or local git refs. Native hooks catch accidental omissions and malformed manifests as defense-in-depth, and emit an advisory `NOTE` unless `ORCA_PROVENANCE` confirms off-worker execution.
 - **CI, MCP Task, and coordinator subprocesses are SOUND:** When an external process owns the environment and runs against a clean fetch of the repository with system-owned binaries (`git`, `gh`, `gitleaks`), the worker cannot tamper with the contract digest, unit class, or verifying key.
 - **The `ORCA_NO_GH` lane is an explicit downgrade:** Setting `ORCA_NO_GH` replaces the independent GitHub API review check with a local review artifact corroborated by the coordinator contract. It is intended only for sanctioned offline environments and must never be enabled in shared CI templates where it would downgrade review verification.
+- **The verifier's interpreter never imports the graded tree's siblings (W3-01):** `python3 <dir>/verify.py` puts `<dir>` — in a worker's checkout, the worker's own `runtime/scripts` — ahead of the standard library on `sys.path`, so a committed `runtime/scripts/json.py` used to *be* the verifier's `json` and could turn a RED verdict GREEN, bound by no toolchain hash (the toolchain lists first-party files only). Every control-plane entry point now drops its own directory from `sys.path` as its first statement, before any other import, and `verify-gate.sh` runs the verifier as `python3 -I`; prefer `-I` wherever you invoke a script yourself. The signed transcript does **not** list other `.py` files beside the verifier: with the guard none of them can load by name, the guard is part of `verify.py`'s own hashed bytes (so a toolchain match proves it ran), and a list of unrelated siblings would bind nothing `run_report.py` could judge. `tests/test_entrypoint_guard.py` names every guarded entry point and plants every stdlib module name beside them.
 
 ---
 
@@ -142,7 +143,7 @@ When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispat
    - **Without `--execute-nc`:** Pass `--dispatch-record /tmp/dispatch-record.json --dispatch-pubkey .orca/dispatch-pubkey@<reviewed ref> --transcript-out <signed.json> --transcript-key <secret>` directly to `verify.py`.
    - **With `--execute-nc` (recommended two-process flow):** Because `--execute-nc` executes repository tests under the current user ID, `verify.py` refuses `--transcript-key` alongside `--execute-nc` so the private seed is never loaded into the test-execution process. Instead, write an unsigned verdict first and sign it in a separate process (which re-hashes `toolchain.files` against its sibling scripts before signing):
      ```bash
-     python3 runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
+     python3 -I runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
        --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
        --repo "$GITHUB_REPOSITORY" --base "${ORCA_BASE:?set ORCA_BASE to the integration branch}" \
        --dispatch-record /tmp/dispatch-record.json \
@@ -150,6 +151,6 @@ When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispat
        --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci \
        --transcript-out /tmp/verdict-unsigned.json
 
-     python3 runtime/scripts/dispatch-sign.py sign-transcript --key <secret> \
+     python3 -I runtime/scripts/dispatch-sign.py sign-transcript --key <secret> \
        --transcript /tmp/verdict-unsigned.json --out docs/runs/<run>/verifier-transcript.json
      ```

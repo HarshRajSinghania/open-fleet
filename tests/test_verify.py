@@ -6546,3 +6546,102 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
                 {"unit": "u1", "base_sha": self.poison}, "sha256:" + "a" * 64, "mutation",
                 None, "rec.json", "pub")
             self.assertTrue(bad and "pre-fix content was swapped" in bad[0], bad)
+
+
+class SiblingNamedLikeTheStdlibNeverLoads(unittest.TestCase):
+    """W3-01 (2026-10-27 security audit, P0): `python3 runtime/scripts/verify.py` puts
+    runtime/scripts at sys.path[0], AHEAD of the stdlib, so a committed sibling `json.py` was the
+    `json` the verifier parsed the manifest with — and the toolchain hash binds first-party files
+    only, so nothing recorded it. The audit's PoC: a stale review (RED, exit 2) turned GREEN (exit
+    0) by a json.py that rewrote one field inside `loads`, with a transcript binding the untouched
+    bytes. Run WITHOUT -I on purpose: the guard must hold when the caller forgets it.
+
+    The seam: the verifier's own interpreter start-up, with the audit's two plants beside a copy
+    of the toolchain. It catches a verdict reached through a substituted stdlib module; it does not
+    cover a plant on a caller-chosen PYTHONPATH (the caller's own environment)."""
+
+    # The plants proxy the REAL stdlib module (from the directory `os` came from — os is imported
+    # at start-up, before sys.path[0] exists) and record that they ran.
+    JSON_PLANT = (
+        "import importlib.util as _u, os as _o, sys as _s\n"
+        "_std = _o.path.dirname(_o.__file__)\n"
+        "_spec = _u.spec_from_file_location('json', _o.path.join(_std, 'json', '__init__.py'),\n"
+        "                                   submodule_search_locations=[_o.path.join(_std, 'json')])\n"
+        "_m = _u.module_from_spec(_spec); _s.modules['json'] = _m; _spec.loader.exec_module(_m)\n"
+        "open(_o.path.join(_o.path.dirname(__file__), 'PLANT-json'), 'w').close()\n"
+        "_loads = _m.loads\n"
+        "def _forged(s, *a, **k):\n"
+        "    d = _loads(s, *a, **k)\n"
+        "    if isinstance(d, dict) and isinstance(d.get('pr'), dict) and 'head_sha' in d:\n"
+        "        d['pr']['reviewed_sha'] = d['head_sha']\n"
+        "    return d\n"
+        "_m.loads = _forged\n"
+    )
+    HASHLIB_PLANT = (
+        "import importlib.util as _u, os as _o, sys as _s\n"
+        "_spec = _u.spec_from_file_location('hashlib', _o.path.join(_o.path.dirname(_o.__file__),\n"
+        "                                                           'hashlib.py'))\n"
+        "_m = _u.module_from_spec(_spec); _s.modules['hashlib'] = _m; _spec.loader.exec_module(_m)\n"
+        "open(_o.path.join(_o.path.dirname(__file__), 'PLANT-hashlib'), 'w').close()\n"
+    )
+
+    def setUp(self):
+        td = _temp_repo()
+        self.addCleanup(td.cleanup)
+        tmp = Path(td.name).resolve()
+        self.rs = tmp / "rs"
+        self.rs.mkdir()
+        for name in verify._Transcript.TOOLCHAIN:
+            shutil.copy2(ROOT / "runtime" / "scripts" / name, self.rs / name)
+        self.repo = tmp / "repo"
+        self.repo.mkdir()
+
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True,
+                                  text=True).stdout.strip()
+
+        git("init", "-q", "-b", "main")
+        (self.repo / "contract.md").write_text("- AC-1: x\n", encoding="utf-8")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+        self.base = git("rev-parse", "HEAD")
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "r.md").write_text("# report\n", encoding="utf-8")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "head")
+        head = git("rev-parse", "HEAD")
+        self.digest = "sha256:" + hashlib.sha256(b"- AC-1: x\n").hexdigest()
+        # The stale-review invariant: the review is pinned to base while head moved on.
+        self.manifest_bytes = json.dumps({
+            "unit": "u", "base_sha": self.base, "head_sha": head,
+            "criteria": [{"id": "AC-1", "addressed": True}],
+            "contract": {"digest": self.digest, "criterion_ids": ["AC-1"]},
+            "pr": {"reviewed_sha": self.base}}).encode("utf-8")
+        (self.repo / "manifest.json").write_bytes(self.manifest_bytes)
+
+    def _run(self):
+        argv = [sys.executable, str(self.rs / "verify.py"), "--manifest", "manifest.json",
+                "--contract-source", f"contract.md@{self.base}", "--contract-digest", self.digest,
+                "--unit-class", "report-only", "--transcript-out", "t.json"]
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("PYTHON", "ORCA_", "OPEN_FLEET_"))}
+        return subprocess.run(argv, cwd=self.repo, capture_output=True, text=True, env=env,
+                              timeout=120)
+
+    def test_the_stale_review_stays_red_with_json_and_hashlib_planted_beside_the_verifier(self):
+        control = self._run()
+        self.assertEqual(control.returncode, 2, control.stdout + control.stderr)
+        self.assertIn("stale review", control.stderr)
+        (self.rs / "json.py").write_text(self.JSON_PLANT, encoding="utf-8")
+        (self.rs / "hashlib.py").write_text(self.HASHLIB_PLANT, encoding="utf-8")
+        planted = self._run()
+        loaded = sorted(p.name for p in self.rs.glob("PLANT-*"))
+        self.assertEqual(loaded, [], "a sibling named like a stdlib module loaded into the "
+                                     f"verifier: {loaded}")
+        self.assertEqual(planted.returncode, 2,
+                         f"a planted sibling changed the verdict: {planted.stdout}{planted.stderr}")
+        self.assertIn("stale review", planted.stderr)
+        record = json.loads((self.repo / "t.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["exit"], 2)
+        self.assertEqual(record["manifest_sha256"],
+                         hashlib.sha256(self.manifest_bytes).hexdigest())

@@ -56,6 +56,18 @@ the worker in a disposable sandbox.
 Exit: 0 ok · 1 --check failed / live run failed or stopped · 2 usage, refusal or corpus error ·
 128+N interrupted by signal N (results and ledger written first).
 """
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
+
 import argparse
 import contextlib
 import copy
@@ -69,7 +81,6 @@ import secrets
 import shlex
 import signal
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -77,8 +88,14 @@ from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "runtime" / "scripts"))
-import search_sessions  # runtime/scripts is on the path first
+# Loaded by path, registered under its name as an import would: runtime/scripts never goes on
+# sys.path, where a file there named like a stdlib module — or like one the stdlib only probes
+# for, as `subprocess` probes `msvcrt` — would answer the import (W3-01).
+_ss_spec = importlib.util.spec_from_file_location("search_sessions",
+                                                  ROOT / "runtime" / "scripts" / "search_sessions.py")
+search_sessions = importlib.util.module_from_spec(_ss_spec)
+sys.modules["search_sessions"] = search_sessions
+_ss_spec.loader.exec_module(search_sessions)
 
 
 def _load_spend_guard():

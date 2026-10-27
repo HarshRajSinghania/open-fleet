@@ -329,5 +329,50 @@ class TestCliFailures(unittest.TestCase):
         self.assertIn("stale_dispatch", err)
 
 
+class TestEveryReceiptFieldPrintsInert(unittest.TestCase):
+    """W4-11 (2026-10-27 audit): the transcript and tail went through pm._visible, but their
+    neighbours (STATE, STAGE, NEXT_ACTION, agentWait.reason/source, dispatchId, cursors, the
+    list rows) printed raw, so a pane that reports ANSI or bidi text drove the coordinator's
+    terminal, and a newline in one field forged another KEY= line."""
+
+    HOSTILE = "ok\x1b]0;pwned\x07\u202eevil\nSTATE=forged"
+
+    def setUp(self):
+        self.m = load()
+
+    def assert_inert(self, lines):
+        joined = "\n".join(lines)
+        for raw in ("\x1b", "\x07", "\u202e"):
+            self.assertNotIn(raw, joined)
+        self.assertNotIn("\nSTATE=forged", joined)
+        self.assertIn("\\x1b", joined)
+
+    def test_show(self):
+        h = self.HOSTILE
+        self.assert_inert(self.m.format_show({
+            "dispatch": {"id": h}, "worker": {"state": h, "stage": h},
+            "projection": {"liveness": {"verdict": h}, "nextAction": {"argv": ["orca", h, 7]}},
+            "observation": {"agentWait": {"source": h, "reason": h}}}))
+
+    def test_read(self):
+        h = self.HOSTILE
+        self.assert_inert(self.m.format_read({"source": "terminal", "cursor": h, "fallbackReason": h,
+                                              "terminal": {"tail": ["line"]}}))
+        with self.assertRaises(self.m.Failed) as ctx:
+            self.m.format_read({"source": "terminal", "fallbackReason": h,
+                                "terminal": {"tail": []}}, want="transcript")
+        self.assert_inert([str(ctx.exception)])
+
+    def test_fence(self):
+        h = self.HOSTILE
+        self.assert_inert(self.m.format_fence({"dispatchId": h, "state": h}, "stop_unknown"))
+
+    def test_list(self):
+        h = self.HOSTILE
+        self.assert_inert(self.m.format_list({
+            "workers": [{"dispatchId": h, "taskId": h, "terminalState": h}],
+            "scope": {"source": h}, "page": {"nextCursor": h}}))
+
+
 if __name__ == "__main__":
     unittest.main()

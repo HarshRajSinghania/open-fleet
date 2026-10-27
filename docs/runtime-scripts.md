@@ -2003,7 +2003,9 @@ other question — refused like upstream's `incompatible_runtime` instead of
 certifying accumulated output as the rendered screen; `screen-unavailable` is
 degraded output, likewise never certified. Successful reads print the `tail` lines
 under `--- tail` (a receipt without `tail` fails closed — the payload is the point
-of the read); tail lines and titles render through pm.py's `_visible`, inertly.
+of the read); tail lines and titles render through pm.py's `_visible`, inertly, and every
+single-line field (`HANDLE`, `SOURCE`, `TITLE`, list rows) also has its newline folded, so a
+receipt value cannot forge another line (W4-11).
 Mutating verbs
 (close/rename/set-pane-title/split/switch/stop/send/wait) stay out (lifecycle-risk).
 
@@ -2165,7 +2167,9 @@ Flags: `show` takes `--dispatch` (fleet verdict: `projection.nextAction.argv`, l
 `--source` (`auto|transcript|terminal`; `transcript` certifies — a non-transcript effective
 source is exit 1; transcript reads print each message as `--- <id> (<role>)` with joined
 text blocks capped at 2000 chars, terminal reads print `--- tail` plus the lines, and a
-missing payload fails closed; all of it through pm.py's `_visible`, inertly); `stop` and
+missing payload fails closed; all of it through pm.py's `_visible`, inertly — and every
+single-line field, `STATE`/`STAGE`/`NEXT_ACTION`/`AGENT_WAIT`/`CURSOR`/`FALLBACK`, the fencing
+`DISPATCH`/`STATE` and the list rows, with its newline folded too, W4-11); `stop` and
 `abandon` take `--dispatch`, `--retry-request` (scripted fencing; `stop_unknown` fails,
 never claims); `release` and `retain` take `--dispatch`, `--retry-request` (reclaim; only
 `release_unknown` fails); `list` takes `--run`, `--terminal-state`, `--include-remote`,

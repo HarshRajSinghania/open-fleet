@@ -216,7 +216,10 @@ def run_json(argv, *, timeout, error, nonzero="strict"):
     err = doc.get("error") or result.get("error")
     if err:
         code = err.get("code") if isinstance(err, dict) else err
-        raise error(f"orca refused: {code}")
+        # The code is the runtime's text and every tool prints this line to the coordinator's
+        # terminal: anything non-printable (controls, newlines, bidi) is escaped (W4-11).
+        inert = "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(code))
+        raise error(f"orca refused: {inert}")
     if nonzero == "strict" and proc.returncode != 0:
         raise error(f"orca exited {proc.returncode} with no error envelope")
     if nonzero == "no-receipt" and not result and proc.returncode != 0:

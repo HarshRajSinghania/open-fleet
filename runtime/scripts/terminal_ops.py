@@ -151,6 +151,12 @@ def build_argv(ns):
     return argv
 
 
+def _line(value):
+    """One receipt field, inert and on one line (W4-11): pm._visible escapes controls and bidi,
+    and the newline it keeps for bodies is folded, so a field cannot forge another KEY= line."""
+    return _visible(value).replace("\n", "\\n")
+
+
 def format_create(result):
     if not isinstance(result, dict):
         raise Failed("terminal create receipt is not an object")
@@ -159,7 +165,7 @@ def format_create(result):
     handle = term.get("handle") or result.get("handle")
     if not handle:
         raise Failed("terminal create returned no handle")
-    return [f"HANDLE={handle}"]
+    return [f"HANDLE={_line(handle)}"]
 
 
 def format_read(result, want_screen=False):
@@ -186,7 +192,7 @@ def format_read(result, want_screen=False):
     tail = term.get("tail") if isinstance(term, dict) else None
     if not isinstance(tail, list):
         raise Failed("terminal read receipt names no tail")
-    lines = [f"SOURCE={source}",
+    lines = [f"SOURCE={_line(source)}",
              f"TRUNCATED={'yes' if term.get('truncated') else 'no'}",
              "--- tail"]
     lines.extend(_visible(line) for line in tail)
@@ -204,8 +210,8 @@ def format_list(result):
     for row in terminals:
         if not isinstance(row, dict):
             continue
-        lines.append(f"{_visible(row.get('handle') or '?')} "
-                         f"{_visible(row.get('title') or '?')}")
+        lines.append(f"{_line(row.get('handle') or '?')} "
+                     f"{_line(row.get('title') or '?')}")
     return lines
 
 
@@ -215,8 +221,8 @@ def format_show(result):
     term = result.get("terminal")
     if not isinstance(term, dict) or not term.get("handle"):
         raise Failed("terminal show receipt names no terminal")
-    return [f"HANDLE={_visible(term.get('handle'))}",
-            f"TITLE={_visible(term.get('title') or 'none')}"]
+    return [f"HANDLE={_line(term.get('handle'))}",
+            f"TITLE={_line(term.get('title') or 'none')}"]
 
 
 def run_orca(argv):

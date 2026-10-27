@@ -150,22 +150,28 @@ def build_argv(ns):
     return argv
 
 
+def _line(value):
+    """One receipt field, inert and on one line (W4-11): pm._visible escapes controls and bidi,
+    and the newline it keeps for bodies is folded, so a field cannot forge another KEY= line."""
+    return _visible(value).replace("\n", "\\n")
+
+
 def format_show(result):
     """Minimal worker-show consumption: verdict + wait + next action."""
     if not isinstance(result, dict):
         raise Failed("worker-show receipt is not an object")
     dispatch = result.get("dispatch") or {}
     worker = result.get("worker") or {}
-    lines = [f"DISPATCH={dispatch.get('id') or 'unknown'}",
-             f"STATE={worker.get('state') or 'unknown'}",
-             f"STAGE={worker.get('stage') or 'unknown'}"]
+    lines = [f"DISPATCH={_line(dispatch.get('id') or 'unknown')}",
+             f"STATE={_line(worker.get('state') or 'unknown')}",
+             f"STAGE={_line(worker.get('stage') or 'unknown')}"]
     projection = result.get("projection")
     if isinstance(projection, dict):
         liveness = projection.get("liveness") or {}
         nxt = projection.get("nextAction") or {}
         argv = nxt.get("argv")
-        lines.append(f"PROJECTION_VERDICT={liveness.get('verdict') or 'unknown'}")
-        lines.append("NEXT_ACTION=" + (" ".join(argv) if argv else "none"))
+        lines.append(f"PROJECTION_VERDICT={_line(liveness.get('verdict') or 'unknown')}")
+        lines.append("NEXT_ACTION=" + (" ".join(_line(a) for a in argv) if argv else "none"))
     else:
         lines += ["PROJECTION_VERDICT=absent", "NEXT_ACTION=absent"]
     observation = result.get("observation")
@@ -175,8 +181,8 @@ def format_show(result):
         lines.append("AGENT_WAIT=unknown")
     elif observation["agentWait"]:
         wait = observation["agentWait"]
-        lines.append(f"AGENT_WAIT=waiting:{wait.get('source') or '?'}:"
-                     f"{wait.get('reason') or 'interactive prompt'}")
+        lines.append(f"AGENT_WAIT=waiting:{_line(wait.get('source') or '?')}:"
+                     f"{_line(wait.get('reason') or 'interactive prompt')}")
     else:
         lines.append("AGENT_WAIT=none")
     return lines
@@ -201,13 +207,13 @@ def format_read(result, want="auto"):
     if want == "transcript" and source != "transcript":
         raise Failed(f"--source transcript asked but the effective source is "
                      f"{source} (fallback "
-                     f"{result.get('fallbackReason') or 'unknown'}): refusing "
+                     f"{_line(result.get('fallbackReason') or 'unknown')}): refusing "
                      f"to certify terminal output as transcript evidence")
     lines = [f"SOURCE={source}",
-             f"CURSOR={result.get('cursor') or 'none'}"]
+             f"CURSOR={_line(result.get('cursor') or 'none')}"]
     fallback = result.get("fallbackReason")
     if fallback:
-        lines.append(f"FALLBACK={fallback}")
+        lines.append(f"FALLBACK={_line(fallback)}")
     if source == "transcript":
         page = result.get("transcript")
         messages = page.get("messages") if isinstance(page, dict) else None
@@ -218,8 +224,8 @@ def format_read(result, want="auto"):
                 lines.append("--- ? (?)")
                 lines.append("(unreadable message skipped)")
                 continue
-            lines.append(f"--- {_visible(m.get('id', '?'))} "
-                         f"({_visible(m.get('role', '?'))})")
+            lines.append(f"--- {_line(m.get('id', '?'))} "
+                         f"({_line(m.get('role', '?'))})")
             text = "\n".join(
                 b.get("text", "") for b in m.get("blocks", [])
                 if isinstance(b, dict) and b.get("type") == "text"
@@ -243,8 +249,8 @@ def format_fence(result, unknown):
         raise Failed("fencing receipt names no state")
     if unknown is not None and state == unknown:
         raise Failed(f"the runtime reports {unknown}: unproven, inspect")
-    return [f"DISPATCH={result.get('dispatchId') or 'unknown'}",
-            f"STATE={state}"]
+    return [f"DISPATCH={_line(result.get('dispatchId') or 'unknown')}",
+            f"STATE={_line(state)}"]
 
 
 def format_list(result):
@@ -256,14 +262,14 @@ def format_list(result):
     scope = result.get("scope") or {}
     page = result.get("page") or {}
     lines = [f"ROWS={len(workers)}",
-             f"SCOPE={scope.get('source') or 'unknown'}",
-             f"NEXT_CURSOR={page.get('nextCursor') or 'none'}"]
+             f"SCOPE={_line(scope.get('source') or 'unknown')}",
+             f"NEXT_CURSOR={_line(page.get('nextCursor') or 'none')}"]
     for row in workers:
         if not isinstance(row, dict):
             continue
-        lines.append(f"{row.get('dispatchId') or '?'} "
-                     f"{row.get('taskId') or '?'} "
-                     f"{row.get('terminalState') or '?'}")
+        lines.append(f"{_line(row.get('dispatchId') or '?')} "
+                     f"{_line(row.get('taskId') or '?')} "
+                     f"{_line(row.get('terminalState') or '?')}")
     return lines
 
 

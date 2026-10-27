@@ -153,6 +153,15 @@ class SharedEnvelopeReader(unittest.TestCase):
             self.run_stub('{"result": {}}', 3, nonzero="no-receipt")
         self.assertEqual(self.run_stub('{"result": {}}', 3, nonzero="ignore"), {})
 
+    def test_an_error_code_from_the_envelope_is_reported_inert(self):
+        # W4-11 class sweep: every tool prints this message to the coordinator's terminal, and
+        # the code is the runtime's (untrusted) text.
+        with self.assertRaises(self.Boom) as ctx:
+            self.run_stub('{"error": {"code": "nope\\u001b]0;pwned\\u0007\\u202e\\nOK=1"}}', 1)
+        for raw in ("\x1b", "\x07", "\u202e", "\n"):
+            self.assertNotIn(raw, str(ctx.exception))
+        self.assertIn("orca refused: nope", str(ctx.exception))
+
     def test_an_unrunnable_cli_raises_the_callers_class(self):
         with mock.patch.dict(os.environ, {"ORCA_CLI_COMMAND": "/nonexistent/orca"}):
             with self.assertRaisesRegex(self.Boom, "could not run orca"):

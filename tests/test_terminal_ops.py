@@ -237,5 +237,32 @@ class TestCliFailures(unittest.TestCase):
         self.assertIn("terminal_gone", err)
 
 
+class TestEveryReceiptFieldPrintsInert(unittest.TestCase):
+    """W4-11 (2026-10-27 audit): `terminal create` printed the receipt's handle raw beside
+    formatters that already escape, and the stream read printed its source raw."""
+
+    HOSTILE = "term\x1b]0;pwned\x07\u202eevil\nHANDLE=forged"
+
+    def setUp(self):
+        self.m = load()
+
+    def assert_inert(self, lines):
+        joined = "\n".join(lines)
+        for raw in ("\x1b", "\x07", "\u202e"):
+            self.assertNotIn(raw, joined)
+        self.assertNotIn("\nHANDLE=forged", joined)
+
+    def test_create(self):
+        self.assert_inert(self.m.format_create({"terminal": {"handle": self.HOSTILE}}))
+
+    def test_read_source(self):
+        self.assert_inert(self.m.format_read({"terminal": {"source": self.HOSTILE, "tail": []}}))
+
+    def test_list_and_show(self):
+        h = self.HOSTILE
+        self.assert_inert(self.m.format_list({"terminals": [{"handle": h, "title": h}]}))
+        self.assert_inert(self.m.format_show({"terminal": {"handle": h, "title": h}}))
+
+
 if __name__ == "__main__":
     unittest.main()

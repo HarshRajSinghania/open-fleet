@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""bundle.py --out never deletes what it did not write (#623; 2026-10-23 review, P2-21).
+"""bundle.py --out deletes only what it can prove a build wrote (#623; 2026-10-23 review, P2-21;
+2026-10-27 audit, W5-10).
 
 build() used to rmtree <out>/.claude-plugin, hooks, runtime and skills whenever they were not
 the source's own tree, so `--out ~/.claude` deleted the user's own skills/ (where the README's
 symlink install puts missions), hooks/ and runtime/ with exit 0. A build now records what it
-writes in <out>/.open-fleet-bundle.json, a rebuild deletes only those files, and anything else
-where the build would write makes it refuse — exit 2, nothing deleted, nothing written.
+writes in <out>/.open-fleet-bundle.json, and anything else where the build would write makes it
+refuse — exit 2, nothing deleted, nothing written. That marker lives in --out, so it only names
+candidates: outside a mission directory the build writes whole, a stale file is deleted only when
+the source repository committed its exact bytes at the path the build copies it from.
 """
 import contextlib
 import hashlib
@@ -13,6 +16,7 @@ import importlib.util
 import io
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -174,12 +178,17 @@ class RebuildsStillWork(unittest.TestCase):
             # A file the previous build wrote and this one will not (a retired mission).
             marker = out / bundle.MARKER
             data = json.loads(marker.read_text(encoding="utf-8"))
-            (out / "skills" / "retired-it").mkdir()
-            (out / "skills" / "retired-it" / "SKILL.md").write_text("old\n", encoding="utf-8")
+            # A retired mission's vendored runtime copy: committed bytes of its source path, which
+            # is what lets a rebuild delete it (Codex review of 82a2d00c: a digest in the marker
+            # is no proof; the source repository's history is).
+            retired = out / "skills" / "retired-it" / "runtime" / "scripts" / "verify.py"
+            retired.parent.mkdir(parents=True)
+            retired.write_bytes(committed_bytes("runtime/scripts/verify.py"))
             # A build records each file it wrote WITH the digest of its bytes (2026-10-27 audit,
             # W5-10): the retired file and the stale copy are what an earlier build wrote.
-            data["files"].append("skills/retired-it/SKILL.md")
-            data["sha256"]["skills/retired-it/SKILL.md"] = hashlib.sha256(b"old\n").hexdigest()
+            data["files"].append("skills/retired-it/runtime/scripts/verify.py")
+            data["sha256"]["skills/retired-it/runtime/scripts/verify.py"] = hashlib.sha256(
+                retired.read_bytes()).hexdigest()
             stale = out / "skills" / "ship-it" / "references" / "README.md"
             stale.write_text("stale copy\n", encoding="utf-8")
             data["sha256"]["skills/ship-it/references/README.md"] = hashlib.sha256(b"stale copy\n").hexdigest()
@@ -300,6 +309,89 @@ class AForgedMarkerDeletesNothing(unittest.TestCase):
             bundle._record(out, [])
             self.assertEqual(victim.read_text(encoding="utf-8"), "victim\n")
             self.assertFalse((out / bundle.MARKER).is_symlink())
+
+
+def committed_bytes(rel):
+    """The bytes the source repository has COMMITTED at `rel` (HEAD), not the working tree's."""
+    return subprocess.run(["git", "-C", str(ROOT), "cat-file", "blob", f"HEAD:{rel}"],
+                          capture_output=True, check=True).stdout
+
+
+class ADigestInTheMarkerIsNoProof(unittest.TestCase):
+    """Codex review of 82a2d00c (P1): a digest written into the marker proves nothing, because the
+    marker sits in the tree it governs. A forger who can read a user's file under a generated name
+    (`skills/<anything>/…`, `runtime/**`) lists it with its TRUE sha256, and the rebuild deleted it.
+    The authority to delete comes from outside --out: a stale file goes only when its exact bytes
+    are a blob the source repository committed at the path the build copies it from."""
+
+    built = AForgedMarkerDeletesNothing.built
+    forge = AForgedMarkerDeletesNothing.forge
+
+    def test_a_user_file_under_a_generated_name_survives_a_forged_true_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            mine = {"skills/mine/SKILL.md": b"---\nname: mine\n---\nmy own skill\n",
+                    "runtime/scripts/mine.py": b"print('mine')\n"}
+            for rel, data in mine.items():
+                (out / rel).parent.mkdir(parents=True, exist_ok=True)
+                (out / rel).write_bytes(data)
+            self.forge(out, list(mine), {rel: hashlib.sha256(data).hexdigest() for rel, data in mine.items()})
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            for rel, data in mine.items():
+                self.assertEqual((out / rel).read_bytes(), data, f"{rel} was deleted on the marker's word")
+                self.assertIn(rel, err, "a candidate left in place is not reported")
+            owned = json.loads((out / bundle.MARKER).read_text(encoding="utf-8"))["files"]
+            self.assertFalse(set(mine) & set(owned), "a file left in place was re-recorded as the bundle's")
+
+    def test_a_user_file_at_a_path_the_build_copies_is_not_overwritten_on_a_forged_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            (out / "README.md").write_bytes(b"my own README\n")
+            self.forge(out, [], {"README.md": hashlib.sha256(b"my own README\n").hexdigest()})
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn("README.md", err)
+            self.assertEqual((out / "README.md").read_bytes(), b"my own README\n")
+
+    def test_a_retired_missions_committed_files_are_still_cleaned_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            retired = {"skills/retired-it/runtime/scripts/verify.py": committed_bytes("runtime/scripts/verify.py"),
+                       "skills/retired-it/evals/evals.json": committed_bytes("skills/ship-it/evals/evals.json"),
+                       "runtime/scripts/retired.py": committed_bytes("runtime/scripts/egress.py")}
+            generated = {"skills/retired-it/SKILL.md": b"a generated copy no commit holds\n"}
+            for rel, data in {**retired, **generated}.items():
+                (out / rel).parent.mkdir(parents=True, exist_ok=True)
+                (out / rel).write_bytes(data)
+            both = {**retired, **generated}
+            self.forge(out, list(both), {rel: hashlib.sha256(data).hexdigest() for rel, data in both.items()})
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            # skills/retired-it/evals/evals.json is NOT a commit of that path: only the runtime copy
+            # (committed at runtime/scripts/verify.py, the path it is copied from) is provable.
+            self.assertFalse((out / "skills/retired-it/runtime/scripts/verify.py").exists(),
+                             "a retired mission's committed copy was kept")
+            self.assertTrue((out / "skills/retired-it/evals/evals.json").exists(),
+                            "a file deleted on bytes committed at a different path")
+            self.assertTrue((out / "runtime/scripts/retired.py").exists(),
+                            "a root runtime file deleted on bytes committed at a different path")
+            self.assertEqual((out / "skills/retired-it/SKILL.md").read_bytes(), generated["skills/retired-it/SKILL.md"])
+            self.assertIn("skills/retired-it/SKILL.md", err)
+
+    def test_without_git_provenance_nothing_stale_is_deleted_and_that_is_said(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            rel = "skills/retired-it/runtime/scripts/verify.py"
+            data = committed_bytes("runtime/scripts/verify.py")
+            (out / rel).parent.mkdir(parents=True)
+            (out / rel).write_bytes(data)
+            self.forge(out, [rel], {rel: hashlib.sha256(data).hexdigest()})
+            with mock.patch.object(bundle.gitexec, "GIT", None):
+                code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            self.assertEqual((out / rel).read_bytes(), data)
+            self.assertIn("provenance", err)
 
 
 class GitControlFilesNeverShip(unittest.TestCase):

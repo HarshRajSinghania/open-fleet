@@ -42,6 +42,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 SCHEMA_TAG = "gate-batch/1"
@@ -73,6 +74,10 @@ GRANT_SIG_RE = re.compile(r"^[0-9a-f]{128}$")
 # A caller that sets one of these claims a sound (off-worker) lane, as for verify-gate.sh.
 PROVENANCE_VARS = ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
 ANSWER_DOMAIN = "open-fleet gate-batch answer v1\n"
+COMMIT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+# What makes a gate the gate the anchor asked (PR #719 review round 3): the fields a human reads
+# before answering. `blocking` is held separately: a gate blocks every ref either record names.
+IDENTITY_FIELDS = ("title", "question", "asked")
 
 
 class GateError(Exception):
@@ -160,6 +165,175 @@ def effective_status(data, gate, pub=None, sound=False):
     if gate["status"] == "owed" or (pub is None and not sound):
         return gate["status"]
     return gate["status"] if answer_verified(data, gate, pub) else "owed"
+
+
+# --- PR #719 review round 3: WHICH gates are owed --------------------------------------------
+# A signature authenticates each answer; nothing authenticated the SET. With the key pinned at
+# refs/remotes/origin/main, a worker wrote `"gates": []`, re-rendered the view, and `list --status
+# owed` owed nothing, so release gate 1 passed. The set is now read where the key is read:
+# --pin-ref is resolved ONCE to a commit, the key AND the batch at this batch's path are both read
+# at that commit, and every gate the anchor's batch carries must be here with the same title,
+# question and asked date. One missing (deleted, renamed) or altered is OWED, listed from the
+# anchor's record on stdout, where the close predicate looks, and a gate blocks every ref either
+# record names (dropping one hides nothing); a batch claiming another run owes every anchored
+# gate; a duplicate id is a store error. What the anchor never carried — a gate added and dropped
+# on one branch — it cannot hold.
+
+def _git(root, *args):
+    """git through gitexec.py's hardened executor (no repo config, hooks or replace refs), as
+    decisions.py reads the key. gitexec.py missing beside this script is could-not-run."""
+    path = Path(__file__).resolve().parent / "gitexec.py"
+    if not path.is_file():
+        raise GateError("gitexec.py, the hardened git the anchor is read with, is not beside "
+                        "this script; fail-closed")
+    spec = importlib.util.spec_from_file_location("gitexec_for_gate_batch", path)
+    gitexec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gitexec)
+    try:
+        return subprocess.run(gitexec.argv("-C", str(root), *args), capture_output=True,
+                              timeout=60, env=gitexec.env(), stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as err:
+        raise GateError(f"git {args[0]} failed to run: {err}") from err
+
+
+def batch_repo(batch_path):
+    """The repository a batch belongs to, found as decisions.py finds the key's: the first
+    ancestor of the resolved path that carries .git, else this script's own."""
+    real = Path(batch_path).resolve()
+    return next((p for p in real.parents if (p / ".git").exists()), repo_root())
+
+
+def anchor_commit(root, pin_ref):
+    """--pin-ref resolved ONCE to a commit id, under the predicate verify.py applies to every
+    trust key, on every lane: a commit id, or a ref whose FINAL target (any symbolic chain
+    followed) is remote-tracking. A local branch, tag, HEAD or short name is the checked change's
+    to move, and the anchor is the only thing that tells a deleted gate from one never asked."""
+    if not pin_ref or pin_ref.startswith("-"):
+        raise GateError(f"--pin-ref {pin_ref!r} must name a commit or a ref, not an option")
+    target = pin_ref
+    if not COMMIT_ID_RE.fullmatch(pin_ref):
+        sym = _git(root, "symbolic-ref", "-q", pin_ref)
+        found = sym.stdout.decode("utf-8", "replace").strip()
+        target = found if sym.returncode == 0 and found else pin_ref
+        if not target.startswith("refs/remotes/"):
+            via = f" (a symbolic ref to {target})" if target != pin_ref else ""
+            raise GateError(f"--pin-ref {pin_ref!r}{via} is neither a commit id nor a full "
+                            "refs/remotes/… name: a local branch, tag, HEAD or short name is "
+                            "the checked change's to move, so it anchors nothing")
+    resolved = _git(root, "rev-parse", "--verify", "-q", f"{target}^{{commit}}")
+    commit = resolved.stdout.decode("utf-8", "replace").strip()
+    if resolved.returncode != 0 or not COMMIT_ID_RE.fullmatch(commit):
+        raise GateError(f"--pin-ref {pin_ref!r} names no commit in {root}")
+    return commit
+
+
+def anchored_rel(batch_path, root):
+    """The batch's path inside `root`, as git names it. A symlink inside the repository that
+    redirects the read (docs/runs/<run> -> another run's directory) is refused: the store read
+    must be the one at the path the anchor is consulted for."""
+    lexical = Path(os.path.abspath(batch_path))
+    real = lexical.resolve()
+    try:
+        rel = real.relative_to(root)
+    except ValueError:
+        raise GateError(f"{batch_path} is not inside {root}, the repository whose commit "
+                        "anchors it (--pin-ref)") from None
+    n = len(rel.parts)
+    if lexical.parts[-n:] != rel.parts or Path(*lexical.parts[:-n]).resolve() != root:
+        raise GateError(f"{batch_path} reaches {rel.as_posix()} through a symlink inside the "
+                        "repository: the store read would not be the one the anchor names; "
+                        "fail-closed")
+    return rel.as_posix()
+
+
+def anchored_batch(batch_path, root, commit):
+    """The batch at `commit` for this batch's path, validated — or None when that commit carries
+    none there (a run newer than the anchor). Listed but unreadable or invalid is could-not-run."""
+    rel = anchored_rel(batch_path, root)
+    at = f"{rel} at {commit[:12]}"
+    listing = _git(root, "ls-tree", "-z", "--full-tree", commit, "--", rel)
+    if listing.returncode != 0:
+        raise GateError(f"cannot list {at}")
+    entries = [e for e in listing.stdout.decode("utf-8", "replace").split("\0") if e]
+    entry = next((e for e in entries if e.split("\t", 1)[-1] == rel), None)
+    if entry is None:
+        return None
+    mode, kind, obj = entry.split("\t", 1)[0].split()
+    if kind != "blob" or mode not in ("100644", "100755"):
+        raise GateError(f"{at} is not a regular file ({mode} {kind}); fail-closed")
+    blob = _git(root, "cat-file", "blob", obj)
+    if blob.returncode != 0:
+        raise GateError(f"{at} is listed but its blob is unreadable here; fail-closed")
+    try:
+        data = json.loads(blob.stdout.decode("utf-8"))
+        validate_batch(data)
+    except (UnicodeDecodeError, json.JSONDecodeError, GateError) as err:
+        raise GateError(f"the batch {at} is not a valid store ({err}); fail-closed") from None
+    return data
+
+
+def read_trust(batch_path, pin_ref=None):
+    """(key, anchored batch, anchor commit) for a read of the close predicate. With --pin-ref it
+    is ONE commit: the key and the batch are both read at it. Without, (key, None, None)."""
+    if not pin_ref:
+        return trust_key(batch_path), None, None
+    root = batch_repo(batch_path)
+    commit = anchor_commit(root, pin_ref)
+    return trust_key(batch_path, commit), anchored_batch(batch_path, root, commit), commit
+
+
+def anchor_drift(data, anchored, commit):
+    """{gate id: why it is owed} for every gate the anchored batch carries that this batch lacks
+    or has altered. No anchored batch, no drift."""
+    if not anchored:
+        return {}
+    at = f"the batch at {commit[:12]}"
+    if data["run_id"] != anchored["run_id"]:
+        return {g["id"]: f"this batch claims run {data['run_id']!r}; {at} is run "
+                         f"{anchored['run_id']!r}" for g in anchored["gates"]}
+    here = {g["id"]: g for g in data["gates"]}
+    drift = {}
+    for gate in anchored["gates"]:
+        mine = here.get(gate["id"])
+        if mine is None:
+            drift[gate["id"]] = f"in {at}, missing here: deleted or renamed"
+            continue
+        changed = [k for k in IDENTITY_FIELDS if mine[k] != gate[k]]
+        if changed:
+            drift[gate["id"]] = f"its {'/'.join(changed)} differ from {at}"
+    return drift
+
+
+def close_view(data, pub=None, sound=False, anchored=None, commit=None):
+    """[(gate, effective status, blocked refs, note)] — every gate the close predicate reads: this
+    batch's, then each anchored gate it lacks (the anchor's record). A drifted gate is owed and
+    blocks every ref it or its anchored record names; `note` says why (None when it agrees)."""
+    drift = anchor_drift(data, anchored, commit)
+    theirs = {g["id"]: g for g in (anchored or {}).get("gates", [])}
+    view = []
+    for gate in data["gates"]:
+        refs = list(gate["blocking"]) + [r for r in theirs.get(gate["id"], {}).get("blocking", ())
+                                         if r not in gate["blocking"]]
+        note = drift.get(gate["id"])
+        view.append((gate, "owed" if note else effective_status(data, gate, pub, sound), refs,
+                     note))
+    here = {g["id"] for g in data["gates"]}
+    view += [(g, "owed", list(g["blocking"]), drift[g["id"]]) for g in theirs.values()
+             if g["id"] not in here]
+    return view
+
+
+def note_anchor(pub, pin_ref, anchored, commit):
+    """Say on stderr when the gate set is not held to an anchor (exit status unchanged)."""
+    if pin_ref and anchored is None:
+        print(f"gate-batch.py: NOTE — {commit[:12]} carries no batch at this path, so no "
+              "anchored gate set holds this one (a run newer than the anchor): each gate is "
+              "judged by its own record", file=sys.stderr)
+    elif not pin_ref and pub is not None:
+        print("gate-batch.py: NOTE — no --pin-ref: the human grant key and the set of owed gates "
+              "are this working tree's, where a deleted gate leaves no trace; pass --pin-ref "
+              "refs/remotes/origin/<default> (or a commit id) in a clone the checked change "
+              "cannot write refs in", file=sys.stderr)
 
 
 def repo_root():
@@ -364,27 +538,29 @@ def transition(data, gid, status, text, answered=None, source=None):
     return gate
 
 
-def list_gates(data, status=None, blocking=None, pub=None, sound=False):
+def list_gates(data, status=None, blocking=None, pub=None, sound=False, anchored=None,
+               commit=None):
     """Gates by status and, optionally, by blocked ref. The close rule waits
     on list(status="owed", blocking=<unit>): every owed blocker whatever its
     age — `stale` is only a reminder report and must never gate a close.
     Status is the EFFECTIVE one (W3-06): with a pinned key or on a sound lane
-    an unverified terminal gate is owed."""
+    an unverified terminal gate is owed; with an anchored batch (--pin-ref),
+    every gate it carries that this batch lacks or altered is owed too."""
     if status is not None and status not in STATUSES:
         raise GateError(f"status {status!r} is not one of "
                         f"{', '.join(STATUSES)}")
-    return [g for g in data["gates"]
-            if (status is None or effective_status(data, g, pub, sound) == status)
-            and (blocking is None or blocking in g["blocking"])]
+    return [g for g, shown, refs, _ in close_view(data, pub, sound, anchored, commit)
+            if (status is None or shown == status)
+            and (blocking is None or blocking in refs)]
 
 
-def stale_gates(data, days, today=None, pub=None, sound=False):
+def stale_gates(data, days, today=None, pub=None, sound=False, anchored=None, commit=None):
     if days < 1:
         raise GateError(f"--days must be >= 1, got {days}")
     today = today or today_utc()
     stale = []
-    for gate in data["gates"]:
-        if effective_status(data, gate, pub, sound) != "owed":
+    for gate, shown, _, _ in close_view(data, pub, sound, anchored, commit):
+        if shown != "owed":
             continue
         age = (today - parse_date(gate["asked"], "asked")).days
         if age >= days:
@@ -497,23 +673,31 @@ def _split_refs(values):
     return refs
 
 
-def _fmt_list(gate, shown=None):
+def _fmt_list(gate, shown=None, note=None, refs=None):
     shown = shown or gate["status"]
+    refs = gate["blocking"] if refs is None else refs
     head = (f"{gate['id']} [{shown}] asked {gate['asked']} "
             f"\u00b7 {gate['title']}")
-    if shown != gate["status"]:
+    if note:
+        head += f" ({note})"
+    elif shown != gate["status"]:
         head += (f" (recorded {gate['status']} {gate['answered']}, but not a verified human "
                  "answer \u2014 W3-06)")
     elif gate["status"] != "owed":
         head += f" \u2192 recorded {gate['answered']}"
-    if gate["blocking"]:
-        head += f" (blocking {', '.join(gate['blocking'])})"
+    if refs:
+        head += f" (blocking {', '.join(refs)})"
     return head
 
 
-def _fmt_show(gate):
+def _fmt_show(gate, shown=None, note=None):
+    shown = shown or gate["status"]
     lines = [f"{gate['id']} \u00b7 {gate['title']}",
-             f"status: {gate['status']} (asked {gate['asked']})"]
+             f"status: {shown} (asked {gate['asked']})"]
+    if note:
+        lines.append(f"read as owed: {note}")
+    elif shown != gate["status"]:
+        lines.append(f"recorded {gate['status']}, but not a verified human answer \u2014 W3-06")
     if gate["status"] != "owed":
         lines.append(f"recorded {gate['answered']}: {gate['answer'] or '(no text)'}")
     if gate.get("source"):
@@ -542,17 +726,22 @@ def build_parser():
     target.add_argument("--file", metavar="PATH",
                         help="explicit batch JSON path (tests, scratch)")
     parser.add_argument("--pin-ref", default=None, metavar="REF",
-                        help="read the human grant key (.orca/human-grant-pubkey) at this git "
-                             "ref through decisions.py --pin-ref — a commit id or a full "
-                             "refs/remotes/… name, trustworthy only in a clone the checked change "
-                             "cannot write refs in (the coordinator's fetch, a CI checkout); "
-                             "required on a sound lane (ORCA_PROVENANCE set) — W3-06")
+                        help="the trust anchor: a commit id or a ref whose final target is "
+                             "remote-tracking (refs/remotes/origin/main), resolved once; the "
+                             "human grant key (.orca/human-grant-pubkey, via decisions.py) AND "
+                             "this batch's set of gates are read at that commit, and a gate it "
+                             "carries that this batch lacks or altered is owed. Trustworthy only "
+                             "in a clone the checked change cannot write refs in (the "
+                             "coordinator's fetch, a CI checkout); required on a sound lane "
+                             "(ORCA_PROVENANCE set) — W3-06, PR #719 review")
     # The same flags after the subcommand (SUPPRESS keeps main-parser
     # values unless re-given): `list --run x` and `--run x list` both work.
     store = argparse.ArgumentParser(add_help=False)
     store.add_argument("--run", metavar="DIR", default=argparse.SUPPRESS,
                        help=argparse.SUPPRESS)
     store.add_argument("--file", metavar="PATH", default=argparse.SUPPRESS,
+                       help=argparse.SUPPRESS)
+    store.add_argument("--pin-ref", metavar="REF", default=argparse.SUPPRESS,
                        help=argparse.SUPPRESS)
     subs = parser.add_subparsers(dest="command", required=True)
 
@@ -778,7 +967,7 @@ def main(argv=None):
             field = {"answer": "answer", "waive": "reason",
                      "overtake": "note"}[args.command]
             text = getattr(args, field)
-            pub = trust_key(path, args.pin_ref)
+            pub = read_trust(path, args.pin_ref)[0]
             gate = transition(data, args.gid, status, text,
                               answered=args.date, source=args.source)
             if pub is None and args.grant_sig:
@@ -819,23 +1008,35 @@ def main(argv=None):
             print(ed.signature(answer_payload(trial, gate), seed, ed.publickey(seed)).hex())
             return 0
         if args.command == "list":
-            pub, sound = trust_key(path, args.pin_ref), bool(sound_lane())
-            for gate in list_gates(data, args.status, args.blocking, pub, sound):
-                print(_fmt_list(gate, effective_status(data, gate, pub, sound)))
+            pub, anchored, commit = read_trust(path, args.pin_ref)
+            note_anchor(pub, args.pin_ref, anchored, commit)
+            for gate, shown, refs, note in close_view(data, pub, bool(sound_lane()), anchored,
+                                                      commit):
+                if ((args.status is None or shown == args.status)
+                        and (args.blocking is None or args.blocking in refs)):
+                    print(_fmt_list(gate, shown, note, refs))
             for warning in check_citations(data, path.parent):
                 print(warning, file=sys.stderr)
             return 0
         if args.command == "stale":
             today = parse_date(args.today, "--today") \
                 if args.today else None
-            pub, sound = trust_key(path, args.pin_ref), bool(sound_lane())
-            for gate, age in stale_gates(data, args.days, today, pub, sound):
+            pub, anchored, commit = read_trust(path, args.pin_ref)
+            note_anchor(pub, args.pin_ref, anchored, commit)
+            for gate, age in stale_gates(data, args.days, today, pub, bool(sound_lane()),
+                                         anchored, commit):
                 print(f"{gate['id']} owed {age} days "
                       f"(asked {gate['asked']}) \u00b7 {gate['title']}")
             return 0
         if args.command == "show":
-            print(_fmt_show(find_gate(data, args.gid)))
-            return 0
+            pub, anchored, commit = read_trust(path, args.pin_ref)
+            note_anchor(pub, args.pin_ref, anchored, commit)
+            for gate, shown, _, note in close_view(data, pub, bool(sound_lane()), anchored,
+                                                   commit):
+                if gate["id"] == args.gid:
+                    print(_fmt_show(gate, shown, note))
+                    return 0
+            find_gate(data, args.gid)  # raises, naming the ids this batch does carry
         if args.command == "render":
             out = args.out or str(path.parent / "gate-batch.md")
             rendered = render_batch(data)

@@ -817,5 +817,204 @@ class HumanAnswersAreSignedOnceAKeyIsPinned(unittest.TestCase):
         self.assertIn("G1 [owed]", r.stdout)
 
 
+class TheOwedSetIsReadWhereTheKeyIsRead(unittest.TestCase):
+    """PR #719 review round 3 (P1): signed answers protected each answer, but nothing
+    authenticated WHICH gates are owed — `"gates": []`, a deleted or renamed blocker, or a
+    blocked ref dropped from an owed gate, and the close predicate (`list --status owed
+    --blocking <unit>`, which a coordinator reads as "shows a gate") owed nothing. With --pin-ref
+    the batch at the anchor commit is read with the key, and every gate it carries that this
+    batch lacks or altered is listed OWED, from the anchor's record — on stdout, where the
+    predicate looks. `--pin-ref` itself takes only a commit id or a ref whose final target is
+    remote-tracking, resolved once (the soundness predicate every other trust key answers to)."""
+
+    SEED = bytes(range(13, 45))
+    SCRIPT = ROOT / "runtime" / "scripts" / "gate-batch.py"
+
+    def git(self, *args):
+        import subprocess
+        return subprocess.run(["git", "-C", str(self.tmp), "-c", "user.name=t", "-c",
+                               "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = Path(self._td.name).resolve()
+        self.git("init", "-q", "-b", "main")
+        ed = _ed25519()
+        self.pin = self.tmp / ".orca" / "human-grant-pubkey"
+        self.pin.parent.mkdir()
+        self.pin.write_text(ed.publickey(self.SEED).hex() + "\n", encoding="utf-8")
+        self.batch = self.tmp / "docs" / "runs" / "r" / "gate-batch.json"
+        data = gb.init_batch(self.batch, run_id="run_set", run_title="set")
+        add_owed(data, "G1", blocking=["#1"])
+        add_owed(data, "G2", blocking=["#1", "#2"])
+        gb.save_batch(self.batch, data)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "the owed gates land")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.anchor = self.git("rev-parse", "HEAD")
+
+    def cli(self, *args, env_extra=None, batch=None):
+        import os
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        env.update(env_extra or {})
+        return subprocess.run([sys.executable, str(self.SCRIPT), "--file",
+                               str(batch or self.batch), *args],
+                              capture_output=True, text=True, env=env)
+
+    def edit(self, change):
+        data = json.loads(self.batch.read_text(encoding="utf-8"))
+        change(data)
+        self.batch.write_text(json.dumps(data), encoding="utf-8")
+
+    def owed(self, *extra, ref="refs/remotes/origin/main"):
+        r = self.cli("--pin-ref", ref, "list", "--status", "owed", *extra)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_an_emptied_batch_still_owes_every_anchored_gate(self):
+        self.edit(lambda d: d.update(gates=[]))
+        out = self.owed("--blocking", "#1")
+        self.assertIn("G1 [owed]", out)
+        self.assertIn("G2 [owed]", out)
+        self.assertIn("missing here", out)
+        self.assertIn(self.anchor[:12], out)
+
+    def test_a_dropped_blocked_ref_still_blocks(self):
+        self.edit(lambda d: d["gates"][1].update(blocking=["#1"]))
+        self.assertIn("G2 [owed]", self.owed("--blocking", "#2"))
+
+    def test_a_renamed_gate_is_owed_under_its_anchored_id(self):
+        self.edit(lambda d: d["gates"][1].update(id="G7"))
+        out = self.owed()
+        self.assertIn("G2 [owed]", out)
+        self.assertIn("G7 [owed]", out)
+
+    def sign_all(self, data):
+        ed = _ed25519()
+        for gate in data["gates"]:
+            gate.update(status="answered", answer="yes", answered="2026-09-15", source="human:lia")
+            gate["grant_sig"] = ed.signature(gb.answer_payload(data, gate), self.SEED,
+                                             ed.publickey(self.SEED)).hex()
+
+    def test_a_signed_answer_closes_an_anchored_gate(self):
+        self.edit(self.sign_all)
+        self.assertEqual(self.owed(), "")
+
+    def test_a_gate_re_worded_or_re_dated_then_signed_is_owed(self):
+        # The human signs what the record says: a question re-worded into something harmless and
+        # THEN signed is not the anchored question answered.
+        for field, value in (("question", "is the sky blue?"), ("title", "smaller"),
+                             ("asked", "2026-09-13")):
+            with self.subTest(field=field):
+                self.edit(lambda d, f=field, v=value: (d["gates"][1].update({f: v}),
+                                                       self.sign_all(d)))
+                out = self.owed()
+                self.assertIn("G2 [owed]", out)
+                self.assertIn(f"its {field} differ", out)
+                self.assertNotIn("G1", out)
+                self.git("checkout", "-q", "--", "docs")
+
+    def test_a_batch_claiming_another_run_owes_every_anchored_gate(self):
+        self.edit(lambda d: (d.update(run_id="run_elsewhere"), self.sign_all(d)))
+        out = self.owed()
+        self.assertIn("G1 [owed]", out)
+        self.assertIn("G2 [owed]", out)
+        self.assertIn("run_elsewhere", out)
+
+    def test_stale_and_show_read_the_same_set(self):
+        self.edit(lambda d: d.update(gates=[]))
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "stale", "--days", "1",
+                     "--today", "2026-10-01")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("G1 owed", r.stdout)
+        self.assertIn("G2 owed", r.stdout)
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "show", "G2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("status: owed", r.stdout)
+        self.assertIn("missing here", r.stdout)
+
+    def test_show_names_a_typed_answer_as_owed(self):
+        self.edit(lambda d: d["gates"][0].update(status="answered", answer="typed",
+                                                 answered="2026-09-15", source="human:x"))
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "show", "G1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("status: owed", r.stdout)
+        self.assertIn("recorded answered", r.stdout)
+
+    def test_the_pin_ref_is_a_commit_or_a_remote_tracking_ref_resolved_once(self):
+        self.assertIn("G1 [owed]", self.owed(ref=self.anchor))
+        self.assertIn("G1 [owed]", self.owed(ref="refs/remotes/origin/main"))
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        self.assertIn("G1 [owed]", self.owed(ref="refs/remotes/origin/HEAD"))
+        # A local branch, a short name, HEAD, a tag, and a refs/remotes/ name symbolic to a local
+        # branch are all the checked change's to move: refused on every lane.
+        self.git("tag", "t1")
+        self.git("symbolic-ref", "refs/remotes/origin/sly", "refs/heads/main")
+        for ref in ("main", "refs/heads/main", "origin/main", "HEAD", "t1",
+                    "refs/remotes/origin/sly", "-q"):
+            with self.subTest(ref=ref):
+                r = self.cli("--pin-ref", ref, "list", "--status", "owed")
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertEqual(r.stdout, "")
+
+    def test_the_key_and_the_set_are_read_at_one_commit(self):
+        seen = []
+        real = gb._decisions
+
+        def spy():
+            dec = real()
+            grant = dec.grant_pubkey
+            dec.grant_pubkey = lambda path, ref=None: seen.append(ref) or grant(path, ref)
+            return dec
+        with mock.patch.object(gb, "_decisions", spy):
+            pub, anchored, commit = gb.read_trust(self.batch, "refs/remotes/origin/main")
+        self.assertEqual(commit, self.anchor)
+        self.assertEqual(seen, [self.anchor])
+        self.assertEqual([g["id"] for g in anchored["gates"]], ["G1", "G2"])
+        self.assertIsNotNone(pub)
+
+    def test_a_symlink_inside_the_repository_cannot_redirect_the_read(self):
+        other = self.tmp / "docs" / "runs" / "elsewhere"
+        other.mkdir()
+        data = gb.init_batch(other / "gate-batch.json", run_id="run_set", run_title="set")
+        gb.save_batch(other / "gate-batch.json", data)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "an empty batch elsewhere, also on main")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        run = self.batch.parent
+        run.rename(self.tmp / "docs" / "runs" / "moved")
+        run.symlink_to(other)
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "list", "--status", "owed")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("symlink", r.stderr)
+
+    def test_a_batch_outside_the_anchored_repository_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path, data = fresh_batch(tmp)
+            gb.save_batch(path, data)
+            r = self.cli("--pin-ref", self.anchor, "list", batch=path)
+            self.assertEqual(r.returncode, 2, r.stdout)
+
+    def test_a_malformed_anchored_batch_is_could_not_run(self):
+        self.batch.write_text("{not json", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "a broken store on main")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        data = gb.init_batch(self.batch.with_name("x.json"), run_id="run_set", run_title="set")
+        self.batch.with_name("x.json").unlink()
+        self.batch.write_text(json.dumps(data), encoding="utf-8")
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "list", "--status", "owed")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn(self.git("rev-parse", "HEAD")[:12], r.stderr)
+
+    def test_without_an_anchor_a_pinned_key_says_the_set_is_unanchored(self):
+        r = self.cli("list", "--status", "owed")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--pin-ref", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

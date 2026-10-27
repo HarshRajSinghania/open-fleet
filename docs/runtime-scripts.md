@@ -1938,18 +1938,21 @@ refused beside `--spec`); `--parent-profile` (the parent's profile, for monotoni
 `--pairing-code`, `--cli-cwd` (routing; ambient disagreement refuses, `--from`
 against `ORCA_TERMINAL_HANDLE`);
 `--task-brief` (brief spawn-time read); `--parent-profile ro|rw|danger` (monotonic narrowing:
-the most restrictive of this flag, `OPEN_FLEET_PARENT_PROFILE`/`ORCA_PARENT_PROFILE` and the
-caller's `OPEN_FLEET_SANDBOX_PROFILE`/`ORCA_SANDBOX_PROFILE` caps `PROFILE`; a wider child
-refuses, exit 2. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
-`OPEN_FLEET_WORKER_ID`, `OPEN_FLEET_UNIT_WORKTREE` or an `ORCA_` alias — with none of those set
-is capped at `ro`, never left uncapped). The custom-argv lane's `terminal create --command`
-for the script's own rows (every Orca `ro` launch; a `WORKER_CMD` override stays verbatim)
-carries the worker's own profile as those four
-variables in assignment-prefix form, as posix's supervised lane already did, so the cap is
-present in what the worker inherits; Orca's `worker-start` has no env flag at the pin, so an
-Orca `rw` worker is bounded only by that identity fail-safe (W4-04). All of it is the worker's
-own environment: it bounds the fleet's spawn path against an omitted or inherited profile, not
-a worker that scrubs its env or calls the runtime CLI or an agent directly. Documented refusals, not silent drops:
+the most restrictive of this flag, `OPEN_FLEET_PARENT_PROFILE`/`ORCA_PARENT_PROFILE`, the
+caller's `OPEN_FLEET_SANDBOX_PROFILE`/`ORCA_SANDBOX_PROFILE` and the spawn registry caps
+`PROFILE`; a wider child refuses, exit 2). The spawn registry (W4-04): every launch, on both
+lanes and with or without an override, is recorded in `~/.open-fleet/spawn-profiles/<handle>`
+under the pane handle the runtime returns, which the worker's pane then carries as
+`ORCA_TERMINAL_HANDLE`, so a spawn from a recorded pane is capped at its record (an empty record
+reads `ro`, a foreign value refuses); the launch command itself is never changed, so nothing
+depends on the pane's shell. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
+`OPEN_FLEET_WORKER_ID`, `OPEN_FLEET_UNIT_WORKTREE` or an `ORCA_` alias — with no profile in its
+environment or the registry is capped at `ro`, and `--parent-profile` cannot raise that (the flag
+only narrows). A capped session cannot use a command override (`WORKER_CMD`, `CLAUDE_CMD`,
+`CODEX_CMD`): overrides are a coordinator-only facility. All of it is the worker's own
+environment or a file its uid can write: it bounds the fleet's spawn path against an omitted or
+inherited profile, not a worker that unsets `ORCA_TERMINAL_HANDLE`, edits the registry, or calls
+the runtime CLI or an agent directly. Documented refusals, not silent drops:
 `--task-status`/`--task-ready` (a filtered view cannot verify deps, so the DAG check
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).

@@ -472,38 +472,75 @@ if [ "$ACTIVE_RUNTIME" = "openhands" ] && [ "$agent" != "openhands" ]; then
 fi
 # The parent profile a child must not exceed is the MOST restrictive of every source that
 # names one: the --parent-profile flag, the inherited OPEN_FLEET_PARENT_PROFILE /
-# ORCA_PARENT_PROFILE, and the CALLER's own OPEN_FLEET_SANDBOX_PROFILE / ORCA_SANDBOX_PROFILE
-# (the launcher exports it into every worker). Taking the first non-empty one let a ro
-# worker mint an rw child by passing --parent-profile rw, or by naming none at all (G14).
+# ORCA_PARENT_PROFILE, the CALLER's own OPEN_FLEET_SANDBOX_PROFILE / ORCA_SANDBOX_PROFILE (posix
+# exports both into every worker), and the profile this script RECORDED for the caller's pane.
+# Taking the first non-empty one let a ro worker mint an rw child by passing --parent-profile rw,
+# or by naming none at all (G14).
 profile_rank() { case "$1" in ro) echo 0 ;; rw) echo 1 ;; danger) echo 2 ;; *) echo x ;; esac; }
-eff_parent_profile=""
-for _pp in "${PARENT_PROFILE:-}" "${OPEN_FLEET_PARENT_PROFILE:-}" "${ORCA_PARENT_PROFILE:-}" \
-           "${OPEN_FLEET_SANDBOX_PROFILE:-}" "${ORCA_SANDBOX_PROFILE:-}"; do
-  [ -n "$_pp" ] || continue
-  if [ "$(profile_rank "$_pp")" = "x" ]; then
-    echo "SPAWN=REFUSED task=${task} unknown parent profile '${_pp}' (want ro|rw|danger)" >&2
+# W4-04: the spawn registry. Nothing exported a profile into an Orca worker, and a `VAR=val`
+# prefix on its launch command is neither shell-neutral (PowerShell, cmd.exe and nushell are in
+# Orca's --shell keyset) nor available to worker-start, so every launch below is RECORDED here
+# under the pane handle Orca (or posix) gives the worker, which its pane then carries as
+# ORCA_TERMINAL_HANDLE. A spawn from a recorded pane is capped at that record; an empty record
+# fails safe (ro), a foreign value refuses.
+SPAWN_REGISTRY="${HOME:+$HOME/.open-fleet/spawn-profiles}"
+registry_key_ok() { case "$1" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._:-]*) return 1 ;; esac; return 0; }
+registered_profiles=()
+for _ph in "${ORCA_TERMINAL_HANDLE:-}" "${OPEN_FLEET_TERMINAL_HANDLE:-}"; do
+  registry_key_ok "$_ph" && [ -n "$SPAWN_REGISTRY" ] && [ -f "$SPAWN_REGISTRY/$_ph" ] || continue
+  _rp=$(head -n 1 -- "$SPAWN_REGISTRY/$_ph" 2>/dev/null || true)
+  registered_profiles+=("${_rp:-ro}")
+done
+known_parent() {  # refuse, in this shell (never a subshell), a parent profile outside the keyset
+  if [ "$(profile_rank "$1")" = "x" ]; then
+    echo "SPAWN=REFUSED task=${task} unknown parent profile '$1' (want ro|rw|danger)" >&2
     exit 2
   fi
-  if [ -z "$eff_parent_profile" ] || [ "$(profile_rank "$_pp")" -lt "$(profile_rank "$eff_parent_profile")" ]; then
-    eff_parent_profile="$_pp"
-  fi
+}
+fold_parent() {  # fold_parent <current> <candidate>: the more restrictive of two known profiles
+  if [ -z "$1" ] || [ "$(profile_rank "$2")" -lt "$(profile_rank "$1")" ]; then echo "$2"; else echo "$1"; fi
+}
+env_parent=""
+for _pp in "${OPEN_FLEET_PARENT_PROFILE:-}" "${ORCA_PARENT_PROFILE:-}" "${OPEN_FLEET_SANDBOX_PROFILE:-}" \
+           "${ORCA_SANDBOX_PROFILE:-}" ${registered_profiles[@]+"${registered_profiles[@]}"}; do
+  [ -n "$_pp" ] || continue
+  known_parent "$_pp"
+  env_parent=$(fold_parent "$env_parent" "$_pp")
 done
-# W4-04: no parent profile is NOT "uncapped" inside a worker. Each of these names is fleet worker
-# identity a runtime sets for the worker it launches (posix: dispatch/worker id; every base.py
-# launch and a deny-hook settings file: the unit worktree), never a coordinator session; carrying
-# one with no parent profile caps the child at ro, the most restrictive tier. Every name here and
-# above is still the worker's OWN environment, so this bounds the spawn path a worker inherits,
-# not a worker that scrubs its env or calls the runtime CLI or an agent directly (W4-05 is the ro
-# boundary); a coordinator session carries none of them and is unchanged.
-if [ -z "$eff_parent_profile" ]; then
+# No parent profile is NOT "uncapped" inside a worker. Each of these names is fleet worker identity
+# a runtime sets for the worker it launches (posix: dispatch/worker id; every base.py launch and a
+# deny-hook settings file: the unit worktree), never a coordinator session; carrying one with no
+# profile in the environment or the registry caps the child at ro, and a --parent-profile flag
+# cannot raise that (the flag only ever narrows). Every source here is still the worker's OWN
+# environment or a file its uid can write: this bounds the spawn path a worker inherits, not a
+# worker that scrubs its env or calls the runtime CLI or an agent directly (W4-05 is the ro
+# boundary). A coordinator session carries none of them and is unchanged.
+if [ -z "$env_parent" ]; then
   for _wv in OPEN_FLEET_DISPATCH_ID ORCA_DISPATCH_ID OPEN_FLEET_WORKER_ID ORCA_WORKER_ID \
              OPEN_FLEET_UNIT_WORKTREE ORCA_UNIT_WORKTREE; do
     [ -n "${!_wv:-}" ] || continue
-    eff_parent_profile=ro
-    echo "SPAWN=NOTE task=${tname} this session carries fleet worker identity (${_wv}) but no parent profile (--parent-profile, OPEN_FLEET_PARENT_PROFILE, OPEN_FLEET_SANDBOX_PROFILE or an ORCA_ alias): the child is capped at ro, the most restrictive tier, rather than left uncapped (W4-04). A coordinator session must not carry ${_wv}." >&2
+    env_parent=ro
+    echo "SPAWN=NOTE task=${tname} this session carries fleet worker identity (${_wv}) but no parent profile (OPEN_FLEET_PARENT_PROFILE, OPEN_FLEET_SANDBOX_PROFILE, an ORCA_ alias, or a recorded pane): the child is capped at ro, the most restrictive tier, rather than left uncapped (W4-04). A coordinator session must not carry ${_wv}." >&2
     break
   done
 fi
+eff_parent_profile="$env_parent"
+if [ -n "${PARENT_PROFILE:-}" ]; then
+  known_parent "$PARENT_PROFILE"
+  eff_parent_profile=$(fold_parent "$eff_parent_profile" "$PARENT_PROFILE")
+fi
+# register_spawn <handle>: record this launch's PROFILE under the pane handle it was given.
+register_spawn() {
+  if ! registry_key_ok "$1"; then
+    echo "SPAWN=WARNING task=${task} the launched pane's handle is not a registry key, so its PROFILE=${PROFILE} is NOT recorded: its own spawns are bounded by its environment alone (W4-04)" >&2
+    return 0
+  fi
+  if [ -z "$SPAWN_REGISTRY" ] || ! { mkdir -p -m 700 -- "$SPAWN_REGISTRY" \
+      && printf '%s\n' "$PROFILE" > "$SPAWN_REGISTRY/.$1.$$" \
+      && mv -f -- "$SPAWN_REGISTRY/.$1.$$" "$SPAWN_REGISTRY/$1"; } 2>/dev/null; then
+    echo "SPAWN=WARNING task=${task} could not record PROFILE=${PROFILE} for pane $1 in the spawn registry (HOME unset or unwritable): its own spawns are bounded by its environment alone (W4-04)" >&2
+  fi
+}
 if [ -n "$ACTIVE_RUNTIME" ] && [ "$ACTIVE_RUNTIME" != "orca" ]; then
   WS_ARGS+=(--profile "$PROFILE")
   if [ -n "$eff_parent_profile" ]; then
@@ -896,6 +933,13 @@ PY
   base_profile_flag=$(printf '%s\n' "$_bl" | sed -n '2p')
 fi
 
+# W4-04 re-attack: an override replaces the PROFILE's command and its opt-in is the caller's own
+# env, so a capped worker (`PROFILE=ro WORKER_CMD='claude --dangerously-skip-permissions'`) could
+# name any command and still pass the label check. Overrides are a coordinator-only facility.
+if [ -n "$override" ] && [ -n "$eff_parent_profile" ]; then
+  echo "SPAWN=REFUSED task=${task} a launch override (WORKER_CMD / CLAUDE_CMD / CODEX_CMD) is a coordinator-only facility, and this session is capped at parent profile '${eff_parent_profile}': the override would replace the PROFILE's command with any command at all (W4-04)" >&2
+  exit 2
+fi
 ALLOW_OVERRIDE="${OPEN_FLEET_COORD_ALLOW_CMD_OVERRIDE:-${ORCA_COORD_ALLOW_CMD_OVERRIDE:-0}}"
 if [ -n "$override" ]; then
   if [ "$ALLOW_OVERRIDE" != "1" ]; then
@@ -1383,6 +1427,13 @@ PY
     fi
   fi
 
+  # A worker may be live in every one of these: record its profile under its pane (W4-04).
+  case "$verdict" in
+    ready|unknown|unusable)
+      ws_handle=$(printf '%s\n' "$payload" | sed -n 's/^HANDLE=\([^ ]*\) READY=.*/\1/p' | head -n 1)
+      if [ -n "$ws_handle" ]; then register_spawn "$ws_handle"; fi ;;
+  esac
+
   step=verify-ready
   case "$verdict" in
     ready)
@@ -1426,18 +1477,7 @@ else
   # ledger (dispatch-lifecycle.md).
   step=create-terminal
   tj="$SP/sw-$safe_title.json"
-  # W4-04: a row this script owns (every Orca ro launch) carries the worker's own profile in its
-  # launch env as the sandbox profile AND the parent profile, so the monotonic check above fires
-  # when it (or anything it runs) calls this script. posix's supervised lane exports the same pair;
-  # Orca's worker-start has no env flag at the pin, which leaves its rw workers to the identity
-  # fail-safe above. Assignment prefixes, the form the goose/hermes rows already use; PROFILE is
-  # keyset-validated (ro|rw|danger), so nothing caller-controlled is spliced in. A WORKER_CMD
-  # override reaches terminal create exactly as written: its semantics are the caller's assertion.
-  launch_cmd="$cmd"
-  if [ -z "$override" ]; then
-    launch_cmd="OPEN_FLEET_SANDBOX_PROFILE=${PROFILE} ORCA_SANDBOX_PROFILE=${PROFILE} OPEN_FLEET_PARENT_PROFILE=${PROFILE} ORCA_PARENT_PROFILE=${PROFILE} ${cmd}"
-  fi
-  orca_json "$tj" terminal create --worktree "$sel" --title "$title" --command "$launch_cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
+  orca_json "$tj" terminal create --worktree "$sel" --title "$title" --command "$cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
   h=$(python3 -I - "$tj" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -1456,6 +1496,7 @@ if not isinstance(h, str) or not all(c.isprintable() and not c.isspace() for c i
 print(h)
 PY
 )
+  register_spawn "$h"  # before anything is injected: the pane's cap exists from its first turn
 
   step=wait-tui-idle
   # READ the result. A timed-out wait prints a normal result carrying `wait.satisfied:false` AND

@@ -39,8 +39,10 @@
   `search_sessions.py` reads only regular files (a link, FIFO or device is said, never opened) and
   only a SQLite store's plain tables' stored columns (never a view, virtual table or generated
   column), capped per file and per scan as the bytes arrive, a row's stored size charged as
-  SQLite reads it so no value past either cap ever reaches Python, and a store over 1 GiB never
-  opened; a `.zst` transcript is walked frame
+  SQLite reads it so no value past either cap ever reaches Python, a store over 1 GiB never
+  opened (and, on a SQLite without `octet_length`, one over the 64 MiB value cap, so sizing can never
+  load a larger value: a bound decided before the open), and SQLite told never to load a value
+  past the cap; a `.zst` transcript is walked frame
   by frame in linear work, a damaged tail kept up to its last whole frame and said; a record nested
   past the parser's depth is skipped, never fatal; and a store swapped for a FIFO during SQLite's own
   open fails closed and is said, never hangs recall.

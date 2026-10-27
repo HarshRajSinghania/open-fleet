@@ -33,8 +33,9 @@ episodic hint's manifests too), regular files only (a link, FIFO or device is sa
 never read; a store, -wal or -shm swapped for one during SQLite's open fails it closed, and
 an open stalled past SQLITE_OPEN_SECONDS is abandoned), a SQLite store's plain tables'
 stored columns only (never a view, a virtual table or a computed column; a store over
-MAX_STORE_BYTES is never opened, and each row's stored size is charged as SQLite reads it,
-before any of its values reaches Python), every whole frame of a .zst (each frame charged; a damaged
+MAX_STORE_BYTES is never opened, nor, on a SQLite without octet_length, one over MAX_FILE_BYTES;
+each row's stored size is charged as SQLite reads it, before any of its values reaches Python, and
+SQLite is told never to load a value past MAX_FILE_BYTES at all), every whole frame of a .zst (each frame charged; a damaged
 tail is said), and a record nested past the parser's depth skipped, never fatal. One hit per
 session; --since drops undated records; --path matches the session's cwd;
 --cursor pages with the ``local:<offset>`` NEXT_CURSOR it printed (any other
@@ -115,6 +116,15 @@ MAX_FILE_BYTES = 64 << 20
 MAX_RUN_BYTES = 512 << 20
 # A SQLite store (with its -wal) is never opened past this size. Its rows are charged as SQLite
 # reads them (_RowGate), so this bounds the time a scan spends in one store, not what it holds.
+# Sizing a row without loading it needs octet_length (SQLite 3.43+): before that, the fallback
+# length(CAST(x AS BLOB)) loads each value into SQLite's memory first, so a 450 MiB value in a store
+# under MAX_STORE_BYTES was loaded before the cap refused it (Codex round 3 on PR #723). There the
+# store itself is held to MAX_FILE_BYTES: a stored value's bytes live in the file and its -wal, so
+# no value in a store that small can be larger than the cap. That bound is the rule chosen because
+# it is decided before the store is opened, from the descriptor checked, on every SQLite; and
+# every connection also sets SQLITE_LIMIT_LENGTH to MAX_FILE_BYTES where Python offers setlimit
+# (3.11+), so SQLite refuses to load a larger value at all (SQLITE_TOOBIG, before allocating it),
+# which also holds if a store grows after its size was checked.
 MAX_STORE_BYTES = 1 << 30
 
 
@@ -131,6 +141,11 @@ class _ReadBudget:
                     "run": f"files past the scan's byte budget ({MAX_RUN_BYTES} bytes)",
                     "irregular": "a link or a file that is not a regular file (never followed or read)",
                     "store": f"a SQLite store over {MAX_STORE_BYTES} bytes with its -wal (never opened)",
+                    "store-unsized": f"a SQLite store over {MAX_FILE_BYTES} bytes with its -wal on a SQLite "
+                                     "without octet_length (before 3.43), where sizing a value loads it "
+                                     "(never opened)",
+                    "value": f"a stored value over {MAX_FILE_BYTES} bytes, which SQLite was told never to "
+                             "load (that table's rows from the one before it on)",
                     "damaged": "the rest of a damaged or truncated compressed transcript",
                     "stalled": f"a SQLite store whose open did not return in {SQLITE_OPEN_SECONDS} s (abandoned)",
                     "blocked": "SQLite stores after an open that is still blocked (it may hold SQLite's lock)",
@@ -1202,6 +1217,9 @@ def _sqlite_ro(path):
         if checked.st_size + wal_size > MAX_STORE_BYTES:
             _BUDGET.omit(path, "store")
             return None
+        if _OCTETS is None and checked.st_size + wal_size > MAX_FILE_BYTES:
+            _BUDGET.omit(path, "store-unsized")  # no value in it can be over the cap: see MAX_STORE_BYTES
+            return None
         # Its rows are charged as SQLite reads them (_RowGate), not by the file's size, which says
         # nothing of what a query returns (W5-21); the size only bounds the time spent in it.
         suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
@@ -1218,6 +1236,8 @@ def _sqlite_ro(path):
                 return None
             if conn is not None:
                 conn.path = path
+                if hasattr(conn, "setlimit"):  # Python 3.11+: SQLite never loads a value past the cap
+                    conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_FILE_BYTES)
                 return conn
         return None
     finally:
@@ -1313,6 +1333,9 @@ def _rows(conn, table):
         cursor.execute(f"SELECT {', '.join(quoted)} FROM {_quoted(table)} WHERE _open_fleet_admit({size})")
         while (row := cursor.fetchone()) is not None:
             out.append(dict(zip(columns, row, strict=True)))
+        return out
+    except sqlite3.DataError:  # SQLITE_TOOBIG: a value past SQLITE_LIMIT_LENGTH, refused unloaded
+        _BUDGET.omit(where, "value")
         return out
     except sqlite3.Error:
         return []

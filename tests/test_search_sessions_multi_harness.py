@@ -1061,6 +1061,89 @@ class TestNoValueOverTheCapReachesPython(_Base):
         self.assertIn("a SQLite store over", err)
 
 
+class TestOldSqliteNeverSizesAValueByLoadingIt(_Base):
+    """Codex round 3 on PR #723 (W5-21): without octet_length (SQLite before 3.43) the row gate's
+    size, length(CAST(x AS BLOB)), loads each value into SQLite's memory first, so a 450 MiB value
+    in a store under the 1 GiB guard was loaded before the cap refused it. There a store over
+    MAX_FILE_BYTES is now never opened -- no value inside it can be over the cap -- and every store
+    connection tells SQLite never to load a value past MAX_FILE_BYTES (SQLITE_LIMIT_LENGTH), which
+    holds even for a store that grows after its size was checked."""
+
+    goose_db = TestSqliteAndManifestReadsAreBounded.goose_db
+
+    def build(self, conn):
+        conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, content_json TEXT)")
+        conn.execute("INSERT INTO messages VALUES ('s1', 'user', '2026-10-10T12:00:00Z', "
+                     "json_array(json_object('type', 'text', 'text', 'chi_token ' || hex(zeroblob(150000)))))")
+
+    def test_without_octet_length_a_store_over_the_value_cap_is_refused_before_any_query(self):
+        self.goose_db(self.build)
+        db = self.tmp / "only-goose" / "data" / "sessions" / "sessions.db"
+        self.assertGreater(db.stat().st_size, 200_000)
+        opened = []
+        real = self.mod._open_watched
+
+        def spy(*args, **kwargs):
+            opened.append(args)
+            return real(*args, **kwargs)
+
+        err = io.StringIO()
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 200_000, create=True), \
+                mock.patch.object(self.mod, "_OCTETS", None), mock.patch.object(self.mod, "_open_watched", spy), \
+                contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            self.assertIsNone(self.mod._sqlite_ro(db), "a store over the value cap was opened without octet_length")
+        self.assertEqual(opened, [], "SQLite was asked to open the store at all")
+        self.assertIn("without octet_length", err.getvalue())
+        if self.mod.sqlite3.sqlite_version_info >= (3, 43, 0):  # with it, the same store is read
+            with mock.patch.object(self.mod, "MAX_FILE_BYTES", 200_000, create=True), \
+                    mock.patch.object(self.mod, "_OCTETS", "octet_length"), contextlib.redirect_stderr(io.StringIO()):
+                self.mod._new_scan()
+                conn = self.mod._sqlite_ro(db)
+                self.assertIsNotNone(conn)
+                conn.close()
+
+    # Another process grows the store after its size was checked: its memory is not the child's.
+    GROW = ("import sqlite3, sys\n"
+            "c = sqlite3.connect(sys.argv[1])\n"
+            "c.execute(\"INSERT INTO messages VALUES ('s1', 'user', 't', zeroblob(96 * 1048576))\")\n"
+            "c.commit()\n")
+    CHILD = ("import importlib.util, json, resource, subprocess, sys\n"
+             "from pathlib import Path\n"
+             "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+             "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+             "mod._OCTETS = None  # the fallback a SQLite before 3.43 takes\n"
+             "db, grow = sys.argv[2], sys.argv[3]\n"
+             "real = mod._open_watched\n"
+             "def grow_then_open(*args, **kwargs):\n"
+             "    mod._open_watched = real\n"
+             "    subprocess.run([sys.executable, '-I', '-c', grow, db], check=True)\n"
+             "    return real(*args, **kwargs)\n"
+             "mod._open_watched = grow_then_open\n"
+             "scale = 1024 if sys.platform == 'darwin' else 1\n"
+             "base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // scale\n"
+             "conn = mod._sqlite_ro(Path(db))\n"
+             "rows = mod._rows(conn, 'messages') if conn is not None else None\n"
+             "peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // scale\n"
+             "print(json.dumps({'opened': conn is not None, 'rows': None if rows is None else len(rows),\n"
+             "                  'grew_kib': peak - base}))\n")
+
+    def test_sqlite_never_loads_a_value_past_the_cap_even_in_a_store_grown_after_its_check(self):
+        self.goose_db(self.build)
+        db = self.tmp / "only-goose" / "data" / "sessions" / "sessions.db"
+        proc = subprocess.run([sys.executable, "-I", "-c", self.CHILD, str(SEARCH_PY), str(db), self.GROW],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        got = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertTrue(got["opened"], proc.stderr)
+        # sqlite3's cursor steps one row ahead, so the refusal can also cost the row before it: what
+        # is never lost is the bound, and that it is said.
+        self.assertIsNotNone(got["rows"], proc.stderr)
+        self.assertLess(got["grew_kib"], 48 * 1024,
+                        f"recall's memory grew {got['grew_kib']} KiB: SQLite loaded a 96 MiB value past the 64 MiB cap")
+        self.assertIn("SQLite was told never to load", proc.stderr)
+
+
 class TestNestingNeverAbortsTheScan(_Base):
     """Re-check of W5-21: json.loads raises RecursionError, not JSONDecodeError, on a line nested
     100 000 deep, and _extract_text recursed once per level of a 1 400-deep list the parser

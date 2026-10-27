@@ -125,8 +125,10 @@
 # name pointing out is judged by where it ends up however many links that takes.
 # Path segments are names, never patterns; a glob in a shell target is also judged
 # by every existing path the shell would expand it to (W4-09). A leading ~, ~user,
-# $HOME or ${HOME} is expanded first, for both tools and shells, as the shell does:
-# `> ~/.bashrc` is a write to the home directory, not to ./~ (W1-01).
+# $HOME or ${HOME} is expanded first (W1-01): `> ~/.bashrc` is a write to the home
+# directory, not to ./~. A file-tool path carries no shell quoting, so it always
+# expands; a shell word expands only when the lead is UNQUOTED, as bash does -- a
+# quoted `'~/x'` (or single-quoted `'$HOME/x'`) stays the literal relative path (W1-01).
 #
 # What the Bash half does NOT cover, and says so at the block itself: a relative
 # target (the hook is not told the worker's cwd, and the segment before it may
@@ -1110,12 +1112,14 @@ def policy_word(word):
 _IFS_EXPANSION = re.compile(r"[$](?:IFS(?![A-Za-z0-9_])|[{]IFS(?:[^A-Za-z0-9_}][^}]*)?[}])")
 
 
-def shell_tokens(seg, with_fd=False):
+def shell_tokens(seg, with_fd=False, raw=False):
     # Keep operator identity BEFORE quote removal: quoted/escaped > is data.
     # A descriptor is optional and may have several digits. After an operator,
     # however, the next word is its target: in 10>&1>file, 1 is not another fd.
     # with_fd: every token carries a third item, the descriptor a redirection opens
     # (0 for <-forms, 1 for >-forms, "&" for &> and &>>; None for a word).
+    # raw: a trailing item carrying the RAW (pre-unquote) slice, so a caller can tell a quoted
+    # leading ~ from a live one (Codex g1 P2). A word split on $IFS carries the raw of each piece.
     ops = r"(?:&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)"
     i, target = 0, False
     while i < len(seg):
@@ -1128,9 +1132,9 @@ def shell_tokens(seg, with_fd=False):
             if with_fd:
                 num = op[0][:len(op[0]) - len(name)]
                 fd = int(num) if num else ("&" if name[0] == "&" else int(name[0] == ">"))
-                yield "redirect", name, fd
+                yield ("redirect", name, fd) + ((op[0],) if raw else ())
             else:
-                yield "redirect", name
+                yield ("redirect", name) + ((op[0],) if raw else ())
             i += len(op[0])
             target = True
             continue
@@ -1164,7 +1168,7 @@ def shell_tokens(seg, with_fd=False):
         edges = [start] + [x for cut in cuts for x in cut] + [i]
         pieces = [seg[edges[k]:edges[k + 1]] for k in range(0, len(edges), 2)]
         for piece in [pc for pc in pieces if pc] or [seg[start:i]]:
-            yield ("word", _unquote(piece)) + ((None,) if with_fd else ())
+            yield ("word", _unquote(piece)) + ((None,) if with_fd else ()) + ((piece,) if raw else ())
         target = False
 
 
@@ -2710,10 +2714,48 @@ def _gh_alias(ws):
     return ops[0], None, None, False
 
 
+def _sed_s_execs(script):
+    """Replacement texts of sed s/// commands that carry the `e` flag -- the substitution-execute
+    form `s/.*/CMD/e` runs the substituted text through a shell (Codex g1 P1, W1-03). The flag may
+    be combined (`ge`, `pe`, a numeric count) and the delimiter may be any punctuation char."""
+    out, i, n = [], 0, len(script)
+    while i < n:
+        ch = script[i]
+        if ch == "s" and i + 1 < n and not (script[i + 1].isalnum() or script[i + 1] in " \t\n"):
+            delim, j, parts, cur = script[i + 1], i + 2, [], []
+            while j < n and len(parts) < 2:
+                c = script[j]
+                if c == "\\" and j + 1 < n:
+                    cur.append(script[j + 1] if script[j + 1] == delim else script[j:j + 2])
+                    j += 2
+                    continue
+                if c == "\n":
+                    break
+                if c == delim:
+                    parts.append("".join(cur))
+                    cur = []
+                    j += 1
+                    continue
+                cur.append(c)
+                j += 1
+            flags = []
+            while j < n and script[j] not in " \t\n;":
+                flags.append(script[j])
+                j += 1
+            if len(parts) == 2 and "e" in flags:
+                out.append(parts[1])
+            i = j
+            continue
+        i += 1
+    return out
+
+
 def _shell_launcher_lines(head, rest):
     """Shell command lines a non-interpreter tool hands to a shell by its own syntax (W1-03):
-    sqlite3 `.shell`/`.system` dot-commands and sed `e <command>`. Not exec-call code, so
-    _code_commands does not see them; read here so a refused command launched this way is judged.
+    sqlite3 `.shell`/`.system` dot-commands and sed `e <command>` / `s///e`. Not exec-call code,
+    so _code_commands does not see them; read here so a command launched this way is judged.
+    A sed script given with -f names a FILE this hook cannot read -- that is the on-disk-script
+    limit the header already states, not covered here.
     """
     lines = []
     if head == "sqlite3":
@@ -2762,6 +2804,7 @@ def _shell_launcher_lines(head, rest):
                 m = re.match(r"\s*(?:[0-9]+|\$|/(?:[^/\\]|\\.)*/|,)*\s*e\s+(\S.*)", piece)
                 if m:
                     lines.append(m[1].strip())
+            lines += _sed_s_execs(script)   # the s///e substitution-execute form (g1 P1)
     return lines
 
 
@@ -3395,15 +3438,54 @@ def _home_path(p):
     """p with a leading ~, ~user, $HOME or ${HOME} expanded the way the shell expands it (W1-01,
     2026-10-27 audit). The boundary held two meanings of ~: the self-guard expanded it, the
     write boundary read it as a directory named ~ under the cwd, so `> ~/.bashrc` was never
-    judged and the `~/.bashrc` of a file tool resolved inside the worktree. A ~name no account owns
-    stays literal, as it does in the shell. Quoting is gone by here, so a quoted ~ is expanded
-    too: that can only move a write to where it is judged, never past it."""
+    judged and the `~/.bashrc` of a file tool resolved inside the worktree. A ~name no account
+    owns stays literal, as it does in the shell. A file-tool path carries no shell quoting, so
+    this expands unconditionally; a shell word is expanded QUOTE-AWARE through _sh_home_path."""
     if p.startswith("~"):
         return os.path.expanduser(p)
     m = re.match(r"[$](?:HOME|[{]HOME[}])(?=/|$)", p)
     if m:
         return (os.environ.get("HOME") or os.path.expanduser("~")) + p[m.end():]
     return p
+
+
+def _sh_home_path(unq, raw):
+    """A shell word home expansion, quote-aware (Codex g1 P2): bash expands a leading tilde only
+    when it is UNQUOTED, and a leading $HOME/${HOME} only when it is not single-quoted. So a
+    quoted tilde path stays the literal relative path the shell writes, not an over-denied home
+    path. raw is the pre-unquote slice."""
+    if unq.startswith("~"):
+        return _home_path(unq) if raw.startswith("~") else unq
+    if re.match(r"[$](?:HOME|[{]HOME[}])(?=/|$)", unq):
+        inner = raw[1:] if raw[:1] == DQ else raw     # a leading " still allows $HOME to expand
+        return _home_path(unq) if inner[:1] == "$" else unq
+    return unq
+
+
+def _write_targets(seg):
+    """[(unquoted, raw)] for file-write redirect targets and tee operands in one segment, the raw
+    slice kept so home expansion can be quote-aware (Codex g1 P2)."""
+    toks, redirs, pending = [], [], None
+    for kind, val, rawslice in shell_tokens(seg, raw=True):
+        if kind == "redirect":
+            pending = val
+        elif pending is not None:
+            if pending in (">", ">>", ">|", ">&", "&>", "&>>", "<>"):
+                redirs.append((val, rawslice))
+            pending = None
+        else:
+            toks.append((val, rawslice))
+    out = list(redirs)
+    ws = _command_words([v for v, _r in toks])
+    if ws and ws[0].rsplit("/", 1)[-1] == "tee":
+        seen = False
+        for v, rawslice in toks:
+            if not seen:
+                seen = v.rsplit("/", 1)[-1] == "tee"
+                continue
+            if v in ("-", "--") or not (v.startswith("-") and len(v) > 1):
+                out.append((v, rawslice))
+    return out
 
 
 _parts, heredoc_patches = _expand(raw_command)
@@ -3983,6 +4065,58 @@ def _find_may_match(tests, shown, name):
     return True
 
 
+_TAR_TAKES = set("fCbLVXTIgG")   # tar option letters that consume an operand
+
+
+def _tar_info(rest):
+    """(letters, long-names, -f file target, -C destination) for a tar command, reading BOTH the
+    dashed form and tar traditional dashless bundle -- `tar cf FILE src` / `tar xf e.tar`, where
+    the first operand is the option bundle and its arg-taking letters consume the operands that
+    follow, in order (Codex g1 P1, W1-05)."""
+    letters, longs, pos, pending, dashed = "", [], [], [], {}
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w == "--":
+            pos.extend(rest[i + 1:])
+            break
+        if w.startswith("--"):
+            name, eq, val = w[2:].partition("=")
+            longs.append(name)
+            if name in ("file", "directory"):
+                if eq:
+                    dashed[name] = val
+                elif i + 1 < len(rest):
+                    dashed[name] = rest[i + 1]
+                    i += 1
+            i += 1
+            continue
+        if w.startswith("-") and len(w) > 1:
+            cluster = w[1:]
+            letters += cluster
+            k = next((k for k, c in enumerate(cluster) if c in _TAR_TAKES), None)
+            if k is not None:
+                glued = cluster[k + 1:]
+                if glued:
+                    dashed[cluster[k]] = glued
+                elif i + 1 < len(rest):
+                    dashed[cluster[k]] = rest[i + 1]
+                    i += 1
+            i += 1
+            continue
+        if not letters and not pos and re.fullmatch(r"[A-Za-z]+", w):
+            letters += w                       # the traditional dashless bundle
+            pending = [c for c in w if c in _TAR_TAKES]
+            i += 1
+            continue
+        pos.append(w)
+        i += 1
+    trad = dict(zip(pending, pos))
+    file_t = dashed.get("f") or dashed.get("file") or trad.get("f")
+    dest = dashed.get("C") or dashed.get("directory") or trad.get("C")
+    return letters, longs, file_t, dest
+
+
 def guard_targets(words, depth=0):
     """(path, deleting) pairs a shell command writes or removes, as far as text shows.
 
@@ -3996,20 +4130,11 @@ def guard_targets(words, depth=0):
     head, rest = _peel_busybox(head, rest)   # busybox tar -> tar, so an applet is judged (W1-05)
     if head == "tar":
         # A create/append/update with -f FILE overwrites FILE: `tar -cf .claude/settings.json x`
-        # replaces the guard with a tarball (W1-05). Extraction is handled in the never list,
-        # since the archive member names are not visible here.
-        letters = "".join(w[1:] for w in rest if re.fullmatch(r"-[A-Za-z]+", w))
-        longs = [w.split("=", 1)[0] for w in rest if w.startswith("--")]
-        if any(c in letters for c in "cru") or any(x in longs for x in ("--create", "--append",
-                                                                         "--update")):
-            fval = None
-            for i, w in enumerate(rest):
-                if w in ("-f", "--file") and i + 1 < len(rest):
-                    fval = rest[i + 1]
-                elif w.startswith("--file="):
-                    fval = w.split("=", 1)[1]
-                elif re.fullmatch(r"-[A-Za-z]*f", w) and i + 1 < len(rest):
-                    fval = rest[i + 1]
+        # (or `tar cf …`, the dashless bundle) replaces the guard with a tarball (W1-05).
+        # Extraction is handled in the never list, since the member names are not visible here.
+        letters, longs, fval, _dest = _tar_info(rest)
+        if any(c in letters for c in "cru") or any(x in longs for x in ("create", "append",
+                                                                        "update")):
             if fval and fval != "-":
                 out.append((fval, True))
     elif head == "patch":
@@ -4147,12 +4272,12 @@ def _code_guard_targets(code, depth=0):
 
 
 # W: the write targets the boundary judges, in the path model of the shell: every redirect target
-# and every tee operand, a leading ~, ~user, $HOME or ${HOME} expanded (W1-01).
-for _args, _writes in _guard_segs:
-    _bws = _command_words(_args)
-    _tee_ops = _operands(_bws[1:]) if _bws and _bws[0].rsplit("/", 1)[-1] == "tee" else []
-    for _bw in _writes + _tee_ops:
-        record("W", _home_path(_bw))
+# and every tee operand, a leading ~/$HOME expanded QUOTE-AWARE (W1-01; Codex g1 P2 -- a quoted
+# ~ is left literal, as bash does). Read off the segment text so the raw (pre-unquote) word is
+# available to decide the expansion.
+for _wj, _wseg in _split(_judged):
+    for _wu, _wraw in _write_targets(_wseg):
+        record("W", _sh_home_path(_wu, _wraw))
 
 
 _guard_hits = []
@@ -4194,15 +4319,19 @@ def _dest_covers_guard(dest):
     """True when an extraction into dest could write a guard path (W1-05): the guard files sit at
     the worktree root, so a destination at or above it reaches them with an ordinary member name.
     An unknown destination (no -C/-d; the worker cwd this hook is not told) is assumed to be that
-    root. A relative subdir cannot reach the root without a `..` member, which tar/unzip refuse."""
+    root. A RELATIVE destination is resolved against the worktree root and its symlinks followed
+    (Codex g1 P1): `-C build` where build -> the worktree root reaches the guard, so it must not
+    short-circuit to allow; an unresolvable destination asks rather than allows."""
     if dest is None:
         return True
     d = _home_path(dest)
     if d in (".", "./") or ".." in d.split("/"):
         return True
-    if not d.startswith("/"):
-        return False
-    real = os.path.realpath(d).rstrip("/") or "/"
+    base = d if d.startswith("/") else os.path.join(_GROOT, d)
+    try:
+        real = os.path.realpath(base).rstrip("/") or "/"
+    except (OSError, ValueError):
+        return True   # cannot resolve -> ask, never a silent allow
     root = _GROOT.rstrip("/") or "/"
     return real == root or root.startswith(real + "/") or real == os.path.dirname(root)
 
@@ -4228,8 +4357,11 @@ def _extracts_over_guard(ws):
                 return rest[i + 1]
         return None
 
-    if head == "tar" and ("x" in letters or any(x in longs for x in ("--extract", "--get"))):
-        dest = dest_of("C", ("--directory",))
+    if head == "tar":
+        tletters, tlongs, _f, tdest = _tar_info(rest)   # reads the dashless bundle too (g1 P1)
+        if not ("x" in tletters or any(x in tlongs for x in ("extract", "get"))):
+            return None
+        dest = tdest
     elif head in ("unzip", "zipinfo") and head == "unzip":
         dest = dest_of("d", ())
     elif head == "cpio" and ("i" in letters or "--extract" in longs):
@@ -4291,7 +4423,9 @@ def _root_wipe(ws):
     return bool(recursive and targets and all(_rooty(t) for t in targets))
 
 
-_WRITE_OPS = (">", ">>", ">|", "&>", "&>>", "<>", ">&")
+# File-write redirect operators (NOT the fd-duplication ops): a numeric target is a filename
+# for these, while for >& / <& a number is a descriptor (Codex g1 P1).
+_FILE_WRITE_OPS = (">", ">>", ">|", "&>", "&>>", "<>")
 
 
 def _has_write(text, depth=0):
@@ -4308,8 +4442,12 @@ def _has_write(text, depth=0):
         except ValueError:
             continue
         for _fd, op, target in redirs:
-            if op in _WRITE_OPS and target and target != "-" and not target.isdigit():
-                return True
+            if not target or target == "-":
+                continue
+            if op in _FILE_WRITE_OPS:
+                return True                       # `> 123` writes a file named 123
+            if op == ">&" and not target.isdigit():
+                return True                       # `>&out` writes a file; `>&1` is an fd dup
         ws = _command_words(words)
         if not ws:
             continue

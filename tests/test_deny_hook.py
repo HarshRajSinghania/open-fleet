@@ -1367,6 +1367,24 @@ class TestBashWritesAreBounded(HookBase):
                         self.assertIsNotNone(block, f"{tool} {path} from {cwd} was allowed")
                         self.assertEqual(block["permissionDecision"], "deny")
 
+    def test_a_quoted_tilde_or_single_quoted_home_stays_a_literal_relative_target(self):
+        # Codex g1 P2 (W1-01): the shell leaves a QUOTED leading ~ (and a single-quoted $HOME)
+        # literal, writing a relative `./~/...` inside the tree; expanding it anyway over-denied a
+        # legitimate write. Expansion is quote-aware now, matching bash.
+        home = self.tmp / "home"
+        home.mkdir()
+        for command in ("echo x > '~/.notes'", 'echo x > "~/.notes"', "echo x > \\~/.notes",
+                        "echo x > '$HOME/.notes'", "echo x | tee '~/.notes'"):
+            with self.subTest(command=command):
+                r = self._fire_home(event("Bash", command=command), home, self.wt)
+                self.assertEqual(r.stdout.strip(), "", command)
+        # the live (unquoted, or double-quoted $HOME) spellings still deny
+        for command in ("echo x > ~/.notes", 'echo x > "$HOME/.notes"'):
+            with self.subTest(command=command):
+                block = self.decision(self._fire_home(event("Bash", command=command), home, self.wt))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+
     def test_a_home_inside_the_boundary_stays_writable(self):
         # The control: the expansion is the shell's, not a refusal of every `~`.
         for command in ("echo x > ~/sub/new.txt", "echo x | tee ~/real.txt"):
@@ -2920,6 +2938,22 @@ class TestInterpreterTableCoversTheClass(ReviewHookBase):
             "sed 'e git push --force origin main' f",
         ), bounded_modes=self.BOTH)
 
+    def test_sed_substitute_execute_flag_is_extracted(self):
+        # Codex g1 P1 (W1-03): the `e` FLAG on an s/// command executes the substituted text
+        # through a shell; only the standalone `e COMMAND` was extracted. The replacement of an
+        # s-command carrying `e` (incl. combined flags, and via -e/--expression) is read now.
+        self.expect("deny", (
+            "sed 's/.*/git push --force origin main/e' f",
+            "sed 's/.*/rm -rf \\//e' f",
+            "sed 's|x|orca orchestration reset|ge' f",
+            "sed -e 's/.*/git push --force origin main/e' f",
+            "sed --expression='s/.*/git push --force origin main/e' f",
+            "sed 's#a#git push --force origin main#pe' f",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "sed 's/a/b/e' f", "sed 's/a/b/ge' f", "sed 's/foo/bar/g' f",
+        ), bounded_modes=self.BOTH)
+
     def test_an_interpreter_writing_a_guard_path_is_denied(self):
         self.expect("deny", (
             "awk 'BEGIN{print \"x\" > \".claude/settings.json\"}'",
@@ -2965,6 +2999,40 @@ class TestArchiveAndPatchWritersReachTheGuard(ReviewHookBase):
             "tar -czf out.tar src", "tar -tf e.tar", "tar -cf dist/app.tar build",
         ), bounded_modes=(True,))
 
+    def test_a_relative_destination_symlinked_to_the_root_is_resolved(self):
+        # Codex g1 P1 (W1-05): `_dest_covers_guard` returned False for a relative `-C` before
+        # resolving it, so `tar -C build -xf e.tar` with build -> the worktree root reached the
+        # guard. The destination is resolved (symlinks followed) against the root now.
+        wt = Path(tempfile.mkdtemp(prefix="dh-destlink-"))
+        self.addCleanup(shutil.rmtree, wt, True)
+        (wt / "build").symlink_to(wt)       # build resolves back to the worktree root
+        (wt / "safe").mkdir()
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(wt)}
+        for command, want in (("tar -C build -xf e.tar", "deny"),
+                              ("tar xf e.tar -C build", "deny"),
+                              ("unzip e.zip -d build", "deny"),
+                              ("tar -C safe -xf e.tar", "allow")):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env, cwd=wt))
+                got = block["permissionDecision"] if block else "allow"
+                self.assertEqual(got, "ask" if want == "deny" else "allow", command)
+
+    def test_tars_dashless_option_bundle_is_recognised(self):
+        # Codex g1 P1 (W1-05): tar's traditional syntax puts the option bundle in the first
+        # operand with no leading dash -- `tar cf FILE src` overwrites FILE, `tar xf e.tar`
+        # extracts. Neither tar parser read the dashless bundle, so both were silent ALLOWs.
+        self.expect("deny", (
+            "tar cf .claude/settings.json src", "tar cvf .orca/dispatch-pubkey src",
+            "tar cfz .codex/hooks.json src", "busybox tar cf .claude/settings.json src",
+        ), bounded_modes=(True,), reason="own guard")
+        self.expect("ask", (
+            "tar xf e.tar", "tar xvf e.tar", "tar xzf e.tgz", "tar xf e.tar -C .",
+            "busybox tar xf e.tar",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "tar cf out.tar src", "tar xf e.tar -C build", "tar cCf sub out.tar src",
+        ), bounded_modes=(True,))
+
 
 class TestReadOnlyTierWriteFloor(HookBase):
     """W4-05 (2026-10-27 audit): ``ro`` was a tool filter, not a filesystem one, so plan-mode
@@ -3007,6 +3075,20 @@ class TestReadOnlyTierWriteFloor(HookBase):
         block = self.decision(self._fire(event("Bash", command=command)))
         self.assertIsNotNone(block)
         self.assertEqual(block["permissionDecision"], "deny")
+
+    def test_a_numeric_redirect_target_is_a_file_not_a_descriptor(self):
+        # Codex g1 P1 (W4-05 floor): `_has_write` excluded every numeric target, but a number is a
+        # descriptor only for the duplication ops (>&N); `> 123` writes a file named 123.
+        for command in ("echo pwned > 123", "echo pwned >> 7", "echo x >| 42"):
+            with self.subTest(command=command):
+                block = self.decision(self._fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        # an fd duplication is not a file write
+        for command in ("make 2>&1 | tail", "echo hi >&2", "cat 0<&3"):
+            with self.subTest(command=command):
+                r = self._fire(event("Bash", command=command))
+                self.assertEqual(r.stdout.strip(), "", command)
 
     def test_read_only_shell_still_runs_under_readonly(self):
         for command in ("git diff", "git log --oneline -5", "cat README.md", "ls -la",

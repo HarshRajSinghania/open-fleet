@@ -174,7 +174,8 @@ def _git_env(blanks=()):
     pairs, so a driver name holding `=` or a non-UTF-8 byte reaches git exactly (PR #649)."""
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
-           and k not in ("GIT_EXTERNAL_DIFF", "GIT_CONFIG_COUNT")}
+           and k not in ("GIT_EXTERNAL_DIFF", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+                         "GIT_CONFIG")}
     pairs = (("core.fsmonitor", "false"), ("protocol.ext.allow", "never"), ("safe.directory", "*"),
              # #629: the repo-config command channels a fixed key can close — hooks (post-checkout
              # on a worktree read) and the global external-diff program.

@@ -182,6 +182,21 @@ class GitexecDriverBlanks(unittest.TestCase):
         self.assertEqual(diff_scope._driver_blanks(p.repo), want)
         self.assertEqual(verify._Authority.driver_blanks(p.repo), want)
 
+    def test_a_git_dir_reads_the_config_that_git_dir_resolves(self):
+        # W4-01: posix.py names a worktree by its admin git dir (`--git-dir`) and never through the
+        # worktree's own `.git` pointer, so the drivers come from where that call runs: here a
+        # linked worktree's admin dir, whose `includeIf gitdir:` the main checkout never matches.
+        p = self._repo()
+        inc = p.dir / "linked-only.gitconfig"
+        inc.write_text('[filter "inc"]\n\tsmudge = danger\n', encoding="utf-8")
+        p._git("config", "includeIf.gitdir:**/worktrees/**.path", str(inc))
+        p._git("worktree", "add", "-q", "--detach", str(p.dir / "wt"))
+        admin = p.repo / ".git" / "worktrees" / "wt"
+        linked = gitexec.driver_blanks(None, git_dir=admin)
+        self.assertIn(("filter.inc.smudge", ""), linked)
+        self.assertEqual(linked, gitexec.driver_blanks(p.dir / "wt"))
+        self.assertEqual(gitexec.driver_blanks(None, git_dir=p.repo / ".git"), [])
+
 
 class StaticBeltClosesTheFixedKeyChannels(unittest.TestCase):
     """The env belt (command-line precedence, so it overrides repo .git/config) names every
@@ -197,6 +212,42 @@ class StaticBeltClosesTheFixedKeyChannels(unittest.TestCase):
         self.assertEqual(pairs["protocol.ext.allow"], "never")
         self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
         self.assertEqual(env["GIT_GRAFT_FILE"], os.devnull)
+
+    def test_an_inherited_config_channel_neither_blinds_nor_outranks_the_floor(self):
+        # W4-07 sweep: GIT_CONFIG_PARAMETERS (inherited `-c` pairs) is read AFTER the
+        # GIT_CONFIG_COUNT pairs, so it outranks the floor; GIT_CONFIG names the ONE file
+        # `git config --list` reads, so driver_blanks listed nothing while `diff`/`add` still
+        # loaded the repo config and ran its filter. Neither reaches a floored child.
+        inherited = {"GIT_CONFIG": os.devnull, "GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='danger'"}
+        env = gitexec.env(inherited)
+        self.assertNotIn("GIT_CONFIG", env)
+        self.assertNotIn("GIT_CONFIG_PARAMETERS", env)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        p._git("config", "filter.media.clean", "danger")
+        with mock.patch.dict(os.environ, inherited):
+            self.assertIn(("filter.media.clean", ""), gitexec.driver_blanks(p.repo))
+            got = subprocess.run(gitexec.argv("-C", str(p.repo), "config", "--get", "core.fsmonitor"),
+                                 env=gitexec.env(), capture_output=True, text=True,
+                                 stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(got.stdout.strip(), "false")
+
+    def test_diff_scope_drops_the_same_inherited_channels(self):
+        # diff_scope inlines the floor (it is in the verifier toolchain), so it must drop the same
+        # inherited variables gitexec drops, or its own driver enumeration is blinded.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        p._git("config", "filter.media.clean", "danger")
+        inherited = {k: "x" for k in gitexec._INHERITED_DROPPED}
+        inherited["GIT_CONFIG"] = os.devnull
+        with mock.patch.dict(os.environ, inherited):
+            env = diff_scope._git_env()
+            self.assertIn(("filter.media.clean", ""), diff_scope._driver_blanks(p.repo))
+        self.assertEqual(set(env) & gitexec._INHERITED_DROPPED, set())
 
     def test_diff_scope_mirrors_the_whole_gitexec_floor(self):
         env = diff_scope._git_env()

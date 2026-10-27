@@ -384,6 +384,33 @@ class TestHighTierDenies(HookBase):
         self.assertEqual(block["permissionDecision"], "ask",
                          "a named path inside the tree is an ask, not a hard deny")
 
+    def test_the_root_and_home_class_denies_past_the_canonical_spellings(self):
+        # W1-06 (2026-10-27 audit): the HIGH tier matched a literal token set, so `/*/`, `~/.`,
+        # `~/*`, `${HOME}/*` and `${HOME}/.` were a root/home wipe downgraded to a never-list ask.
+        # The class is normalised now: . and .. collapse, a single trailing glob segment means
+        # "everything here", and ~/$HOME/${HOME} are the home root.
+        for command in (
+            "rm -rf /*/", "rm -rf ~/.", "rm -rf ~/*", "rm -rf ${HOME}/*", "rm -rf ${HOME}/.",
+            "rm -rf $HOME/*", "rm -rf /dev/../", "rm -rf /./", "rm -rf //*", "rm -rf /*//",
+            "rm -rf ~/foo/..", "sudo rm -rf /*/", "rm -rf ${HOME}/./",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+
+    def test_a_scoped_delete_below_root_or_home_is_not_the_root_class(self):
+        # The class is root/home itself or everything one level under it, not a named child and
+        # not the parent above it (`~/..` is /home, a different target the HIGH tier does not own).
+        for command in (
+            "rm -rf /etc", "rm -rf /etc/*", "rm -rf ~/.ssh", "rm -rf ${HOME}/project",
+            "rm -rf /var/log/*", "rm -rf ~/../", "rm -rf ~/foo/../../",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "ask", command)
+
     def test_a_refused_shape_is_refused_in_a_later_segment_too(self):
         # Was "falls through to ask" until #297. `ask` is the wrong answer for a
         # shape the HIGH tier refuses outright: the tier exists because none of
@@ -2870,3 +2897,33 @@ class TestInterpreterTableCoversTheClass(ReviewHookBase):
             "Rscript -e 'cat(1:10)'", "sed -n '1,5p' f.txt", "sed 's/a/b/g' f.txt",
             "sqlite3 d 'select count(*) from t'",
         ), bounded_modes=self.BOTH)
+
+
+class TestArchiveAndPatchWritersReachTheGuard(ReviewHookBase):
+    """W1-05 (P2, 2026-10-27 audit): tar/unzip/patch/busybox were absent from the self-guard, so
+    an archive or patch extracted over the worktree replaced the guard file with no deny and no
+    prompt. Member names are not visible to the hook, so an extraction whose destination covers
+    the guard region is asked about; a destination that cannot reach it stays allowed."""
+
+    BOTH = (False, True)
+
+    def test_an_extraction_over_the_guard_region_is_asked(self):
+        self.expect("ask", (
+            "tar -xf /tmp/e.tar", "tar -xzf e.tgz", "tar --extract --file e.tar",
+            "tar -C . -xf e.tar", "tar -C .. -xf e.tar", "unzip -o e.zip",
+            "unzip e.zip -d .", "patch -p1 < d.patch", "patch < d.patch",
+            "busybox tar -xf e.tar", "busybox unzip e.zip",
+        ), bounded_modes=self.BOTH)
+
+    def test_an_archive_overwriting_a_guard_file_outright_is_denied(self):
+        self.expect("deny", (
+            "tar -cf .claude/settings.json x", "tar -czf .orca/dispatch-pubkey src",
+            "tar --create --file=.codex/hooks.json x", "patch -o .claude/settings.json < d.patch",
+        ), bounded_modes=(True,), reason="own guard")
+
+    def test_an_extraction_that_cannot_reach_the_guard_stays_allowed(self):
+        self.expect("allow", (
+            "tar -C build -xf e.tar", "tar -C sub/dir --extract -f e.tar",
+            "unzip e.zip -d build", "unzip -d out e.zip", "patch -d build -p1 < d.patch",
+            "tar -czf out.tar src", "tar -tf e.tar", "tar -cf dist/app.tar build",
+        ), bounded_modes=(True,))

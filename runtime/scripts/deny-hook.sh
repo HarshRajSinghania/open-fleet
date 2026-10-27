@@ -58,8 +58,11 @@
 # disk, a program a download or decoder produces, an alias or function defined in
 # an EARLIER command, and a value computed at run time stay beyond it, and the
 # Never list and the sandbox are the net for those. The refused shapes:
-#   1. recursive delete whose every target is /, ~, $HOME or /*, or any
-#      recursive delete carrying --no-preserve-root
+#   1. recursive delete whose every target is the root or home CLASS -- /, ~,
+#      $HOME or ${HOME}, or everything one level under them, judged after `.`/`..`
+#      collapse and a trailing glob (so /*/, /dev/../, ~/., ~/*, ${HOME}/* all
+#      count, not just the canonical spellings, W1-06) -- or any recursive delete
+#      carrying --no-preserve-root
 #   2. force-push to the default branch, including the +main refspec form that
 #      needs no flag at all — and deleting it outright, which carries no flag
 #      either: `:main`, `git push -d`, `git push --delete` (#297). An effective
@@ -165,6 +168,10 @@
 # directory above this file counts too. Inline interpreter code (python -c,
 # perl -e, node -e, ...) naming a guard path beside a write call is judged a
 # write to it; touch is not guarded (it changes no content or permission).
+# A tar/patch that names a guard file as its own output (tar -cf, patch -o) is
+# denied; an archive EXTRACTION (tar -x, unzip, cpio -i, patch) is asked when its
+# destination covers the guard region, since the member names are not visible
+# here and the hook cannot prove the guard files untouched (W1-05).
 #
 # File touches (#590). With OPEN_FLEET_STATE_DB set, an allowed edit is recorded
 # with its line range, the path RELATIVE to the unit worktree so two workers'
@@ -3944,6 +3951,31 @@ def guard_targets(words, depth=0):
     if not ws:
         return []
     head, rest, out = ws[0].rsplit("/", 1)[-1], ws[1:], []
+    head, rest = _peel_busybox(head, rest)   # busybox tar -> tar, so an applet is judged (W1-05)
+    if head == "tar":
+        # A create/append/update with -f FILE overwrites FILE: `tar -cf .claude/settings.json x`
+        # replaces the guard with a tarball (W1-05). Extraction is handled in the never list,
+        # since the archive member names are not visible here.
+        letters = "".join(w[1:] for w in rest if re.fullmatch(r"-[A-Za-z]+", w))
+        longs = [w.split("=", 1)[0] for w in rest if w.startswith("--")]
+        if any(c in letters for c in "cru") or any(x in longs for x in ("--create", "--append",
+                                                                         "--update")):
+            fval = None
+            for i, w in enumerate(rest):
+                if w in ("-f", "--file") and i + 1 < len(rest):
+                    fval = rest[i + 1]
+                elif w.startswith("--file="):
+                    fval = w.split("=", 1)[1]
+                elif re.fullmatch(r"-[A-Za-z]*f", w) and i + 1 < len(rest):
+                    fval = rest[i + 1]
+            if fval and fval != "-":
+                out.append((fval, True))
+    elif head == "patch":
+        for i, w in enumerate(rest):
+            if w in ("-o", "--output") and i + 1 < len(rest):
+                out.append((rest[i + 1], False))
+            elif w.startswith("--output="):
+                out.append((w.split("=", 1)[1], False))
     if head == "find":
         # find ROOT... -delete, or -exec CMD {} (#598, PR #648 review): each guard file under a
         # starting point is deleted unless the AND-chain of tests before the action PROVES it
@@ -4116,6 +4148,107 @@ for _hp in heredoc_targets:
 _WHOLE_TREE = (".", "./", "./*", "*", ":/", ":/*", ":(top)", ":(top).")
 
 
+def _dest_covers_guard(dest):
+    """True when an extraction into dest could write a guard path (W1-05): the guard files sit at
+    the worktree root, so a destination at or above it reaches them with an ordinary member name.
+    An unknown destination (no -C/-d; the worker cwd this hook is not told) is assumed to be that
+    root. A relative subdir cannot reach the root without a `..` member, which tar/unzip refuse."""
+    if dest is None:
+        return True
+    d = _home_path(dest)
+    if d in (".", "./") or ".." in d.split("/"):
+        return True
+    if not d.startswith("/"):
+        return False
+    real = os.path.realpath(d).rstrip("/") or "/"
+    root = _GROOT.rstrip("/") or "/"
+    return real == root or root.startswith(real + "/") or real == os.path.dirname(root)
+
+
+def _extracts_over_guard(ws):
+    """A reason when ws extracts an archive (tar -x, unzip, cpio -i, patch) into a directory that
+    covers the guard region, else None. The members are not visible, so this asks rather than
+    denies (W1-05)."""
+    if not ws:
+        return None
+    head, rest = _peel_busybox(ws[0].rsplit("/", 1)[-1], ws[1:])
+    letters = "".join(w[1:] for w in rest if re.fullmatch(r"-[A-Za-z]+", w))
+    longs = [w.split("=", 1)[0] for w in rest if w.startswith("--")]
+
+    def dest_of(short, longnames):
+        for i, w in enumerate(rest):
+            if w in longnames and i + 1 < len(rest):
+                return rest[i + 1]
+            for ln in longnames:
+                if w.startswith(ln + "="):
+                    return w.split("=", 1)[1]
+            if short and re.fullmatch(r"-%s" % short, w) and i + 1 < len(rest):
+                return rest[i + 1]
+        return None
+
+    if head == "tar" and ("x" in letters or any(x in longs for x in ("--extract", "--get"))):
+        dest = dest_of("C", ("--directory",))
+    elif head in ("unzip", "zipinfo") and head == "unzip":
+        dest = dest_of("d", ())
+    elif head == "cpio" and ("i" in letters or "--extract" in longs):
+        dest = dest_of("D", ("--directory",))
+    elif head == "patch":
+        dest = dest_of("d", ("--directory",))
+        if any(w in ("-o", "--output") or w.startswith("--output=") for w in rest):
+            return None   # -o FILE is a named write, judged by the self-guard instead
+    else:
+        return None
+    if _dest_covers_guard(dest):
+        return ("Extracting an archive or applying a patch into a directory that holds the hook "
+                "guard. Its member names are not visible to this hook, so it cannot prove the "
+                "guard files are untouched; extract into a subdirectory or name the targets.")
+    return None
+
+
+def _rooty(tok):
+    """"root" or "home" when a delete target denotes all of / or all of $HOME at the CLASS level,
+    else None (W1-06). The HIGH tier matched a literal spelling set, so `/*/`, `~/.`, `~/*`,
+    `${HOME}/*` and `${HOME}/.` were a root/home wipe downgraded to a never-list ask. Here `.` and
+    `..` collapse, a single trailing glob segment (*, ?, [) is "everything directly here", and
+    ~, $HOME and ${HOME} are the home root -- so the class is judged, not the spelling."""
+    if not tok:
+        return None
+    m = re.match(r"\$\{HOME\}|\$HOME(?![A-Za-z0-9_])", tok)
+    if tok == "~" or tok.startswith("~/"):
+        base, body = "home", tok[1:]
+    elif m:
+        base, body = "home", tok[m.end():]
+    elif tok.startswith("/"):
+        base, body = "root", tok
+    else:
+        return None
+    segs = []
+    for s in body.split("/"):
+        if s in ("", "."):
+            continue
+        if s == "..":
+            if segs:
+                segs.pop()
+            elif base == "home":
+                return None   # the parent of $HOME is not the home class
+            continue   # above / stays /
+        segs.append("*" if any(ch in s for ch in "*?[") else s)
+    if not segs:
+        return base
+    return base if segs == ["*"] else None
+
+
+def _root_wipe(ws):
+    """True when ws is a recursive rm whose every target is root/home-class (W1-06)."""
+    if not ws or ws[0].rsplit("/", 1)[-1] != "rm":
+        return False
+    rest = ws[1:]
+    recursive = any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", w) or w == "--recursive"
+                    for w in rest if w.startswith("-"))
+    targets = _operands(rest)
+    return bool(recursive and targets and all(_rooty(t) for t in targets))
+
+
 def _never_git(ws):
     """Why a git command discards local work or history beyond easy recovery, or None (P2-12)."""
     if not ws or ws[0].rsplit("/", 1)[-1] != "git":
@@ -4221,6 +4354,7 @@ def _fetch_runs():
 
 
 _never = [why for why in (_never_git(_vw) for _vw, _w, _sg in _all_views) if why]
+_never += [why for why in (_extracts_over_guard(_vw) for _vw, _w, _sg in _all_views) if why]
 if _fetch_runs():
     _never.append("Running a script fetched from the network in the same command.")
 if _never:
@@ -4232,6 +4366,9 @@ if _BRACE_REFUSAL:
     _hard.insert(0, _BRACE_REFUSAL)
 if _hard:
     record("D", _hard[0])
+# Y: a recursive rm whose every target is the root or home CLASS (W1-06), judged by the HIGH tier.
+if any(_root_wipe(_vw) for _vw, _w, _sg in _all_views):
+    record("Y", "1")
 
 
 # R: the line the as-written never-list pass reads (#598, from #602). That pass ran over the raw
@@ -5218,6 +5355,14 @@ for _SEG in "$@"; do
     exit 0
   fi
 done
+
+# A recursive rm whose every target is the root or home CLASS (W1-06): the reader normalised the
+# spellings (/*/, ~/., ${HOME}/*, /dev/../, …) the per-token case above only matched literally.
+# After the loop, so --no-preserve-root and the canonical spellings keep their own reasons.
+if [ -n "$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^Y //p' | sed -n '1p')" ]; then
+  decide deny "deny-hook[HIGH]: recursive delete of / or the home directory is refused. Delete a named path inside the unit worktree instead."
+  exit 0
+fi
 
 guard_check
 

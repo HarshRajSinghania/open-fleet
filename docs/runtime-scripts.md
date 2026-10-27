@@ -319,7 +319,7 @@ Exits: 0 ok · 1 validation failure · 2 could-not-run or usage.
 ## `deny-hook.sh`
 
 PreToolUse guard for read-write workers (Bash, Edit, Write). Reads the hook event JSON
-on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-191`;
+on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-198`;
 behavior pinned by `tests/test_deny_hook.py`, `tests/test_deny_hook_multi_harness.py` and the
 differential corpus `tests/test_deny_hook_conformance.py` (#598, below).
 
@@ -401,8 +401,11 @@ a guard file only when the whole AND-chain of tests proves it unmatched (`-iname
 case, `-path` matches the path as `find` prints it, a negation or `-o` or `-regex` proves
 nothing) — and interpreter code (`python -c`, `perl -e`, `node -e`, …) naming a guard path
 beside a write call, whether from `-c` or fed on stdin or a heredoc; `touch` is not guarded and
-reading an anchor stays free (PR #648 review). A `grep`, `sed` or `tr`
-that is missing or errors denies: a matcher's exit 2 or 127 is never read as no-match.
+reading an anchor stays free (PR #648 review). A `tar`/`patch` naming a guard file as its own
+output (`tar -cf`, `patch -o`) is denied; an archive extraction (`tar -x`, `unzip`, `cpio -i`,
+`patch`) is ASKED when its destination covers the guard region, since the archive's member names
+are not visible to the hook and it cannot prove the guard files untouched (W1-05). A `grep`,
+`sed` or `tr` that is missing or errors denies: a matcher's exit 2 or 127 is never read as no-match.
 
 Who reads a body (PR #648 review). Reader identification is structural, not positional: each
 simple command is its words plus its redirections, wherever they sit among the words, and each

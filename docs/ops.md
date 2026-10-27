@@ -328,10 +328,20 @@ done
 gh release list --limit 20     # nine rows once the runs finish
 ```
 
+A backfilled Release is published with `--latest=false`: only the newest `v*` tag on `main`, in
+version order, takes GitHub's "Latest" (2026-10-27 security audit, W6-11).
+
 `.github/workflows/publish-dist.yml` builds `scripts/bundle.py`'s self-contained tree on the
 same tag pushes (a manual run must name an existing `v*` tag; it refuses a branch) and
 force-pushes it to the `dist` branch, the target copy installers point at
-([docs/install.md](install.md)).
+([docs/install.md](install.md)). Its staging step adds the tree with `git add -A --force`, so
+a `.gitignore` a mission carries cannot drop a file, and it fails unless the index holds every
+built file byte for byte, nothing else, and every entry of each mission's `bundle-files.json`
+(W6-04).
+
+Both publishers check the tag is `vMAJOR.MINOR.PATCH` before the checkout, and publish-dist
+checks out that checked value, so a dispatch input is never fetched before it is validated
+(W6-16).
 
 Both publishers refuse to run unless the tag's commit is on `main` and the account that pushed
 or dispatched, and the one that started the attempt, is the repository owner (2026-10-23

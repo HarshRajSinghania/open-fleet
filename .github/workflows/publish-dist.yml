@@ -59,10 +59,27 @@ jobs:
             exit 1
           fi
           echo "release maintainer '$RELEASE_MAINTAINER' started this run"
+      - name: The tag is a release version, checked before anything fetches it
+        # 2026-10-27 security audit, W6-16: the checkout's `ref:` resolved the dispatch input
+        # before the shape check further down refused it, so a value with a space or a refspec
+        # (`v1:refs/heads/x`) was fetched first. The checkout now takes this step's output. Only
+        # vMAJOR.MINOR.PATCH passes, and the raw value is never echoed back (a newline in it
+        # would start a workflow command).
+        id: tag
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf '::error::not a release tag (vMAJOR.MINOR.PATCH), so nothing was fetched: %q\n' "$TAG"
+            exit 1
+          fi
+          printf 'tag=%s\nref=refs/tags/%s\n' "$TAG" "$TAG" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; same pin as validate.yml)
         with:
-          # A dispatch checks out the named tag, never the branch the run was started from.
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          # A dispatch checks out the named tag, never the branch the run was started from; a
+          # tag push checks out the pushed tag. Either way, the value the step above checked.
+          ref: ${{ steps.tag.outputs.ref }}
           fetch-depth: 0  # bundle.py resolves references against the full tree; provenance names the commit
           # No write token in the tree bundle.py runs in (W6-07): the re-fetches below are
           # anonymous (a public repository), and the push names its token in the URL.
@@ -73,7 +90,7 @@ jobs:
 
       - name: Refuse anything but the newest annotated release tag on main
         env:
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           case "$TAG" in
@@ -103,6 +120,54 @@ jobs:
           printf 'Built by scripts/bundle.py from %s at %s.\nEvery mission under skills/ carries its playbooks and runtime docs under references/.\nSource: https://github.com/%s\n' \
             "${TAG}" "$(git rev-parse HEAD)" "${GITHUB_REPOSITORY}" > "$RUNNER_TEMP/dist/DIST-PROVENANCE.txt"
 
+      - name: Stage the bundle exactly as built
+        # 2026-10-27 security audit, W6-04: `git add -A` honoured any .gitignore the bundle
+        # carries (a mission may commit one), so `dist` could lose files its own
+        # bundle-files.json lists while `bundle.py --check`, which reads the disk, stayed green.
+        # --force stages ignored paths too, and the check fails unless the index holds every
+        # file on disk, byte for byte (no clean filter or line-ending rewrite from a
+        # .gitattributes in the bundle), nothing else, and every mission's inventory entry.
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/dist"
+          git init -q -b dist
+          git add -A --force
+          python3 - <<'PY'
+          import glob, hashlib, json, os, subprocess, sys
+          problems, on_disk = [], set()
+          for top, dirs, files in os.walk("."):
+              if top == ".":
+                  dirs[:] = [d for d in dirs if d != ".git"]
+              for name in dirs + files:
+                  path = os.path.relpath(os.path.join(top, name), ".").replace(os.sep, "/")
+                  if os.path.islink(path):
+                      problems.append(f"{path} is a symbolic link; the bundle ships files")
+                  elif name in files:
+                      on_disk.add(path)
+          staged = {}
+          listing = subprocess.run(["git", "ls-files", "-s", "-z"], check=True,
+                                   capture_output=True).stdout
+          for record in filter(None, listing.split(b"\0")):
+              meta, path = record.split(b"\t", 1)
+              staged[os.fsdecode(path)] = meta.split()[1].decode()
+          problems += [f"{p} is in the bundle but not staged" for p in sorted(on_disk - set(staged))]
+          problems += [f"{p} is staged but not in the bundle" for p in sorted(set(staged) - on_disk)]
+          for path in sorted(on_disk & set(staged)):
+              data = open(path, "rb").read()
+              if hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() != staged[path]:
+                  problems.append(f"{path} was staged with different bytes than were built")
+          for inventory in sorted(glob.glob("skills/*/references/bundle-files.json")):
+              mission = inventory.split("/")[1]
+              for entry in json.load(open(inventory, encoding="utf-8")):
+                  if f"skills/{mission}/{entry}" not in staged:
+                      problems.append(f"skills/{mission}/{entry} is in {inventory} but not staged")
+          for problem in problems:
+              print(f"::error::{problem}")
+          if problems or not staged:
+              sys.exit(1)
+          print(f"staged {len(staged)} files, exactly the bundle as built")
+          PY
+
       - name: Publish to the dist branch
         # An orphan commit per publish: the branch is a build artifact, never a history to merge.
         env:
@@ -128,9 +193,7 @@ jobs:
               exit 1
             fi
           fi
-          cd "$RUNNER_TEMP/dist"
-          git init -q -b dist
-          git add -A
+          cd "$RUNNER_TEMP/dist"   # staged, and checked, by the step above
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -qm "dist: bundle of ${TAG} (${src})"
           git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" dist:dist

@@ -786,6 +786,192 @@ class TagPublishersRefuseAnyoneButTheMaintainer(unittest.TestCase):
                 self.assertRegex(scripts, r'git merge-base --is-ancestor "\$cut" origin/main\b')
 
 
+_GIT_FIXTURE_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+
+
+def _publisher_steps(name):
+    text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+    return _steps(next(iter(_jobs(text).values())))
+
+
+def _named_step(steps, title):
+    found = [s for s in steps if _step_name(s) == title]
+    return found[0] if len(found) == 1 else None
+
+
+class TheReleaseTagIsCheckedBeforeAnythingFetchesIt(unittest.TestCase):
+    """2026-10-27 security audit, W6-16 and W6-11: publish-dist resolved the dispatch tag in the
+    checkout's `ref:` and only shape-checked it a step later, and release.yml never shape-checked
+    it at all, so `-f tag=anything` published a Release for any existing tag. Both publishers now
+    check the tag is a release version before the checkout, and the checkout takes the checked
+    value."""
+
+    PUBLISHERS = ("release.yml", "publish-dist.yml")
+    STEP = "The tag is a release version, checked before anything fetches it"
+    GOOD = ("v0.1.0", "v1.0.0", "v10.20.30")
+    BAD = ("main", "v1", "v1.0", "v1.0.0-rc1", "v1.0.0 ", " v1.0.0", "v1.0.0\nmain",
+           "refs/tags/v1.0.0", "v1.0.0:refs/heads/x", "-v1.0.0", "v01x.0.0", "")
+
+    def _check(self, name):
+        steps = _publisher_steps(name)
+        step = _named_step(steps, self.STEP)
+        self.assertIsNotNone(step, f"{name}: no tag check step")
+        return steps, step
+
+    def test_the_check_runs_after_the_maintainer_guard_and_before_the_checkout(self):
+        for name in self.PUBLISHERS:
+            with self.subTest(workflow=name):
+                steps, step = self._check(name)
+                checkout = next(i for i, s in enumerate(steps)
+                                if any("actions/checkout@" in ln for ln in s))
+                self.assertEqual(steps.index(step), 1, f"{name}: the tag check is not second")
+                self.assertLess(steps.index(step), checkout)
+
+    def test_only_a_release_version_passes(self):
+        for name in self.PUBLISHERS:
+            _, step = self._check(name)
+            script = _step_script(step)
+            for tag in self.GOOD + self.BAD:
+                with self.subTest(workflow=name, tag=tag), tempfile.TemporaryDirectory() as tmp:
+                    out = Path(tmp) / "out"
+                    out.write_text("", encoding="utf-8")
+                    r = _bash(script, {"TAG": tag, "GITHUB_OUTPUT": str(out)})
+                    if tag in self.GOOD:
+                        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                        self.assertEqual(out.read_text(encoding="utf-8"),
+                                         f"tag={tag}\nref=refs/tags/{tag}\n")
+                    else:
+                        self.assertNotEqual(r.returncode, 0, f"{tag!r} passed")
+                        self.assertIn("::error::", r.stdout)
+                        self.assertEqual(out.read_text(encoding="utf-8"), "")
+
+    def test_the_tag_reaches_the_check_through_env(self):
+        for name, want in (("release.yml", "${{ github.event.inputs.tag || github.ref_name }}"),
+                           ("publish-dist.yml", "${{ github.event_name == 'workflow_dispatch' "
+                                                "&& inputs.tag || github.ref_name }}")):
+            with self.subTest(workflow=name):
+                self.assertEqual(_step_env(self._check(name)[1]).get("TAG"), want)
+
+    def test_publish_dist_checks_out_the_checked_ref(self):
+        steps, _ = self._check("publish-dist.yml")
+        checkout = next(s for s in steps if any("actions/checkout@" in ln for ln in s))
+        refs = [ln.strip() for ln in checkout if ln.strip().startswith("ref:")]
+        self.assertEqual(refs, ["ref: ${{ steps.tag.outputs.ref }}"])
+        self.assertIn("id: tag", "\n".join(self._check("publish-dist.yml")[1]))
+
+
+class AReleaseForAnOlderTagIsNeverLatest(unittest.TestCase):
+    """W6-11: release.yml had no newest-tag guard and no `--latest=false`, so publishing a
+    missing historical Release (docs/ops.md backfills nine that way) moved GitHub's "Latest"
+    onto it. The step is run here against a real repository and a stub `gh`."""
+
+    STEP = "Publish the Release (idempotent)"
+
+    def _run(self, tag):
+        script = _step_script(_named_step(_publisher_steps("release.yml"), self.STEP))
+        self.assertTrue(script.strip(), "the publish step has no run: body")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, bin_dir = Path(tmp) / "repo", Path(tmp) / "bin"
+            repo.mkdir()
+            bin_dir.mkdir()
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, env={**os.environ, **_GIT_FIXTURE_ENV},
+                                            check=True, capture_output=True, text=True)
+            git("init", "-q")
+            for version in ("v0.9.0", "v0.10.0"):
+                git("commit", "-q", "--allow-empty", "-m", version)
+                git("tag", "-a", version, "-m", version)
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            log = Path(tmp) / "gh.log"
+            (bin_dir / "gh").write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_LOG\"\n"
+                "[ \"$1 $2\" = 'release view' ] && exit 1\nexit 0\n", encoding="utf-8")
+            (bin_dir / "gh").chmod(0o755)
+            # The stub must shadow any real gh: PATH starts with it, nothing is prepended, and
+            # GH_REPO, GH_TOKEN and GH_CONFIG_DIR give a real gh no repository and no login.
+            env = {**os.environ, **_GIT_FIXTURE_ENV, "TAG": tag, "GH_LOG": str(log),
+                   "cut": "0" * 40, "RUNNER_TEMP": tmp, "GH_REPO": "invalid/invalid",
+                   "GH_TOKEN": "", "GH_CONFIG_DIR": str(Path(tmp) / "no-gh-config"),
+                   "GITHUB_STEP_SUMMARY": str(Path(tmp) / "summary"),
+                   "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            r = subprocess.run(["bash", "-e", "-c", script], env=env, cwd=repo,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue(log.is_file(), "the step never reached the stub gh")
+            return [ln for ln in log.read_text(encoding="utf-8").splitlines()
+                    if ln.startswith("release create")]
+
+    def test_the_newest_release_is_latest_and_an_older_one_is_not(self):
+        newest = self._run("v0.10.0")  # version order, not string order: 0.10 > 0.9
+        self.assertEqual(len(newest), 1)
+        self.assertIn("--latest", newest[0].split())
+        older = self._run("v0.9.0")
+        self.assertEqual(len(older), 1)
+        self.assertIn("--latest=false", older[0].split())
+        self.assertNotIn("--latest", older[0].split())
+
+
+class TheDistIndexIsExactlyTheBundle(unittest.TestCase):
+    """2026-10-27 security audit, W6-04 (publish half): `git add -A` in the fresh dist repository
+    honoured any .gitignore the bundle carried, so a committed `skills/<m>/.gitignore` of `*.md`
+    dropped that mission's prose from `dist` while its own bundle-files.json still listed it. The
+    staging step is run here on a built-looking tree."""
+
+    STEP = "Stage the bundle exactly as built"
+
+    def _stage(self, files, git_env=None):
+        steps = _publisher_steps("publish-dist.yml")
+        step = _named_step(steps, self.STEP)
+        self.assertIsNotNone(step, "publish-dist has no staging step of its own")
+        publish = _named_step(steps, "Publish to the dist branch")
+        self.assertLess(steps.index(step), steps.index(publish))
+        self.assertNotRegex(_step_script(publish), r"\bgit\s+(add|init)\b",
+                            "the publish step stages on its own again")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        dist = Path(tmp.name) / "dist"
+        for rel, body in files.items():
+            (dist / rel).parent.mkdir(parents=True, exist_ok=True)
+            (dist / rel).write_text(body, encoding="utf-8")
+        env = {**_GIT_FIXTURE_ENV, **(git_env or {}), "RUNNER_TEMP": tmp.name}
+        r = _bash(_step_script(step), env, cwd=tmp.name)
+        listed = subprocess.run(["git", "-C", str(dist), "ls-files"], capture_output=True,
+                                text=True, env={**os.environ, **_GIT_FIXTURE_ENV}).stdout.split()
+        return r, listed
+
+    MISSION = {
+        "skills/m/SKILL.md": "# m\n",
+        "skills/m/notes.md": "notes\n",
+        "skills/m/references/bundle-files.json": '[".gitignore", "SKILL.md", "notes.md"]\n',
+        "README.md": "dist\n",
+    }
+
+    def test_a_nested_ignore_file_drops_nothing(self):
+        files = {**self.MISSION, "skills/m/.gitignore": "*.md\n", ".gitignore": "*\n"}
+        r, listed = self._stage(files)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sorted(listed), sorted(files))
+
+    def test_a_filter_that_rewrites_a_file_fails_the_stage(self):
+        files = {**self.MISSION, "skills/m/.gitattributes": "*.md filter=swap\n"}
+        files["skills/m/references/bundle-files.json"] = \
+            '[".gitattributes", "SKILL.md", "notes.md"]\n'
+        with tempfile.TemporaryDirectory() as cfg:
+            config = Path(cfg) / "gitconfig"
+            config.write_text("[filter \"swap\"]\n\tclean = tr a-z A-Z\n", encoding="utf-8")
+            r, _ = self._stage(files, {"GIT_CONFIG_GLOBAL": str(config)})
+        self.assertNotEqual(r.returncode, 0, "a clean filter changed what dist would publish")
+        self.assertIn("::error::", r.stdout)
+
+    def test_an_inventory_entry_missing_from_the_tree_fails_the_stage(self):
+        files = dict(self.MISSION)
+        files["skills/m/references/bundle-files.json"] = '["SKILL.md", "gone.md"]\n'
+        r, _ = self._stage(files)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("skills/m/gone.md", r.stdout)
+
+
 class TheNegativeControlDiagnosticIsReachable(unittest.TestCase):
     """2026-10-23 review, §5 CI: `set -uo pipefail` under the runner's default `bash -e` ended
     the step on the pipeline, so the "demo itself is RED" diagnostic never printed. The step is

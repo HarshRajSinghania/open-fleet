@@ -1122,6 +1122,18 @@ class PosixWorktreeProvider(RuntimeProvider):
             }
         }
 
+    @staticmethod
+    def _linked_worktrees(root: Path) -> set[Path]:
+        """Resolved paths of `root`'s LINKED worktrees, from the repository's own admin entries
+        (`worktree list`; the first entry is the main checkout). Empty when that cannot be read."""
+        if not (root / ".git").exists():
+            return set()
+        proc = _git(["worktree", "list", "--porcelain"], cwd=root)
+        if proc.returncode != 0:
+            return set()
+        paths = [ln.split(" ", 1)[1] for ln in proc.stdout.splitlines() if ln.startswith("worktree ")]
+        return {Path(p).resolve() for p in paths[1:]}
+
     def worktree_rm(self, selector: str, force: bool = False) -> dict[str, Any]:
         if not selector:
             raise ProviderError("invalid_argument", "worktree rm needs a worktree selector")
@@ -1137,7 +1149,13 @@ class PosixWorktreeProvider(RuntimeProvider):
             raise ProviderError("worktree_protected", f"refusing to remove {wt_path}: it is (or contains) the main checkout")
         if not wt_path.exists():
             return {"removed": False, "id": shown["id"], "reason": "absent"}
-        is_linked = (wt_path / ".git").is_file()
+        # W4-08: whether this is a linked worktree is the REPOSITORY's record, read once from its
+        # own admin entries — never the `.git` pointer inside the tree, which the worker rewrites
+        # at will (deleted, it steered a forced removal onto the rmtree branch below and left the
+        # admin entry and branch registered to a tree that was gone). A registered worktree is
+        # git's to remove: `worktree remove` checks that pointer against its own admin entry and
+        # refuses a missing or foreign one. Anything unregistered takes the plain-directory branch.
+        is_linked = wt_path in self._linked_worktrees(repo_root)
         if is_linked:
             cmd = ["worktree", "remove"] + (["--force"] if force else []) + ["--", str(wt_path)]
             # git's clean check runs `status` IN the worktree: its drivers are read there (W4-01).

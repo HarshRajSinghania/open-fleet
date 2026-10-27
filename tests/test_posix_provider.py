@@ -639,6 +639,32 @@ class TestWorktreeSafety(PosixRealProcessBase):
         self.assertNotIn(".claude/CLAUDE.md", dirty)
         self.assertNotIn(".claude/settings.local.json", dirty)
 
+    def test_rm_decides_linkedness_from_the_repo_not_the_worktree_pointer(self):
+        # W4-08: `.git` inside the worktree is the worker's to rewrite. Deleted, it once steered a
+        # forced removal onto the plain-directory rmtree branch, past the `git worktree remove` that
+        # refuses it, leaving the repository's admin entry and branch registered to a tree that was
+        # gone. The repository's own worktree list decides; git then refuses the broken pointer.
+        wt = Path(self.prov.worktree_create("ptr")["worktree"]["path"])
+        (wt / ".git").unlink()
+        (wt / "junk.txt").write_text("x", encoding="utf-8")
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            self.prov.worktree_rm(f"path:{wt}", force=True)
+        self.assertEqual(ctx.exception.code, "worktree_rm_failed")
+        self.assertTrue((wt / "junk.txt").is_file(), "no rmtree fallback for a registered worktree")
+        listed = _git("worktree", "list", "--porcelain", cwd=self.repo).stdout
+        self.assertIn(f"worktree {wt}", listed)
+        # A pointer rewritten to ANOTHER worktree's admin entry is refused by git's back-pointer
+        # check, and neither worktree loses its registration (the finding's stated exploit).
+        a = Path(self.prov.worktree_create("ptr-a")["worktree"]["path"])
+        b = Path(self.prov.worktree_create("ptr-b")["worktree"]["path"])
+        (a / ".git").write_text((b / ".git").read_text(encoding="utf-8"), encoding="utf-8")
+        with self.assertRaises(self.providers.ProviderError):
+            self.prov.worktree_rm(f"path:{a}", force=True)
+        listed = _git("worktree", "list", "--porcelain", cwd=self.repo).stdout
+        self.assertIn(f"worktree {a}", listed)
+        self.assertIn(f"worktree {b}", listed)
+        self.assertTrue(b.is_dir())
+
     def test_rm_refuses_paths_outside_provider_base(self):
         stray = Path(self.tmp.name) / "stray"
         stray.mkdir()

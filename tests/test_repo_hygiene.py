@@ -467,7 +467,9 @@ _LOOSE_KEY = re.compile(
     r"[{,]\s*[\"']?" + _SCANNED_KEYS + r"[\"']?\s*:"       # a key inside a flow mapping
     r"|[\"']" + _SCANNED_KEYS + r"[\"']\s*:"               # a quoted key
     r"|\b" + _SCANNED_KEYS + r"\s+:")                      # a space before the colon
-_YAML_INDIRECTION = re.compile(r"<<\s*:|(?:^|[\s\[{,:-])[&*][A-Za-z_][\w-]*\s*(?:$|[\]},#])")
+# A merge key, an anchor (`&name`, with or without a value after it) or an alias (`*name`), as a
+# YAML node starts: after a line start, whitespace or a flow indicator (a run: body is not read).
+_YAML_INDIRECTION = re.compile(r"<<\s*:|(?:^|[\s\[{,])[&*][A-Za-z_][\w-]*(?=\s|$|[\]},])")
 
 
 def _structure_offenders(name, text):
@@ -519,6 +521,8 @@ class TheScansReadEveryWorkflowAsWritten(unittest.TestCase):
                      'jobs:\n  x:\n    steps:\n      - "uses": actions/checkout@v4\n',
                      "jobs:\n  x:\n    steps:\n      - name: a\n        with: {persist-credentials: true}\n",
                      "x: &co\n  uses: actions/checkout@v4\njobs:\n  y:\n    steps:\n      - <<: *co\n",
+                     "jobs:\n  x:\n    steps:\n      - uses: &u actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\n        with: *w\n",
                      "jobs:\n  x:\n    steps: [{run: echo}]\n"):
             with self.subTest(text=text):
                 self.assertTrue(_structure_offenders("w.yml", text))

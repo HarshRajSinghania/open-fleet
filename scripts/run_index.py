@@ -28,6 +28,7 @@ Exit: 0 every check holds, 1 a check failed, 2 the input could not be read.
 """
 import argparse
 import bisect
+import html
 import json
 import re
 import sys
@@ -85,6 +86,15 @@ _LOOSE_ATTR_RE = re.compile(r"""[ \t\n\f\r/]*([^ \t\n\f\r/>][^ \t\n\f\r/>=]*)"""
 # Raw HTML that is no tag (CommonMark 0.31, "Raw HTML"): a comment, a processing instruction, a
 # declaration or CDATA. And an autolink (URI or e-mail), which CommonMark reads before raw HTML,
 # so raw_html() steps over it rather than reading it as a tag (2026-10-27 security audit, W6-14).
+# A link a browser follows to run or read something rather than to open a page (PR #718
+# re-attack, W6-14): an autolink, an inline link or image, or a reference definition whose
+# destination, folded as a browser folds it (entities decoded, whitespace and control characters
+# dropped, case ignored), opens with one of these schemes.
+_DANGEROUS_SCHEMES = ("javascript:", "vbscript:", "data:", "file:")
+_LINK_DESTINATION_RE = re.compile(
+    r"<([A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*)>"     # an autolink
+    r"|\]\(\s*<?([^)>]*)"                                  # an inline link or image
+    r"|^[ \t>]*\[[^\]]+\]:[ \t]*<?(\S+)", re.MULTILINE)      # a reference definition
 _RAW_OTHER_RE = re.compile(r"<!--|<\?|<![A-Za-z]|<!\[CDATA\[")
 # A line that may be a GFM table's delimiter row (`--- | ---`, `|:-:|`), past quote and list
 # marks. GFM splits a row into cells, before it reads a code span, only inside a table, and a
@@ -175,6 +185,19 @@ def html_link(text):
     line, unclear "<", "[", bare URL, "|", "$" or open backtick run, and loosely after one. An identical copy of scripts/changelog.py's html_link
     (this script is loaded alone; tests/test_changelog.py holds the two equal)."""
     return next((found for view in (text, *_quote_views(text)) if (found := _first_link(view))), None)
+
+
+def dangerous_link(text):
+    """The first link destination in `text` whose scheme is javascript:, vbscript:, data: or
+    file:, or None. Read wherever it stands, code spans included: a false refusal costs a
+    rewording, a missed one a script in a published page. Identical in scripts/changelog.py and
+    scripts/run_index.py."""
+    for match in _LINK_DESTINATION_RE.finditer(text):
+        destination = next(group for group in match.groups() if group is not None)
+        folded = re.sub(r"[\x00-\x20]", "", html.unescape(destination)).lower()
+        if folded.startswith(_DANGEROUS_SCHEMES):
+            return destination
+    return None
 
 
 def raw_html(text):
@@ -302,6 +325,9 @@ def row_errors(name, data, root=ROOT):
         elif isinstance(value, str) and (raw := raw_html(value)):
             errors.append(f"{where}: {cell} holds raw HTML ({raw[:40]!r}), which docs/runs/README.md "
                           "would publish verbatim; put it in a code span or escape the '<'")
+        if isinstance(value, str) and (bad := dangerous_link(value)):
+            errors.append(f"{where}: {cell} links {bad[:40]!r}: a javascript:, vbscript:, data: "
+                          "or file: scheme is refused")
         for href in _LINK_RE.findall(value) if isinstance(value, str) else ():
             path = href.split("#", 1)[0]
             if path and not (runs_dir(root) / path).exists():

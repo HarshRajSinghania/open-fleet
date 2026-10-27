@@ -396,5 +396,29 @@ class RawHtmlInACellIsRefused(unittest.TestCase):
                          [e for e in errors if "HTML link" in e])
 
 
+
+class DangerousSchemesInACellAreRefused(unittest.TestCase):
+    """PR #718 re-attack (W6-14): a cell's `<javascript:alert(1)>` autolink reached
+    docs/runs/README.md. A javascript:, vbscript:, data: or file: link is refused."""
+
+    def errors(self, text):
+        report = "2026-01-02-demo-it-self-run.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            write_row(root, row(report, outcome=text))
+            return [e for e in ri.check_rows(root) if "scheme" in e]
+
+    def test_a_dangerous_scheme_is_refused(self):
+        for text in ("see <javascript:alert(1)>", "<vbscript:msgbox(1)>", "[x](data:text/html,x)",
+                     "[x](file:///etc/passwd)", "[x](JAVA&#83;CRIPT:alert(1))"):
+            with self.subTest(text=text):
+                self.assertEqual(len(self.errors(text)), 1, text)
+
+    def test_ordinary_links_pass(self):
+        for text in ("see <https://example.org>", "[x](https://example.org/javascript:)"):
+            with self.subTest(text=text):
+                self.assertEqual(self.errors(text), [])
+
+
 if __name__ == "__main__":
     unittest.main()

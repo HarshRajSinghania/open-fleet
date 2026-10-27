@@ -574,5 +574,59 @@ class RawHtmlIsRefused(unittest.TestCase):
         self.assertIn("Markdown link", errors[0])
 
 
+
+class DangerousSchemesAreRefused(unittest.TestCase):
+    """PR #718 re-attack (W6-14): `<javascript:alert(1)>` and `<vbscript:…>` autolinks, which no
+    raw-HTML check sees, passed both writers into published Markdown. A link or autolink whose
+    destination is javascript:, vbscript:, data: or file: (case, entities, whitespace and control
+    characters folded as a browser folds them) is refused."""
+
+    REFUSED = (
+        "- **Change** see <javascript:alert(1)>.\n",
+        "- **Change** see <VBScript:msgbox(1)>.\n",
+        "- **Change** [x](javascript:alert(1)).\n",
+        "- **Change** [x]( JavaScript:alert(1) ).\n",
+        "- **Change** [x](<javascript:alert(1)>).\n",
+        "- **Change** [x](java&#115;cript:alert(1)).\n",
+        "- **Change** [x](java\tscript:alert(1)).\n",
+        "- **Change** [x](data:text/html,hi).\n",
+        "- **Change** [x](file:///etc/passwd).\n",
+        "- **Change** ![img](data:image/svg+xml,x).\n",
+        "- **Change** [x][y]\n  [y]: javascript:alert(1)\n",
+    )
+    ACCEPTED = (
+        "- **Change** see <https://example.org/x>.\n",
+        "- **Change** [x](https://example.org/javascript:alert).\n",
+        "- **Change** [ops](../docs/ops.md#data:x).\n",
+        "- **Change** the word javascript: in prose names no link.\n",
+    )
+
+    def errors(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "entry.md").write_text(text, encoding="utf-8")
+            return [e for e in cl.check_fragments(d) if "scheme" in e]
+
+    def test_a_dangerous_scheme_is_refused(self):
+        for text in self.REFUSED:
+            with self.subTest(text=text):
+                self.assertEqual(len(self.errors(text)), 1, text)
+
+    def test_other_links_and_mentions_pass(self):
+        for text in self.ACCEPTED:
+            with self.subTest(text=text):
+                self.assertEqual(self.errors(text), [])
+
+    def test_the_run_index_check_reads_schemes_the_same_way(self):
+        spec = importlib.util.spec_from_file_location("_run_index_schemes",
+                                                      ROOT / "scripts" / "run_index.py")
+        ri = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ri)
+        for text in self.REFUSED + self.ACCEPTED:
+            with self.subTest(text=text):
+                self.assertEqual(ri.dangerous_link(text), cl.dangerous_link(text))
+
+
 if __name__ == "__main__":
     unittest.main()

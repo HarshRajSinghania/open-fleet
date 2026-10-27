@@ -1117,6 +1117,31 @@ def _iter_claude():
 _UUID_TAIL = re.compile(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 
 
+def _unzstd_capped(zstd, packed, fp):
+    """Every frame of a .zst, decompressed up to MAX_FILE_BYTES in all (W5-21), or None.
+
+    One ZstdDecompressor decodes ONE frame and leaves the rest in `unused_data`, so a stream of
+    concatenated frames is walked frame by frame (the one-shot `zstd.decompress` did that, but
+    had no output cap). Past the cap is a skip that is said; a damaged or truncated stream is
+    unreadable, as before."""
+    out, total, rest = [], 0, packed
+    while rest:
+        unpacker = zstd.ZstdDecompressor()
+        try:
+            chunk = unpacker.decompress(rest, max_length=MAX_FILE_BYTES + 1 - total)
+        except Exception:
+            return None
+        total += len(chunk)
+        out.append(chunk)
+        if total > MAX_FILE_BYTES or (not unpacker.eof and not unpacker.needs_input):
+            _BUDGET.omit(fp, "file")  # the output reached the cap before the frame ended
+            return None
+        if not unpacker.eof:
+            return None  # a truncated frame
+        rest = unpacker.unused_data
+    return b"".join(out)
+
+
 def _codex_lines(fp):
     if fp.name.endswith(".zst"):
         try:
@@ -1126,15 +1151,8 @@ def _codex_lines(fp):
         packed = _read_capped(fp)
         if packed is None:
             return []
-        try:
-            # Decompressed output is capped too: a small .zst can expand without bound (W5-21).
-            unpacker = zstd.ZstdDecompressor()
-            plain = unpacker.decompress(packed, max_length=MAX_FILE_BYTES + 1)
-        except Exception:
-            return []
-        if len(plain) > MAX_FILE_BYTES or not unpacker.eof or not _charge(fp, len(plain)):
-            if len(plain) > MAX_FILE_BYTES or not unpacker.eof:
-                _BUDGET.omit(fp, "file")
+        plain = _unzstd_capped(zstd, packed, fp)
+        if plain is None or not _charge(fp, len(plain)):
             return []
         raw = plain.decode("utf-8", errors="replace")
         out = []

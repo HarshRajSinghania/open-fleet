@@ -34,6 +34,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import tempfile
 import unittest
 from contextlib import closing
@@ -664,6 +665,97 @@ class TestRecallReadsAreBounded(_Base):
         with mock.patch.object(self.mod, "MAX_FILE_BYTES", 2048, create=True), \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(self.mod._prior_hints(["src/app.py"], self.tmp / "runs"), [])
+
+
+class _FrameZstd:
+    """A stand-in for 3.14's compression.zstd with its frame semantics: a stream is concatenated
+    frames (here b"ZF" + 4-byte repeat count + 4-byte length + chunk, decoding to chunk * count,
+    so a small frame can expand like a real one); one ZstdDecompressor decodes ONE frame, sets
+    `eof` at its end and leaves what follows in `unused_data`; `max_length` caps the output, and
+    a truncated frame leaves `needs_input` set."""
+
+    class ZstdError(Exception):
+        pass
+
+    class ZstdDecompressor:
+        def __init__(self):
+            self.eof, self.needs_input, self.unused_data = False, True, b""
+
+        def decompress(self, data, max_length=-1):
+            if data[:2] != b"ZF":
+                raise _FrameZstd.ZstdError("not a frame")
+            if len(data) < 10:
+                return b""  # truncated: needs more input
+            count, size = int.from_bytes(data[2:6], "big"), int.from_bytes(data[6:10], "big")
+            if len(data) < 10 + size:
+                return b""
+            payload, rest = data[10:10 + size] * count, data[10 + size:]
+            if 0 <= max_length < len(payload):
+                self.needs_input = False
+                return payload[:max_length]
+            self.eof, self.needs_input, self.unused_data = True, False, rest
+            return payload
+
+    @staticmethod
+    def frame(chunk, count=1):
+        return b"ZF" + count.to_bytes(4, "big") + len(chunk).to_bytes(4, "big") + chunk
+
+
+class TestMultiFrameZstdTranscripts(_Base):
+    """Codex review of 82a2d00c (W5-21): the capped decompressor stopped at the end of the FIRST
+    frame and ignored `unused_data`, so a valid .jsonl.zst of concatenated frames silently lost
+    every later record -- with no partial-recall warning. The real module is 3.14-only here."""
+
+    SID = "0199f1a2-7b3c-7d4e-8f90-aaaaaaaaaaaa"
+
+    def zst_session(self, frames):
+        path = (self.tmp / "codex" / "sessions" / "2026" / "10" / "11"
+                / f"rollout-2026-10-11T09-00-00-{self.SID}.jsonl.zst")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"".join(frames))
+        return path
+
+    def records(self, *records):
+        return "".join(json.dumps(r) + "\n" for r in records).encode()
+
+    def scan(self, query, env=None):
+        package = type(sys)("compression")
+        package.zstd = _FrameZstd
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {"compression": package, "compression.zstd": _FrameZstd}), \
+                mock.patch.dict(os.environ, env or self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args([query, "--local-harnesses", "--agent", "codex", "--limit", "50"])
+            return self.mod.search_local_harnesses(ns)["hits"], err.getvalue()
+
+    def session(self, later_frame_count=1):
+        meta = {"timestamp": "2026-10-11T09:00:00Z", "type": "session_meta",
+                "payload": {"id": self.SID, "cwd": "/workspace/zst"}}
+        first = {"timestamp": "2026-10-11T09:00:01Z", "type": "response_item",
+                 "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "start"}]}}
+        later = {"timestamp": "2026-10-11T09:00:02Z", "type": "response_item",
+                 "payload": {"type": "message", "role": "assistant",
+                             "content": [{"type": "output_text", "text": "kappa_token in a later frame"}]}}
+        return self.zst_session([_FrameZstd.frame(self.records(meta, first)),
+                                 _FrameZstd.frame(self.records(later), count=later_frame_count)])
+
+    def test_every_frame_of_a_multi_frame_transcript_is_read(self):
+        self.session()
+        hits, _err = self.scan("kappa_token")
+        self.assertEqual(len(hits), 1, "the records after the first frame were dropped")
+
+    def test_the_cap_holds_across_frames_and_a_skip_is_said(self):
+        # Only this one store, so the skip reported is this file's: the later frame expands to
+        # ~40 KB, past a cap the compressed file itself is well under.
+        path = self.session(later_frame_count=200)
+        only = self.tmp / "only-codex"
+        (only / "home").mkdir(parents=True)
+        env = {"HOME": str(only / "home"), "XDG_DATA_HOME": str(only / "xdg"), "CODEX_HOME": str(path.parents[4]),
+               "PATH": os.environ.get("PATH", "")}
+        self.assertEqual(len(self.scan("kappa_token", env)[0]), 1)
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", path.stat().st_size + 4096, create=True):
+            hits, err = self.scan("kappa_token", env)
+        self.assertEqual(hits, [], "the frames together passed the per-file cap")
+        self.assertIn(f"skipped a file over the per-file cap ({path.stat().st_size + 4096} bytes), first {path}", err)
 
 
 if __name__ == "__main__":

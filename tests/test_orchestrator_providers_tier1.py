@@ -723,6 +723,29 @@ class TestAdapterGitRunsNoDriverAddedMidCall(_Base):
         self.assertEqual(self.fired(), [], "worktrunk's merge-tree ran a driver a sibling added mid-call")
         self.control("merge-tree", "--write-tree", "--name-only", "main", "work", cwd=self.wt)
 
+    def test_vibe_kanban_head_log_runs_no_signature_program_the_shared_config_names(self) -> None:
+        # Codex round 3 sweep: a fixed key the floor did not override. `log.showSignature` makes
+        # vibe-kanban's `git log -1 --format=...` verify a signed HEAD with `gpg.program`.
+        head = subprocess.run(["git", "-C", str(self.wt), "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        tree = subprocess.run(["git", "-C", str(self.wt), "rev-parse", "HEAD^{tree}"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+        body = (f"tree {tree}\nparent {head}\nauthor t <t@e> 1 +0000\ncommitter t <t@e> 1 +0000\n"
+                "gpgsig -----BEGIN PGP SIGNATURE-----\n \n -----END PGP SIGNATURE-----\n\nsigned\n")
+        signed = subprocess.run(["git", "-C", str(self.wt), "hash-object", "-t", "commit", "-w", "--stdin"],
+                                input=body, capture_output=True, text=True, check=True).stdout.strip()
+        subprocess.run(["git", "-C", str(self.wt), "update-ref", "HEAD", signed], check=True)
+        gpg = self.tmp / "gpg"
+        gpg.write_text(f'#!/bin/sh\necho gpg >> "{self.marker}"\nexit 1\n', encoding="utf-8")
+        gpg.chmod(0o755)
+        for key, value in (("log.showSignature", "true"), ("gpg.program", str(gpg))):
+            subprocess.run(["git", "-C", str(self.repo), "config", key, value], check=True)
+        out = self.ext.run_cli(["git", "-C", str(self.wt), "log", "-1", "--format=%s%x00%ct", "HEAD"], provider="git")
+        self.assertEqual(out["stdout"], "signed\x001\n")
+        self.assertEqual(self.fired(), [], "vibe-kanban's HEAD log ran the shared config's gpg.program")
+        subprocess.run(["git", "-C", str(self.wt), "log", "-1", "--format=%s", "HEAD"], capture_output=True)
+        self.assertEqual(self.fired(), ["gpg"], "control: a bare `git log` runs it")
+
     def test_the_dirty_check_never_recurses_into_a_submodule_and_counts_it_dirty(self) -> None:
         # Codex round 3 sweep: `status` recursed into a populated submodule with a CHILD git that
         # git starts without GIT_CONFIG_COUNT, reading the submodule's own config (in the shared

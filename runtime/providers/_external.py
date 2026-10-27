@@ -35,7 +35,7 @@ def _run_git(argv: list[str], *, cwd: str | None, env: dict[str, str] | None, ti
     """A `git` an adapter runs: COORDINATOR-side git over a worker's worktree (the shared
     `.git/config` and `info/attributes`, the same-uid `~/.gitconfig`), so it runs through
     posix.run_git's custody exactly as posix.py's own git does (W4-01): gitexec's absolute git and
-    floor, a repository-selecting GIT_* in `env` dropped, `status` /
+    floor plus PROVIDER_FLOOR, a repository-selecting GIT_* in `env` dropped, `status` /
     `reset --hard` / `merge-tree` run against a coordinator-built git dir whose config declares no
     driver (so a sibling cannot add one mid-call, PR #720 Codex round 3), and any other subcommand
     that could apply an attribute-selected driver refused (GitCustodyRefused, an OSError), wherever

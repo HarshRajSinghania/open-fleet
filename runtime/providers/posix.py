@@ -788,6 +788,35 @@ def git_location(args: list[str], cwd: str | Path | None) -> tuple[str, str | No
 # ---------------------------------------------------------------------------------------------
 # Coordinator git custody (W4-01; PR #720 Codex round 3)
 # ---------------------------------------------------------------------------------------------
+# Fixed config keys, on top of gitexec's floor, that name a program (or a transport that runs one)
+# for a subcommand the custody runs. A fixed key is overridden atomically on git's own command
+# line (GIT_CONFIG_COUNT pairs outrank every config file), so no read-then-use window exists:
+#   core.alternateRefsCommand - `fetch` runs it for an alternate the SHARED objects/info/alternates
+#     names (the sandbox sync's fetch did, as the coordinator);
+#   protocol.allow=never + protocol.file.allow=always - a name-indexed `url.<base>.insteadOf` in the
+#     shared config cannot turn a local path into `ssh://` (core.sshCommand), `git://`
+#     (core.gitProxy) or `<helper>::` (git-remote-<helper>): only the local file transport runs;
+#   submodule.recurse / fetch.recurseSubmodules / status.submoduleSummary - git starts a CHILD git
+#     in a submodule WITHOUT the GIT_CONFIG_COUNT floor, under the submodule's own config;
+#   log.showSignature + gpg.*.program - `log` verifying a signed HEAD runs gpg.program;
+#   maintenance.auto / gc.auto - no auto-maintenance child after a fetch.
+PROVIDER_FLOOR: tuple[tuple[str, str], ...] = (
+    ("core.alternateRefsCommand", "exit 0"),
+    ("protocol.allow", "never"),
+    ("protocol.file.allow", "always"),
+    ("submodule.recurse", "false"),
+    ("fetch.recurseSubmodules", "false"),
+    ("status.submoduleSummary", "false"),
+    ("log.showSignature", "false"),
+    ("gpg.program", os.devnull),
+    ("gpg.openpgp.program", os.devnull),
+    ("gpg.x509.program", os.devnull),
+    ("gpg.ssh.program", os.devnull),
+    ("maintenance.auto", "false"),
+    ("gc.auto", "0"),
+)
+
+
 class GitCustodyRefused(OSError):
     """A git command the custody will not run: it could apply an attribute-selected driver (or
     otherwise run a program the repository names) and the custody has no driver-free way to run
@@ -898,12 +927,12 @@ def _custody_kind(sub: str, rest: list[str]) -> str:
 
 def _direct(args: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float,
             input: bytes | None = None) -> subprocess.CompletedProcess:
-    """One git child: gitexec's absolute git and floor, stdin closed, output
+    """One git child: gitexec's absolute git and floor plus PROVIDER_FLOOR, stdin closed, output
     captured as BYTES (never decoded here: a `\\r` or a non-UTF-8 byte in a path survives). The
     drivers the config declares where it runs are blanked too, a belt for the direct commands
     (which apply none) and empty for a custody git dir (which declares none)."""
     repo, git_dir = git_location(args, cwd)
-    blanks = gitexec.driver_blanks(repo, git_dir=git_dir, base=base)
+    blanks = [*gitexec.driver_blanks(repo, git_dir=git_dir, base=base), *PROVIDER_FLOOR]
     feed: dict[str, Any] = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
     return subprocess.run(gitexec.argv(*args), cwd=cwd, capture_output=True, env=gitexec.env(base, blanks=blanks),
                           timeout=timeout, **feed)
@@ -1036,8 +1065,8 @@ def run_git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, st
 
     The coordinator runs git over a repository a worker writes: linked worktrees share one
     `.git/config` and `info/attributes`, and the same-uid `~/.gitconfig` is the worker's too. A
-    fixed command key (core.hooksPath, core.fsmonitor, diff.external) is overridden atomically on
-    git's command line. A name-indexed driver (`filter.<n>.*`,
+    fixed command key (core.hooksPath, core.fsmonitor, diff.external, PROVIDER_FLOOR's) is
+    overridden atomically on git's command line. A name-indexed driver (`filter.<n>.*`,
     `diff.<n>.*`, `merge.<n>.driver`) cannot be: listing the declared names and blanking them
     leaves a window in which a sibling adds a new one (PR #720 Codex round 3). So no command that
     could apply such a driver ever reads the repository's config:
@@ -1255,7 +1284,8 @@ def sync_sandbox_git(meta: dict[str, str], dispatch_id: str) -> dict[str, Any]:
     worker's branch is only fast-forwarded, never rewritten, and the host worktree's index is
     reset to the new HEAD (`read-tree`, zero stat data) so `git status` there reflects it. A
     non-fast-forward (the worker rewrote history) leaves the branch untouched and reports
-    `nonFastForward`.
+    `nonFastForward`. The fetch runs only the local file transport (PROVIDER_FLOOR), so a
+    shared-config `url.<base>.insteadOf` that rewrites the sandbox path fails the sync closed.
     """
     _sanitize_sandbox_git(meta)
     sandbox = meta["sandbox_git"]

@@ -1186,6 +1186,46 @@ class TestSandboxGitRoundTrip(PosixRealProcessBase):
         self.assertTrue(res["branchUpdated"])
         self.assertFalse(pwned.exists(), "the host-side sync ran a command the shared config names")
 
+    def test_sync_fetch_runs_no_command_the_shared_config_names_for_its_transport(self):
+        # Codex round 3 sweep: the sync's `fetch` reads the SHARED config. A fixed key the floor did
+        # not override (`core.alternateRefsCommand`, run for an alternate the worker plants) ran as
+        # the coordinator, and so did a name-indexed `url.<base>.insteadOf` that turned the
+        # sandbox path into `ssh://` (running `core.sshCommand`) or `<helper>::` (`git-remote-*`).
+        pwned = Path(self.tmp.name) / "pwned"
+        probe = f"sh -c 'echo x >> {shlex.quote(str(pwned))}; exit 1'"
+        alt = Path(self.tmp.name) / "alt"
+        _git("init", "-q", "--bare", str(alt), cwd=Path(self.tmp.name))
+        helper = self.bin / "git-remote-evil"
+        helper.write_text(f"#!/bin/sh\necho helper >> {shlex.quote(str(pwned))}\nexit 1\n", encoding="utf-8")
+        helper.chmod(0o755)
+        wt, meta, cenv = self._sandbox()
+        for n, plant in enumerate(("alternates", "ssh", "helper")):
+            with self.subTest(plant=plant):
+                (wt / f"f{n}.txt").write_text("done\n", encoding="utf-8")
+                subprocess.run(["git", "add", f"f{n}.txt"], cwd=wt, env=cenv, check=True)
+                subprocess.run(["git", "commit", "-qm", f"f{n}"], cwd=wt, env=cenv, check=True)
+                if plant == "alternates":
+                    (self.repo / ".git" / "objects" / "info" / "alternates").write_text(f"{alt}/objects\n", encoding="utf-8")
+                    _git("config", "core.alternateRefsCommand", probe, cwd=self.repo)
+                else:
+                    target = "ssh://evil.invalid/x" if plant == "ssh" else "evil::x"
+                    _git("config", f"url.{target}.insteadOf", meta["sandbox_git"], cwd=self.repo)
+                    _git("config", "core.sshCommand", probe, cwd=self.repo)
+                with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+                    try:
+                        res = self.posix.sync_sandbox_git(meta, f"disp_t{n}")
+                    except self.providers.ProviderError as exc:
+                        # A rewritten sandbox URL fails closed (no transport but `file` is allowed),
+                        # and the host branch is left where it was.
+                        self.assertNotEqual(plant, "alternates", exc.message)
+                        self.assertEqual(exc.code, "sandbox_git_failed")
+                        res = None
+                self.assertFalse(pwned.exists(), f"the sync's fetch ran a {plant} command the shared config names")
+                if res is not None:
+                    self.assertTrue(res["branchUpdated"])
+                if plant != "alternates":
+                    _git("config", "--unset", f"url.{target}.insteadOf", cwd=self.repo)
+
     def test_symlink_planted_in_sandbox_is_refused_and_host_untouched(self):
         wt, meta, cenv = self._sandbox()
         victim = Path(self.tmp.name) / "victim.txt"

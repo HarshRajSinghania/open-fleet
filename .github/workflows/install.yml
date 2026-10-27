@@ -57,6 +57,6 @@ jobs:
           export HOME="$RUNNER_TEMP/fakehome"
           sh scripts/install.sh --check
           linked=$(find "$HOME/.claude/skills" -mindepth 1 -maxdepth 1 | wc -l)
-          missions=$(python3 -c 'import glob; print(len([d for d in glob.glob("skills/*/SKILL.md")]))')
+          missions=$(python3 -I -c 'import glob; print(len([d for d in glob.glob("skills/*/SKILL.md")]))')
           test "$linked" -eq "$missions"
           echo "installed $linked missions into a clean HOME; installer exits 0 with warnings only"

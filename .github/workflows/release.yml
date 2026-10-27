@@ -95,7 +95,7 @@ jobs:
         # was written later still finds its notes. Values reach python as argv, never as code.
         run: |
           set -euo pipefail
-          python3 - CHANGELOG.md "${TAG#v}" > "$RUNNER_TEMP/notes.md" <<'PY'
+          python3 -I - CHANGELOG.md "${TAG#v}" > "$RUNNER_TEMP/notes.md" <<'PY'
           import re, sys
           text = open(sys.argv[1], encoding="utf-8").read()
           version = sys.argv[2]

@@ -50,7 +50,7 @@ jobs:
         # shape as validate.yml (#301), so this lint runs the ruff the catalog gate runs.
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --require-hashes --only-binary :all: \
+          python3 -I -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           ruff --version
       - run: ruff check evals/demo/target-app

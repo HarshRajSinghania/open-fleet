@@ -244,7 +244,7 @@ class TheSecretWaiverCarriesIdentityNotContent(unittest.TestCase):
         self.assertRegex(run, r'printf .*AKIA.*> "\$canary/\$file"')
         self.assertRegex(run, r'(?s)if \(cd "\$canary" && "\$gl" detect [^\n]*'
                               r'--report-format json --report-path "\$RUNNER_TEMP/canary\.json"\)')
-        self.assertRegex(run, r'python3 - "\$RUNNER_TEMP/canary\.json" "\$\{planted\[@\]\}"')
+        self.assertRegex(run, r'python3 -I - "\$RUNNER_TEMP/canary\.json" "\$\{planted\[@\]\}"')
         self.assertIn("missed = [path for path in sys.argv[2:] if path not in reported]", run)
 
     def test_the_scanner_config_is_on_the_frozen_guard_surface(self):
@@ -785,6 +785,47 @@ class TheAlertPathNamesWorkflowsThatExist(unittest.TestCase):
         for name in asked:
             with self.subTest(workflow=name):
                 self.assertIn(name, self.NAMES, f"release_check asks gh for {name!r} runs")
+
+
+class EveryToolModuleRunsIsolated(unittest.TestCase):
+    """PR #718 re-attack (W6-01 class, W3-01 in CI): `python3 -m pip` / `-m unittest`, `-c` and
+    `python3 -` put the working directory, the PR's checkout, first on sys.path, so a PR's root
+    `pip/` or `json.py` ran instead of the tool. Every such invocation in a workflow carries
+    `-I` (isolated: no working directory, no user site, no PYTHON* variables). The demo app's own
+    module under `uv run` is the code under test, not a tool."""
+
+    UNISOLATED = re.compile(r"\bpython3?((?:\s+-[A-Za-z]+)*?)\s+(-m\b|-c\b|-(?=\s|$))")
+
+    def _offenders(self, text):
+        bad = []
+        for lineno, script in _run_scripts(text):
+            for line in script.replace("\\\n", " ").splitlines():
+                code = line.split(" #", 1)[0]
+                if re.search(r"\buv\s+run\s+python\b", code):
+                    continue
+                for m in self.UNISOLATED.finditer(code):
+                    if "-I" not in m.group(1).split():
+                        bad.append(f"{lineno}: {line.strip()}")
+        return bad
+
+    def test_every_tool_module_and_inline_script_runs_with_dash_i(self):
+        for path in WORKFLOWS:
+            with self.subTest(workflow=path.name):
+                self.assertEqual(self._offenders(path.read_text(encoding="utf-8")), [])
+
+    def test_the_scan_can_actually_see_one(self):
+        for line in ("python3 -m pip install -r x", "python3 - <<'PY'", "python3 -c 'import glob'",
+                     "PATH=x python3 -m unittest discover -s tests", "python -m coverage report",
+                     "python3 -u -m pip install x"):
+            with self.subTest(line=line):
+                self.assertTrue(self._offenders(
+                    "jobs:\n  x:\n    steps:\n      - run: |\n          " + line + "\n"))
+        for line in ("python3 -I -m pip install -r x", "python3 -I - <<'PY'",
+                     "python3 -I -c 'import glob'", "python3 scripts/validate.py",
+                     "uv run python -m app.seed --count 0"):
+            with self.subTest(line=line):
+                self.assertEqual(self._offenders(
+                    "jobs:\n  x:\n    steps:\n      - run: |\n          " + line + "\n"), [])
 
 
 class TagPublishersRefuseAnyoneButTheMaintainer(unittest.TestCase):

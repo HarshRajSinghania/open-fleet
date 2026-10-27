@@ -132,7 +132,7 @@ jobs:
           cd "$RUNNER_TEMP/dist"
           git init -q -b dist
           git add -A --force
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import glob, hashlib, json, os, subprocess, sys
           problems, on_disk = [], set()
           for top, dirs, files in os.walk("."):

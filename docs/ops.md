@@ -114,6 +114,9 @@ fork's branch gets no exemption, because the fork keeps push access to that bran
 - A module file at the root (`*.py`, `*.pyc`, `*.pyd`, `*.so`, `*.pth`) or a top-level directory
   this repository does not have: `shard-tests.py` runs `python -m coverage` and `-m unittest`
   from the root, so a root `coverage/` or `unittest.py` would run instead of the locked tool.
+  That invocation cannot be isolated (its `tests.<module>` ids need the root on `sys.path`);
+  every tool module and inline script a workflow runs itself (`-m pip`, `-m unittest`, `-c`,
+  `python3 -`) carries `-I`, so the checkout is not on its path at all.
 
 What the gate scripts import, and the tests, are not on the list: a PR could not change any code
 otherwise. They are what the GO above has to cover. The bar's own settings (`.coveragerc`,

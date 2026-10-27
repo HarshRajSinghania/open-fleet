@@ -399,7 +399,8 @@ class RawHtmlInACellIsRefused(unittest.TestCase):
 
 class DangerousSchemesInACellAreRefused(unittest.TestCase):
     """PR #718 re-attack (W6-14): a cell's `<javascript:alert(1)>` autolink reached
-    docs/runs/README.md. A javascript:, vbscript:, data: or file: link is refused."""
+    docs/runs/README.md. A javascript:, vbscript:, data: or file: scheme is refused wherever it
+    stands in a cell (review round 3: by token, not by the Markdown construct around it)."""
 
     def errors(self, text):
         report = "2026-01-02-demo-it-self-run.md"
@@ -410,12 +411,13 @@ class DangerousSchemesInACellAreRefused(unittest.TestCase):
 
     def test_a_dangerous_scheme_is_refused(self):
         for text in ("see <javascript:alert(1)>", "<vbscript:msgbox(1)>", "[x](data:text/html,x)",
-                     "[x](file:///etc/passwd)", "[x](JAVA&#83;CRIPT:alert(1))"):
+                     "[x](file:///etc/passwd)", "[x](JAVA&#83;CRIPT:alert(1))",
+                     "[x](https://example.org/javascript:)", "- [p]: javascript:alert(1)"):
             with self.subTest(text=text):
                 self.assertEqual(len(self.errors(text)), 1, text)
 
     def test_ordinary_links_pass(self):
-        for text in ("see <https://example.org>", "[x](https://example.org/javascript:)"):
+        for text in ("see <https://example.org>", "the metadata: key"):
             with self.subTest(text=text):
                 self.assertEqual(self.errors(text), [])
 

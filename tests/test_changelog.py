@@ -577,9 +577,11 @@ class RawHtmlIsRefused(unittest.TestCase):
 
 class DangerousSchemesAreRefused(unittest.TestCase):
     """PR #718 re-attack (W6-14): `<javascript:alert(1)>` and `<vbscript:…>` autolinks, which no
-    raw-HTML check sees, passed both writers into published Markdown. A link or autolink whose
-    destination is javascript:, vbscript:, data: or file: (case, entities, whitespace and control
-    characters folded as a browser folds them) is refused."""
+    raw-HTML check sees, passed both writers into published Markdown, and then (review round 3) a
+    reference definition inside a list item evaded the link reader. So a javascript:, vbscript:,
+    data: or file: scheme is refused wherever it stands, whatever Markdown is around it (entities
+    decoded, control characters dropped, case ignored), and only a word that runs into it (as in
+    `metadata:`) is not one."""
 
     REFUSED = (
         "- **Change** see <javascript:alert(1)>.\n",
@@ -593,12 +595,19 @@ class DangerousSchemesAreRefused(unittest.TestCase):
         "- **Change** [x](file:///etc/passwd).\n",
         "- **Change** ![img](data:image/svg+xml,x).\n",
         "- **Change** [x][y]\n  [y]: javascript:alert(1)\n",
+        # a reference definition inside a list item (PR #718 review round 3)
+        "- **Change** [click][payload]\n- [payload]: javascript:alert(1)\n",
+        "- **Change** [click][p]\n  - [p]: &#106;avascript:alert(1)\n",
+        # anywhere at all: refused by token, not by the construct around it
+        "- **Change** [x](https://example.org/javascript:alert).\n",
+        "- **Change** [ops](../docs/ops.md#data:x).\n",
+        "- **Change** the word javascript: in prose.\n",
+        "- **Change** a `file:` key named as code.\n",
+        "- **Change** split java\tscript: by a tab.\n",
     )
     ACCEPTED = (
         "- **Change** see <https://example.org/x>.\n",
-        "- **Change** [x](https://example.org/javascript:alert).\n",
-        "- **Change** [ops](../docs/ops.md#data:x).\n",
-        "- **Change** the word javascript: in prose names no link.\n",
+        "- **Change** the metadata: and profile: keys, a dataset, the word javascript.\n",
     )
 
     def errors(self, text):
@@ -625,7 +634,7 @@ class DangerousSchemesAreRefused(unittest.TestCase):
         spec.loader.exec_module(ri)
         for text in self.REFUSED + self.ACCEPTED:
             with self.subTest(text=text):
-                self.assertEqual(ri.dangerous_link(text), cl.dangerous_link(text))
+                self.assertEqual(ri.dangerous_scheme(text), cl.dangerous_scheme(text))
 
 
 if __name__ == "__main__":

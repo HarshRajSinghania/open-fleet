@@ -93,15 +93,11 @@ _LOOSE_ATTR_RE = re.compile(r"""[ \t\n\f\r/]*([^ \t\n\f\r/>][^ \t\n\f\r/>=]*)"""
 # Raw HTML that is no tag (CommonMark 0.31, "Raw HTML"): a comment, a processing instruction, a
 # declaration or CDATA. And an autolink (URI or e-mail), which CommonMark reads before raw HTML,
 # so raw_html() steps over it rather than reading it as a tag (2026-10-27 security audit, W6-14).
-# A link a browser follows to run or read something rather than to open a page (PR #718
-# re-attack, W6-14): an autolink, an inline link or image, or a reference definition whose
-# destination, folded as a browser folds it (entities decoded, whitespace and control characters
-# dropped, case ignored), opens with one of these schemes.
-_DANGEROUS_SCHEMES = ("javascript:", "vbscript:", "data:", "file:")
-_LINK_DESTINATION_RE = re.compile(
-    r"<([A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*)>"     # an autolink
-    r"|\]\(\s*<?([^)>]*)"                                  # an inline link or image
-    r"|^[ \t>]*\[[^\]]+\]:[ \t]*<?(\S+)", re.MULTILINE)      # a reference definition
+# A scheme a browser follows to run or read something rather than to open a page (PR #718
+# re-attack, W6-14). Reading link constructs missed one (a reference definition inside a list
+# item, review round 3), so the scheme is refused as a token, wherever it stands: a word that
+# runs into it (`metadata:`) is no scheme, anything else is.
+_DANGEROUS_SCHEME_RE = re.compile(r"(?<![a-z0-9+.\-])(?:javascript|vbscript|data|file) *:")
 _RAW_OTHER_RE = re.compile(r"<!--|<\?|<![A-Za-z]|<!\[CDATA\[")
 # A line that may be a GFM table's delimiter row (`--- | ---`, `|:-:|`), past quote and list
 # marks. GFM splits a row into cells, before it reads a code span, only inside a table, and a
@@ -203,16 +199,16 @@ def html_link(text):
     return next((found for view in (text, *_quote_views(text)) if (found := _first_link(view))), None)
 
 
-def dangerous_link(text):
-    """The first link destination in `text` whose scheme is javascript:, vbscript:, data: or
-    file:, or None. Read wherever it stands, code spans included: a false refusal costs a
-    rewording, a missed one a script in a published page. Identical in scripts/changelog.py and
-    scripts/run_index.py."""
-    for match in _LINK_DESTINATION_RE.finditer(text):
-        destination = next(group for group in match.groups() if group is not None)
-        folded = re.sub(r"[\x00-\x20]", "", html.unescape(destination)).lower()
-        if folded.startswith(_DANGEROUS_SCHEMES):
-            return destination
+def dangerous_scheme(text):
+    """The first javascript:, vbscript:, data: or file: scheme in `text`, wherever it stands and
+    whatever Markdown is around it, or None. Read as a browser reads a URL: HTML entities
+    decoded, case ignored, and ASCII control characters (a tab or a line break inside the scheme)
+    dropped, and read again with them as spaces, so neither joining nor splitting hides one.
+    Identical in scripts/changelog.py and scripts/run_index.py."""
+    decoded = html.unescape(text).lower()
+    for folded in (re.sub(r"[\x00-\x1f\x7f]", "", decoded), re.sub(r"[\x00-\x1f\x7f]", " ", decoded)):
+        if match := _DANGEROUS_SCHEME_RE.search(folded):
+            return match.group()
     return None
 
 
@@ -312,9 +308,9 @@ def fragment_errors(path):
     elif raw := raw_html(text):
         errors.append(f"{where}: raw HTML ({raw[:40]!r}) would reach CHANGELOG.md verbatim; put "
                       "it in a code span or escape the '<'")
-    if bad := dangerous_link(text):
-        errors.append(f"{where}: a link to {bad[:40]!r} uses a javascript:, vbscript:, data: or "
-                      "file: scheme, which CHANGELOG.md must not carry")
+    if bad := dangerous_scheme(text):
+        errors.append(f"{where}: {bad!r}: a javascript:, vbscript:, data: or file: scheme is "
+                      "refused anywhere in a fragment, which CHANGELOG.md publishes")
     lines = text.rstrip("\n").split("\n")
     if not lines[0].startswith("- "):
         errors.append(f"{where}:1: an entry opens with '- ' at column 0")

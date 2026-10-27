@@ -3,14 +3,15 @@
 [Documentation](README.md) · [Contribution rules](../CONTRIBUTING.md) · [Architecture](../ARCHITECTURE.md)
 
 This is a Markdown catalog with Python and shell helpers. There is no application server to
-start. The validator and tests run locally; Orca is needed when you exercise a live mission.
+start. The validator and tests run locally; a runtime is needed when you exercise a live
+mission: Orca by default, or another provider such as `OPEN_FLEET_RUNTIME=posix` ([runtimes](runtimes.md)).
 
 ## The 3-layer mental model
 
 | Layer | Path | In one phrase | Enforced budget (`scripts/validate.py`) |
 |---|---|---|---|
 | **Missions** | `skills/<name>/SKILL.md` | **What outcome** the fleet converges to (the only discoverable, auto-triggering skills) | Body ≤ 110 lines · Frontmatter ≤ 34 lines |
-| **Playbooks** | `playbooks/<name>.md` | **How each phase runs** when injected into a worker `TASK` (no frontmatter, never auto-triggers) | ≤ 90 lines · Must include `Recipe:` and `## Completion` |
+| **Playbooks** | `playbooks/<name>.md` | **How each phase runs** when injected into a worker `TASK` (no frontmatter, never auto-triggers) | ≤ 90 lines · Must include `Recipe:` and `## Completion` (`tests/test_doctrine_consistency.py`) |
 | **Runtime** | `runtime/*.md` + `runtime/scripts/` | **What is enforced below the model** (dispatch, merge train, SHA verification, sandbox, control files) | Policy docs ≤ 160 lines |
 | **Tests & Evals** | `tests/` + `evals/` + `bench/` | **Does the contract hold** against mutations, prompt injection, and adversarial trajectories | Stdlib `unittest` + deterministic eval suites |
 
@@ -54,8 +55,8 @@ python3 scripts/validate.py
 Keep the full Git history and tags: some tests verify recorded releases and evidence against
 older commits. If your clone was shallow or omitted tags, fetch the missing history and tags
 before running those checks (`git fetch --unshallow --tags`). In a shallow clone
-`scripts/validate.py` fails closed on every proven mission's run-report pin and prints that
-remedy; it never skips the pin.
+`scripts/validate.py` fails closed on every proven mission's run-report pin and prints the
+history half of that remedy (`git fetch --unshallow`); it never skips the pin.
 
 You can contribute without installing the catalog into your agent, starting Orca, or logging
 into GitHub CLI. Tests exercise runtime operations through fixtures. To test the installed
@@ -88,13 +89,13 @@ when one does not.
 | `python3 scripts/run_index.py check` | Check one well-formed `docs/runs/index/<run>.json` row per run report; `print` renders today's index; the README holds the rendering from the last cut |
 | `python3 scripts/eval.py run --suite routing --threshold 1.0` | Check description-based mission routing |
 | `python3 scripts/eval.py run --suite injection` | Run the deterministic VAL-01 prompt-injection and trust-fence drills ([`evals/injection-drills.json`](../evals/injection-drills.json), #560) |
-| `python3 scripts/deny_hook_corpus.py` | Differential-test the deny-hook's shell parsing against real bash; `--minimize --write` stores new mismatches as fixtures ([`runtime-scripts.md`](runtime-scripts.md#deny-hooksh), #598) |
+| `python3 scripts/deny_hook_corpus.py` | Differential-test the deny-hook's shell parsing against real bash; `--minimize --write` stores new mismatches as fixtures ([`runtime-scripts.md`](runtime-scripts.md#deny-hooksh), #598). It exits 1 on any mismatch, the documented `boundary` false-denials included: `tests/test_deny_hook_conformance.py` is the check that accepts those |
 | `python3 scripts/eval.py run --suite trajectories` | Replay the adversarial worker trajectories through the real guards and print the [results table](adversarial-evals.md) (#602) |
 | `python3 scripts/hint_replay.py --check` | Replay the fixed episodic-hint corpus ([`tests/fixtures/hint-replay.json`](../tests/fixtures/hint-replay.json), #605) with hints off, unchecked and checked; fails unless provenance checks retrieve every useful note and leak no stale or poisoned one |
 | `python3 scripts/ablation.py prereg` | Check the #606 [ablation pre-registration](experiments/ablation-prereg.md): schema, obligation anchors, the page pinned to the JSON, payloads current. The registration is bound to its live run, so it is checked frozen at the run commit and an edit to a doc it pins no longer makes it stale. `ablation.py run --dry-run --cost-cap-usd 0 --repeats 1` drives the paired pipeline with an inert stand-in (no model, no spend) |
 | `python3 scripts/bundle.py --check` | Build in a temporary directory and check bundled references |
 | `python3 scripts/wip_curve.py check-prereg` | Check the [WIP-curve pre-registration](experiments/wip-curve-prereg.md) (#604): its digests, its seed commit, and that every oracle fails on the seed and passes on its reference edit |
-| `python3 scripts/release_check.py --fast --skip-github` | Verify the local [Release 1.0 checklist](release-1.0-checklist.md) gates |
+| `python3 scripts/release_check.py --fast --skip-github` | Verify the local [Release 1.0 checklist](release-1.0-checklist.md) gates. The skipped suite and GitHub checks stand as SKIPs, so a clean run exits 3, not 0; any FAIL exits 1 |
 | `python3 -m unittest discover -s tests -v` | Run the complete contract and fixture suite |
 | `git diff --check` | Catch whitespace errors in the patch |
 
@@ -111,7 +112,7 @@ The suite runs on Linux and macOS. Tests that start real workers (tmux included,
 installed) launch a fake agent from a temporary `bin` and put a tripwire ahead of every real
 harness on `PATH`, so a test never starts your installed `claude` or other agent CLI.
 
-The full suite creates temporary Git repositories and can take several minutes. To run one
+The full suite creates temporary Git repositories and takes about an hour serially. To run one
 CI-sized partition locally, use `python3 scripts/shard-tests.py --shard 1 --of 6`; run all six
 partitions for full coverage. `python3 scripts/shard-tests.py --check` verifies the partition,
 and `--list` prints it: a few heavy modules run as one unit per TestCase class.

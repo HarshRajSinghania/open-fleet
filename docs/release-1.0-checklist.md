@@ -169,7 +169,7 @@ git tag --list 'v1.0.*'                       # v1.0.0 still present, v1.0.1 bes
 ```
 
 Plugin consumers pick up the fix by reinstalling (`/plugin install open-fleet`
-re-copies the repo at the new tip); symlink consumers `git pull` and re-run
+re-copies the `dist` branch, which the new tag republishes); symlink consumers `git pull` and re-run
 `sh scripts/install.sh --check`. If the bad 1.0 was a *release-process* failure
 (wrong cut, lightweight tag) rather than a code failure, stop after recording:
 do not amend the cut, recreate the tag, or reset the published mapping —

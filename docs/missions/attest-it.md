@@ -3,8 +3,8 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel evidence workers, one obligation each, re-derived independently; the human/legal owner's disposition of gaps and the conformance verdict are one-way gates, not a lower rung.
-> **Activation load:** ~26,700 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 13% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Activation load:** ~27,000 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 14% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([CONFORMANT-WITH-GAPS](../runs/campaign-2026-09-16-attest-it/), 34 VERIFIED, 8 GAP against NIST SP 800-218), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Point it at a standard (EU AI Act Art-12/50, SOC 2, NIST SSDF) and a codebase. Come back to an
 > auditor-grade verdict: every obligation either satisfied with evidence a fresh session re-derived
@@ -17,7 +17,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/attest-it.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/attest-it-light.jpg">
-    <img src="../../assets/diagrams/missions/attest-it-light.jpg" alt="Mission contract for attest-it: you give it a standard at a version, and a codebase; it interrupts you for the conformance verdict; every accepted gap; you get back CONFORMANT or CONFORMANT-WITH-GAPS, plus evidence per obligation, re-derived in a fresh session; gaps with a named owner; it stops at read-only — remediation is a separate ship-it or clean-sweep run; phases FREEZE, EVIDENCE, RE-DERIVE, ATTEST" width="820">
+    <img src="../../assets/diagrams/missions/attest-it-light.jpg" alt="Mission contract for attest-it: you give it a standard at a version, and a codebase; it interrupts you for freezing the obligation catalog — a one-way gate; accepting any residual gap; you get back CONFORMANT or CONFORMANT-WITH-GAPS, plus evidence per obligation, re-derived in a fresh session; gaps with a named owner; it stops at read-only — remediation is a separate ship-it or clean-sweep run; phases FREEZE, EVIDENCE, RE-DERIVE, AGGREGATE, PUBLISH" width="820">
   </picture>
 </p>
 
@@ -72,8 +72,10 @@ flowchart TD
     D --> E{Control satisfied?}
     E -->|evidence re-derived| F[VERIFIED]
     E -->|no re-derivable artifact| G[GAP → human/legal owner]
-    F --> H{{CONFORMANT}}
-    G --> I{{CONFORMANT-WITH-GAPS}}
+    F --> P[PUBLISH the attestation bundle<br/>a versioned link · publish-evidence]
+    G --> P
+    P -->|every obligation VERIFIED| H{{CONFORMANT}}
+    P -->|any GAP| I{{CONFORMANT-WITH-GAPS}}
 ```
 
 ## Terminal states

@@ -106,7 +106,7 @@ How the missions hand work to one another:
 | 🧱 [floor-it](floor-it.md)         | A written, numbered quality bar — every dimension tool-enforced and proven to fire |
 | 🧬 [reshape-it](reshape-it.md)     | Hot modules deepened behind smaller interfaces, behaviour proven unchanged |
 | 📱 [field-test-it](field-test-it.md) | Defects reproduced, fixed, and re-proven on a real device — revert control included |
-| 🗄️ [migrate-it](migrate-it.md)     | A stateful shape change landed phase by phase across deploys — parity proven, zero readers before the drop |
+| 🗄️ [migrate-it](migrate-it.md)     | A stateful shape change landed phase by phase across deploys — parity proven, zero readers and writers before the drop |
 | 📟 [oncall-it](oncall-it.md)       | A frozen path set made operable — alerts test-fired, and an induced failure named by a source-blind worker |
 | 📥 [absorb-it](absorb-it.md)       | An inbound PR queue drained — landed with authorship and a receipt, refuted, or parked with a named ask |
 | 📚 [document-it](document-it.md)   | A public surface covered by quadrant with zero critical gaps — every claim anchored and rename-controlled |
@@ -120,12 +120,12 @@ When you run a mission for the first time, use these observable behavioral tells
 
 ### It's working if…
 
-1. **Phase 0 runs `preflight.py` before dispatching workers:** On code-mutating missions, the coordinator runs `preflight.py --base <BASE>` (verifying `BASE` is not your default branch) and separately runs the baseline test command to confirm `T0` is green. On report-only/non-promoting missions (`review-it`, `map-it`, `root-cause`, `attest-it`), the coordinator runs `preflight.py --mode readonly`.
-2. **The `T0` ledger header is written before worker dispatch:** You see a ledger header recording `RUN`, `COORDINATOR`, `BASE` (or fixed point), `FORK_POINT`, `T0`, and the frozen `SOURCE` denominator.
-3. **One-way gates ask one question at a time with a recommended option and wait:** During spec/contract freeze or promotion, the coordinator stops and waits for your explicit reply without auto-continuing on timeout.
+1. **Phase 0 runs `preflight.py` before dispatching workers:** On code-mutating missions, the coordinator runs `preflight.py --base <BASE>` (verifying `BASE` is not your default branch) and separately runs the baseline test command to confirm `T0` is green. On report-only/non-promoting missions (`review-it`, `map-it`, `root-cause`, `attest-it`, `oss-contribute`), the coordinator runs `preflight.py --mode readonly`.
+2. **The `T0` ledger header is written before worker dispatch:** You see a ledger header recording `RUN`, `COORDINATOR`, `BASE` (`-` on report-only and planning missions), `FORK_POINT`, `T0`, the frozen `SOURCE` denominator, and the `WIP` cap.
+3. **One-way gates ask with a recommended option on every question and wait:** During spec/contract freeze or promotion, the coordinator stops and waits for your explicit reply without auto-continuing on timeout.
 4. **The coordinator dispatches isolated workers rather than editing application files itself:** Workers run in separate sessions or git worktrees (`≤ 3` concurrent builders per [`runtime/attention-budget.md`](../../runtime/attention-budget.md)), each mounting at most **one** upstream pack router.
-5. **Reviewers are build-blind and SHA-bound:** On code-mutating missions, a fresh reviewer session (`PROFILE=ro`) inspects the PR diff without seeing the builder's narrative summary and records `reviewed_sha == head_sha`.
-6. **Evidence is bound to a SHA in a manifest (`verify.py` on code-mutating missions):** Code-mutating units are graded by `runtime/scripts/verify.py` (checking frozen scope digest, git ancestry on `BASE`, review freshness, and the executed negative control); report-only missions (`review-it`, `map-it`, `attest-it`) emit a report-only manifest bound to `head_sha` / `reviewed_sha` without executing code-mutating negative controls (`review-it` forbids executed controls and judges test coverage statically from the diff).
+5. **Reviewers are build-blind and SHA-bound:** On code-mutating missions, a fresh reviewer session (`PROFILE=ro`, or `rw` where it must run mutation tests) inspects the PR diff without seeing the builder's narrative summary and records `reviewed_sha == head_sha`.
+6. **Evidence is bound to a SHA in a manifest (`verify.py` on code-mutating missions):** Code-mutating units are graded by `runtime/scripts/verify.py` (checking frozen scope digest, git ancestry on `BASE`, review freshness, and the executed negative control); report-only missions (`review-it`, `attest-it`) emit a report-only manifest bound to `head_sha` / `reviewed_sha`, and planning missions (`map-it`, `root-cause`) a planning manifest checked by artifact verification, neither executing code-mutating negative controls (`review-it` forbids executed controls and judges test coverage statically from the diff).
 
 ### Red flags (the agent is freelancing without the mission protocol)
 

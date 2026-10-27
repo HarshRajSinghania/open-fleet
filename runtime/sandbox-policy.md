@@ -25,11 +25,12 @@ maps are `YOLO_TUI_AGENT_ARGS` (`tui-agent-permissions.ts:12-45`), a small `YOLO
 and the choice maps above — none of them read-only. Every entry in the `ro` column below is that agent's
 OWN native flag, chosen here; the dashes are agents for which no such flag has been verified, not
 agents Orca singles out. The note used to read "(no RO in Orca)" beside two of them, which implied
-Orca supplied the others (#302).
+Orca supplied the others (#302). This is the Orca table: off Orca every launch line is base.py's
+`build_harness_command` (one table, #580), where opencode, omp and pi have rows of their own.
 
 | Agent  | `ro` (read-only review) | `rw` = `danger` flag (autonomous, non-blocking) |
 |--------|-------------------------|--------------------------------------------------|
-| claude | `--permission-mode plan` | `--dangerously-skip-permissions`                |
+| claude | `--permission-mode plan` + `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit` (#596) | `--dangerously-skip-permissions` |
 | antigravity | — none verified → WORKER_CMD | `--dangerously-skip-permissions` (same flag as claude) |
 | codex  | `--sandbox read-only`    | `--dangerously-bypass-approvals-and-sandbox`    |
 | gemini | `--approval-mode plan`   | `--yolo`                                        |
@@ -38,6 +39,8 @@ Orca supplied the others (#302).
 | droid  | WORKER_CMD               | `--auto high`                                   |
 | opencode / kilo | WORKER_CMD      | WORKER_CMD — Orca **strips** `--dangerously-skip-permissions` from both (`tui-agent-launch-defaults.ts:23-26`) |
 | omp / pi | WORKER_CMD             | WORKER_CMD (not in Orca's autonomous-arg map)   |
+| jcode / goose / hermes | own restriction (#596): jcode `--tools` allowlist + `--disabled-tools`, goose `GOOSE_MODE=chat`, hermes `HERMES_WRITE_SAFE_ROOT=/dev/null` + `--toolsets file,web,session_search` | jcode `--no-session`, goose `GOOSE_MODE=auto`, hermes `--yolo` |
+| crush  | WORKER_CMD — no flag makes `crush run` read-only | `--yolo`                          |
 
 - **`ro`** is non-blocking because it cannot mutate — nothing to approve. It is the permission
   boundary for report-only missions (review-it).
@@ -59,9 +62,9 @@ Orca supplied the others (#302).
   entirely — its semantics become the caller's assertion — so it needs its own opt-in
   `ORCA_COORD_ALLOW_CMD_OVERRIDE=1` (an inherited env var must not silently defeat `PROFILE=ro`).
   It is also how an agent with no Orca-verified flag for the tier (grok `ro`, opencode, …) runs.
-- **Effort default:** `spawn_worker.sh` defaults the optional effort arg to **`xhigh`** (max
-  reasoning tier the agent exposes — e.g. codex `model_reasoning_effort`). Pass a lower tier only
-  for deliberately cheap workers; never leave build/fix workers on a soft default.
+- **Effort default:** `spawn_worker.sh` defaults the optional effort arg to **`xhigh`** (codex's keyset runs `minimal`…`ultra`;
+  lower it only for deliberately cheap workers). It reaches only a custom-argv codex line (`-c model_reasoning_effort`): `worker-start`
+  gets no `--effort` — on Orca it needs `--model`, so workers keep the agent's configured default; off Orca base.py's codex line uses `xhigh`.
 
 ## A denied runtime connection
 

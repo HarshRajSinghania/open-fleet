@@ -49,13 +49,15 @@ Record (one JSON object per line, ``.orca/egress.jsonl``, mode 0600)::
 Subcommands
     write    append one receipt, print its id
     verify   recompute the whole chain
+    head     verify, then print the chain head digest to anchor off the writer
     grants   list the distinct consents, with sink/host and use counts
 
 Exit codes
     0  ok (``verify``: the chain is intact)
     2  usage -- a missing or malformed argument
-    3  fail-closed: the receipt could not be written, or ``verify`` found a
-       broken/unparseable line. Never treat a 3 as permission to send.
+    3  fail-closed: the receipt could not be written, ``verify`` or ``head`` found a
+       broken/unparseable line, or a ``verify`` anchor (``--expect-head`` /
+       ``--expect-ancestor``) did not match. Never treat a 3 as permission to send.
 
 How to wire
     Every off-repo write the coordinator itself performs is preceded by
@@ -408,7 +410,7 @@ def build_parser():
         epilog="exit 0 ok / 2 usage / 3 fail-closed (receipt unwritable, or chain tampered)",
     )
     p.add_argument("--ledger", default=None,
-                   help=f"ledger path (default ${LEDGER_ENV} or {DEFAULT_LEDGER})")
+                   help=f"ledger path (default ${PRIMARY_LEDGER_ENV}, ${LEDGER_ENV}, or {DEFAULT_LEDGER})")
     sub = p.add_subparsers(dest="command", required=True)
 
     w = sub.add_parser("write", help="append one receipt BEFORE the send")

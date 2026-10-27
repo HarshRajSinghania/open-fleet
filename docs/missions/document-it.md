@@ -3,8 +3,8 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus parallel per-cell writer workers, each reviewed build-blind; which entities deserve a tutorial or an explanation is your call.
-> **Activation load:** ~32,100 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Activation load:** ~32,500 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([DOCUMENTED](../runs/campaign-2026-09-16-document-it/), 32/32 cells terminal), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Point it at a public surface nobody has documented. Come back to a coverage map re-derived at
 > the final head with zero critical gaps — and every factual claim in every new page bound to a
@@ -16,7 +16,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/document-it.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/document-it-light.jpg">
-    <img src="../../assets/diagrams/missions/document-it-light.jpg" alt="Mission contract for document-it: you give it a public surface — extracted by a script, not by hand; it interrupts you for freezing the gap list; which entities deserve a tutorial or an explanation; you get back DOCUMENTED or DOCUMENTED-WITH-PARKED, plus a page per cell with every claim anchored; rename-control transcripts; the coverage map re-derived at the final head; it stops at never inventing a why, never rewriting a diagram; phases EXTRACT, MAP, FREEZE, WRITE, CLAIM-VERIFY, REVIEW, LAND, RE-MAP" width="820">
+    <img src="../../assets/diagrams/missions/document-it-light.jpg" alt="Mission contract for document-it: you give it a public surface — extracted by a script, not by hand; it interrupts you for freezing the gap list; which entities deserve a tutorial or an explanation; you get back DOCUMENTED or DOCUMENTED-WITH-PARKED, plus a page per cell with every claim anchored; rename-control transcripts; the coverage map re-derived at the final head; it stops at never inventing a why, never rewriting a diagram; phases EXTRACT, MAP, FREEZE, WRITE, CLAIM-VERIFY, REVIEW, LAND, RE-MAP, PUBLISH" width="820">
   </picture>
 </p>
 
@@ -81,8 +81,9 @@ flowchart TD
     F --> G[build-blind REVIEW<br/>voice · accuracy · reachable in one hop]
     G --> H[LAND]
     H --> I[RE-MAP at the final head<br/>same extractor, new SHA]
-    I -->|zero critical gaps, cells filled| J{{DOCUMENTED}}
-    I -->|explanation-needs-author / tutorial-not-warranted / diagram-needs-human| K{{DOCUMENTED-WITH-PARKED}}
+    I --> P[PUBLISH the map + landed pages<br/>versioned links · publish-evidence]
+    P -->|zero critical gaps, cells filled| J{{DOCUMENTED}}
+    P -->|explanation-needs-author / tutorial-not-warranted / diagram-needs-human| K{{DOCUMENTED-WITH-PARKED}}
 ```
 
 Reference cells for an entity land **before** its how-to and tutorial cells: reference establishes

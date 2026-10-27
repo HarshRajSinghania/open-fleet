@@ -98,7 +98,7 @@ recipe. The full boundary is stated in the README under
 [Before you run a mission](../../README.md#before-you-run-a-mission).
 
 **What you need.** The Orca app running with the orchestration experimental feature enabled, at
-or above the catalog pin (`runtime/pins.json`, v1.4.224 at the 0.7.1 cut; v1.4.229 on `main`); the `orca` CLI, which is
+or above the catalog pin (`runtime/pins.json`, v1.4.224 at the 0.7.1 cut; v1.4.239 on `main`); the `orca` CLI, which is
 `orca-ide` on Linux; Orca's `orchestration` and `orca-cli` skills installed for your agent host;
 `git` and `gh`; Python 3.11 or newer. Most recorded runs happened on macOS; Linux, supported
 by the code as of 0.7.1, has two recorded runs on Ubuntu via `orca-ide`: a `review-it` verdict
@@ -112,7 +112,7 @@ completion gate by construction. Copy installers, including the `skills` CLI, mu
 and says which ones carry the gate.
 
 **Support window.** The catalog is re-witnessed against the installed Orca binary on every
-re-pin; 0.7.1 was tested against v1.4.209 through v1.4.224 (and re-pinned through v1.4.229 on `main`). Orca ships almost daily, so a weekly
+re-pin; 0.7.1 was tested against v1.4.209 through v1.4.224 (and re-pinned through v1.4.239 on `main`). Orca ships almost daily, so a weekly
 probe files an issue when the pin falls behind, and a quarterly re-pin runs regardless.
 
 **What is not claimed.** Only `ship-it` and `review-it` are `external-run`, and `ship-it`'s run stopped at `BUILT` on an
@@ -132,7 +132,7 @@ beta to that release is a tracked epic on the issue tracker.
 
 ### Closing line
 
-Cut from `8a5211b` (or the announced tag's cut, per the gate list); every frozen gate green in
+Cut from `5331b9b` (the commit tag `v0.7.1` names, per the gate list); every frozen gate green in
 CI at that commit. Release notes are the CHANGELOG section the tag carries.
 
 ## Where it goes, in order

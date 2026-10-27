@@ -3,8 +3,8 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel research workers chart the frontier; each decision you freeze is a one-way gate class, not a lower rung.
-> **Activation load:** ~25,300 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 13% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Activation load:** ~25,600 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 13% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([MAPPED-WITH-BLOCKED](../runs/campaign-2026-09-16-map-it/)), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Bring it the epic you cannot yet write acceptance criteria for. Come back to a named
 > destination, every decision answered by you, every open question either sharply ticketed or
@@ -29,7 +29,7 @@
 > chart this: <the goal you cannot write acceptance criteria for yet>
 ```
 
-**Needs** (the skill's `compatibility` field, verbatim): HARD dependency: open-fleet RPI runtime (Orca, posix, adapter). A wayfinder/research worker playbook (mattpocock wayfinder + research) — one router per worker.
+**Needs** (the skill's `compatibility` field, verbatim): HARD dependency: open-fleet RPI runtime (Orca, posix, adapter). git + gh (the freeze lands as a planning-branch PR). A wayfinder/research worker playbook (mattpocock wayfinder + research) — one router per worker.
 
 ## What to provide
 
@@ -100,7 +100,8 @@ Phase by phase:
    gather evidence while you are away. **Decision and grill tickets** are HITL: the agent never
    stands in for the human's side of a decision, and each session resolves exactly one decision.
    **Prototype tickets** (HITL) answer "how should it look/behave" with a cheap throwaway artifact —
-   a scratch-worktree spike, captured before disposal. **Task tickets** carry what is already sharp.
+   a scratch-worktree spike, captured before disposal. **Task tickets** are manual work blocking a
+   decision — provisioning, credentials, data moves — a precise human checklist.
    Under [`decide-and-freeze`](../../playbooks/decide-and-freeze.md)
    discipline, facts get looked up in the codebase, never asked; only genuine decisions reach you,
    each with a recommended answer attached. Resolving a ticket clears fog — questions that just

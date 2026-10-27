@@ -63,7 +63,7 @@ stall or resume · compound-learn.md at VERDICT (which modules resisted deepenin
 
 ```
 SCAN: churn-weighted shallowness inventory over a 90-day window, run PER CANDIDATE MODULE: CHURN =
-  `git log --since=90d --format=%h -- <module-path> | wc -l` (commits touching the module — a
+  `git log --since=90.days.ago --format=%h -- <module-path> | wc -l` (commits touching the module — a
   path-count would pin every single-file module at 1) · WIDTH =
   exported-symbol count (e.g. Python: `grep -cE '^(def |class |async def |[A-Z_]+ =)' <module>`,
   plus `__all__` length; TS/JS: `grep -c '^export ' <module>`; adapt per language) · DEPTH =

@@ -21,6 +21,7 @@ new handles.
 `observation.status` is **PTY liveness only** — a `live` terminal can still hold an agent that died at a trust
 prompt (`orchestration/recovery-and-cleanup:25-31` at v1.4.203). The fleet taught this inverted for two runs; the projection half is re-witnessed live at v1.4.203 (docs/runs/2026-09-16-pin-it-416/receipts/worker-list-unscoped.json).
 it is the reason pane-reading felt authoritative.
+The projection is Orca's: no other provider emits one (a posix row is `state`/`terminalState` only, posix.py `worker_list`).
 
 Always scope it: `worker-list --run <run_id>`. Unscoped it reports every Dispatch this runtime ever recorded — ≥ v1.4.206 pages newest-first with a truncation `warnings[]`, but an unscoped page is still everyone's rows, not your run's: scope or the convergence math is fiction.
 

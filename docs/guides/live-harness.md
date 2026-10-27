@@ -83,15 +83,16 @@ The launcher starts both containers with these properties:
   own ledger and evidence outlive the container there. **Every output flag must name a path under
   `/results`**: `--results` and `--out` for `wip_curve`, `--out` for `ablation`, `hint_replay` and
   `trajectories`, and `--workdir` for `first_run`. The launcher refuses any other path, and an
-  abbreviation of one of those flags. `ablation`, `hint_replay` and `trajectories` must also
-  name an `--out`, and `first_run` a `--workdir`, because each one's default is a temp dir that
-  dies with the container;
-- the broker writes its ledger beside the receipt, out of the arm's reach: one JSON line for each
-  call it opens, starts, settles or refuses. It never holds the token, a request or a response;
+  abbreviation of one of those flags counts as that flag. `ablation`, `hint_replay` and
+  `trajectories` must also name an `--out`, and `first_run` a `--workdir`, because each one's
+  default is a temp dir that dies with the container;
+- the broker writes its ledger beside the receipt, out of the arm's reach: one JSON line when it
+  opens, and one for each call it starts, settles or refuses. It never holds the token, a request
+  or a response;
 - the arm sees the launcher's attestation, read-only. The attestation holds a fresh nonce, the
   commit, the arm, the image and the host's name, hashed (`host_sha256`), which names the machine
-  across launches. The broker's container is named `of-live-<nonce>`, and the arm's container
-  inherits that hostname with the network namespace. The receipt records the same nonce;
+  across launches. The broker's container has the hostname `of-live-<nonce>`, and the arm's
+  container inherits it with the network namespace. The receipt records the same nonce;
 - one launch runs at a time. A launch holds `~/of-live/live-harness.lock` from its check for
   leftover containers until its receipt is written;
 - it runs under a wall-clock limit. At the limit the launcher kills and removes both containers,
@@ -276,7 +277,7 @@ label=org.open-fleet.live-harness`), and 124 when the limit ended the run.
 | `another launch holds …live-harness.lock` | One arm runs at a time. Wait for the other launch to end |
 | `a harness container already exists` | A launch left one behind. Inspect the leftover, then `docker rm -f` it |
 | `the token file … is readable by others` | `chmod 600` the file |
-| `the <arm> arm needs --out under /results` | Name an `--out` under `/results` |
+| `the <arm> arm needs --out under /results` (`--workdir` for `first_run`) | Name an `--out` (`first_run`: a `--workdir`) under `/results` |
 | `--out … is outside /results` | Write every output under `/results` |
 | `--cap-usd must be a positive number of dollars` | Pass the arm's authorised cap |
 | `--token-file … is inside --results` (or the checkout) | Keep the token file outside both: the arm's container mounts them |

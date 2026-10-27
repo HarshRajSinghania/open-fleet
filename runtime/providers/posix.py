@@ -7,8 +7,8 @@ an external orchestrator daemon (`stablyai/orca`), combining:
   - `git worktree` / `wtree.sh` worktree isolation
   - `tmux`, `cmux` (`manaflow-ai/cmux` with `kqueue` `cmux wait-for`), or detached `setsid`
     process groups
-  - The verified CLI-harness launch table (`base.SUPPORTED_HARNESSES`) across
-    `PROFILE=ro|rw|danger`
+  - The verified CLI-harness launch table (`base.SUPPORTED_HARNESSES`), for the harnesses
+    `capabilities.json` lists for posix, across `PROFILE=ro|rw|danger` (`hermes` refuses `danger`)
   - Automatic per-worktree `PreToolUse` hook installation (`deny-hook.sh`)
   - Overstory-style synthetic `worker_died` guarantee on process exit without terminal mail (#590).
   - Crash-recoverable worker launch: a launch intent persisted before the first external side

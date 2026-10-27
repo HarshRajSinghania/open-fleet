@@ -3,8 +3,8 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel fix workers on isolated violation units against a deterministic axe oracle; the residual human-AT park and the promotion are gate classes you own.
-> **Activation load:** ~30,400 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Activation load:** ~30,700 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([PARKED](../runs/campaign-2026-09-16-access-it/), no UI target), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Point it at a page/flow/component set and a WCAG target. Come back to a surface a deterministic
 > oracle certifies clean, every fix proven by a revert-to-violation negative control — and the
@@ -17,7 +17,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/access-it.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/access-it-light.jpg">
-    <img src="../../assets/diagrams/missions/access-it-light.jpg" alt="Mission contract for access-it: you give it a page, flow or component set and a WCAG 2.2 AA target; it interrupts you for the human-AT park — screen-reader and cognitive criteria; promotion; you get back CONFORMANT or CONFORMANT-WITH-MANUAL-PARKED, plus an axe-core clean report; revert-to-violation controls; parked criteria with reasons; it stops at never passing a criterion on the oracle's silence; phases FREEZE, DETECT, FIX, LAND, RE-VERIFY, PARK" width="820">
+    <img src="../../assets/diagrams/missions/access-it-light.jpg" alt="Mission contract for access-it: you give it a page, flow or component set and a WCAG 2.2 AA target; it interrupts you for a one-way freeze of the surface; the human-AT park for screen-reader and cognitive criteria; promotion; you get back CONFORMANT or CONFORMANT-WITH-MANUAL-PARKED, plus an axe-core clean report; revert-to-violation controls; parked criteria with reasons; it stops at never passing a criterion on the oracle's silence; phases FREEZE, DETECT, FIX, LAND, RE-VERIFY, PARK" width="820">
   </picture>
 </p>
 

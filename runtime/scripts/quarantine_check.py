@@ -7,8 +7,8 @@ playbook, upstream pack) a human has declared unusable. Three gates consume it:
     scripts/validate.py      the catalog may not route through a quarantined
                              component: no mission may compose a quarantined
                              playbook, pins.json may not pin a quarantined pack
-                             (it builds the catalog view and imports violations()
-                             from here, so the matching rule exists once)
+                             (it imports catalog_view() and violations()
+                             from here: one catalog view, one matching rule)
     preflight.py --mission   a run may not start on a quarantined mission or on
                              playbooks it composes (invariant, exit 2)
     this CLI                 ad hoc checks and the tests

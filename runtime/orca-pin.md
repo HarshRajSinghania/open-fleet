@@ -89,7 +89,7 @@ Owner: the **pin-it** mission (its coordinator runs the loop; the weekly probe f
 Next trigger: **2027-01-26** (`pins.json` `orca.next_review`, a quarter after this witness) or
 the next minor / ten patches behind / drift sighting, whichever first. The weekly probe files
 triggers 1 and 2 itself — no issue to open; the successor run inherits the park register in
-docs/runs/2026-10-24-pin-it-238.md.
+docs/runs/2026-10-26-pin-it-239.md.
 
 ## How to re-pin (so a stranger can reproduce the diff)
 

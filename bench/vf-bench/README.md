@@ -315,7 +315,7 @@ required case that goes missing from the run fails the gate (above).
 | `check_review` | a pr.number that is not a positive JSON integer (refused at three sites). Sites: `is not a positive integer`. | trap | `pr-number-path` `pr-number-bool` `pr-number-negative` |
 | `check_review` | no --repo to read the review from. Sites: `--repo not resolvable`. | deferred | The bench always names --repo; no message-level unit pin yet. |
 | `check_review` | the review fetch fails. Sites: `cannot fetch reviews`. | trap | `review-fetch-fail-closed` |
-| `check_review` | the PR author, or a historical review commit, cannot be resolved. Sites: `cannot resolve PR author`, `cannot establish INDEPENDENT APPROVED review`. | deferred | Pinned by tests/test_verify.py::ReviewCheck.test_unresolved_author_fails_closed and ::AuthoritativeReviewHistory.test_unresolved_objection_fails_closed_until_tree_is_known. |
+| `check_review` | the PR author, or a historical review commit, cannot be resolved. Sites: `cannot resolve PR author`, `cannot establish INDEPENDENT APPROVED review`. | deferred | Pinned by tests/test_verify.py::ReviewLookupBinding.test_unresolved_author_fails_closed and ::AuthoritativeReviewHistory.test_unresolved_objection_fails_closed_until_tree_is_known. |
 | `review_ok` | the only approval is the PR author's own | trap | `author-as-approver` |
 | `review_ok` | the approver has no standing in the repository (author_association) | trap | `non-member-approver` |
 | `review_ok` | the reviewer's latest state is not APPROVED (a dismissed approval) | trap | `dismissed-approval` |
@@ -359,7 +359,7 @@ reads them degrades and the verdict would measure the *checkout*, not the gate. 
 score them: each such trap declares `requires_commits`, and a run without them prints
 
 ```
-  [SKIP ] review-fetch-fail-closed-1 review-fetch-fail-closed    <- NOT SCORED: shallow clone: pinned commit b611906b4de7 is not in this checkout
+  [SKIP ] review-fetch-fail-closed-1 review-fetch-fail-closed    <- NOT SCORED: shallow clone: pinned commit f947837d3992 is not in this checkout
   1 trap(s) skipped — this run does not measure them. Use a full clone (CI: actions/checkout with fetch-depth: 0).
 ```
 

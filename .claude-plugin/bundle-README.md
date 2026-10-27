@@ -84,7 +84,7 @@ read under its older `ORCA_` name.
 - T3 Code, through `t3 acp-mcp-call` to `T3_ACP_MCP_ENDPOINT`, with `T3_ACP_MCP_AUTHORIZATION`.
 - Superset. Its `danger` profile creates a cloud workspace with
   `superset workspaces create --environment <recipe>`, under your Superset login.
-- Every other provider runs its own CLI on this machine.
+- Every other provider runs on this machine, through its own CLI or its local daemon's socket.
 
 **Only when a mission's task calls for it**
 

@@ -9,7 +9,7 @@ endorsed by Stably (the maker of Orca) or by the authors of the packs below.
 
 | Project | Role here | License | Copyright |
 |---|---|---|---|
-| [stablyai/orca](https://github.com/stablyai/orca) | the runtime every mission rides; its served skill guides are archived as re-pin receipts under `docs/runs/` | MIT | stablyai |
+| [stablyai/orca](https://github.com/stablyai/orca) | the default runtime the missions ride; its served skill guides are archived as re-pin receipts under `docs/runs/` | MIT | stablyai |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | recipes adapted in playbooks (grilling, to-spec, to-tickets, tdd, diagnosing-bugs, code-review, research, wizard, resolving-merge-conflicts — removed upstream in v1.3.0, codebase-design, agent-brief) | MIT | Copyright (c) 2026 Matt Pocock |
 | [garrytan/gstack](https://github.com/garrytan/gstack) | recipes adapted in playbooks (review-army dispatch, ship's release state machine, canary, plan reviews, document-release, qa browser rules, user-challenge governance) | MIT | Copyright (c) 2026 Garry Tan |
 | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | recipes adapted in playbooks (incremental-implementation, debugging-and-error-recovery, security/perf/a11y/data-migration lenses, deprecation-and-migration, observability-and-instrumentation, documentation-and-adrs) | MIT | Copyright (c) 2025 Addy Osmani |

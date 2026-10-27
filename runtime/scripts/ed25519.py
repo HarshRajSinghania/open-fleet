@@ -18,6 +18,12 @@ backend can swap in libsodium / `cryptography` behind the same three functions: 
 Used by:
   - runtime/scripts/dispatch-sign.py  (coordinator, OFF the graded worker) — sign the dispatch record
   - runtime/scripts/verify.py         (the gate) — verify the signature with the pinned public key
+  - runtime/scripts/decisions.py      (human grants) — grant-keygen, sign-grant, and verifying a
+                                      one-way grant's signature against .orca/human-grant-pubkey
+  - runtime/scripts/inventory.py      through dispatch-sign.py — sign and verify the inventory and
+                                      its retention receipt
+  - runtime/scripts/run_report.py     through dispatch-sign.py's loader — verify a signed verdict
+                                      transcript against the committed .orca/dispatch-pubkey
 """
 from __future__ import annotations
 

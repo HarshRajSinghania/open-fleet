@@ -97,7 +97,8 @@ head_sha (declared in evidence-manifest.md §1) — which verify.py's `--no-gh` 
 (coordinator-attested, the weaker guarantee). Because the local artifact is worker-forgeable on the
 native in-session hook, verify.py accepts it ONLY when an out-of-band coordinator contract
 corroborates the run (`--contract-source` `--contract-digest`, from the dispatch record — not the
-manifest); without it the `--no-gh` review fails closed. The BASE→default promotion still needs a
+manifest) AND the negative control is EXECUTED (`--execute-nc`, #256); without both the `--no-gh`
+review fails closed. The BASE→default promotion still needs a
 human and a real PR, so a no-gh run stops at BASE and surfaces that the promotion PR is owed.
 
 The same lane applies when a run STARTS offline, not just when gh dies mid-run: Phase 0
@@ -109,5 +110,7 @@ skipped, every git-based BASE invariant still runs — and the conductor works P
 
 - ONE conductor per BASE: run steps 1-4 through `merge_queue.py` (#599), a fenced lease over
   durable FIFO entries that rechecks step 2 before each merge and reconciles before a handoff.
+  Its gh mode merges with `POST repos/<owner>/<name>/merges` (base=BASE, head=the accepted
+  commit), not step 3's `gh pr merge`, which pins the head but not a retargeted PR's base (PR #647).
 - Arrival order only; no priority lanes without a human gate.
 - Merge to the DEFAULT branch is out of scope here — that promotion is a one-way human gate.

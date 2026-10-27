@@ -12,8 +12,9 @@ the set. A source scan fails if a claude plan-mode launch appears anywhere it do
 
 spawn_worker.sh's Orca `claude:ro` TUI row was the one exemption until the #596 follow-up. It is the
 live-witnessed Orca route (docs/runs/2026-10-13-review-it-linux.md: the coordinator approves the
-plan in-pane, which exits plan mode, and the worker then writes its report). It carries the set now,
-so that witness predates the row and the route needs a fresh one; and tests/test_spawn_worker.py
+plan in-pane, which exits plan mode, and the worker then writes its report). It carries the set now:
+that witness predates the row, and the 2026-10-26 #680 witness
+(docs/runs/2026-10-26-review-it-orca-ro-680.md) ran the current row; and tests/test_spawn_worker.py
 pinned the old row exactly, so moving that pin needs a one-way floor waiver for an existing
 assertion, which is a human decision, not this fix's.
 """

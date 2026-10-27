@@ -108,7 +108,9 @@
 # printf arguments, a git -m / gh --body message, comments, heredoc data -- so a
 # shape quoted as an example is not asked about (#598, from #602).
 #
-# Worktree boundary: when ORCA_UNIT_WORKTREE is set, a write outside it is DENIED.
+# Worktree boundary: when OPEN_FLEET_UNIT_WORKTREE is set (else its legacy alias
+# ORCA_UNIT_WORKTREE, read only when the OPEN_FLEET_ name is unset or empty), a
+# write outside it is DENIED.
 # It covers the Edit/Write/MultiEdit file_path and NotebookEdit's notebook_path
 # — the one write tool that spells the field differently (#297) — and, since a
 # worker that can run a shell can spell the same write as `echo pwned >
@@ -125,7 +127,7 @@
 # which would waive `> /dev/sda` along with them.
 #
 # A payload that parses but names no file_path (a non-file tool) is allowed. When
-# the variable is unset the boundary is not enforced — an unset boundary is a
+# both names are unset or empty the boundary is not enforced — an unset boundary is a
 # configuration choice, and this hook says so rather than guessing one.
 #
 # Exit codes. For Claude Code the DECISION is the output and the exit is 0 — a
@@ -134,11 +136,14 @@
 #   * an empty or unparseable payload, ALWAYS — OpenHands and jcode fail OPEN on
 #     exit 1 and on an exit-0 reply they cannot read (#577);
 #   * STRICT mode, where an "ask" also becomes a deny (Codex rejects "ask" and
-#     fails open; Hermes only reads "block"). Strict is ORCA_HOOK_STRICT_EXIT=1
-#     (or OPEN_FLEET_HOOK_STRICT_EXIT / OPEN_FLEET_HOOK_EXIT2), JCODE_HOOK_TOOL_NAME,
+#     fails open; Hermes only reads "block"). Strict is OPEN_FLEET_HOOK_STRICT_EXIT
+#     (or its legacy alias ORCA_HOOK_STRICT_EXIT) or OPEN_FLEET_HOOK_EXIT2 set to
+#     anything but empty or 0 (any one; none overrides another), JCODE_HOOK_TOOL_NAME,
 #     or a payload naming a non-Claude tool (exec_command, apply_patch, terminal,
 #     shell, write_file, file_editor, any lowercase tool name). Claude Code's own
 #     tool names are PascalCase, so its contract above is unchanged.
+# Outside strict mode, CODEX_CI, CODEX_SANDBOX or OPEN_FLEET_HEADLESS_STRICT (set
+# to anything but empty or 0) still turn an "ask" into a deny, at exit 0.
 #
 # Self-guard. A worker that can rewrite its own hook config is not guarded, so a
 # write, edit, redirect, tee, rm/mv/cp/ln/install/rsync, sed -i/perl -i,
@@ -199,11 +204,16 @@ Usage: deny-hook.sh [--help] [--settings <worktree>]
   under a scrubbed environment, never through sh -c (2026-10-26 review).
 
 Environment:
-  ORCA_UNIT_WORKTREE  when set, a write outside this directory is denied: the
-                      Edit/Write/MultiEdit file_path or NotebookEdit
+  OPEN_FLEET_UNIT_WORKTREE  when set, a write outside this directory is denied:
+                      the Edit/Write/MultiEdit file_path or NotebookEdit
                       notebook_path, and a Bash redirect or tee destination
-                      naming an absolute path.
-  ORCA_HOOK_STRICT_EXIT=1  strict mode: ask becomes deny, deny exits 2.
+                      naming an absolute path. ORCA_UNIT_WORKTREE is its legacy
+                      alias, read only when OPEN_FLEET_UNIT_WORKTREE is unset
+                      or empty.
+  OPEN_FLEET_HOOK_STRICT_EXIT=1, OPEN_FLEET_HOOK_EXIT2=1 or the legacy
+  ORCA_HOOK_STRICT_EXIT=1  strict mode (any one): ask becomes deny, deny exits 2.
+  CODEX_CI, CODEX_SANDBOX or OPEN_FLEET_HEADLESS_STRICT  set to anything but
+                      empty or 0: ask becomes deny, the exit stays 0.
 
 Exit: 0 with the decision on stdout (Claude Code); 2 with the reason on stderr
 in strict mode, for unparseable input, and when grep, sed or tr is missing or
@@ -4259,7 +4269,8 @@ TOOL=$(printf '%s\n' "$FIELDS" | sed -n '1p')
 CMD=$(printf '%s\n' "$FIELDS" | sed -n '2p')
 FILE=$(printf '%s\n' "$FIELDS" | sed -n '3p')
 
-# The unit boundary, resolved once; empty when ORCA_UNIT_WORKTREE is unset.
+# The unit boundary, resolved once; empty when neither OPEN_FLEET_UNIT_WORKTREE
+# nor its legacy alias ORCA_UNIT_WORKTREE is set.
 BOUND=""
 if [ -n "${UNIT_WORKTREE:-}" ]; then
   BOUND=$(cd "$UNIT_WORKTREE" 2>/dev/null && pwd -P) || BOUND=""

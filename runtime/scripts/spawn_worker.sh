@@ -145,6 +145,9 @@
 #   (unambiguous) or that full id. See runtime/dispatch-lifecycle.md.
 #
 # Env:
+#   Each ORCA_* name below is the legacy alias of its OPEN_FLEET_* twin (same suffix), which is
+#   read first: the ORCA_* value applies only when the twin is unset or empty, and off Orca two
+#   SANDBOX_RECIPE values that disagree are refused.
 #   SP                        parent dir for retained per-attempt JSON artifacts (default: cwd)
 #   PROFILE                   ro | rw (default) | danger — worker permission profile
 #   ORCA_COORD_ALLOW_AUTONOMOUS_WRITE  must be 1 for PROFILE=rw (accept autonomous bypass workers)
@@ -734,7 +737,7 @@ _cx_effort="-c model_reasoning_effort=\"$effort\""
 case "$agent:$PROFILE" in
   # claude ro is plan mode PLUS base.py's CLI floor, the disallowed set `=`-joined as base.py's label
   # spells it: the coordinator's in-pane plan approval exits plan mode, and the set still holds
-  # after it (#596). This is the live-witnessed Orca route; the witness ran it without the set.
+  # after it (#596). This is the live-witnessed Orca route; the 2026-10-26 #680 witness ran it with the set.
   claude:ro)                 cmd_default="claude --permission-mode plan --disallowedTools=Edit,Write,MultiEdit,NotebookEdit" ;;
   claude:rw|claude:danger)   cmd_default="claude --dangerously-skip-permissions" ;;
   codex:ro)                  cmd_default="codex --sandbox read-only $_cx_effort" ;;

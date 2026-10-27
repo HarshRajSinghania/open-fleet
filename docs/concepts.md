@@ -10,6 +10,7 @@ The policy files in [`runtime/`](../runtime/) are written as compact, imperative
 - [Read a run result](#read-a-run-result)
 - [A fleet is an outcome, not an ingredient](#a-fleet-is-an-outcome-not-an-ingredient)
 - [Coordinators and workers](#coordinators-and-workers)
+- [Runtime-agnostic execution: the Runtime Provider Interface](#runtime-agnostic-execution-the-runtime-provider-interface)
 - [The evidence manifest](#the-evidence-manifest)
 - [Independent verification](#independent-verification)
 - [Decision gates: mechanical, taste, one-way](#decision-gates-mechanical-taste-one-way)
@@ -48,7 +49,7 @@ To prevent terminology drift across coordinator prompts, worker instructions, an
 | **Negative control** | A check proving that reverting the fix or injecting a behavior-changing mutation turns the covering test `RED` | *Avoid:* treating a green test run alone (without proof the test can fail) as verification |
 | **One-way door** | An irreversible or high-blast-radius decision (spec freeze, promoting `BASE` → default branch, deploy, schema drop, paid cloud spend) that blocks for human approval | *Avoid:* auto-resolving one-way doors on timeout or downgrading them to "taste" gates |
 | **Quarantine** (`runtime/quarantine.json`) | The human-controlled, fail-closed component deny-list enforced by `validate.py`, `preflight.py`, and `quarantine_check.py` | *Avoid:* editing `quarantine.json` from an agent session or confusing it with flaky-test quarantine (`STABLE-WITH-QUARANTINE`) |
-| **Host prompt budget (Activation load)** | The token cost loaded into the coordinator at mission activation (`SKILL.md` + `ARCHITECTURE.md` + composed `playbooks/` and `runtime/` policies), budgeted and tracked per mission | *Avoid:* loading deferred phase playbooks at T0 before their pipeline phase runs |
+| **Host prompt budget (Activation load)** | The token cost loaded into the coordinator at mission activation (`SKILL.md` + the `playbooks/` and `runtime/` policies its Composes/rides clause makes mandatory + any repo-root doc it links, such as `ARCHITECTURE.md`), budgeted and tracked per mission | *Avoid:* loading deferred phase playbooks at T0 before their pipeline phase runs |
 
 ### Core operational terms
 
@@ -59,7 +60,7 @@ To prevent terminology drift across coordinator prompts, worker instructions, an
   - **Build-blind reviewers** inspect diffs they did not write without seeing the builder's narrative conclusion.
   - **Integrators** open PRs targeting `BASE`.
   - **Conductor** — A single role that serializes and lands all verified merges onto `BASE`.
-- **Ledger** — The coordinator's durable state file on disk: one row per unit recording its state flags (`BUILD_DONE`, `REVIEWED`, `MERGED`, `VERIFIED`), `lighting`, PR number, `reviewed_sha`, `merge_sha`, and evidence manifest path. Git is the source of truth; the ledger is its index.
+- **Ledger** — The coordinator's durable state file on disk: one row per unit recording its state flags (`BUILD_DONE`, `PR_OPEN`, `BOT`, `REVIEWED`, `MERGED`, `WT_CLEAN`), `lighting`, PR number, `reviewed_sha`, `merge_sha`, and evidence manifest path. Git is the source of truth; the ledger is its index.
 - **`T0`** — The UTC timestamp in the ledger header marking when the run's scope denominator was frozen.
 - **Denominator** — The frozen set of units a run must account for (acceptance criteria, tracker issues, user journeys, or code paths). Workers cannot shrink the denominator; `verify.py` re-derives it from the frozen contract digest.
 - **Evidence manifest** — The SHA-bound JSON document emitted by a worker with `worker_done` (the completion signal). A `worker_done` message is a *claim* to verify, never a fact to record.
@@ -132,17 +133,17 @@ Every mission separates coordination from execution:
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/runtime-providers.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/runtime-providers-light.jpg">
-    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects posix (standalone SQLite WAL and local git worktrees), orca, or 12 external orchestrators while OPEN_FLEET_HARNESS selects the coding agent and maps ro, rw and danger profiles; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
+    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 15 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects orca (the default), posix (standalone SQLite WAL and local git worktrees) or one of 12 external orchestrators, while each worker's agent argument to spawn_worker.sh selects its coding agent (cursor, antigravity, grok and droid rw only) and PROFILE maps it to ro, rw or danger; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
   </picture>
 </p>
 
 Missions and playbooks never hardcode a single vendor's terminal or worktree CLI. Instead, they call neutral runtime entrypoints under `runtime/scripts/` (`spawn_worker.sh`, `task_ops.py`, `worker_ops.py`, `worktree_ops.py`, `send_msg.py`, `verify.py`), which dispatch through the **[Runtime Provider Interface (RPI)](runtimes.md)** across two independent axes:
 
 - **Orchestrator runtime (`OPEN_FLEET_RUNTIME`, default `orca`):**
-  - **`posix` (standalone local):** Set `OPEN_FLEET_RUNTIME=posix` (or `OPEN_FLEET_RUNTIME=auto`) for zero-daemon SQLite WAL state + local `git worktree` checkouts + `tmux`, `cmux`, or headless subprocesses — runs on any POSIX developer workstation or CI container without installing an external desktop app.
+  - **`posix` (standalone local):** Set `OPEN_FLEET_RUNTIME=posix` (or `OPEN_FLEET_RUNTIME=auto` on a host with no Orca CLI on `PATH`) for zero-daemon SQLite WAL state + local `git worktree` checkouts + `tmux`, `cmux`, or headless subprocesses — runs on any POSIX developer workstation or CI container without installing an external desktop app.
   - **`orca` (default when unset):** Native [Orca](https://github.com/stablyai/orca) desktop IDE and CLI worktrees, managed terminals, task DAG, and issue-tracker bridge.
   - **External multi-agent orchestrators:** `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, and `openhands`.
-- **Coding-agent harness (`OPEN_FLEET_HARNESS`):** `claude` (Claude Code), `codex`, `gemini`, `opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, `crush`, and the `openhands` SDK agent — each mapped uniformly onto `PROFILE=ro|rw|danger`.
+- **Coding-agent harness (the `[agent]` argument of `spawn_worker.sh`):** `claude` (Claude Code), `codex`, `gemini`, `opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, `crush`, `cursor`, `antigravity`, `grok`, `droid`, and the `openhands` SDK agent — each mapped onto `PROFILE=ro|rw|danger` (`cursor`, `antigravity`, `grok` and `droid` have no `ro` launch).
 
 Because verification (`verify.py`, `verify-gate.sh`, and `run_report.py`) inspects git ancestry, clean-environment test runs, negative controls, and GitHub review state rather than orchestrator-specific logs, **the definition of done is identical across every runtime and harness**.
 
@@ -346,7 +347,7 @@ Workers are dispatched with the minimum privilege required ([`runtime/sandbox-po
 |---|---|---|
 | `ro` | Read-only / plan mode | `review-it`, `map-it`, `attest-it`, build-blind reviewers (`root-cause` investigators and mutation-hunt reviewers run `rw` in a throwaway worktree — their SKILL and playbook say so) |
 | `rw` | Workspace file write inside isolated git worktree (requires `OPEN_FLEET_COORD_ALLOW_AUTONOMOUS_WRITE=1` or `ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1`) | Standard builder and integrator workers |
-| `danger` | Unattended execution inside a placement-bound disposable VM/container (requires `OPEN_FLEET_COORD_ALLOW_DANGER=1` + `OPEN_FLEET_SANDBOX_RECIPE`, or `ORCA_*` aliases) | Exploit PoCs (`harden-it`) and destructive environment tests (`offload-it`) |
+| `danger` | Unattended execution inside a placement-bound disposable VM/container (requires `OPEN_FLEET_COORD_ALLOW_DANGER=1` + `OPEN_FLEET_SANDBOX_RECIPE`, or `ORCA_*` aliases) | Exploit PoCs (`harden-it`) and host-unsafe repros (`root-cause`) |
 
 `danger` lanes never run directly on your workstation host and require a non-`orca` runtime with authoritative prelaunch placement binding (`sandbox_doctor.py --require-placement`, such as `posix` Docker `--on <recipe>`); on `orca`, `spawn_worker.sh` refuses `PROFILE=danger` (`SPAWN=REFUSED`) and parks the unit. Verified changes from a `danger` sandbox are harvested via `git push` to a work branch before teardown and enter `BASE` through the standard PR and review pipeline.
 
@@ -365,7 +366,7 @@ Workers are dispatched with the minimum privilege required ([`runtime/sandbox-po
 Prompts are guidance, not a security boundary. [`runtime/threat-model.md`](../runtime/threat-model.md) enforces four defense-in-depth boundaries below the model:
 
 1. **Sandbox boundary:** Isolated git worktrees, `PROFILE=ro|rw|danger` enforcement (`runtime/scripts/spawn_worker.sh` and `runtime/providers/base.py`), `PreToolUse` command guards (`deny-hook.sh`), and OS process/memory limits (`ORCA_TERMINAL_PROCESS_CEILING`, `ORCA_TERMINAL_MEMORY_MAX`).
-2. **Network & egress boundary:** Hash-chained egress receipts (`runtime/scripts/egress.py`) that gate external write operations (`gh pr create`, `gh issue close`) and anchor into the run's SHA-256 inventory.
+2. **Network & egress boundary:** Hash-chained egress receipts (`runtime/scripts/egress.py`) written before external write operations (`gh pr create`, `gh issue close`) — the deny-hook refuses an unreceipted `gh` write where it is wired — with the chain head anchored in committed run records at close.
 3. **Supply-chain boundary:** Commit-pinned upstream packs in `runtime/pins.json` audited by `runtime/scripts/pin_review.py`, one pack per worker, and untrusted-text sanitization via `runtime/scripts/guard_text.py`.
 4. **Identity & verification boundary:** Optional Ed25519 dispatch signing (`runtime/scripts/dispatch-sign.py`), human-only one-way doors (`runtime/one-way-doors.json`), and off-worker verification (`runtime/scripts/verify.py`).
 
@@ -387,8 +388,8 @@ When a boundary violation occurs, the coordinator steps through the **five-rung 
 When missions consume issues or PRs from GitHub (`gh`), Linear (`orca linear`), or Jira (`orca jira`), [`playbooks/linear-enumeration.md`](../playbooks/linear-enumeration.md) enforces three safeguards:
 
 - **`T0` twin-query denominator:** Two independent workers paginate the tracker query until `truncated: false` and reconcile the exact item list at `T0` before any builder is dispatched.
-- **Untrusted-text fence (`guard_text.py`):** Issue titles, descriptions, and comments are treated as untrusted data. `guard_text.py` normalizes Unicode (`NFKC`), strips hidden format characters, neutralizes delimiter spoofing, and tags `[INJECTION-PATTERN]` payloads before a worker reads them.
-- **Idempotent closure:** Tracker state updates use single-attempt `writeId` replay or state read-back and link the verified merge SHA via `orca reference add`.
+- **Untrusted-text fence (`guard_text.py`):** Issue titles, descriptions, and comments are treated as untrusted data. `guard_text.py` wraps them in a trust envelope, matches directive patterns over a Unicode-normalized (`NFKC`) copy with hidden format characters stripped (the worker still reads the original bytes), neutralizes delimiter spoofing, and tags `[INJECTION-PATTERN]` lines before a worker reads them.
+- **Idempotent closure:** Tracker state updates use single-attempt `writeId` replay or state read-back and link the PR via `orca reference add`; closure is claimed off the verified merge, never the ticket's state.
 
 ---
 

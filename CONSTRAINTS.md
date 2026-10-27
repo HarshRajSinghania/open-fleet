@@ -27,7 +27,7 @@ No threshold below moves without a one-way human decision recorded in docs/DECIS
 > guard by design. D2's threshold cell ("21/21 missions") means *every
 > mission in the catalog*, which has grown since. Read the live values from their generators:
 > mission count — `python3 scripts/validate.py` and `assets/badges/missions.json`; test count —
-> `assets/badges/tests.json`; proof mix — the generated proof-status sentence in
+> `assets/badges/tests.json` (as of the last release); proof mix — the generated proof-status sentence in
 > [README.md](README.md#proof-status) and `python3 runtime/scripts/proof_status.py`; bound
 > reports — `python3 runtime/scripts/run_report.py`; coverage — the `coverage report` step of
 > [validate CI](.github/workflows/validate.yml) (D9 status: see its row note).

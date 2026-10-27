@@ -21,6 +21,12 @@ reported by the caller (or by `--path` below), never silently swapped for anothe
 Usage:
   python3 orca_cli.py            # print the resolved command name
   python3 orca_cli.py --path     # print the resolved absolute path; exit 1 when not on PATH
+  python3 orca_cli.py --version  # print `open-fleet-rpi <runtime/pins.json orca.version>`
+                                 # (`unknown` when the pin cannot be read)
+  python3 orca_cli.py <domain> ARGS...
+      # hand `<domain> ARGS` (minus --json) to the active runtime provider's dispatch and print
+      # a JSON envelope ({"ok": true, "result": ...} or the error); <domain> is orchestration,
+      # worktree, terminal, vm, search, environment, linear, jira or reference
 Library:
   from orca_cli import resolve, run_json
   argv = [resolve(), "orchestration", "check", "--json"]
@@ -34,7 +40,9 @@ the `result` object (`{}` when absent). `nonzero` keeps each caller's exit-statu
 "strict" (a nonzero exit with no error envelope fails), "no-receipt" (fails only when
 there is no result either), "ignore" (the envelope alone decides).
 
-Exit: 0 printed · 1 (`--path`) the resolved command is not on PATH · 2 usage.
+Exit: 0 printed · 1 (`--path`) the resolved command is not on PATH, or a `<domain>` dispatch
+failed (its error envelope is still printed on stdout) · 2 usage, or an unknown
+OPEN_FLEET_RUNTIME (else legacy ORCA_FLEET_RUNTIME) value, checked first whatever the arguments.
 """
 from __future__ import annotations
 
@@ -192,7 +200,7 @@ def main(argv=None) -> int:
         except Exception as exc:
             print(json.dumps({"ok": False, "error": {"code": "runtime_error", "message": str(exc)}}))
             return 1
-    print("usage: orca_cli.py [--path]", file=sys.stderr)
+    print("usage: orca_cli.py [--path | --version | <domain> ARGS...]", file=sys.stderr)
     return 2
 
 

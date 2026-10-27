@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — coordinator plus parallel isolated builders and build-blind reviewers; you own the one-way doors (freeze, promotion, deploy).
-> **Activation load:** ~34,200 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~34,600 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 17% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** external-run — the 2026-10-13 run built ravidsrk/mdtoc from a maintainer-frozen
 > spec to BUILT @ `046d1f8d` on the Linux witness VM (six slices, an integrated FAIL closed by
 > a seam-fix slice, re-review PASS); binding report [`docs/runs/2026-10-13-ship-it-mdtoc.md`](../runs/2026-10-13-ship-it-mdtoc.md).
@@ -53,13 +53,15 @@ The coordinator never writes code. Its job is dispatch, verification against aut
 [evidence manifest](../concepts.md#the-evidence-manifest), and an independent verifier checks the
 claims before the run advances. A worker saying "done" is a claim to check, never a fact to record.
 
-Two entries, one canonical pipeline:
+Three entries, one canonical pipeline:
 
 - **Frozen spec in hand** → the spec is validated (are its dependencies real? are its acceptance
   criteria testable?) and the run goes straight to decomposition.
-- **Raw intent** ("build me X") → the coordinator runs a grilling session with *you* — one
-  question at a time, recommended answers attached — and freezes the result. The grill is never
+- **Raw intent** ("build me X") → the coordinator runs a grilling session with *you* — round by
+  round, a recommended answer on every question — and freezes the result. The grill is never
   delegated to a worker: it is your side of the alignment conversation.
+- **A map-it handoff** (frozen spec + frozen prepared DAG) → the freeze is validated, the prepared
+  DAG re-verified and its task ids adopted — decomposition is skipped.
 
 ## When to reach for it
 
@@ -83,6 +85,7 @@ Two entries, one canonical pipeline:
 flowchart TD
     A[Intent or draft] -->|grill + freeze<br/>human gate 1| C[Frozen spec]
     B[Frozen spec handed in] -->|validate| C
+    B2[map-it handoff<br/>frozen spec + prepared DAG] -->|validate, verify DAG,<br/>adopt task ids| E
     C --> D[DECOMPOSE<br/>tracer-bullet slices → Orca DAG]
     D --> E[BUILD waves<br/>one worker per slice, failing test first]
     E --> F[ACCEPTANCE-REVIEW<br/>build-blind, per slice]
@@ -124,8 +127,8 @@ Phase by phase:
    the BASE head once the wave lands — the traceability table is verified there, never inferred
    from per-slice green.
 6. **Land** ([`merge-serialization`](../../runtime/merge-serialization.md)). One conductor owns
-   all merges to the integration BASE. Reviewed-SHA freshness is enforced: a rebase voids the
-   review and the PR re-boards with a fresh one.
+   all merges to the integration BASE. Reviewed-SHA freshness is enforced: a content-changing
+   rebase voids the review and the PR re-boards with a fresh one.
 7. **Release** ([`release`](../../playbooks/release.md)) and **observe**
    ([`observe`](../../playbooks/observe.md)). Version bump, changelog, promotion PR with a
    traceability table; a human merges to the default branch; deploy and a canary window follow
@@ -154,7 +157,7 @@ takes the executed-control lane; it never self-approves.
 
 ## Human gates
 
-Two in every run, both one-way doors under
+Two, both one-way doors under
 [`gate-classification`](../../runtime/gate-classification.md):
 
 1. **The freeze** (intent entry only) — you confirm the spec before any slice is cut.
@@ -189,7 +192,7 @@ The ask: passwordless login for a Next.js + Postgres app.
 > ship this: magic-link login — email a signed link, 15-minute expiry, reuse the existing
 > session middleware
 
-**Freeze (gate 1).** The coordinator grills you, one question at a time, recommendation attached:
+**Freeze (gate 1).** The coordinator grills you round by round, a recommendation on every question:
 
 > Token storage — (a) stateless signed JWT in the link (recommended: no schema change; revocation
 > only by expiry) or (b) DB-backed one-time token (revocable, adds a table + cleanup)?

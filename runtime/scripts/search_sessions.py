@@ -21,9 +21,11 @@ unavailable are failures (exit 1), never empty results. --precheck-only runs
 just the verdict. Live index behavior is PARKED (needs-human: run against a
 host mid-indexing and confirm phase gating).
 
---local-harnesses (and the automatic fallback when the runtime is not orca)
-scans the ten harnesses' own session stores read-only — claude-code, codex,
-opencode, omp, pi, jcode, goose, hermes, crush, openhands — each through a
+--local-harnesses (and the automatic fallback: with OPEN_FLEET_LOCAL_SEARCH=1, or
+OPEN_FLEET_RUNTIME or ORCA_FLEET_RUNTIME naming a runtime other than orca, a
+search whose Orca/provider call FAILS — the exit-1 class; a precheck refusal never
+falls back) scans the ten harnesses' own session stores read-only — claude-code,
+codex, opencode, omp, pi, jcode, goose, hermes, crush, openhands — each through a
 reader that follows its upstream on-disk format (see the per-reader comments).
 It is a token scan, not an index: every query re-reads the stores. One hit per
 session; --since drops undated records; --path matches the session's cwd;
@@ -536,9 +538,12 @@ def build_episodic_selection(paths, runs_dir=None, session_hits=None, max_lines=
     """Select, assess and render the episodic hint (#605). Returns {"lines", "entries", "counts"}.
 
     ``live`` is a hint_provenance.LiveSource (or a checkout path) for the frozen task's source;
-    without one every entry's currency is UNKNOWN. ``mode="current"`` (worker-facing) suppresses
-    STALE/SUPERSEDED entries and withholds notes that speak as an authority; ``"historical"``
-    lists everything, labelled, for a coordinator's audit."""
+    without one no entry can be CURRENT: each is UNKNOWN (no-live-source) unless the archive's own
+    checks make it STALE (artifact-modified: a manifest or evidence file no longer matches what
+    was recorded) or a newer record or ``current_evidence`` makes it SUPERSEDED; session hits stay
+    UNKNOWN. ``mode="current"`` (worker-facing) suppresses STALE/SUPERSEDED entries and withholds
+    notes that speak as an authority; ``"historical"`` lists everything, labelled, for a
+    coordinator's audit."""
     clean_paths = [_nonempty(p, "--path") for p in (paths or []) if p is not None]
     if not clean_paths and session_hits is None:
         raise Refused("--episodic-hint requires at least one --path or query")

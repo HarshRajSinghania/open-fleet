@@ -39,7 +39,7 @@ DATABASE_URL=sqlite:///./demo.db uv run uvicorn app.main:app
 | Command | Description |
 |---|---|
 | `uv run uvicorn app.main:app` | Run the API + UI on :8000 |
-| `uv run pytest` | Full test suite (51 tests: API + UI + shape + telemetry) |
+| `uv run pytest` | Full test suite (52 tests: API + UI + shape + telemetry) |
 | `ruff check .` | Lint (ruff on PATH, e.g. via mise) |
 | `uv run alembic upgrade 0002` | Migrate an empty DB to the frozen schema |
 | `uv run alembic current` | Reads `0002` after boot; `alembic heads` shows pending `0003` |

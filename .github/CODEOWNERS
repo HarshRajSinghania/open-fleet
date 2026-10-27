@@ -1,5 +1,6 @@
 # Ravindra remains the release, one-way-gate and floor-waiver authority.
-# Critical-path peer ownership activates after agentsalpha accepts write access (#530).
+# Critical-path peer ownership was to activate once agentsalpha accepted write access (#530);
+# that invitation expired unaccepted, so the @agentsalpha entries below are inert (docs/ops.md).
 * @ravidsrk
 /runtime/ @ravidsrk @agentsalpha
 /scripts/ @ravidsrk @agentsalpha

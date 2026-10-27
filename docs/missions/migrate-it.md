@@ -2,9 +2,9 @@
 
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
-> **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus isolated per-phase workers; phases of one table are strictly serial, and the destructive CONTRACT step is your one-way door.
-> **Activation load:** ~32,200 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus isolated per-phase workers; phases of one table are strictly serial, and FREEZE, every phase's promotion and deploy, and the destructive CONTRACT step are your one-way doors.
+> **Activation load:** ~32,500 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([PARKED](../runs/campaign-2026-09-16-migrate-it/), zero tables), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Point it at "we need to rename this column and we cannot take downtime." Come back to a table
 > moved one deployable phase at a time — each phase with a down path that was actually run, old
@@ -17,7 +17,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/migrate-it.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/migrate-it-light.jpg">
-    <img src="../../assets/diagrams/missions/migrate-it-light.jpg" alt="Mission contract for migrate-it: you give it a table set and a phase list, each phase with its down path; it interrupts you for CONTRACT — dropping the old shape; bake windows that need production telemetry; you get back MIGRATED or MIGRATED-WITH-PARKED or ABANDONED, plus one PR per phase; up + down receipts with an empty schema diff; a parity archive; zero-use telemetry; it stops at one phase of one table in flight — nothing dropped before the zero-reader window; phases EXPAND, DUAL-WRITE, BACKFILL, SWITCH-READS, RETIRE-WRITES, CONTRACT" width="820">
+    <img src="../../assets/diagrams/missions/migrate-it-light.jpg" alt="Mission contract for migrate-it: you give it a table set and a phase list, each phase with its down path; it interrupts you for one-way gates: the freeze, each phase's promotion and deploy, and CONTRACT (the drop); bake windows the fleet cannot observe; you get back MIGRATED or MIGRATED-WITH-PARKED or ABANDONED, plus one PR per phase; up + down receipts with an empty schema diff; a parity archive; zero-use telemetry; it stops at one phase of one table in flight — nothing dropped before zero readers and zero writers; phases EXPAND, DUAL-WRITE, BACKFILL, SWITCH-READS, ZERO-READERS, RETIRE-WRITES, ZERO-WRITERS, CONTRACT" width="820">
   </picture>
 </p>
 
@@ -214,9 +214,10 @@ ALTER TABLE users DROP COLUMN name;
 
 > migrate the database: users.name → users.full_name, no downtime
 
-**Plan.** One table, the phase ladder, a down path per phase; the integration BASE is bootstrapped.
+**Plan.** One table, the phase ladder, a down path per phase.
 
-**Freeze.** You confirm the one-table set and its ladder.
+**Freeze.** You confirm the one-table set and its ladder; each phase then bootstraps its own BASE
+off the current default.
 
 **Expand → dual-write.** `full_name` is added; you merge the phase's promotion PR and grant the
 deploy; deploy, bake. Every insert and update path writes

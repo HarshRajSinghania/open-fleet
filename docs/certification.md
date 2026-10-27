@@ -74,8 +74,9 @@ witness.
 
 ## Fixture (mocked) results
 
-All other cells that are not refusals use fixtures. They show that the fleet's side of the route
-works. They do not show how the upstream build or the harness behaves:
+All other cells that are neither refusals nor Orca's 13 `source-only` cells use fixtures. They
+show that the fleet's side of the route works. They do not show how the upstream build or the
+harness behaves:
 
 - **posix** (`ro` and `rw`, the 9 harnesses other than `claude`, which is live):
   `first_run.py` drives the whole route through the public wrappers. An inert stand-in answers to each harness name, in that harness's own output
@@ -161,9 +162,12 @@ not move up: every changed cell is still `source-only` or `fixture-tested`, or i
   print it still settles `worker_died (exit=0)`, and the run accepts either. In the unbound
   2026-10-24 live `ro` run, Claude Code 2.1.304 printed the line too and the unit settled
   `completed`.
-- **gastown's claude `ro` alias carries `--disallowedTools`.** Every claude `ro` launch row and
-  alias carries `Edit,Write,MultiEdit,NotebookEdit`. Orca's plan-mode row was the exception
-  until record version 4.
+- **gastown's claude `ro` alias carries `--disallowedTools`.** Every claude `ro` launch line the
+  fleet builds (`base.py`, `spawn_worker.sh`'s Orca row, the gastown alias, emdash's `extraArgs`)
+  carries `Edit,Write,MultiEdit,NotebookEdit`, and multiclaude denies the same tools (plus `Bash`)
+  in the worker's `.claude/settings.json`; vibe-kanban, t3code and paperclip rely on the
+  upstream's own plan or approval mode instead, and overstory on its own guard hooks. Orca's
+  plan-mode row was the exception until record version 4.
 
 ### What record version 4 changes
 
@@ -345,7 +349,7 @@ exact `spawn_worker.sh` lane, the `verify.py` invocation and its GREEN outcome. 
 follow [Getting started](getting-started.md#your-first-mission-a-review-it-dry-run) with Orca
 installed.
 
-That witness predates the `--disallowedTools` set on Orca's claude `ro` row, so the route is owed
+That witness predates the `--disallowedTools` set on Orca's claude `ro` row, so the route was owed
 a fresh one. Two 2026-10-24 attempts are recorded in the
 [live first runs](runs/2026-10-24-review-it-first-run.md). Both launched the current row and both
 failed closed before any injection:
@@ -399,7 +403,7 @@ set holding.
 --disallowedTools=Edit,Write,MultiEdit,NotebookEdit`. Bind the run as the 2026-10-13 run was
 bound. Its artifacts need one line naming `Orca` (or `orca-ide`) with its version, Claude Code
 with its version, and `PROFILE=ro`, as that run's `toolchain` line does. Then replace the
-`orca` `ro` group's `witnessed` and `evidence`, and drop its re-witness limitation. A witness on
+`orca` `ro` group's `witnessed`, `evidence` and `limitations`. A witness on
 an Orca build other than the pinned one also moves `pins.json` `live_receipts`, which voids
 every `orca` cell until `certified_against` is re-recorded (see
 [A refreshed pin voids cells](#a-refreshed-pin-voids-cells)).
@@ -471,7 +475,5 @@ Record:
 
 - A clean-host record on separate hardware. The recorded one is a fresh container on the dev
   Mac (see [Recording a clean-host first run](#recording-a-clean-host-first-run)).
-- A fresh live witness of Orca `ro`/`claude` on its current row, which carries
-  `--disallowedTools`; the 2026-10-13 witness ran the row without it.
-- Live witnesses for every other provider, for Orca on macOS, and for any harness other than
-  Claude Code. Their upstream versions stay `unknown` until a run records them.
+- Live witnesses for every other provider and for any harness other than Claude Code. Their
+  upstream versions stay `unknown` until a run records them.

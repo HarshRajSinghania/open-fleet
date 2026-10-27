@@ -181,10 +181,10 @@ During an active run (walked hour-by-hour in **[Anatomy of a run](guides/anatomy
 
 - **Coordinator terminal:** The session where you typed your prompt. It manages phase transitions, runs `verify.py`, updates the ledger, and surfaces human gates.
 - **Worker terminals:** Ephemeral sessions (one per active unit in its own git worktree) that execute a single task, emit an evidence manifest, and exit. You never need to type into a worker terminal.
-- **The run ledger:** A durable file tracking every unit's state flags (`BUILD_DONE`, `REVIEWED`, `MERGED`, `VERIFIED`), PR number, `reviewed_sha`, `merge_sha`, and manifest path.
+- **The run ledger:** A durable file tracking every unit's state flags (`BUILD_DONE`, `REVIEWED`, `MERGED`, `WT_CLEAN`), PR number, `reviewed_sha`, `merge_sha`, and manifest path.
 - **Per-unit pull requests:** Opened against the integration `BASE` branch and merged by the conductor once verified.
 
-Example ledger header written at `T0`:
+Example ledger header written at `T0` (a 2026-07-15 run; a header written today also ends with `· WIP: builders=<n> reviewers=<n>`):
 
 ```text
 RUN: clean-sweep-chimely-20260715 · COORDINATOR: term_905ccdf2… + term_c5e4d798… ·
@@ -260,7 +260,7 @@ Reply 'a' or 'b'. No timeout default — the freeze is a one-way gate, and its q
 
 See **[Troubleshooting](troubleshooting.md)** for the full diagnostic reference. Common first-run issues:
 
-- **`"BASE is the default branch"` — preflight refuses to start:** By design, fleets never commit directly to `main`/`master`. Allow the coordinator to create an integration branch (e.g., `ship-it/integration`).
+- **`BASE (…) is the DEFAULT_BRANCH` — preflight refuses to start:** By design, fleets never commit directly to `main`/`master`. Allow the coordinator to create an integration branch (e.g., `ship-it/integration`).
 - **Playbooks or `../../ARCHITECTURE.md` not found:** The mission folder was copied instead of symlinked. Re-install using `sh scripts/install.sh` or `ln -s` per [Install the catalog](#install-the-catalog).
 - **Baseline test suite is red:** Missions refuse to build on top of pre-existing test failures. Run [`deflake-it`](missions/deflake-it.md) for intermittent flakes or [`clean-sweep`](missions/clean-sweep.md) to fix deterministic failures first.
 - **Worker stalled or coordinator interrupted:** Liveness supervision respawns stalled workers in clean terminals, and a restarted coordinator resumes from the ledger after re-verifying git ancestry ([`runtime/liveness-resume.md`](../runtime/liveness-resume.md)).

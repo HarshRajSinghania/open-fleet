@@ -12,7 +12,8 @@ description: >-
   it), framework/dependency upgrades (modernize-it), or a PR verdict (review-it).
 license: MIT
 compatibility: >-
-  HARD dependency: open-fleet RPI runtime (Orca, posix, adapter) plus the target the tier needs:
+  HARD dependency: open-fleet RPI runtime (Orca, posix, adapter; off Orca, preflight requires adb or
+  xcrun) plus the target the tier needs:
   the Orca emulator skills (orca-emulator for iOS simulators, orca-emulator-android for Android) or
   a paired physical device; a driven browser (BROWSER), orca computer (DESKTOP), or a workspace
   recipe (CLEAN-ENV). git + gh. The app's own build/run toolchain. A fix worker playbook pack (mattpocock,

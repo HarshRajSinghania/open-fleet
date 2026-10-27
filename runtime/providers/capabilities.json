@@ -4,11 +4,11 @@
   "capabilities": {
     "cap:core-orchestration": {
       "description": "Worktree isolation, task/run state, worker lifecycle (spawn/fence/poll), and two-way mailbox messaging.",
-      "fallback": "runtime/providers/local_state.py (SQLite WAL + git worktree + tmux/nohup)"
+      "fallback": "runtime/providers/local_state.py (SQLite WAL + git worktree + tmux/cmux/setsid)"
     },
     "cap:sandbox-vm": {
       "description": "Disposable VM or container isolation for untrusted code execution and environment recipe verification.",
-      "fallback": "posix only: `--on <image>` Docker launch (--cap-drop ALL, no-new-privileges, pids-limit, private git dir) certified by `vm recipe doctor` + runtime/scripts/sandbox_doctor.py (docker, bwrap, gondolin, devcontainer, apptainer recipes)"
+      "fallback": "posix only: `--on <image>` Docker launch (--cap-drop ALL, no-new-privileges, pids-limit, private git dir) certified by `vm recipe doctor` + runtime/scripts/sandbox_doctor.py (docker, bwrap, gondolin, devcontainer, hermes-docker, apptainer, superset-cloud, openhands-docker recipe transcripts)"
     },
     "cap:session-search": {
       "description": "Cross-session FTS5 transcript indexing and search for prior-art recall and compound learning.",
@@ -24,7 +24,7 @@
     },
     "cap:issue-tracker": {
       "description": "Issue and pull-request enumeration, creation, commenting, and state transitions.",
-      "fallback": "GitHub CLI (gh) and runtime/scripts/pm.py"
+      "fallback": "GitHub CLI (gh)"
     },
     "cap:scheduler": {
       "description": "Recurring cron/interval execution for unattended sweeps and sentinel missions.",

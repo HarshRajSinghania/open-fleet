@@ -163,7 +163,7 @@ def _build_harness_command(
     bridge_dir: str | None = None,
     data_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Build the verified CLI command, argv, env, and profile_flag for any of the 9 CLI harnesses.
+    """Build the CLI command, argv, env, and profile_flag for any of the 14 CLI harnesses.
 
     Source-audited across all cloned harnesses to avoid silent permission bypasses:
       - `pi` has no `--cwd` flag and no built-in permission prompt (requires `cd` + `--exclude-tools` on `ro`).

@@ -7,7 +7,9 @@ directory — and each used to spawn a bare ``git``: re-resolved against PATH on
 call (a later PATH entry, or a worker-planted ``./bin/git`` on it, answers instead),
 under the caller's whole git environment and the graded repo's own config. A
 repo-local ``core.fsmonitor`` is a command git runs on ``status``/``diff``; a
-``refs/replace/`` ref silently swaps the object a blob hash is taken from.
+``refs/replace/`` ref silently swaps the object a blob hash is taken from. decisions.py
+(``--pin-ref``), hint_provenance.py and the paid runners in scripts/ (ablation.py,
+_trajectories.py, wip_curve.py, live_container.py) have since joined those four.
 
 ``GIT`` is resolved ONCE, at import, to an absolute path (the run_report.py /
 verify.py rule, h409 R2). ``argv(*args)`` is the argv head every call uses; with no

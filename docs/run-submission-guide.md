@@ -22,7 +22,9 @@ describe historical reports.
 Three hard requirements, same as running any mission
 ([getting-started](getting-started.md)):
 
-1. **The Orca app + `orca` CLI, running.** `orca status --json` must show the
+1. **A runtime, running: the Orca app + `orca` CLI by default**, or the
+   provider `OPEN_FLEET_RUNTIME` names (e.g. `posix`; [runtimes](runtimes.md)) —
+   record which. On Orca, `orca status --json` must show the
    runtime `ready`. Record the Orca version your run used; the catalog's
    pinned runtime is the `orca` entry in
    [pins.json](../runtime/pins.json) — if your installed Orca differs, say
@@ -49,8 +51,9 @@ mission-addressed summary future runners copy).
 | 2 | `docs/runs/<YYYY-MM-DD>-<mission>-<self-run\|external-run>/` | The run's own artifact directory: the graded `manifest.json` (with the `commands[]` ledger), `negctrl.txt`, verifier and gate transcripts. Every file here is hashed by the inventory. |
 | 3 | `docs/reports/<mission>-<self-run\|external-run>/` | The envelope: `README.md` (the run's story in one page, the `RUN:` coordinates, a pointer to part 1) plus `negctrl.txt` (the same negative-control transcript as part 2, so the envelope reads standalone). Either tier spelling is accepted (`selfrun` and `self-run` both route); the `RUN:` header itself must use the hyphenated frontmatter spelling. |
 
-Also required: one row in the [run archive](runs/README.md) index table
-linking the mission name to the part-1 filename — a test fails the build
+Also required: one [run archive](runs/README.md) index row, the file
+`docs/runs/index/<run>.json` ([format](../scripts/run_index.py)), linking
+the mission name to the part-1 filename — a test fails the build
 if a dated report has no row — and the runner-credit row (below).
 
 The `RUN:` header is the report's identity. One line, every field, no
@@ -62,7 +65,8 @@ RUN: mission=<mission> tier=<self-run|external-run> inventory_at=<commit> manife
 
 `mission=` must name a catalog mission; `tier=` is exactly `self-run` or
 `external-run` (a run-together spelling fails the promotion gate);
-`inventory_at=` is the commit whose tree holds your frozen evidence;
+`inventory_at=` is the commit whose tree holds your frozen evidence, named by its id (7 to 40
+hex; a branch or tag name is refused, since it can move);
 `manifest=` is the graded manifest inside your run's own directory;
 `verifier=` is the outcome you actually recorded (a RED is honest — a solo
 run cannot manufacture an independent approver); `waves=` is required for
@@ -79,7 +83,7 @@ Run commands from the catalog root (`/tmp` fixtures excepted). Replace
    run produces it; explain any inapplicable section instead of deleting it.
 2. **Run the mission** per its `SKILL.md`, keeping evidence in the run
    directory as you go. Record the fixed point (BASE branch and SHA, frozen
-   spec digest), the Orca version, and every human gate with who decided it.
+   spec digest), the runtime (its Orca version on Orca), and every human gate with who decided it.
 3. **Record the verifier through the recorder** — never by hand. A tier
    costs a command execution, not a sentence about one:
    `python3 runtime/scripts/evidence-run.py --label verifier --manifest

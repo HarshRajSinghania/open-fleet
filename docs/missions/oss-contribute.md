@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel builders per upstream issue; the maintainer's merge is a gate the fleet neither owns nor fakes.
-> **Activation load:** ~32,600 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~32,900 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — it ran ([external-run report](../runs/2026-07-16-oss-contribute-external-run.md)), but that run's
 > artifacts were retained outside this repository, so the tier is not re-derivable here
 > (`runtime/scripts/run_report.py`, issue #259)
@@ -19,7 +19,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/oss-contribute.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/oss-contribute-light.jpg">
-    <img src="../../assets/diagrams/missions/oss-contribute-light.jpg" alt="Mission contract for oss-contribute: you give it issues on an upstream repo you can only fork; it interrupts you for refuted and stand-down closes, in a batch; assist vs alternative PR; CLA and DCO signatures; you get back CONTRIBUTED or CONTRIBUTED-WITH-PARKED, plus open, reviewed, etiquette-correct upstream PRs; review-assist comments; every thread answered; it stops at the maintainer merges, never the fleet; phases ENUMERATE, TRIAGE, BUILD ON THE FORK, REVIEW, OPEN PR, FOLLOW UP" width="820">
+    <img src="../../assets/diagrams/missions/oss-contribute-light.jpg" alt="Mission contract for oss-contribute: you give it issues on an upstream repo you can only fork; it interrupts you for refuted and stand-down closes, in a batch; assist vs stand-down, yours to veto; CLA and DCO signatures; you get back CONTRIBUTED or CONTRIBUTED-WITH-PARKED, plus open, reviewed, etiquette-correct upstream PRs; review-assist comments; every thread answered; it stops at the maintainer merges, never the fleet; phases ENUMERATE, TRIAGE, BUILD ON THE FORK, REVIEW, OPEN PR, FOLLOW UP" width="820">
   </picture>
 </p>
 

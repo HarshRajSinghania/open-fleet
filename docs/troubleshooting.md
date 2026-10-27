@@ -102,7 +102,7 @@ Use this diagnostic guide to resolve setup, runtime, completion-gate, and pull-r
 ## Preflight refuses BASE
 
 - **Cause:** Code-mutating missions refuse to use your repository's default branch (`main` or `master`) as the integration `BASE` branch.
-- **Fix:** Allow the coordinator to create a dedicated integration branch (e.g., `ship-it/integration`) forked from your default branch. Non-promoting missions (`review-it`, `map-it`, `root-cause`, `attest-it`) run preflight with `--mode readonly` and do not require an integration branch.
+- **Fix:** Allow the coordinator to create a dedicated integration branch (e.g., `ship-it/integration`) forked from your default branch. Non-promoting missions (`review-it`, `map-it`, `root-cause`, `attest-it`, `oss-contribute`) run preflight with `--mode readonly` and do not require an integration branch.
 
 ---
 
@@ -120,7 +120,7 @@ Use this diagnostic guide to resolve setup, runtime, completion-gate, and pull-r
 
 - **Cause:** A worker process hung past its heartbeat window or the coordinator terminal was closed.
 - **Fix:** Do not manually edit worker worktrees. Check the run ledger first:
-  - Under [`runtime/worker-supervision.md`](../runtime/worker-supervision.md) and [`runtime/liveness-resume.md`](../runtime/liveness-resume.md), the watchdog respawns stalled workers in fresh terminals with bounded retries.
+  - Under [`runtime/worker-supervision.md`](../runtime/worker-supervision.md) and [`runtime/liveness-resume.md`](../runtime/liveness-resume.md), the watchdog classifies a stalled worker, nudges it once, and recommends a stop and re-dispatch; the coordinator performs the stop and the fresh re-dispatch, with a counted retry.
   - A restarted coordinator reads the ledger header (`RUN`, `BASE`, `FORK_POINT`, `T0`), cross-verifies completed rows against git ancestry, and resumes from the last unverified unit.
 
 ---

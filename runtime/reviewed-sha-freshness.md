@@ -19,7 +19,8 @@ relaxes freshness, it never substitutes for proof the review happened (check_rev
   head SHA; if the resulting tree differs from `reviewed_wtree`, re-review; if identical, the
   review survives (the content the reviewer read is the content that merges).
 - A **bot autofix** commit (Cursor BugBot Autofix and similar) landing after the reviewer's PASS —
-  its tree differs by construction → re-review. See dispatch-lifecycle.md "bot non-convergence".
+  its tree differs by construction → re-review. See dispatch-lifecycle.md "Third-party review bots"
+  (step 3: an autofix bot is non-convergent).
 - Any late push by the builder — same tree test.
 
 ## Enforcement

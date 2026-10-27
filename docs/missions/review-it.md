@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel axis reviewers on the same pinned SHA; the GO/NO-GO verdict is yours to act on — a gate class, not a lower rung.
-> **Activation load:** ~24,600 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~24,800 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** external-run — the 2026-10-13 Linux witness reviewed stablyai/orca PR #28206 at
 > `6dcd957a` to a NO-GO verdict (4 read-only workers, 14/14 quotes re-read, `verify.py` OK) with
 > every artifact retained in its own run directory; binding report
@@ -21,7 +21,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/review-it.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/review-it-light.jpg">
-    <img src="../../assets/diagrams/missions/review-it-light.jpg" alt="Mission contract for review-it: you give it a PR or branch, and the spec it claims to implement; it interrupts you for nothing during the run — acting on the verdict is yours; you get back GO or NO-GO, plus findings per axis, each quoting its motivating line; the verdict bound to reviewed_sha; it stops at read-only — PROFILE=ro, not one byte of the tree modified; phases PIN, STANDARDS; SPEC; TEST-ADEQUACY; RISK, AGGREGATE" width="820">
+    <img src="../../assets/diagrams/missions/review-it-light.jpg" alt="Mission contract for review-it: you give it a PR or branch, and the spec it claims to implement; it interrupts you for posting the verdict to the PR — a one-way gate; acting on the verdict is yours; you get back GO or NO-GO, plus findings per axis, each quoting its motivating line; the verdict bound to reviewed_sha; it stops at read-only — PROFILE=ro, not one byte of the tree modified; phases PIN, STANDARDS; SPEC; TEST-ADEQUACY; RISK, AGGREGATE, VERDICT" width="820">
   </picture>
 </p>
 
@@ -132,7 +132,7 @@ Phase by phase:
 | State | Meaning | Who acts on it |
 |---|---|---|
 | `GO` | Every axis reported, zero Critical and zero Required findings, the whole bound to `reviewed_sha` | a human, or the mission that owns the merge |
-| `NO-GO` | Any Critical or any Required (merge-blocking) finding — a "conditional" note may accompany it, never rename it | route the findings to `ship-it` / `clean-sweep` |
+| `NO-GO` (degraded) | Any Critical or any Required (merge-blocking) finding — a "conditional" note may accompany it, never rename it | route the findings to `ship-it` / `clean-sweep` |
 
 Either way the verdict names the worst issue per axis, and it expires with its SHA: a head that
 moves past `reviewed_sha` leaves you holding an opinion about code that no longer exists.

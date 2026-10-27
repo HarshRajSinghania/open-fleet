@@ -414,7 +414,7 @@ class TheAlertWorkflowCannotBeTrippedByAFork(unittest.TestCase):
                       "the manual drill path is gone, so the alert can no longer be proven")
 
 
-WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))  # .yml and .yaml
 # ANY expression inside a `run:` script (2026-10-23 review, §5 CI). The runner pastes an
 # expression's value into the script text before the shell parses it, so whether one is safe
 # inline depends on where the value came from, which no regex can decide: the old list of
@@ -460,6 +460,71 @@ def _run_scripts(text):
             body.append(nxt)
         scripts.append((i + 1, "\n".join(body)))
     return scripts
+
+
+_SCANNED_KEYS = r"(?:uses|run|with|steps|jobs|persist-credentials|shell|working-directory)"
+_LOOSE_KEY = re.compile(
+    r"[{,]\s*[\"']?" + _SCANNED_KEYS + r"[\"']?\s*:"       # a key inside a flow mapping
+    r"|[\"']" + _SCANNED_KEYS + r"[\"']\s*:"               # a quoted key
+    r"|\b" + _SCANNED_KEYS + r"\s+:")                      # a space before the colon
+_YAML_INDIRECTION = re.compile(r"<<\s*:|(?:^|[\s\[{,:-])[&*][A-Za-z_][\w-]*\s*(?:$|[\]},#])")
+
+
+def _structure_offenders(name, text):
+    """Why the stdlib scans in this module could misread a workflow: they read block-style YAML
+    line by line (no parser on the runner), so a workflow must be a `.yml` file whose scanned
+    keys are plain block keys, with no anchor, alias or merge key outside a `run:` body."""
+    bad = [] if name.endswith(".yml") else [f"{name}: not a .yml file"]
+    lines = text.splitlines()
+    in_script, indent = False, 0
+    for n, line in enumerate(lines, start=1):
+        if in_script:
+            if not line.strip() or len(line) - len(line.lstrip()) > indent:
+                continue
+            in_script = False
+        m = re.match(r"^(\s*)(?:- )?run:\s*([|>][-+0-9]*)?\s*(?:#.*)?$", line)
+        if m and m.group(2):
+            in_script, indent = True, len(m.group(1))
+        code = re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
+        if _LOOSE_KEY.search(code) or _YAML_INDIRECTION.search(code):
+            bad.append(f"{name}:{n}: {line.strip()}")
+    return bad
+
+
+class TheScansReadEveryWorkflowAsWritten(unittest.TestCase):
+    """PR #718 re-attack: the hygiene scans read `*.yml` by regex, so a `sneaky.yaml` workflow
+    with `checkout@v4`, no persist-credentials and `${{ github.event.pull_request.title }}`
+    inside `run:` left them green, and so did a flow mapping (`- {uses: …@v4}`) or `uses :`.
+    WORKFLOWS globs both extensions, and every workflow must be in the plain block style the
+    scans read, so nothing a runner would execute is invisible to them."""
+
+    def test_every_workflow_is_one_the_scans_read(self):
+        directory = ROOT / ".github" / "workflows"
+        self.assertEqual(sorted(p.name for p in directory.iterdir()),
+                         sorted(p.name for p in directory.glob("*.yml")),
+                         "a workflow file the hygiene scans would not read")
+        self.assertEqual([p.name for p in WORKFLOWS],
+                         sorted(p.name for p in directory.glob("*.y*ml")))
+        for path in WORKFLOWS:
+            with self.subTest(workflow=path.name):
+                self.assertEqual(_structure_offenders(path.name,
+                                                      path.read_text(encoding="utf-8")), [])
+
+    def test_the_structure_scan_can_actually_see_one(self):
+        ok = "jobs:\n  x:\n    steps:\n      - uses: a/b@" + "c" * 40 + "\n"
+        self.assertEqual(_structure_offenders("w.yml", ok), [])
+        self.assertTrue(_structure_offenders("sneaky.yaml", ok))
+        for text in ("jobs:\n  x:\n    steps:\n      - {uses: actions/checkout@v4}\n",
+                     "jobs:\n  x:\n    steps:\n      - uses : actions/checkout@v4\n",
+                     'jobs:\n  x:\n    steps:\n      - "uses": actions/checkout@v4\n',
+                     "jobs:\n  x:\n    steps:\n      - name: a\n        with: {persist-credentials: true}\n",
+                     "x: &co\n  uses: actions/checkout@v4\njobs:\n  y:\n    steps:\n      - <<: *co\n",
+                     "jobs:\n  x:\n    steps: [{run: echo}]\n"):
+            with self.subTest(text=text):
+                self.assertTrue(_structure_offenders("w.yml", text))
+        script = ("jobs:\n  x:\n    steps:\n      - run: |\n          a && b {x}, y\n"
+                  "          echo \"$ref\" 2>&1\n      - uses: a/b@" + "c" * 40 + "\n")
+        self.assertEqual(_structure_offenders("w.yml", script), [], "a run: body is shell, not YAML")
 
 
 class WorkflowsAreBoundedAndInjectionFree(unittest.TestCase):

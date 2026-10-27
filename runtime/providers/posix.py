@@ -20,6 +20,7 @@ import contextlib
 import fcntl
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -140,6 +141,17 @@ CRUSH_RO_DISABLED_TOOLS = [
 RUNTIME_DIR = Path(__file__).resolve().parent.parent
 OPEN_FLEET_ROOT = RUNTIME_DIR.parent
 CANONICAL_DENY_HOOK = RUNTIME_DIR / "scripts" / "deny-hook.sh"
+
+
+def _load_gitexec():
+    """runtime/scripts/gitexec.py: the one git resolution rule and hardened environment (W4-01)."""
+    spec = importlib.util.spec_from_file_location("open_fleet_posix_gitexec", RUNTIME_DIR / "scripts" / "gitexec.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+gitexec = _load_gitexec()
 SANDBOX_GIT_MOUNT = "/open-fleet/sandbox.git"
 # Per-worktree guard artifacts install_worktree_hooks writes. They are excluded from git (never
 # land in a PR) and deny-hook.sh refuses edits to them (a worker cannot disarm its own guard).
@@ -188,15 +200,7 @@ def _refuse_guard_links(wt: Path) -> None:
 
 def _exclude_hook_artifacts(wt: Path) -> None:
     """Append HOOK_ARTIFACTS to the worktree's `info/exclude` (shared by all linked worktrees)."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return
+    proc = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=wt, timeout=15)
     if proc.returncode != 0 or not proc.stdout.strip():
         return
     info = Path(proc.stdout.strip()) / "info"
@@ -733,12 +737,42 @@ def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, 
     return {"HERMES_HOME": str(home), "HERMES_ACCEPT_HOOKS": "1", "HERMES_SAFE_MODE": "0"}
 
 
-def _git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, str] | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
-    full = ["git", *(["-C", str(cwd)] if cwd else []), *args]
+def _git(
+    args: list[str],
+    *,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: int = 120,
+    blanks: list[tuple[str, str]] | tuple = (),
+) -> subprocess.CompletedProcess:
+    """Every git the provider runs, and the only way it runs one (W4-01).
+
+    This is coordinator-side git over a repository a worker writes: linked worktrees share ONE
+    `.git/config`, so a plain `git config core.hooksPath …` in a worker's worktree, a
+    `core.fsmonitor`, or a `filter.<d>.smudge` its `.gitattributes` selects ran on the next
+    `worktree add`/`remove` or sandbox sync as the coordinator, outside the deny hook and with the
+    coordinator's whole environment. So: gitexec.py's absolute git (resolved once; absent at
+    import is exit 127 here, never a PATH re-resolution) under its floor — no global or system
+    config (the same-uid `~/.gitconfig` is the worker's to write too), hooks looked up in
+    /dev/null, core.fsmonitor off, replace refs and grafts off, no `ext::` transport,
+    `safe.directory=*` — and stdin closed. A call that materialises content passes `blanks`
+    (`_driver_blanks`, read where that call runs), so no attribute-selected filter runs either."""
+    full = [*(["-C", str(cwd)] if cwd else []), *args]
     try:
-        return subprocess.run(full, capture_output=True, text=True, env=env, timeout=timeout)
+        return subprocess.run(gitexec.argv(*full), capture_output=True, text=True,
+                              env=gitexec.env(env, blanks=blanks), timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(full, 127, "", str(exc))
+
+
+def _driver_blanks(code: str, repo: str | Path | None = None, *, git_dir: str | None = None) -> list[tuple[str, str]]:
+    """gitexec.driver_blanks for one content-materialising call, read in the same place that call
+    runs (an `includeIf gitdir:`/`onbranch:` resolves per worktree). A config that cannot be read
+    refuses the call (`code`), never runs it with every planted driver live (W4-01)."""
+    try:
+        return gitexec.driver_blanks(repo, git_dir=git_dir)
+    except gitexec.DriverQueryFailed as exc:
+        raise ProviderError(code, f"cannot neutralise the repository's filter drivers: {exc}") from exc
 
 
 def _git_ok(args: list[str], what: str, **kw: Any) -> str:
@@ -783,7 +817,9 @@ def prepare_sandbox_git(wt_path: str, lane_dir: Path) -> dict[str, str]:
         _git_ok(sb + ["update-ref", "--no-deref", "HEAD", head], "pin sandbox detached HEAD")
     # Index = HEAD; the worktree's uncommitted edits stay as working-tree modifications.
     _git_ok(sb + ["--work-tree", str(wt), "read-tree", "HEAD"], "seed sandbox index")
-    _git(sb + ["--work-tree", str(wt), "update-index", "-q", "--refresh"])
+    # The refresh re-hashes every worktree file through any filter the sandbox config declares.
+    _git(sb + ["--work-tree", str(wt), "update-index", "-q", "--refresh"],
+         blanks=_driver_blanks("sandbox_git_failed", git_dir=str(sandbox)))
     meta = {
         "sandbox_git": str(sandbox),
         "common_dir": str(common),
@@ -869,8 +905,16 @@ def sync_sandbox_git(meta: dict[str, str], dispatch_id: str) -> dict[str, Any]:
         res["nonFastForward"] = True
         return res
     _git_ok(["--git-dir", common, "update-ref", branch, new_head, old], "fast-forward host branch")
-    # Explicit git dir: never trust the (container-writable) worktree's `.git` pointer.
-    _git(["--git-dir", meta["wt_gitdir"], "--work-tree", meta["worktree"], "reset", "-q"])
+    # Explicit git dir: never trust the (container-writable) worktree's `.git` pointer. Its config
+    # is the SHARED host config, so the drivers are read from that same git dir (W4-01). The
+    # refresh is best-effort: with that config unreadable the index stays stale, never refreshed
+    # with a planted filter live.
+    try:
+        blanks = _driver_blanks("sandbox_git_failed", git_dir=meta["wt_gitdir"])
+    except ProviderError:
+        blanks = None
+    if blanks is not None:
+        _git(["--git-dir", meta["wt_gitdir"], "--work-tree", meta["worktree"], "reset", "-q"], blanks=blanks)
     res["branchUpdated"] = True
     return res
 
@@ -987,16 +1031,31 @@ class PosixWorktreeProvider(RuntimeProvider):
         elif is_git:
             _git(["worktree", "prune"], cwd=root)
             exists = _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=root).returncode == 0
+            # `--` ends the options: a `--base` that starts with `-` is a commit-ish, never a flag (W2-04).
             if exists:
                 # Never `-B`: resetting an existing branch silently discards its unmerged commits.
-                cmd = ["worktree", "add", str(wt_path), branch]
+                cmd = ["worktree", "add", "--no-checkout", "--", str(wt_path), branch]
             else:
-                cmd = ["worktree", "add", "-b", branch, str(wt_path)] + ([base] if base else [])
+                cmd = ["worktree", "add", "--no-checkout", "-b", branch, "--", str(wt_path)] + ([base] if base else [])
             proc = _git(cmd, cwd=root)
             if proc.returncode != 0:
                 raise ProviderError(
                     "worktree_create_failed",
                     (proc.stderr or proc.stdout or f"git worktree add failed for {slug}").strip(),
+                )
+            # The checkout `worktree add` would run is done here, IN the new worktree, as the same
+            # `reset --hard --no-recurse-submodules` git runs: its filter drivers are read where it
+            # checks out (an `includeIf gitdir:`/`onbranch:` matches only there) and blanked (W4-01).
+            try:
+                blanks = _driver_blanks("worktree_create_failed", wt_path)
+                proc = _git(["reset", "--hard", "--no-recurse-submodules", "-q"], cwd=wt_path, blanks=blanks)
+            except ProviderError as exc:
+                proc = subprocess.CompletedProcess([], 1, "", exc.message)
+            if proc.returncode != 0:
+                _git(["worktree", "remove", "--force", "--", str(wt_path)], cwd=root)
+                raise ProviderError(
+                    "worktree_create_failed",
+                    (proc.stderr or proc.stdout or f"checkout of {slug} failed").strip(),
                 )
         else:
             wt_path.mkdir(parents=True, exist_ok=True)
@@ -1080,8 +1139,9 @@ class PosixWorktreeProvider(RuntimeProvider):
             return {"removed": False, "id": shown["id"], "reason": "absent"}
         is_linked = (wt_path / ".git").is_file()
         if is_linked:
-            cmd = ["worktree", "remove"] + (["--force"] if force else []) + [str(wt_path)]
-            proc = _git(cmd, cwd=repo_root)
+            cmd = ["worktree", "remove"] + (["--force"] if force else []) + ["--", str(wt_path)]
+            # git's clean check runs `status` IN the worktree: its drivers are read there (W4-01).
+            proc = _git(cmd, cwd=repo_root, blanks=_driver_blanks("worktree_rm_failed", wt_path))
             if proc.returncode != 0:
                 # Never fall back to rmtree: git refused for a reason (dirty tree, main worktree,
                 # locked) and deleting anyway discards the unit's unsaved work (#591 review).
@@ -1225,7 +1285,9 @@ if SANDBOX_META:
         _log({{"type": "sandbox_git_sync_failed", "error": str(exc)[:500]}})
 else:
     try:
-        head = subprocess.run(["git", "-C", {repr(wt_path)}, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15).stdout.strip()
+        # The provider's own git (gitexec's absolute git and floor, W4-01), never a bare `git`.
+        from providers.posix import _git
+        head = _git(["rev-parse", "HEAD"], cwd={repr(wt_path)}, timeout=15).stdout.strip()
     except Exception:
         head = ""
 try:

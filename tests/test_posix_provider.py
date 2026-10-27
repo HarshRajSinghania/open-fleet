@@ -11,6 +11,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -666,6 +668,112 @@ class TestWorktreeSafety(PosixRealProcessBase):
             self.prov.worktree_create("bad", base="no-such-ref")
         self.assertEqual(ctx.exception.code, "worktree_create_failed")
 
+    def test_a_dash_leading_base_is_a_commit_ish_never_an_option(self):
+        # W2-04: `worktree add -b <br> <path> --force` read the base as a flag and created the
+        # worktree at HEAD — the requested base silently became a different answer.
+        for base in ("--force", "--lock"):
+            with self.subTest(base=base):
+                with self.assertRaises(self.providers.ProviderError) as ctx:
+                    self.prov.worktree_create(f"dash{base}", base=base)
+                self.assertEqual(ctx.exception.code, "worktree_create_failed")
+                self.assertIn("invalid reference", ctx.exception.message)
+                self.assertFalse((self.prov._worktree_base_dir() / f"dash{base}").exists())
+
+
+class TestCoordinatorGitRunsNothingTheRepoNames(PosixRealProcessBase):
+    """W4-01 (P0): the provider's own git — `worktree add`/`remove`, the sandbox seed and sync —
+    runs as the COORDINATOR over the shared `.git/config` a worker writes with one plain
+    `git config` (linked worktrees share it), and over the same-uid `~/.gitconfig`. No hook,
+    fsmonitor or attribute-selected filter planted there may run. Every probe only appends its
+    channel name to a marker in this test's temp dir; GREEN = the marker never appears."""
+
+    def setUp(self):
+        super().setUp()
+        self.base = Path(self.tmp.name)
+        self.marker = self.base / "pwned"
+        (self.repo / "a.txt").write_text("a\n", encoding="utf-8")
+        _git("add", "a.txt", cwd=self.repo)
+        _git("commit", "-qm", "a", cwd=self.repo)
+
+    def probe(self, channel, passthrough=True):
+        return f"sh -c 'echo {channel} >> {shlex.quote(str(self.marker))}" + ("; cat'" if passthrough else "'")
+
+    def hooks_dir(self, name):
+        hooks = self.base / name
+        hooks.mkdir()
+        for hook in ("post-checkout", "reference-transaction", "post-index-change"):
+            (hooks / hook).write_text(f"#!/bin/sh\necho hook-{hook} >> {shlex.quote(str(self.marker))}\n",
+                                      encoding="utf-8")
+            (hooks / hook).chmod(0o755)
+        return hooks
+
+    def config_file(self, name, pairs):
+        """A standalone config file, written by `git config -f` so each value is quoted as git
+        reads it back (a hand-written `;` would start a comment and cut the probe short)."""
+        path = self.base / name
+        for key, value in pairs:
+            _git("config", "-f", str(path), key, value, cwd=self.base)
+        return path
+
+    def plant_repo(self):
+        """What a worker does in its own worktree: config lands in the SHARED `.git/config`. The
+        test's own git never touches the repo after this (a bare `git` would run the plants)."""
+        inc = self.config_file("linked-only.gitconfig", (("filter.inc.smudge", self.probe("inc-smudge")),
+                                                         ("filter.inc.clean", self.probe("inc-clean"))))
+        for key, value in (("core.hooksPath", str(self.hooks_dir("evilhooks"))),
+                           ("core.fsmonitor", self.probe("fsmonitor", passthrough=False)),
+                           ("filter.evil.smudge", self.probe("smudge")),
+                           ("filter.evil.clean", self.probe("clean")),
+                           # Declared only where git runs IN a linked worktree: the drivers must
+                           # be read there, not in the main checkout.
+                           ("includeIf.gitdir:**/worktrees/**.path", str(inc))):
+            _git("config", key, value, cwd=self.repo)
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("* filter=evil\nREADME.md filter=inc\n",
+                                                                 encoding="utf-8")
+
+    def fired(self):
+        return sorted(set(self.marker.read_text().split())) if self.marker.exists() else []
+
+    def test_worktree_create_runs_no_planted_hook_fsmonitor_or_filter(self):
+        self.plant_repo()
+        wt = Path(self.prov.worktree_create("victim")["worktree"]["path"])
+        self.assertEqual(self.fired(), [], "the coordinator's worktree add ran a repo-planted command")
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "a\n", "checked out raw, unsmudged")
+        self.assertEqual((wt / "README.md").read_text(encoding="utf-8"), "# r\n")
+        self.assertTrue((wt / ".git").is_file())
+
+    def test_worktree_rm_runs_no_planted_fsmonitor_or_clean_filter(self):
+        wt = Path(self.prov.worktree_create("victim")["worktree"]["path"])
+        self.plant_repo()
+        later = time.time() + 5
+        os.utime(wt / "a.txt", (later, later))  # stat changed: the clean check re-reads it
+        self.assertTrue(self.prov.worktree_rm(f"path:{wt}")["removed"])
+        self.assertEqual(self.fired(), [], "the coordinator's worktree remove ran a repo-planted command")
+        self.assertFalse(wt.exists())
+
+    def test_the_same_uid_global_config_is_never_read(self):
+        (self.repo / ".gitattributes").write_text("a.txt filter=glob\n", encoding="utf-8")
+        _git("add", ".gitattributes", cwd=self.repo)
+        _git("commit", "-qm", "attrs", cwd=self.repo)
+        glob = self.config_file("worker-written.gitconfig", (
+            ("core.hooksPath", str(self.hooks_dir("globalhooks"))),
+            ("filter.glob.smudge", self.probe("global-smudge")),
+            ("filter.glob.clean", self.probe("global-clean"))))
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(glob)}):
+            wt = Path(self.prov.worktree_create("victim")["worktree"]["path"])
+            self.assertEqual(self.fired(), [], "worktree add read the worker-writable global config")
+            lane = self.base / "lane"
+            lane.mkdir()
+            self.posix.prepare_sandbox_git(str(wt), lane)
+        self.assertEqual(self.fired(), [], "the sandbox seed's index refresh ran a global clean filter")
+
+    def test_no_bare_git_argv_is_left_in_the_provider(self):
+        # Every git the provider (and the monitor script it generates) runs goes through _git, so
+        # through gitexec's absolute git and floor; a literal `["git", ...]` argv is the bypass.
+        src = Path(self.posix.__file__).read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'\[\s*"git"\s*,', src), [])
+
 
 class TestSandboxGitRoundTrip(PosixRealProcessBase):
     """The container's private git dir: commits reach the host, the host repo stays untouched."""
@@ -707,6 +815,26 @@ class TestSandboxGitRoundTrip(PosixRealProcessBase):
         self.posix.sync_sandbox_git(meta, "disp_y")
         self.assertFalse(pwned.exists(), "host git executed sandbox-planted code")
         self.assertFalse((sb / "hooks").exists())
+
+    def test_sync_runs_nothing_the_shared_host_config_plants(self):
+        # W4-01: the sync's host-side `reset` reads the SHARED `.git/config` (the worktree's admin
+        # dir resolves to it), which the worker can write from its own worktree.
+        wt, meta, cenv = self._sandbox()
+        (wt / "feature.txt").write_text("done\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature.txt"], cwd=wt, env=cenv, check=True)
+        subprocess.run(["git", "commit", "-qm", "feature"], cwd=wt, env=cenv, check=True)
+        pwned = Path(self.tmp.name) / "pwned"
+        probe = f"sh -c 'echo x >> {shlex.quote(str(pwned))}; cat'"
+        for key, value in (("core.fsmonitor", f"sh -c 'echo x >> {shlex.quote(str(pwned))}'"),
+                           ("filter.evil.clean", probe), ("filter.evil.smudge", probe)):
+            _git("config", key, value, cwd=self.repo)
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("* filter=evil\n", encoding="utf-8")
+        later = time.time() + 5
+        os.utime(wt / "README.md", (later, later))
+        res = self.posix.sync_sandbox_git(meta, "disp_p")
+        self.assertTrue(res["branchUpdated"])
+        self.assertFalse(pwned.exists(), "the host-side sync ran a command the shared config names")
 
     def test_symlink_planted_in_sandbox_is_refused_and_host_untouched(self):
         wt, meta, cenv = self._sandbox()

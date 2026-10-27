@@ -65,7 +65,8 @@ RUN: mission=<mission> tier=<self-run|external-run> inventory_at=<commit> manife
 
 `mission=` must name a catalog mission; `tier=` is exactly `self-run` or
 `external-run` (a run-together spelling fails the promotion gate);
-`inventory_at=` is the commit whose tree holds your frozen evidence;
+`inventory_at=` is the commit whose tree holds your frozen evidence, named by its id (7 to 40
+hex; a branch or tag name is refused, since it can move);
 `manifest=` is the graded manifest inside your run's own directory;
 `verifier=` is the outcome you actually recorded (a RED is honest — a solo
 run cannot manufacture an independent approver); `waves=` is required for

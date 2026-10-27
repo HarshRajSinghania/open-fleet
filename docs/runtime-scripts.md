@@ -325,10 +325,13 @@ differential corpus `tests/test_deny_hook_conformance.py` (#598, below).
 
 Usage: hook mode reads stdin (no arguments); `deny-hook.sh --settings <worktree>` prints
 the settings.json registration block with the worktree boundary resolved;
-`deny-hook.sh --verify-settings <file> [--harness <name>]` proves a registration is armed by
-running deny and allow probes in that harness's own tool names.
+`deny-hook.sh --verify-settings <file> [--harness <name>] [--boundary <dir>]` proves a
+registration is armed by running deny and allow probes in that harness's own tool names;
+`--boundary` requires the registration to bound exactly that worktree. A registration may
+name only this hook (`[VAR=value ...] [sh] <path>/deny-hook.sh`, the same bytes), and the
+probes run it under a scrubbed environment, never through `sh -c`.
 
-Flags: `--help`, `--settings`, `--verify-settings`, `--harness`.
+Flags: `--help`, `--settings`, `--verify-settings`, `--harness`, `--boundary`.
 
 Every Bash segment is judged after one peeler strips what launches it — `VAR=`, `env`, `sudo`,
 `doas`, `nohup`, `nice`, `time`, `timeout`, `exec`, `setsid`, `stdbuf`, `ionice`, `chrt`,
@@ -2219,6 +2222,8 @@ Keys:
 | `secret-rotation` | Rotate or revoke a secret |
 | `live-credentials` | Use, provision, or move live credentials |
 | `freeze` | Freeze or unfreeze the run's contract |
+| `close-without-landing` | Close someone's contribution or issue without landing it |
+| `review-verdict` | Post a review verdict on someone else's change |
 
 > Why: one registry owns the enumeration because the list used to live in prose and
 > drifted — freeze entered through gate text, not the old list. Each door states its own

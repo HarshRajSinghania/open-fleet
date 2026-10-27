@@ -20,11 +20,11 @@ Applying it is a maintainer action: repository settings are writable only from a
 account with admin rights on this repo, which is why the text lives here as a
 handoff rather than in something automated.
 
-While that dialog is open, two adjacent fields are also empty and worth filling
-from values this repo already maintains:
+While that dialog is open, check the two adjacent fields, which take values this repo
+already maintains (both were set when the API was last read, on 2026-10-27):
 
 - **Website** — `homepage` in `.claude-plugin/plugin.json`.
-- **Topics** — the leading entries of `keywords` in the same file
+- **Topics** — six of the `keywords` in the same file
   (`orca`, `autonomous-agents`, `multi-agent`, `orchestration`, `claude-code`,
   `agent-skills`). Topics are how GitHub's own search finds a pack that the
   external indexers in [distribution.md](distribution.md) still miss.

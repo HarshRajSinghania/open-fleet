@@ -49,7 +49,7 @@ To prevent terminology drift across coordinator prompts, worker instructions, an
 | **Negative control** | A check proving that reverting the fix or injecting a behavior-changing mutation turns the covering test `RED` | *Avoid:* treating a green test run alone (without proof the test can fail) as verification |
 | **One-way door** | An irreversible or high-blast-radius decision (spec freeze, promoting `BASE` → default branch, deploy, schema drop, paid cloud spend) that blocks for human approval | *Avoid:* auto-resolving one-way doors on timeout or downgrading them to "taste" gates |
 | **Quarantine** (`runtime/quarantine.json`) | The human-controlled, fail-closed component deny-list enforced by `validate.py`, `preflight.py`, and `quarantine_check.py` | *Avoid:* editing `quarantine.json` from an agent session or confusing it with flaky-test quarantine (`STABLE-WITH-QUARANTINE`) |
-| **Host prompt budget (Activation load)** | The token cost loaded into the coordinator at mission activation (`SKILL.md` + `ARCHITECTURE.md` + composed `playbooks/` and `runtime/` policies), budgeted and tracked per mission | *Avoid:* loading deferred phase playbooks at T0 before their pipeline phase runs |
+| **Host prompt budget (Activation load)** | The token cost loaded into the coordinator at mission activation (`SKILL.md` + the `playbooks/` and `runtime/` policies its Composes/rides clause makes mandatory + any repo-root doc it links, such as `ARCHITECTURE.md`), budgeted and tracked per mission | *Avoid:* loading deferred phase playbooks at T0 before their pipeline phase runs |
 
 ### Core operational terms
 
@@ -133,7 +133,7 @@ Every mission separates coordination from execution:
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/runtime-providers.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/runtime-providers-light.jpg">
-    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects posix (standalone SQLite WAL and local git worktrees), orca, or 12 external orchestrators while OPEN_FLEET_HARNESS selects the coding agent and maps ro, rw and danger profiles; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
+    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 15 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects orca (the default), posix (standalone SQLite WAL and local git worktrees) or one of 12 external orchestrators, while each worker's agent argument to spawn_worker.sh selects its coding agent (cursor, antigravity, grok and droid rw only) and PROFILE maps it to ro, rw or danger; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
   </picture>
 </p>
 

@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — one serial recipe lane (snapshots are paid and ordered); the money and the login are yours at classified checkpoints.
-> **Activation load:** ~23,400 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~23,700 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 12% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — no run has been retained against this mission yet
 > (`runtime/scripts/run_report.py`)
 
@@ -17,7 +17,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/offload-it.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/offload-it-light.jpg">
-    <img src="../../assets/diagrams/missions/offload-it-light.jpg" alt="Mission contract for offload-it: you give it a repo, plus provider and agent accounts; it interrupts you for each paid checkpoint; the interactive agent login; you get back OFFLOADED or OFFLOADED-WITH-PARKED, plus a wired recipe; a clear doctor transcript; an enacted provision transcript; it stops at money and login stay human — no paid step without an explicit OK; phases INSPECT, INTERVIEW, SCAFFOLD, SNAPSHOT, WIRE, DOCTOR, PROVISION" width="820">
+    <img src="../../assets/diagrams/missions/offload-it-light.jpg" alt="Mission contract for offload-it: you give it a repo, plus provider and agent accounts; it interrupts you for each paid checkpoint; the interactive agent login; merging the promotion PR — a one-way door; you get back OFFLOADED or OFFLOADED-WITH-PARKED, plus a recipe PR landed on BASE; a clear doctor transcript; an enacted provision transcript; an open promotion PR; it stops at money and login stay human — no paid step without an explicit OK; phases INSPECT, INTERVIEW, SCAFFOLD, SNAPSHOT, WIRE, DOCTOR, PROVISION, REVIEW, LAND, PROMOTE" width="820">
   </picture>
 </p>
 

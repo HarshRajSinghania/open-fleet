@@ -3,7 +3,7 @@
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel hotspot workers under a pre-declared measurement contract; you own the one-way doors.
-> **Activation load:** ~31,300 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
+> **Activation load:** ~31,800 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
 > **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([OPTIMIZED-WITH-PARKED](../runs/campaign-2026-09-16-speed-it/)), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Declare the journeys and their budgets. Come back to every one of them measured within budget
@@ -16,7 +16,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/diagrams/missions/speed-it.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../../assets/diagrams/missions/speed-it-light.jpg">
-    <img src="../../assets/diagrams/missions/speed-it-light.jpg" alt="Mission contract for speed-it: you give it the journeys and their budgets; it interrupts you for a metric that cannot be measured to its contract; parking a journey; promotion; you get back WITHIN-BUDGET or OPTIMIZED-WITH-PARKED, plus before, after on every fix PR; CI regression guards; a re-benchmark to the contract; it stops at never a weaker proxy metric, never a lucky single run; phases DECLARE, BASELINE, RANK, DIAGNOSE, FIX, PROVE, RE-BENCHMARK" width="820">
+    <img src="../../assets/diagrams/missions/speed-it-light.jpg" alt="Mission contract for speed-it: you give it the journeys and their budgets; it interrupts you for freezing the journeys and budgets; a metric that cannot be measured to its contract; parking a journey; promotion; you get back WITHIN-BUDGET or OPTIMIZED-WITH-PARKED, plus before, after on every fix PR; CI regression guards; a re-benchmark to the contract; it stops at never a weaker proxy metric, never a lucky single run; phases SCOPE, DECLARE, BASELINE, RANK, DIAGNOSE, FIX, PROVE, RE-BENCHMARK, KEEP-OR-REVERT" width="820">
   </picture>
 </p>
 

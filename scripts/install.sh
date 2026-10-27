@@ -24,6 +24,11 @@
 #      commits that a truncated history cannot resolve. Nothing is fetched for you.
 #   5. An existing mission link that points into a DIFFERENT live clone is not
 #      silently repointed: the install refuses unless --force is given.
+#   6. The skills dir and every mission name are OPERANDS of mkdir/ln: an empty or
+#      option-shaped (-x) skills dir and a mission directory name outside
+#      [A-Za-z0-9._-] (or starting with -) are refused up front, `--` ends every
+#      option list, and an unset HOME is a named failure, never a `set -u` abort
+#      (W2-05/W5-22).
 #
 # Exit: 0 installed (warnings allowed) · 1 a hard prerequisite failed.
 set -eu
@@ -32,7 +37,8 @@ set -eu
 # path through a symlinked directory (macOS /tmp -> /private/tmp) would never match.
 HERE=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(CDPATH= cd -P -- "$HERE/.." && pwd -P)
-SKILLS_DIR="${HOME}/.claude/skills"
+SKILLS_DIR=""
+SKILLS_DIR_GIVEN=0
 MODE="install"
 FORCE=0
 WARN=0
@@ -41,7 +47,7 @@ for arg in "$@"; do
   case "$arg" in
     --check) MODE="check" ;;
     --force) FORCE=1 ;;
-    --skills-dir=*) SKILLS_DIR="${arg#--skills-dir=}" ;;
+    --skills-dir=*) SKILLS_DIR="${arg#--skills-dir=}"; SKILLS_DIR_GIVEN=1 ;;
     -h|--help)
       echo "usage: sh scripts/install.sh [--check] [--force] [--skills-dir=DIR]"
       echo "  --force  repoint mission links that currently belong to another open-fleet clone"
@@ -54,26 +60,42 @@ done
 say() { printf '%s\n' "$1"; }
 warn() { WARN=$((WARN + 1)); printf 'WARN: %s\n' "$1"; }
 die() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+# A mission directory name becomes an operand of ln and a path under the skills dir.
+mission_name_ok() {
+  case "$1" in
+    -*|*[!A-Za-z0-9._-]*) die "skills/$1 is not a mission directory name (want [A-Za-z0-9._-], not starting with -)" ;;
+  esac
+}
+
+# The skills dir is an OPERAND of mkdir/ln below; decide it before anything runs.
+if [ "$SKILLS_DIR_GIVEN" -eq 0 ]; then
+  [ -n "${HOME:-}" ] || die "HOME is not set, so the default skills dir (\$HOME/.claude/skills) has no location — set HOME or pass --skills-dir=DIR"
+  SKILLS_DIR="$HOME/.claude/skills"
+fi
+case "$SKILLS_DIR" in
+  "") die "--skills-dir needs a directory (--skills-dir=DIR)" ;;
+  -*) die "skills dir '$SKILLS_DIR' starts with '-', so mkdir/ln would read it as an option — pass an absolute path, or prefix a relative one with ./" ;;
+esac
 
 # --- hard prerequisites -------------------------------------------------------
 command -v git >/dev/null 2>&1 || die "git not found in PATH (install git first)"
 command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH (Python >= 3.11 required)"
 # 3.11 is the measured floor (#514): the suite is green on 3.11, 3.12 and 3.13 in CI; 3.10
 # compiles but two tests depend on 3.11 interpreter behaviour, so it is not supported.
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+python3 -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
   || die "python3 is $(python3 -V 2>&1); open-fleet requires Python >= 3.11"
 [ -d "$ROOT/skills" ] && [ -d "$ROOT/playbooks" ] && [ -d "$ROOT/runtime" ] \
   || die "not an open-fleet checkout: $ROOT lacks skills/, playbooks/ or runtime/"
 
 # --- soft prerequisites (warn, never fail: the catalog installs without them) -
-ORCA_MIN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["orca"]["version"].lstrip("v"))' "$ROOT/runtime/pins.json" 2>/dev/null || true)"
+ORCA_MIN="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["orca"]["version"].lstrip("v"))' "$ROOT/runtime/pins.json" 2>/dev/null || true)"
 # The active runtime resolves through the SAME code dispatch uses
 # (runtime/providers active_provider_name + orca.resolve_orca_binary):
 # OPEN_FLEET_RUNTIME over ORCA_FLEET_RUNTIME (a blank/whitespace value falls
 # through), trimmed, case-insensitive; `auto` is orca only when the platform's
 # resolved Orca binary (ORCA_CLI_COMMAND, orca-dev, orca-ide on Linux, orca
 # elsewhere) is on PATH, else posix. Prints "<requested>\t<provider>\t<orca-bin>".
-RUNTIME_PROBE="$(python3 - "$ROOT" 2>/dev/null <<'PY' || true
+RUNTIME_PROBE="$(python3 -I - "$ROOT" 2>/dev/null <<'PY' || true
 import sys
 sys.path.insert(0, sys.argv[1])
 from runtime.providers import active_provider_name, resolve_orca_binary
@@ -121,7 +143,7 @@ elif [ -n "$ORCA_BIN" ]; then
   elif [ -z "$ORCA_VER" ]; then
     warn "orca CLI at $ORCA_BIN returned no version output — unable to verify it meets the catalog pin ${ORCA_MIN}"
   else
-    python3 - "$ORCA_VER" "$ORCA_MIN" 2>/dev/null <<'PY' || warn "orca CLI reports '${ORCA_VER:-unknown}', below the catalog pin ${ORCA_MIN} (runtime/pins.json); missions may misbehave"
+    python3 -I - "$ORCA_VER" "$ORCA_MIN" 2>/dev/null <<'PY' || warn "orca CLI reports '${ORCA_VER:-unknown}', below the catalog pin ${ORCA_MIN} (runtime/pins.json); missions may misbehave"
 import re, sys
 def parts(s):
     m = re.search(r"(\d+)\.(\d+)\.(\d+)", s)
@@ -141,7 +163,7 @@ PY
     warn "orca CLI at $ORCA_BIN answered no \`status --json\`, so readiness could not be determined — start Orca before running missions"
   else
     _status_rc=0
-    python3 - "$ORCA_STATUS" 2>/dev/null <<'PY' || _status_rc=$?
+    python3 -I - "$ORCA_STATUS" 2>/dev/null <<'PY' || _status_rc=$?
 import json, sys
 try:
     doc = json.loads(sys.argv[1])
@@ -182,19 +204,20 @@ if [ "$MODE" = "install" ]; then
 then re-run: sh scripts/install.sh"
   fi
   say "validating the catalog..."
-  python3 "$ROOT/scripts/validate.py" || die "scripts/validate.py failed — refusing to install a broken catalog"
-  mkdir -p "$SKILLS_DIR"
+  python3 -I "$ROOT/scripts/validate.py" || die "scripts/validate.py failed — refusing to install a broken catalog"
+  mkdir -p -- "$SKILLS_DIR"
   # Pre-check every destination BEFORE linking anything: a conflict in a
   # later mission must refuse the whole install, not leave a partial one.
   for d in "$ROOT"/skills/*/; do
     [ -f "$d/SKILL.md" ] || continue
     m="$(basename "$d")"
     case "$m" in .*|_*) continue ;; esac
+    mission_name_ok "$m"
     if [ -e "$SKILLS_DIR/$m" ] && [ ! -L "$SKILLS_DIR/$m" ]; then
       die "$SKILLS_DIR/$m exists and is not a symlink (a copy install severs playbook resolution — remove it and re-run)"
     fi
     if [ -L "$SKILLS_DIR/$m" ]; then
-      cur="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SKILLS_DIR/$m")"
+      cur="$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SKILLS_DIR/$m")"
       if [ "$cur" != "$ROOT/skills/$m" ]; then
         if [ ! -e "$SKILLS_DIR/$m" ]; then
           warn "$SKILLS_DIR/$m is a dangling link (to $cur) — repointing it at this clone"
@@ -211,10 +234,11 @@ then re-run: sh scripts/install.sh"
     [ -f "$d/SKILL.md" ] || continue
     m="$(basename "$d")"
     case "$m" in .*|_*) continue ;; esac
+    mission_name_ok "$m"
     if [ -e "$SKILLS_DIR/$m" ] && [ ! -L "$SKILLS_DIR/$m" ]; then
       die "$SKILLS_DIR/$m exists and is not a symlink (a copy install severs playbook resolution — remove it and re-run)"
     fi
-    ln -sfn "$ROOT/skills/$m" "$SKILLS_DIR/$m"
+    ln -sfn -- "$ROOT/skills/$m" "$SKILLS_DIR/$m"
     n=$((n + 1))
   done
   [ "$n" -gt 0 ] || die "no missions found under $ROOT/skills"
@@ -228,12 +252,13 @@ for d in "$ROOT"/skills/*/; do
   [ -f "$d/SKILL.md" ] || continue
   m="$(basename "$d")"
   case "$m" in .*|_*) continue ;; esac
+  mission_name_ok "$m"
   link="$SKILLS_DIR/$m"
   [ -L "$link" ] || die "$link is not a symlink (a copy severs playbook resolution — reinstall)"
-  resolved="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$link")"
+  resolved="$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$link")"
   [ "$resolved" = "$ROOT/skills/$m" ] || die "$link resolves to $resolved, not $ROOT/skills/$m"
   [ -s "$link/SKILL.md" ] || die "$link/SKILL.md is missing or empty"
-  parent="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.dirname(sys.argv[1])))' "$resolved")"
+  parent="$(python3 -I -c 'import os,sys; print(os.path.dirname(os.path.dirname(sys.argv[1])))' "$resolved")"
   [ -d "$parent/playbooks" ] && [ -d "$parent/runtime" ] \
     || die "$m resolves outside the repo tree ($parent) — playbooks/ and runtime/ do not resolve"
   n=$((n + 1))

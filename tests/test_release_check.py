@@ -887,6 +887,20 @@ class CiRunsMeansARunStep(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 self.assertEqual(self.gate3(workflow), rc.FAIL)
 
+    def test_a_job_that_needs_another_does_not_count(self):
+        # PR #718 review round 3 (P2): GitHub skips a job whose `needs:` prerequisite was skipped
+        # (`if: false` on the prerequisite), and only the job's own keys were read. Neither real
+        # gate-3 job has `needs:`, so a counted job may not have one at all.
+        run = "    steps:\n      - name: x\n        run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+                "jobs:\n  prereq:\n    if: false\n    steps:\n      - run: true\n"
+                "  gates:\n    needs: prereq\n" + run,
+                "jobs:\n  prereq:\n    steps:\n      - run: true\n"
+                "  gates:\n    needs: [prereq]\n" + run,
+                "jobs:\n  gates:\n    needs:\n      - prereq\n" + run):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
     def test_a_condition_or_a_non_failing_step_does_not_count(self):
         """PR #718 review (P2): `_NEVER_RE` knew only literal false spellings, so
         `if: ${{ 1 == 2 }}` kept a dead job counting. A counted step and its job carry no `if:`

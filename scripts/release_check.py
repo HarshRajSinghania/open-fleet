@@ -555,10 +555,11 @@ _JOB_KEY_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
 _STEP_KEY_RE = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z_-]+):\s*(.*?)\s*$")
 # A step or job carrying one of these may not run its line, may not fail the build, or may run
 # it some other way than the line says (`shell: bash -n {0}`; `working-directory` or `defaults`
-# deciding which file the path names). None of the real gate-3 steps or jobs carries one, so
-# none is allowlisted: a condition's truth is GitHub's to decide at run time, not this check's.
+# deciding which file the path names; `needs:` on a job whose prerequisite is skipped, which
+# GitHub then skips too). None of the real gate-3 steps or jobs carries one, so none is
+# allowlisted: a condition's truth is GitHub's to decide at run time, not this check's.
 _STEP_DISQUALIFIERS = frozenset({"if", "continue-on-error", "shell", "working-directory"})
-_JOB_DISQUALIFIERS = frozenset({"if", "continue-on-error", "defaults"})
+_JOB_DISQUALIFIERS = frozenset({"if", "continue-on-error", "defaults", "needs"})
 _GATE3_INTERPRETERS = frozenset({"python3", "bash", "sh"})
 # Anything that could make the line more than one command, redirect it or expand into one.
 _SHELL_METACHARACTERS = re.compile(r"[;&|<>`\n\r]|\$\(")
@@ -691,8 +692,9 @@ def check_workflows_mention(ctx, name, patterns, landed):
     the interpreter (`bash -n X`), PR #718 reviews. Shell reachability is undecidable, so the rule
     is a decidable one: a step under a top-level job counts only when its whole `run:` value,
     stripped, is one invocation (invoked_script says exactly what that is), neither the step nor
-    its job carries `if:` or `continue-on-error:`, the step sets no `shell:` or
-    `working-directory:`, neither its job nor the workflow sets `defaults:`, and the workflow
+    its job carries `if:` or `continue-on-error:`, the job has no `needs:` (a skipped prerequisite
+    skips it, PR #718 review round 3), the step sets no `shell:` or `working-directory:`, neither
+    its job nor the workflow sets `defaults:`, and the workflow
     runs on every pull request (runs_on_every_pull_request; a dispatch-only workflow counted, PR
     #718 re-attack). Not read: the environment (`env:`, or `$GITHUB_ENV` written by an earlier
     step), the runner or a container.

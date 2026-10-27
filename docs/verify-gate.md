@@ -128,7 +128,7 @@ When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispat
 1. `ORCA_DISPATCH_PUBKEY` environment variable (trustworthy when set off-worker via `ORCA_PROVENANCE=ci|mcp|sdk|dispatch`).
 2. `.orca/dispatch-pubkey` read from `refs/remotes/origin/HEAD` in the target repository — at its FULL symbolic target, which must itself be a remote-tracking `refs/remotes/…` ref (W3-02: `origin/HEAD` re-pointed at a local branch the worker moves is refused with a NOTE, never read) — else from `refs/remotes/origin/<ORCA_BASE>` when a base is named (a CI clone made by `actions/checkout` carries no `origin/HEAD`).
 3. On GitHub Actions (`GITHUB_ACTIONS=true`, W3-08) — where a fresh `actions/checkout` tree has neither ref above — `refs/remotes/origin/$GITHUB_BASE_REF` when `ORCA_BASE` is unset, then the pull request's **base commit** from the runner's own event payload (`$GITHUB_EVENT_PATH` → `pull_request.base.sha`): an object id, which nothing the PR does can move. The commit must be present in the clone (`fetch-depth: 0`, or fetch that one commit); absent, nothing is read and a signed record fails closed as half-configured. To name the key's commit yourself, set `ORCA_DISPATCH_PUBKEY=.orca/dispatch-pubkey@<base sha>`.
-4. `.orca/dispatch-pubkey` in the target repository's working tree — **advisory lane only.** With `ORCA_PROVENANCE` set the gate refuses to read a key from the tree the graded worker writes: a PR could swap the pin for its own key and self-sign the record. The same rule applies when invoking `verify.py` directly on a sound lane: pass `.orca/dispatch-pubkey@<reviewed ref>` or an absolute off-worker path, never the bare working-tree file.
+4. `.orca/dispatch-pubkey` in the target repository's working tree — **advisory lane only.** With `ORCA_PROVENANCE` set the gate refuses to read a key from the tree the graded worker writes: a PR could swap the pin for its own key and self-sign the record. The same rule binds `verify.py` itself (W3-03): on a lane claiming soundness (`--provenance ci|mcp|sdk|dispatch`) `--dispatch-pubkey` and `--retention-pubkey` are read only as `path@refs/remotes/…` or `path@<commit id>` — a bare path (the working tree) or a local name (`@main`, `@HEAD`, `@refs/heads/…`) is refused, and an absolute path is refused everywhere as evidence outside the clone (#267). On every lane the verdict NOTE names where the key (and the record) was read, so a working-tree key is never mistaken for a pinned one. The dispatch record itself may be a repo-relative file: it is authenticated by the key's signature, so where it is read from cannot raise its trust.
 
 **Operational setup when enabling signed dispatch and signed verifier transcripts:**
 1. **Generate keypair (off-worker):** `python3 runtime/scripts/dispatch-sign.py gen-key --out <secret>` and commit `<secret>.pub` as `.orca/dispatch-pubkey` on the default branch.
@@ -137,17 +137,17 @@ When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispat
    python3 runtime/scripts/dispatch-sign.py sign --key <secret> \
      --manifest-id <unit-id> --contract-digest <sha256> --unit-class mutation --lighting lit \
      --base-sha <fork-point sha> \
-     > /tmp/dispatch-record.json
+     > .orca/dispatch-record.json
    ```
    `--base-sha` is optional, like the negative-control pins; signed, the gate refuses a manifest whose `base_sha` moved (the commit the executed control restores from is the coordinator's choice, not the worker's).
 3. **Verify at gate and emit a signed verifier transcript:** `verify.py` validates the Ed25519 dispatch signature (via vendored RFC 8032 `runtime/scripts/ed25519.py`) and fails closed on any field substitution, replay across units, or missing signature (`verify-gate.sh` forwards `ORCA_DISPATCH_RECORD` and the discovered `.orca/dispatch-pubkey`; when invoking `verify.py` directly, pass `--dispatch-record` and `--dispatch-pubkey` explicitly). Once `.orca/dispatch-pubkey` is committed, `run_report.py` also requires a signed verifier transcript (`transcript=<path>` in the report's `RUN:` header) binding the manifest digest, exit code, and argument tuple:
-   - **Without `--execute-nc`:** Pass `--dispatch-record /tmp/dispatch-record.json --dispatch-pubkey .orca/dispatch-pubkey@<reviewed ref> --transcript-out <signed.json> --transcript-key <secret>` directly to `verify.py`.
+   - **Without `--execute-nc`:** Pass `--dispatch-record .orca/dispatch-record.json --dispatch-pubkey .orca/dispatch-pubkey@refs/remotes/origin/<base> --transcript-out <signed.json> --transcript-key <secret>` directly to `verify.py`.
    - **With `--execute-nc` (recommended two-process flow):** Because `--execute-nc` executes repository tests under the current user ID, `verify.py` refuses `--transcript-key` alongside `--execute-nc` so the private seed is never loaded into the test-execution process. Instead, write an unsigned verdict first and sign it in a separate process (which re-hashes `toolchain.files` against its sibling scripts before signing):
      ```bash
      python3 -I runtime/scripts/verify.py --manifest "$ORCA_MANIFEST" \
        --contract-source "$ORCA_CONTRACT_SOURCE" --contract-digest "$ORCA_CONTRACT_DIGEST" \
        --repo "$GITHUB_REPOSITORY" --base "${ORCA_BASE:?set ORCA_BASE to the integration branch}" \
-       --dispatch-record /tmp/dispatch-record.json \
+       --dispatch-record .orca/dispatch-record.json \
        --dispatch-pubkey ".orca/dispatch-pubkey@refs/remotes/origin/${ORCA_BASE}" \
        --execute-nc --nc-command "$ORCA_NC_COMMAND" --provenance ci \
        --transcript-out /tmp/verdict-unsigned.json

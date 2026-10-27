@@ -844,6 +844,31 @@ class _Authority:
         return inferred
 
     @classmethod
+    def key_source(cls, source, what):
+        """(where, refusal or None) for trust material named `path` or `path@ref` (W3-03).
+
+        A bare path is read from the WORKING TREE — the graded worker's to write — and `path@main`,
+        `@HEAD` or any other local name is a ref the same worker can move (W3-02's class). Both
+        were accepted on a lane claiming soundness with a NOTE that said only "the supplied key",
+        so the rule "pass path@<reviewed ref>" lived in prose. On a provenance lane a trust key is
+        now read only at a remote-tracking ref or a commit id; elsewhere the read stands and
+        `where` says which kind it was, so the verdict and the transcript tell them apart."""
+        path, sep, ref = (source or "").partition("@")
+        if not (sep and ref):
+            where, pinned = f"the working-tree file {path} (the graded worker can write it)", False
+        elif re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref):
+            where, pinned = f"{path} at commit {ref[:12]}", True
+        elif ref.startswith("refs/remotes/"):
+            where, pinned = f"{path} at remote-tracking ref {ref}", True
+        else:
+            where, pinned = f"{path} at {ref!r}, a local name the graded worker can move", False
+        if not pinned and (cls.lane or "").startswith("provenance="):
+            return where, (f"{what} {source!r} is {where} — a lane claiming soundness ({cls.lane}) "
+                           "reads trust material only at a ref the worker cannot move: "
+                           "path@refs/remotes/… or path@<commit id>; fail-closed (W3-03)")
+        return where, None
+
+    @classmethod
     def ensure(cls, explicit_repo=None):
         """Pin on first use for a library caller that never ran main(). A pinned run — absent
         included — is never re-resolved, so nothing the executed control planted is ever found."""
@@ -2986,6 +3011,9 @@ def check_retention_receipt(m, pubkey_ref=None):
         return [f"provenance claims the {claim} retention binding, but no trust material was supplied "
                 "(--retention-pubkey) — a key inside a receipt never establishes trust, so there is "
                 "nothing to verify it against; fail-closed (#608)"]
+    key_where, refused = _Authority.key_source(pubkey_ref, "--retention-pubkey")
+    if refused:
+        return [refused]
     pub_text, err = read_source(pubkey_ref)
     try:
         pub = b"" if err else bytes.fromhex(pub_text.decode("utf-8").strip())
@@ -3040,7 +3068,8 @@ def check_retention_receipt(m, pubkey_ref=None):
         return [f"retention receipt {receipt} refused: {record['inventory']} does not pin this "
                 f"manifest's exact bytes (sha256 {mine}) — the receipt covers some other record of "
                 "this unit (#608)"]
-    return [f"NOTE: retention receipt {receipt} verified OFFLINE against the supplied key (#608): "
+    return [f"NOTE: retention receipt {receipt} verified OFFLINE against the supplied key — "
+            f"{key_where} (W3-03) — (#608): "
             f"signed by {record['signer']} over the {inv.RECEIPT_SCHEMA} payload, binding unit "
             f"{record['unit']!r} at source revision {record['source_revision'][:12]} to inventory "
             f"digest {digest[:12]}… of {record['inventory']}, whose entries carry the same key's "
@@ -3244,6 +3273,12 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
     if bool(record_ref) != bool(pubkey_ref):
         missing = "--dispatch-record" if pubkey_ref else "--dispatch-pubkey"
         return [f"dispatch provenance half-configured (missing {missing}) — cannot verify; fail-closed (#135)"]
+    # W3-03: the KEY's location is what makes the signature mean anything; the record's is named
+    # (it is authenticated by that signature, so where it is read from cannot raise its trust).
+    key_where, refused = _Authority.key_source(pubkey_ref, "--dispatch-pubkey")
+    if refused:
+        return [refused]
+    record_where, _ = _Authority.key_source(record_ref, "--dispatch-record")
     try:
         ed = _load_ed25519()
     except Exception as exc:
@@ -3326,7 +3361,8 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
         return [f"dispatch substitution: the manifest's base_sha={m.get('base_sha')!r} but the "
                 f"coordinator signed {signed_base!r} — the control's pre-fix content was swapped"]
     return ["NOTE: dispatch record signature verified against the supplied key (#135) — a soundness "
-            "boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor)"]
+            "boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor); key: "
+            f"{key_where}; record: {record_where} (W3-03)"]
 
 
 def check_class_downgrade(m, unit_class, record_ref, pubkey_ref):
@@ -3557,7 +3593,9 @@ def main(argv=None):
                          "execute-nc — makes the native hook path sound (#135)")
     ap.add_argument("--dispatch-pubkey", default=None,
                     help="repo-pinned coordinator public key (path or path@ref) that verifies "
-                         "--dispatch-record; a committed pubkey is one the worker cannot swap")
+                         "--dispatch-record; a committed pubkey is one the worker cannot swap. "
+                         "On a --provenance lane only path@refs/remotes/… or path@<commit id> is "
+                         "read — a bare path is the worker's working tree (W3-03)")
     ap.add_argument("--git-dir", default=None,
                     help="run the git/SHA legs (commit existence, ancestry, trees, path@ref "
                          "reads, negative-control worktrees) against the clone at this directory "
@@ -3579,7 +3617,8 @@ def main(argv=None):
     ap.add_argument("--retention-pubkey", default=None, metavar="PATH[@REF]",
                     help="the COORDINATOR's trust key for the provenance retention receipt (#608): "
                          "a path or path@ref, normally .orca/dispatch-pubkey at a ref the worker "
-                         "cannot move. Supplied, provenance.retention must name a v1 receipt that "
+                         "cannot move (on a --provenance lane only path@refs/remotes/… or "
+                         "path@<commit id>, W3-03). Supplied, provenance.retention must name a v1 receipt that "
                          "verifies OFFLINE under THIS key and binds its signed inventory and this "
                          "manifest — a key inside the receipt is never trusted. Absent, a manifest "
                          "that claims the binding (provenance.retention_receipt) fails closed and "

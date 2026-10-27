@@ -197,6 +197,13 @@ class GateCase(unittest.TestCase):
     def sign(self, digest, unit_class, **kw):
         return _sign(self.repo, digest, unit_class, **kw)
 
+    def pinned(self, rel):
+        """`rel` committed and named AT that commit — the form a lane claiming soundness reads a
+        key in (W3-03): a bare path is the graded worker's own working tree."""
+        _git(self.repo, "add", rel)
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", f"pin {rel}")
+        return f"{rel}@{_git_out(self.repo, 'rev-parse', 'HEAD')}"
+
     def manifest(self, source, ids_declared, ids_addressed):
         return _manifest(self.repo, source, ids_declared, ids_addressed)
 
@@ -410,7 +417,7 @@ class VerifyGateSignedDispatch(GateCase):
         m = self.manifest(src, ["AC-1"], ["AC-1"])   # _manifest's unit is "review-it"
         rec, pub = self.sign(self.digest(src), "report-only")
         r = self.gate(m, src, self.digest(src), unit_class="report-only", event="task",
-                     provenance="dispatch", dispatch_record=rec, dispatch_pubkey=pub)
+                     provenance="dispatch", dispatch_record=rec, dispatch_pubkey=self.pinned(pub))  # W3-03
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("signature verified", r.stdout + r.stderr)
         self.assertNotIn("ADVISORY", r.stderr)
@@ -420,7 +427,7 @@ class VerifyGateSignedDispatch(GateCase):
         m = self.manifest(src, ["AC-1"], ["AC-1"])
         rec, pub = self.sign(self.digest(src), "mutation")   # coordinator signed 'mutation'
         r = self.gate(m, src, self.digest(src), unit_class="report-only", event="task",  # worker downgraded
-                     provenance="dispatch", dispatch_record=rec, dispatch_pubkey=pub)
+                     provenance="dispatch", dispatch_record=rec, dispatch_pubkey=self.pinned(pub))  # W3-03
         self.assertEqual(r.returncode, 2)
         self.assertIn("substitution", r.stderr)
 
@@ -532,6 +539,17 @@ class VerifyGateDispatchPinDiscovery(GateCase):
                             "--event", "task"], capture_output=True, text=True, cwd=self.repo, env=env)
         self.assertIn("PUBKEY=.orca/dispatch-pubkey@refs/remotes/origin/main\n", r.stderr)
 
+    def test_a_bare_path_env_key_is_refused_on_a_lane_claiming_soundness(self):
+        # W3-03: ORCA_DISPATCH_PUBKEY=.orca/dispatch-pubkey (a bare path) is the graded worker's
+        # working tree; on a sound lane verify.py refuses it rather than verify against it.
+        self.use_repo(remote_head=False)
+        src = self.src(["AC-1"])
+        rec, pub = self.sign(self.digest(src), "report-only")
+        r = self._run_discovered(src, rec, dispatch_pubkey=pub)
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertNotIn("signature verified", r.stdout + r.stderr)
+        self.assertIn("W3-03", r.stderr)
+
     def _ci_shaped(self):
         """A fresh actions/checkout tree: the base commit pins the coordinator's key, the PR head
         swaps the pin for the worker's, and there is no origin/HEAD and no origin/<base>."""
@@ -633,6 +651,7 @@ class VerifyGateDispatchPinDiscovery(GateCase):
         src = self.src(["AC-1"])
         rec_env, pub_env = self.sign(self.digest(src), "report-only", key=env_key)
         rec_pin, _pub_pin = self.sign(self.digest(src), "report-only", key=pinned)
+        pub_env = self.pinned(pub_env)  # W3-03: the sound lane reads an env key at a commit too
         r = self._run_discovered(src, rec_env, dispatch_pubkey=pub_env)
         self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
         self.assertIn("signature verified", r.stdout + r.stderr)

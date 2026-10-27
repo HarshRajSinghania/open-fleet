@@ -558,6 +558,39 @@ class Rejections(ReceiptCase):
         self.assertRefused(self.check(), "no retention receipt path is named")
 
 
+class SoundLaneTrustKey(ReceiptCase):
+    """W3-03 (2026-10-27 security audit, P2): `--retention-pubkey keys/trusted.pub` (a bare path)
+    is a file in the graded worker's tree. On a lane claiming soundness the trust key is read only
+    at a ref the worker cannot move; the advisory lane keeps the read and the NOTE says which."""
+
+    def _pin(self):
+        subprocess.run(["git", "add", TRUSTED], check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "pin"],
+                       check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+
+    def test_a_bare_path_trust_key_is_refused_on_a_lane_claiming_soundness(self):
+        verify._Authority.lane = "provenance=ci"
+        self.assertRefused(self.check(TRUSTED), "working-tree file", "W3-03")
+
+    def test_a_trust_key_at_a_local_name_is_refused_on_a_lane_claiming_soundness(self):
+        self._pin()
+        verify._Authority.lane = "provenance=ci"
+        self.assertRefused(self.check(f"{TRUSTED}@HEAD"), "local name the graded worker can move")
+
+    def test_a_remote_tracking_trust_key_binds_and_the_note_names_it(self):
+        self._pin()
+        verify._Authority.lane = "provenance=ci"
+        out = self.check(f"{TRUSTED}@refs/remotes/origin/main")
+        self.assertBound(out)
+        self.assertIn("remote-tracking ref refs/remotes/origin/main", out[0])
+
+    def test_the_advisory_lane_reads_a_working_tree_key_and_says_so(self):
+        out = self.check(TRUSTED)
+        self.assertBound(out)
+        self.assertIn(f"working-tree file {TRUSTED}", out[0])
+
+
 class LegacyProvenance(ReceiptCase):
     """No claim from either side: the documented presence-only behaviour, byte for byte."""
 

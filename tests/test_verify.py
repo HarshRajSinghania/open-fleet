@@ -6645,3 +6645,59 @@ class SiblingNamedLikeTheStdlibNeverLoads(unittest.TestCase):
         self.assertEqual(record["exit"], 2)
         self.assertEqual(record["manifest_sha256"],
                          hashlib.sha256(self.manifest_bytes).hexdigest())
+
+
+class SoundLaneTrustKeysAreRefPinned(RepoCase):
+    """W3-03 (2026-10-27 security audit, P2): `--dispatch-pubkey .orca/dispatch-pubkey` (a bare
+    path) reads the WORKING TREE — the graded worker's to write — and was accepted on a lane
+    claiming soundness, with a NOTE indistinguishable from a ref-pinned key's. The rule ("pass
+    path@<reviewed ref>") lived only in prose. On a provenance lane a trust key is now read only
+    at a ref the worker cannot move — a remote-tracking ref or a commit id — and every NOTE names
+    where the key came from. The advisory lane keeps its working-tree read, said in so many words."""
+
+    SEED = bytes(range(1, 33))
+
+    def setUp(self):
+        super().setUp()
+        record = {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation"}
+        self.write(".orca/dispatch-record.json",
+                   json.dumps(verify._Transcript.signer().envelope(self.SEED, record)))
+        self.write(".orca/dispatch-pubkey",
+                   verify._load_ed25519().publickey(self.SEED).hex() + "\n")
+        self.pinned = self.commit("pin the coordinator key")
+        self.git("update-ref", "refs/remotes/origin/main", self.pinned)
+
+    def _check(self, pubkey_ref, lane="provenance=ci"):
+        verify._Authority.lane = lane
+        return verify.check_dispatch_provenance({"unit": "u"}, "sha256:a", "mutation", None,
+                                                ".orca/dispatch-record.json", pubkey_ref)
+
+    def test_a_bare_path_key_is_refused_on_a_lane_claiming_soundness(self):
+        out = self._check(".orca/dispatch-pubkey")
+        self.assertEqual(len(out), 1, out)
+        self.assertFalse(out[0].startswith("NOTE:"), out)
+        self.assertIn("working-tree file", out[0])
+        self.assertIn("W3-03", out[0])
+
+    def test_a_key_at_a_local_name_is_refused_on_a_lane_claiming_soundness(self):
+        for ref in ("main", "HEAD", "refs/heads/main"):
+            with self.subTest(ref=ref):
+                out = self._check(f".orca/dispatch-pubkey@{ref}")
+                self.assertEqual(len(out), 1, out)
+                self.assertFalse(out[0].startswith("NOTE:"), out)
+                self.assertIn("local name the graded worker can move", out[0])
+
+    def test_a_key_at_a_remote_tracking_ref_or_a_commit_id_verifies_and_says_where(self):
+        for ref, where in (("refs/remotes/origin/main", "remote-tracking ref refs/remotes/origin/main"),
+                           (self.pinned, f"commit {self.pinned[:12]}")):
+            with self.subTest(ref=ref):
+                out = self._check(f".orca/dispatch-pubkey@{ref}")
+                self.assertTrue(out and all(line.startswith("NOTE:") for line in out), out)
+                self.assertIn("signature verified", out[0])
+                self.assertIn(where, out[0])
+
+    def test_the_advisory_lane_still_reads_a_working_tree_key_and_says_so(self):
+        out = self._check(".orca/dispatch-pubkey", lane=None)
+        self.assertTrue(out and all(line.startswith("NOTE:") for line in out), out)
+        self.assertIn("working-tree file .orca/dispatch-pubkey", out[0])
+        self.assertIn("the graded worker can write it", out[0])

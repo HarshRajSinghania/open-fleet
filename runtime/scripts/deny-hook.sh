@@ -2423,7 +2423,7 @@ _PARALLEL_SEPS = (":::", "::::", ":::+", "::::+")
 
 def _inline_code(head, rest):
     """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, awk
-    program, deno eval operand, ... (W1-03). The code is scanned by _code_commands for the
+    program, the operand of deno `eval`, ... (W1-03). The code is scanned by _code_commands for the
     shell lines it hands the system, so an interpreter laundering a refused command is seen."""
     head, rest = _peel_busybox(head, rest)
     if _is_awk(head):

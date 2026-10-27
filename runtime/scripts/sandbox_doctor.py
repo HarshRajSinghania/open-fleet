@@ -286,27 +286,55 @@ def _backend_findings(backend: str, doc: dict) -> list[str]:
     return issues
 
 
-def _dicts(node):
-    """Every dict in `node`, at any depth."""
+def _dicts(node, skip=()):
+    """Every dict in `node`, at any depth, never descending into a value whose (normalised) key
+    is in `skip`."""
     stack = [node]
     while stack:
         item = stack.pop()
         if isinstance(item, dict):
             yield item
-            stack.extend(item.values())
+            stack.extend(v for k, v in item.items() if _norm(k) not in skip)
         elif isinstance(item, (list, tuple)):
             stack.extend(item)
 
 
+def _norm(key) -> str:
+    """A key as the reader compares it: case-folded, without `-`, `_`, `.` or spaces, so
+    `prelaunchPlacementBound`, `Ephemeral` and `recipe-id` are the names they look like."""
+    return re.sub(r"[-_.\s]", "", str(key).lower())
+
+
+class DuplicateKey(ValueError):
+    """A JSON object that names one key twice: which value holds is the parser's choice."""
+
+
+def _no_duplicates(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise DuplicateKey(key)
+        out[key] = value
+    return out
+
+
+def _parse(raw):
+    """The transcript as JSON, refusing a repeated key (W4-10 re-attack: `"ephemeral": false ...
+    "ephemeral": true` read as true, and --require-placement passed). Raises DuplicateKey for
+    that, ValueError for text that is not JSON."""
+    return json.loads(raw, object_pairs_hook=_no_duplicates)
+
+
 # The transcript's own placement claims (W4-10): read at the top level, and a report that says
-# anything but true for one of them anywhere else contradicts itself.
+# anything but true for one of them, in any spelling or at any level, contradicts itself.
 SELF_CLAIMS = ("ephemeral", "prelaunch_placement_bound")
+_SELF_CLAIMS_NORM = frozenset(_norm(c) for c in SELF_CLAIMS)
 
 
 def _contradicted_claims(doc: dict) -> list[str]:
-    return [f"{key}={value!r} at a nested level contradicts {key}=true"
-            for d in _dicts(doc) if d is not doc
-            for key, value in d.items() if key in SELF_CLAIMS and value is not True]
+    return [f"{key}={value!r} contradicts {_norm(key)}=true"
+            for d in _dicts(doc)
+            for key, value in d.items() if _norm(key) in _SELF_CLAIMS_NORM and value is not True]
 
 
 def portable_findings(doc: dict) -> list[str]:
@@ -383,12 +411,15 @@ def findings(obj):
     return found
 
 
-# Fields that NAME a recipe (W4-10), matched by key case-insensitively: a string, or an object
-# whose id (else recipeId, else name) is one.
-RECIPE_FIELDS = ("recipe", "recipeid", "recipe_id", "recipename", "recipe_name")
-_RECIPE_OBJECT_IDS = ("id", "recipeid", "recipe_id", "name")
-# Generic identity fields, consulted only by a report that has no recipe field at all.
+# Fields that NAME a recipe (W4-10), matched by normalised key (_norm: `recipe-id`, `recipeId`,
+# `Recipe_ID` are one name): a string, or an object whose id (else recipeId, else name) is one.
+RECIPE_FIELDS = ("recipe", "recipeid", "recipename")
+_RECIPE_OBJECT_IDS = ("id", "recipeid", "name")
+# Generic identity fields, consulted only by a report that has no recipe field at all, and never
+# inside a check, a finding, an error or a mount: a check's id is the check's, not the recipe's.
 _ID_FIELDS = ("id", "name")
+_NOT_IDENTITY = frozenset({"checks", "failures", "warnings", "errors", "error", "problems", "issues",
+                           "mounts", "volumes", "bindmounts", "binds", "credentialmounts"})
 
 
 def _declaration(value):
@@ -401,7 +432,7 @@ def _declaration(value):
     if isinstance(value, list):
         return list(value) if value and all(isinstance(v, str) and v.strip() for v in value) else None
     if isinstance(value, dict):
-        low = {str(k).lower(): v for k, v in value.items()}
+        low = {_norm(k): v for k, v in value.items()}
         key = next((k for k in _RECIPE_OBJECT_IDS if k in low), None)
         ident = low.get(key) if key else None
         return [ident] if isinstance(ident, str) and ident.strip() else None
@@ -416,7 +447,7 @@ def recipe_declarations(doc) -> tuple[list[str], list[str]]:
     declared, malformed = [], []
     for d in _dicts(doc):
         for key, value in d.items():
-            if str(key).lower() not in RECIPE_FIELDS:
+            if _norm(key) not in RECIPE_FIELDS:
                 continue
             ids = _declaration(value)
             if ids is None:
@@ -443,9 +474,11 @@ def names_recipe(doc, raw, recipe):
     every string value, so `{"web": {…}}` or `{"image": "web"}` named `web` even beside
     `"recipe": "other"`. Recipe fields are authoritative — every one must name this recipe — and
     a portable backend's placement claim must say which recipe it binds. Only a report with no
-    recipe field at all (Orca's doctor shape is source-, not binary-witnessed) falls back to an
-    `id`/`name` field equal to the id; a recipe field that is present but malformed names no
-    recipe, and nothing falls back past it.
+    recipe field at all (Orca's doctor shape is source-, not binary-witnessed) falls back to its
+    `id`/`name` fields outside checks, findings and mounts, and every one of those must be the
+    id; a recipe field that is present but malformed names no recipe, and nothing falls back past
+    it. The fallback never authorizes a launch: on Orca danger is refused outright, and a portable
+    backend must declare its recipe in a recipe field.
     """
     want = recipe.lower()
     if doc is not None:
@@ -455,10 +488,12 @@ def names_recipe(doc, raw, recipe):
         declared = {d.lower() for d in found}
         if declared:
             return declared == {want}
-        if isinstance(doc, dict) and str(doc.get("backend") or "").strip().lower() in PORTABLE_BACKENDS:
+        report = _portable_doc(doc)
+        if isinstance(report, dict) and str(report.get("backend") or "").strip().lower() in PORTABLE_BACKENDS:
             return False
-        return any(str(key).lower() in _ID_FIELDS and isinstance(value, str) and value.lower() == want
-                   for d in _dicts(doc) for key, value in d.items())
+        named = {value.lower() for d in _dicts(doc, _NOT_IDENTITY) for key, value in d.items()
+                 if _norm(key) in _ID_FIELDS and isinstance(value, str)}
+        return named == {want}
     return re.search(r"(?<![A-Za-z0-9._-])" + re.escape(recipe) + r"(?![A-Za-z0-9._-])",
                      raw, re.IGNORECASE) is not None
 
@@ -472,13 +507,27 @@ def _portable_doc(doc):
     return doc
 
 
+def _envelope_findings(parsed) -> list[str]:
+    """What an `{ok, result}` envelope around the report says against it: its own `ok`, `error`
+    or any finding, or a placement claim in any spelling that is not true. The envelope used to
+    be dropped whole when the report was read out of it."""
+    if not isinstance(parsed, dict) or _portable_doc(parsed) is parsed:
+        return []
+    outer = {k: v for k, v in parsed.items() if k != "result"}
+    return findings(outer) + [f"{k}={v!r}" for k, v in outer.items()
+                              if _norm(k) in _SELF_CLAIMS_NORM and v is not True]
+
+
 def placement_bound(raw) -> bool:
     """Whether the transcript is a PORTABLE backend that binds the worker's placement before
     launch. Orca's own doctor proves recipe health only, so it never answers yes here."""
     try:
-        doc = _portable_doc(json.loads(raw))
-    except ValueError:
+        parsed = _parse(raw)
+    except ValueError:  # DuplicateKey included: a repeated key binds nothing
         return False
+    if _envelope_findings(parsed):
+        return False
+    doc = _portable_doc(parsed)
     if not isinstance(doc, dict):
         return False
     backend = str(doc.get("backend") or "").strip().lower()
@@ -490,15 +539,22 @@ def assess(raw, recipe):
     """(clear, reason, exposes_host). `exposes_host` marks a credential/isolation finding — the
     exit-2 class — apart from an ordinary fail/warn."""
     try:
-        doc = _portable_doc(json.loads(raw))
+        parsed = _parse(raw)
+    except DuplicateKey as exc:
+        return False, (f"doctor output repeats the key {exc.args[0]!r} in one object: which value "
+                       "holds would be the parser's choice, not the doctor's"), False
     except ValueError:
-        doc = None
+        parsed = None
+    doc = _portable_doc(parsed) if parsed is not None else None
 
-    malformed = recipe_declarations(doc)[1] if doc is not None else []
+    envelope = _envelope_findings(parsed)
+    if envelope:
+        return False, "the envelope around the doctor report contradicts it: " + ", ".join(envelope[:4]), False
+    malformed = recipe_declarations(parsed)[1] if parsed is not None else []
     if malformed:
         return False, ("doctor output carries a malformed recipe field (" + "; ".join(malformed[:3])
                        + "): a recipe field that names no recipe is refused, never read past"), False
-    if not names_recipe(doc, raw, recipe):
+    if not names_recipe(parsed, raw, recipe):
         return False, f"doctor output does not name recipe {recipe!r}", False
 
     if doc is not None:

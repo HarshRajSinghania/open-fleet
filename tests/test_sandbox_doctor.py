@@ -264,6 +264,72 @@ class SelfAssertedClaimsMustNotContradictThemselves(unittest.TestCase):
         self.assertFalse(sandbox_doctor.placement_bound(json.dumps(doc)))
 
 
+class TheTranscriptCannotDisagreeWithItself(unittest.TestCase):
+    """W4-10 re-attack: duplicate JSON keys (the parser keeps the LAST, so `"ephemeral": false …
+    "ephemeral": true` passed --require-placement), claim and recipe spellings the reader did not
+    know (`Ephemeral`, `prelaunchPlacementBound`, `recipe-id`), an `{ok, result}` envelope whose
+    own fields were discarded, and an id/name fallback that read a check's id."""
+
+    def assess(self, doc_or_raw, recipe="lane-7"):
+        raw = doc_or_raw if isinstance(doc_or_raw, str) else json.dumps(doc_or_raw)
+        return sandbox_doctor.assess(raw, recipe)
+
+    def test_a_repeated_key_refuses(self):
+        good = json.dumps(GOOD["docker"])[:-1]
+        for tail in (', "ephemeral": false, "ephemeral": true}',
+                     ', "prelaunch_placement_bound": false, "prelaunch_placement_bound": true}',
+                     ', "recipe": "other", "recipe": "lane-7"}'):
+            with self.subTest(tail=tail):
+                raw = good + tail
+                clear, reason, _ = self.assess(raw)
+                self.assertFalse(clear)
+                self.assertIn("repeats the key", reason)
+                self.assertFalse(sandbox_doctor.placement_bound(raw))
+        clear, reason, _ = self.assess('{"recipe": "other", "failures": [], "recipe": "web"}', "web")
+        self.assertFalse(clear, reason)
+
+    def test_claim_spellings_are_all_read(self):
+        for where, key in (("isolation", "Ephemeral"), ("isolation", "prelaunchPlacementBound"),
+                           ("top", "PRELAUNCH-PLACEMENT-BOUND"), ("top", "Ephemeral")):
+            with self.subTest(where=where, key=key):
+                doc = copy.deepcopy(GOOD["docker"])
+                (doc if where == "top" else doc["isolation"])[key] = False
+                clear, reason, exposes = self.assess(doc)
+                self.assertFalse(clear)
+                self.assertTrue(exposes, reason)
+                self.assertFalse(sandbox_doctor.placement_bound(json.dumps(doc)))
+
+    def test_recipe_spellings_are_all_read(self):
+        for key in ("recipe-id", "Recipe-ID", "recipe.id", "RecipeName"):
+            with self.subTest(key=key):
+                self.assertFalse(self.assess({key: "other", "name": "web", "failures": []}, "web")[0])
+                self.assertTrue(self.assess({key: "web", "failures": []}, "web")[0])
+        self.assertFalse(self.assess({"recipe": ["other"], "checks": [{"id": "web"}], "failures": []}, "web")[0])
+        self.assertFalse(self.assess({"recipe": {"slug": "other"}, "checks": [{"id": "web"}]}, "web")[0])
+        self.assertFalse(self.assess({"recipe": {"id": "other", "name": "web"}, "failures": []}, "web")[0])
+
+    def test_the_envelope_cannot_contradict_the_report(self):
+        for outer in ({"ok": False}, {"ok": True, "ephemeral": False}, {"ok": True, "error": "boom"},
+                      {"ok": True, "Prelaunch_Placement_Bound": False}):
+            with self.subTest(outer=outer):
+                raw = json.dumps(dict(outer, result=GOOD["docker"]))
+                self.assertFalse(self.assess(raw)[0])
+                self.assertFalse(sandbox_doctor.placement_bound(raw))
+        raw = json.dumps({"ok": True, "result": GOOD["docker"]})
+        self.assertTrue(self.assess(raw)[0], "orca_cli's own envelope around a clean report stays clear")
+        self.assertTrue(sandbox_doctor.placement_bound(raw))
+        self.assertFalse(self.assess({"recipe": "other", "result": GOOD["docker"]})[0],
+                         "a recipe the envelope declares counts too")
+
+    def test_the_fallback_never_reads_a_check_finding_or_mount_id(self):
+        for doc in ({"ok": True, "checks": [{"name": "web", "status": "pass"}], "failures": []},
+                    {"ok": True, "result": {"checks": [{"name": "web", "status": "pass"}]}},
+                    {"mounts": [{"id": "web"}], "failures": []},
+                    {"name": "web", "run": {"id": "other"}, "failures": []}):
+            with self.subTest(doc=doc):
+                self.assertFalse(self.assess(doc, "web")[0])
+
+
 class PortableBackends(unittest.TestCase):
     """#585: a portable sandbox must PROVE its isolation, per backend, and fail with exit 2."""
 

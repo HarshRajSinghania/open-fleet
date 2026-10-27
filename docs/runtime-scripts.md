@@ -1753,12 +1753,16 @@ before launch; Orca's own doctor never does). Otherwise two positional arguments
 
 Verdict rule: the transcript must name THIS recipe (the whole id, not a substring of a
 longer one) and report no fail and no warn. In JSON the id must sit in a recipe field
-(`recipe`, `recipeId`, `recipe_id`, or a `recipe` object's id), never a dict key or another
-value, and every recipe field must name this recipe; a portable backend must declare one, and
-only a report with no recipe field at all falls back to an `id`/`name` field (W4-10). A recipe
-field that is present but declares nothing (null, a number, an empty value, a list holding a
-non-string, an object without a usable id) is refused as malformed, never read past to that
-fallback. JSON transcripts read structurally (empty
+(`recipe`, `recipeId`, `recipe-id`, `recipeName` in any case or separator, or a `recipe`
+object's id), never a dict key or another value, and every recipe field must name this recipe;
+a portable backend must declare one, and only a report with no recipe field at all falls back
+to its `id`/`name` fields outside checks, findings and mounts, all of which must be the id
+(W4-10). A recipe field that is present but declares nothing (null, a number, an empty value, a
+list holding a non-string, an object without a usable id) is refused as malformed, never read
+past to that fallback. JSON that repeats a key inside one object is refused (which value wins
+would be the parser's choice), placement claims are read in every spelling
+(`prelaunchPlacementBound`, `Ephemeral`) and at every level, and an `{ok, result}` envelope
+around the report is held to it: its own `ok:false`, `error` or a false claim refuses. JSON transcripts read structurally (empty
 finding collections are good news; `ok:false` is a finding); plain-text transcripts first
 strip "none of these" shapes (`"failures": []`, `failures: 0`, `0 warnings`, `no
 failures`) before matching fail/warn/error words. A transcript naming a portable `backend`

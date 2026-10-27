@@ -73,9 +73,10 @@ class VerdictAtTip(unittest.TestCase):
     def test_commented_go_counts_from_pr_author(self):
         # The coordinator binding its own verdict — the normal fleet flow, since
         # GitHub forbids approving your own PR. A SHA binding, not review: required
-        # approvals stay branch protection's (module docstring).
+        # approvals stay branch protection's (module docstring). It counts because the
+        # author is the OWNER: a fork author's own GO does not (W6-06, below).
         mine = review(go_body(HEAD), state="COMMENTED", login="coord",
-                      association="CONTRIBUTOR")
+                      association="OWNER")
         self.assertTrue(verdict_at_tip([mine], HEAD, pr_author="coord"))
 
     def test_commented_go_counts_from_trusted_tiers(self):

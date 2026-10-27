@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bundle.py --out deletes only what it can prove a build wrote (#623; 2026-10-23 review, P2-21;
+"""bundle.py --out deletes only what it can vouch for from outside --out (#623; 2026-10-23 review, P2-21;
 2026-10-27 audit, W5-10).
 
 build() used to rmtree <out>/.claude-plugin, hooks, runtime and skills whenever they were not
@@ -7,8 +7,9 @@ the source's own tree, so `--out ~/.claude` deleted the user's own skills/ (wher
 symlink install puts missions), hooks/ and runtime/ with exit 0. A build now records what it
 writes in <out>/.open-fleet-bundle.json, and anything else where the build would write makes it
 refuse — exit 2, nothing deleted, nothing written. That marker lives in --out, so it only names
-candidates: outside a mission directory the build writes whole, a stale file is deleted only when
-the source repository committed its exact bytes at the path the build copies it from.
+candidates: a listed file is the bundle's only when the build record kept OUTSIDE --out holds its
+exact bytes, when the source repository committed them at the path the build copies it from, or
+when they are the bytes this build writes there anyway.
 """
 import contextlib
 import hashlib
@@ -29,6 +30,33 @@ ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("bundle_out", ROOT / "scripts" / "bundle.py")
 bundle = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bundle)
+
+
+_RECORDS = []
+
+
+def setUpModule():
+    # Build records go to a scratch directory, never the source checkout's git directory.
+    records = tempfile.TemporaryDirectory()
+    patcher = mock.patch.dict(os.environ, {bundle.RECORDS_ENV: records.name})
+    patcher.start()
+    _RECORDS.extend([patcher, records])
+
+
+def tearDownModule():
+    patcher, records = _RECORDS
+    patcher.stop()
+    records.cleanup()
+
+
+def remember(out, files):
+    """Add {rel: bytes} to --out's build record, as the build that wrote them would have."""
+    path = bundle._record_path(out)
+    doc = (json.loads(path.read_text(encoding="utf-8")) if path.is_file()
+           else {"out": os.path.realpath(out), "files": {}})
+    doc["files"].update({rel: hashlib.sha256(data).hexdigest() for rel, data in files.items()})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
 
 
 def snapshot(root):
@@ -196,6 +224,9 @@ class RebuildsStillWork(unittest.TestCase):
             stale.write_text("stale copy\n", encoding="utf-8")
             data["sha256"]["skills/ship-it/references/README.md"] = hashlib.sha256(b"stale copy\n").hexdigest()
             marker.write_text(json.dumps(data), encoding="utf-8")
+            # ...and its build record, kept outside --out, says so too (re-attack of 4b24dfde: the
+            # marker alone vouches for nothing, not even inside a mission directory).
+            remember(out, {"skills/ship-it/references/README.md": b"stale copy\n"})
             self.assertEqual(bundle.build(out), (22, []))
             self.assertFalse((out / "skills" / "retired-it").exists(), "an owned dir was kept")
             self.assertEqual((out / "skills" / "mine" / "SKILL.md").read_text(), "mine\n")
@@ -399,6 +430,114 @@ class ADigestInTheMarkerIsNoProof(unittest.TestCase):
             self.assertIn("provenance", err)
 
 
+class TheBuildRecordIsTheAuthority(unittest.TestCase):
+    """Re-attack of 4b24dfde (W5-10, the Codex P1 class): inside a mission directory the build
+    writes whole, the marker was still trusted, so a forged TRUE digest deleted a user's
+    skills/ship-it/my-notes.md and overwrote a user's own skills/review-it/SKILL.md with exit 0.
+    A listed file is now the bundle's only on the word of the build record kept OUTSIDE --out,
+    the source repository's history, or because the build writes those exact bytes anyway."""
+
+    built = AForgedMarkerDeletesNothing.built
+    forge = AForgedMarkerDeletesNothing.forge
+
+    def test_a_forged_true_digest_inside_a_bundled_mission_deletes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            note = out / "skills" / "ship-it" / "my-notes.md"
+            note.write_bytes(b"my notes inside a bundled mission\n")
+            self.forge(out, ["skills/ship-it/my-notes.md"],
+                       {"skills/ship-it/my-notes.md": hashlib.sha256(note.read_bytes()).hexdigest()})
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(note.read_bytes(), b"my notes inside a bundled mission\n",
+                             "a user's file in a mission directory was deleted on the marker's word")
+            self.assertIn("skills/ship-it/my-notes.md", err)
+            owned = json.loads((out / bundle.MARKER).read_text(encoding="utf-8"))["files"]
+            self.assertNotIn("skills/ship-it/my-notes.md", owned)
+
+    def test_a_forged_true_digest_never_overwrites_a_users_skill_under_a_missions_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            mine = out / "skills" / "review-it" / "SKILL.md"
+            mine.write_bytes(b"---\nname: review-it\n---\nMY OWN review-it skill\n")
+            self.forge(out, [], {"skills/review-it/SKILL.md": hashlib.sha256(mine.read_bytes()).hexdigest()})
+            before = snapshot(out)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn("skills/review-it/SKILL.md", err)
+            self.assertEqual(snapshot(out), before, "a refused rebuild changed --out")
+
+    def test_what_the_record_says_a_build_wrote_is_replaced_and_cleaned_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            earlier = {"skills/ship-it/SKILL.md": b"an earlier build's generated SKILL.md\n",
+                       "skills/retired-it/SKILL.md": b"a retired mission's generated SKILL.md\n"}
+            for rel, data in earlier.items():
+                (out / rel).parent.mkdir(parents=True, exist_ok=True)
+                (out / rel).write_bytes(data)
+            self.forge(out, ["skills/retired-it/SKILL.md"],
+                       {rel: hashlib.sha256(data).hexdigest() for rel, data in earlier.items()})
+            remember(out, earlier)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            self.assertNotEqual((out / "skills/ship-it/SKILL.md").read_bytes(), earlier["skills/ship-it/SKILL.md"])
+            self.assertFalse((out / "skills" / "retired-it").exists(), "a recorded retired mission was kept")
+
+    def test_without_a_record_a_changed_generated_file_refuses_and_says_why(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            bundle._record_path(out).unlink()
+            old = b"an earlier build's generated SKILL.md\n"
+            (out / "skills/ship-it/SKILL.md").write_bytes(old)
+            self.forge(out, [], {"skills/ship-it/SKILL.md": hashlib.sha256(old).hexdigest()})
+            before = snapshot(out)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn("no build record", err)
+            self.assertEqual(snapshot(out), before)
+
+    def test_a_record_for_another_out_or_behind_a_link_vouches_for_nothing(self):
+        for shape in ("other-out", "symlink", "fifo"):
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as tmp, \
+                    tempfile.TemporaryDirectory() as other:
+                out = self.built(tmp)
+                mine = out / "skills" / "ship-it" / "my-notes.md"
+                mine.write_bytes(b"mine\n")
+                self.forge(out, ["skills/ship-it/my-notes.md"],
+                           {"skills/ship-it/my-notes.md": hashlib.sha256(b"mine\n").hexdigest()})
+                remember(out, {"skills/ship-it/my-notes.md": b"mine\n"})
+                record = bundle._record_path(out)
+                doc = json.loads(record.read_text(encoding="utf-8"))
+                record.unlink()
+                if shape == "other-out":
+                    doc["out"] = os.path.realpath(other)
+                    record.write_text(json.dumps(doc), encoding="utf-8")
+                elif shape == "symlink":
+                    (Path(other) / "record.json").write_text(json.dumps(doc), encoding="utf-8")
+                    record.symlink_to(Path(other) / "record.json")
+                else:
+                    os.mkfifo(record)
+                code, err = run_main("--out", tmp)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(mine.read_bytes(), b"mine\n")
+                self.assertIn("skills/ship-it/my-notes.md", err)
+
+    def test_the_record_lives_outside_out_and_check_keeps_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            record = bundle._record_path(out)
+            self.assertTrue(record.is_file())
+            self.assertFalse(str(record.resolve()).startswith(os.path.realpath(out) + os.sep))
+            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
+            files = json.loads(record.read_text(encoding="utf-8"))["files"]
+            self.assertEqual(files["skills/ship-it/SKILL.md"],
+                             hashlib.sha256((out / "skills/ship-it/SKILL.md").read_bytes()).hexdigest())
+        records = Path(os.environ[bundle.RECORDS_ENV])
+        before = sorted(records.iterdir())
+        self.assertEqual(run_main("--check")[0], 0)
+        self.assertEqual(sorted(records.iterdir()), before, "--check kept a build record")
+
+
 class NothingIsReResolvedAfterItsCheck(unittest.TestCase):
     """Re-attack of 82a2d00c (W5-10/W5-11). A directory swapped for a symlink to an outside tree
     AFTER the checks aimed the deletes and the writes outside --out (5/5 on each). Every delete
@@ -437,6 +576,7 @@ class NothingIsReResolvedAfterItsCheck(unittest.TestCase):
             stale.write_bytes(b"a stale copy\n")
             self.forge(out, ["skills/speed-it/old-reference.md"],
                        {"skills/speed-it/old-reference.md": hashlib.sha256(b"a stale copy\n").hexdigest()})
+            remember(out, {"skills/speed-it/old-reference.md": b"a stale copy\n"})  # a delete IS planned
             (victim / "old-reference.md").write_text("PRECIOUS\n", encoding="utf-8")
             (victim / "id_ed25519").write_text("PRECIOUS\n", encoding="utf-8")
             self.forge(out, ["skills/speed-it/id_ed25519"], {"skills/speed-it/id_ed25519": "0" * 64})

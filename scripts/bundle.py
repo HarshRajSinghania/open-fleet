@@ -36,16 +36,19 @@ between edits. Build it at release time, or before running a copy installer.
     python3 scripts/bundle.py --check         # build to a temp dir and verify only
 
 A build records every file it writes, with its sha256, in `<out>/.open-fleet-bundle.json`. That
-marker sits in --out, so it only names candidates: a stale listed file is deleted when it lies
-inside a mission directory this build writes whole, or when its exact bytes are a blob the source
-repository committed at the path the build copies it from; any other stale file is left in place
-and named on stderr (and, without a git checkout, nothing stale is deleted). A build refuses
-(exit 2, nothing deleted or written) when an unlisted file, a changed listed file or a symlink
-sits where it writes, when it would overwrite a file outside a mission directory that holds
-neither the new bytes nor committed bytes of its source, or when the marker lists a name no
-build writes, a file without a digest, or is itself a symlink. A mission shipping `.gitignore`,
-`.gitattributes`, `.gitmodules` or `.git` fails the build (exit 1): it would change what the
-publish job's `git add -A` records.
+marker sits in --out, so it only names candidates. The build also keeps a record of the same
+digests OUTSIDE --out (one file per --out in `open-fleet-bundle/` under the source checkout's git
+directory, or in $OPEN_FLEET_BUNDLE_RECORDS), and a listed file is the bundle's only when that
+record holds its exact bytes, when its exact bytes are a blob the source repository committed at
+the path the build copies it from, or when they are the bytes this build writes there anyway.
+Such a file is overwritten, or deleted once no longer written; any other stale listed file is left
+in place and named on stderr. A build refuses (exit 2, nothing deleted or written) when an
+unlisted file, a changed listed file, a symlink or a non-file sits where it writes, when it would
+overwrite a file it cannot prove its own, or when the marker lists a name no build writes, a file
+without a digest, or is itself a symlink or FIFO. A `--out` built before records (or from another
+checkout) therefore refuses once if anything the build changes is there: move it away and
+rebuild. A mission shipping `.gitignore`, `.gitattributes`, `.gitmodules` or `.git` fails the
+build (exit 1): it would change what the publish job's `git add -A` records.
 
 Exit: 0 built and verified · 1 a reference could not be resolved · 2 could not run (or refused
 an --out holding content it cannot prove a previous build wrote).
@@ -334,21 +337,22 @@ def plugin_files():
 # The marker sits inside the tree it governs, so anything that can write there can write it
 # (2026-10-27 audit, W5-10/W5-11): two forged names in its list deleted ~/.claude/settings.json
 # and CLAUDE.md with exit 0, and a digest it records proves nothing either, since a forger who
-# can read a file can hash it (Codex review of 82a2d00c). So the marker is an index of
+# can read a file can hash it (Codex review of 82a2d00c) — not even inside a mission directory
+# the build writes whole, where a forged true digest still deleted a user's note and overwrote a
+# user's own skill under a mission's name (re-attack of 4b24dfde). So the marker is an index of
 # CANDIDATES, never proof. A build is made in a staging directory first, so the files it writes
 # are known before --out is touched, and then:
 #   * a listed name no build writes (_generated), a listed file without a digest or whose bytes
 #     changed since, a symlink, a symlinked parent, or an unlisted file where the build writes
-#     refuses the whole build, as before;
-#   * inside a mission directory this build writes whole, a listed, unchanged file is the
-#     bundle's: overwritten, or deleted once no longer written. Its SKILL.md, references and
-#     inventory are generated, so no commit holds them, and an unlisted file there refuses;
-#   * everywhere else (the plugin files, runtime/, a retired mission's directory, any other
-#     skills/<name>/) the marker decides nothing. A listed file is deleted only when its exact
-#     bytes are a blob the source repository COMMITTED at the path the build copies it from
-#     (committed_blobs: the authority is outside --out), and overwritten only when it holds that
-#     or the new bytes already. Otherwise an overwrite refuses, and a stale file is left in
-#     place, reported, and never re-recorded; without a git checkout nothing stale is deleted.
+#     (in a mission directory, anywhere in it) refuses the whole build, as before;
+#   * a listed file is the bundle's only on authority from OUTSIDE --out: its exact bytes are
+#     what this checkout's last build into the same --out recorded writing at that path (the
+#     build record, RECORDS_ENV / the source checkout's git directory), or a blob the source
+#     repository COMMITTED at the path the build copies it from (committed_blobs), or the bytes
+#     this build writes there anyway. Such a file is overwritten, or deleted once no longer
+#     written. Any other listed file refuses an overwrite, and is otherwise left in place,
+#     reported, and never re-recorded; with neither a record nor git history nothing stale is
+#     deleted and no file this build changes is overwritten.
 # The marker is read and replaced without ever following a link.
 MARKER = ".open-fleet-bundle.json"
 MARKER_VERSION = 2
@@ -359,6 +363,16 @@ LEGACY_MARKER = ".orca-fleet-bundle.json"
 # the bundle with exactly that, so one of them inside a mission silently drops files from `dist`
 # while its own inventory still lists them (2026-10-27 audit, W6-04).
 GIT_CONTROL = frozenset({".gitignore", ".gitattributes", ".gitmodules", ".git"})
+
+
+# The build record: what this checkout's last build wrote into one --out, {path: sha256}, kept
+# OUTSIDE --out so that writing there cannot vouch for anything. One JSON file per --out (named
+# by the sha256 of its real path) in $OPEN_FLEET_BUNDLE_RECORDS, else in `open-fleet-bundle/`
+# under the source checkout's git directory; without a checkout none is kept.
+RECORDS_ENV = "OPEN_FLEET_BUNDLE_RECORDS"
+RECORD_VERSION = 1
+# The marker and the record are small (a few hundred KiB); a larger one is not a build's.
+INDEX_LIMIT = 16 << 20
 
 
 class BundleRefused(Exception):
@@ -497,8 +511,9 @@ class _Tree:
             self._close(fds)
 
 
-def _read_fd(opener):
-    """The bytes of the regular file `opener()` opens, or None for anything else (or nothing)."""
+def _read_fd(opener, limit=None):
+    """The bytes of the regular file `opener()` opens, or None for anything else (or nothing, or,
+    with `limit`, more than `limit` bytes)."""
     try:
         fd = opener()
     except OSError:
@@ -506,28 +521,15 @@ def _read_fd(opener):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return None
-        chunks = []
+        chunks, size = [], 0
         while chunk := os.read(fd, 1 << 20):
             chunks.append(chunk)
+            size += len(chunk)
+            if limit is not None and size > limit:
+                return None
         return b"".join(chunks)
     finally:
         os.close(fd)
-
-
-def _sha256_nofollow(path):
-    """sha256 of a regular file's bytes, opened without following a link; None for anything else."""
-    try:
-        fd = os.open(path, READ_FLAGS)
-    except OSError:
-        return None
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        os.close(fd)
-        return None
-    with os.fdopen(fd, "rb") as fh:
-        digest = hashlib.sha256()
-        while chunk := fh.read(1 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _entries_under(path):
@@ -557,7 +559,11 @@ def _owned(out):
             os.close(fd)
             raise BundleRefused(f"{marker}: the ownership marker is not a regular file")
         with os.fdopen(fd, "rb") as fh:
-            doc = json.loads(fh.read().decode("utf-8"))
+            raw = fh.read(INDEX_LIMIT + 1)
+        if len(raw) > INDEX_LIMIT:
+            raise BundleRefused(f"{marker}: the ownership marker is over {INDEX_LIMIT} bytes, larger than "
+                                "any build writes — refusing to guess what a previous build wrote")
+        doc = json.loads(raw.decode("utf-8"))
         files, digests = doc.get("files"), doc.get("sha256")
     except BundleRefused:
         raise
@@ -656,20 +662,103 @@ def _read_nofollow(path):
     return _read_fd(lambda: os.open(path, READ_FLAGS))
 
 
-def _claim(out, planned, produced, stage):
+def records_dir():
+    """The directory holding build records, or None when there is nowhere outside --out to keep
+    one: $OPEN_FLEET_BUNDLE_RECORDS, else `open-fleet-bundle/` in the source checkout's git
+    (common) directory, asked of the hardened git."""
+    override = os.environ.get(RECORDS_ENV)
+    if override:
+        return Path(override)
+    try:
+        proc = subprocess.run(gitexec.argv("-C", str(ROOT), "rev-parse", "--git-common-dir"), env=gitexec.env(),
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    common = proc.stdout.decode("utf-8", "surrogateescape").strip()
+    if proc.returncode != 0 or not common:
+        return None
+    return (ROOT / common) / "open-fleet-bundle"
+
+
+def _record_path(out):
+    """Where the build record for --out `out` lives (None: nowhere)."""
+    where = records_dir()
+    if where is None:
+        return None
+    return where / f"{hashlib.sha256(os.fsencode(os.path.realpath(out))).hexdigest()}.json"
+
+
+def read_record(out):
+    """{out-relative file: sha256} this checkout's last build into `out` recorded writing; {} when
+    there is none, or it is not a regular file, not this --out's, or malformed — then it vouches
+    for nothing."""
+    path = _record_path(out)
+    data = None if path is None else _read_fd(lambda: os.open(path, READ_FLAGS), INDEX_LIMIT)
+    if data is None:
+        return {}
+    try:
+        doc = json.loads(data.decode("utf-8"))
+        files = doc["files"]
+        if doc.get("out") != os.path.realpath(out) or not isinstance(files, dict):
+            return {}
+    except (UnicodeDecodeError, ValueError, TypeError, KeyError, AttributeError):
+        return {}
+    return {rel: digest for rel, digest in files.items()
+            if _valid_name(rel) and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)}
+
+
+def _keep_record(out, tree, produced, stage, previous):
+    """Replace `out`'s build record with every file this build wrote that holds its bytes now, plus
+    any file still holding bytes the previous record vouched for (a build stopped part-way). Read
+    through `tree`, written beside the record and renamed over it, never through a link. Returns
+    why no record could be kept, or None."""
+    path = _record_path(out)
+    if path is None:
+        return "there is no git checkout to keep it in"
+    files = {}
+    for rel in sorted(produced | set(previous)):
+        data = tree.read(rel)
+        if data is None:
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        if (rel in produced and data == (stage / rel).read_bytes()) or previous.get(rel) == digest:
+            files[rel] = digest
+    doc = {"generator": "scripts/bundle.py", "version": RECORD_VERSION, "out": os.path.realpath(out),
+           "files": files}
+    tmp = path.with_name(f".{path.name}.{os.getpid()}-{os.urandom(4).hex()}.tmp")
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        try:
+            view = memoryview((json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8"))
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except OSError as err:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        return f"{path}: {err.strerror}"
+    return None
+
+
+def _claim(out, planned, produced, stage, tree, record):
     """Decide what this build may overwrite and delete in --out, or refuse having changed
     nothing. `planned` are the out-relative paths it writes (plugin files, and mission
-    directories written whole); `produced` every file it writes, already staged under `stage`.
-    Returns (stale files to delete, stale files left in place, why provenance is unavailable)."""
-    if out.exists() and not out.is_dir():
-        raise BundleRefused(f"--out {out} is not a directory")
+    directories written whole); `produced` every file it writes, already staged under `stage`;
+    `tree` is --out opened; `record` the build record read from outside --out.
+    Returns (stale files to delete, stale files left in place, why provenance was short)."""
     owned = _owned(out)
     foreign = []
     # A listed file is the bundle's only while its bytes are the ones the marker recorded: a file
     # changed since, or a name the marker never had a right to, is someone else's (W5-10).
     for rel, digest in owned.items():
-        if os.path.lexists(out / rel) and _sha256_nofollow(out / rel) != digest:
-            foreign.append(out / rel)
+        if os.path.lexists(out / rel):
+            data = tree.read(rel)
+            if data is None or hashlib.sha256(data).hexdigest() != digest:
+                foreign.append(out / rel)
     # Parents are checked for every path this build DELETES as well as every path it writes: a
     # retired mission stays in the marker after leaving `planned`, and a symlink swapped in for
     # its directory would aim the unlink below at another checkout's files (PR #631 review, P1).
@@ -683,25 +772,27 @@ def _claim(out, planned, produced, stage):
     # A directory where a file goes, even an empty one _entries_under cannot see, would take the
     # copy inside it: README.md/bundle-README.md, and no README (Codex at db5023703c).
     foreign += [out / rel for rel in produced if (out / rel).is_dir() and not (out / rel).is_symlink()]
-    # Which listed files the marker alone may vouch for: those inside a mission directory this
-    # build writes whole. Everywhere else the source repository's history decides.
-    whole = tuple(f"{rel}/" for rel in planned if rel.startswith("skills/"))
-    present = {rel: _read_nofollow(out / rel) for rel in owned
-               if os.path.lexists(out / rel) and out / rel not in foreign}
-    needs_history = {rel: data for rel, data in present.items() if data is not None
-                     and not rel.startswith(whole)
-                     and not (rel in produced and data == (stage / rel).read_bytes())}
-    seen = committed_blobs([s for rel in needs_history for s in _sources(rel)])
-    unavailable = None if seen is not None else "no readable git history at the source checkout"
+    # The marker vouches for nothing: a listed file is the bundle's when the build record (outside
+    # --out) holds its exact bytes, when this build writes those bytes there anyway, or when the
+    # source repository committed them at the path the build copies from (W5-10, re-attack of
+    # 4b24dfde: inside a mission directory too).
+    present = {rel: tree.read(rel) for rel in owned if os.path.lexists(out / rel) and out / rel not in foreign}
+    unproven = {rel: data for rel, data in present.items() if data is not None
+                and record.get(rel) != hashlib.sha256(data).hexdigest()
+                and not (rel in produced and data == (stage / rel).read_bytes())}
+    seen = committed_blobs([s for rel in unproven for s in _sources(rel)])
+    short = []
+    if unproven and not record:
+        short.append("no build record for this --out outside it (built before records, by another "
+                     "checkout, or without one)")
+    if unproven and seen is None:
+        short.append("no readable git history at the source checkout")
     delete, left = [], []
     for rel in sorted(present):
         data = present[rel]
         if data is None:
             continue  # nothing regular there: nothing to delete, and the write replaces it
-        if rel.startswith(whole):
-            if rel not in produced:
-                delete.append((rel, hashlib.sha256(data).hexdigest()))
-        elif rel in needs_history and not (seen and _committed_at_source(rel, data, seen)):
+        if rel in unproven and not (seen and _committed_at_source(rel, data, seen)):
             if rel in produced:
                 foreign.append(out / rel)  # a file the build must overwrite and cannot prove its own
             else:
@@ -710,12 +801,14 @@ def _claim(out, planned, produced, stage):
             delete.append((rel, hashlib.sha256(data).hexdigest()))
     if foreign:
         shown = ", ".join(sorted({p.relative_to(out).as_posix() for p in foreign})[:5])
+        hint = f" ({'; '.join(short)})" if short else ""
         raise BundleRefused(
             f"--out {out}: {len(set(foreign))} path(s) where the bundle writes or deletes are not "
-            f"provably its own (not listed in {MARKER}, changed since written, not a committed copy "
-            f"of their source, or behind a symlink): {shown} — move them away or choose an empty "
-            "--out; bundle.py deletes or overwrites only what it can prove it wrote")
-    return delete, left, unavailable
+            f"provably its own (not listed in {MARKER}, changed since written, not what the build "
+            f"record outside --out says a build wrote there nor a committed copy of their source, or "
+            f"behind a symlink){hint}: {shown} — move them away or choose an empty --out; bundle.py "
+            "deletes or overwrites a file only when its exact bytes are vouched for from outside --out")
+    return delete, left, short
 
 
 def _install(tree, stage, produced, delete):
@@ -740,12 +833,13 @@ def _record(tree, produced):
         os.unlink(LEGACY_MARKER, dir_fd=tree.fd)  # migrated: MARKER now lists everything this build owns
 
 
-def build(out_dir):
+def build(out_dir, keep_record=True):
     """Write the distribution tree. Returns (missions built, unresolved refs).
 
     Raises BundleRefused, having deleted and written nothing, when --out holds content the
-    build cannot prove a previous build wrote (MARKER, committed_blobs). Stale files it cannot
-    prove are left in place and named on stderr.
+    build cannot prove a previous build wrote (MARKER, read_record, committed_blobs). Stale
+    files it cannot prove are left in place and named on stderr. `keep_record=False` (--check,
+    a throwaway --out) keeps no build record.
     """
     protocols = validate.known_protocol_names()
     problems = missing_inputs(protocols)
@@ -756,26 +850,36 @@ def build(out_dir):
                 if d.is_dir() and not d.name.startswith((".", "_")) and (d / "SKILL.md").is_file()]
     files = {destination for _source, destination in plugin_files()}
     planned = sorted(files | {f"skills/{d.name}" for d in missions})
+    unkept = None
     with tempfile.TemporaryDirectory(prefix="open-fleet-bundle-") as staging:
         stage = Path(staging)
         result = _build_into(stage, missions, protocols)
         produced = {path.relative_to(stage).as_posix() for path in stage.rglob("*") if path.is_file()}
-        delete, left, unavailable = _claim(out, planned, produced, stage)
+        if os.path.lexists(out) and not out.is_dir():
+            raise BundleRefused(f"--out {out} is not a directory")
         out.mkdir(parents=True, exist_ok=True)
-        tree = _Tree(out)
+        tree = _Tree(out)   # opened before the checks: they and the writes see the same directory
         try:
+            record = read_record(out)
+            delete, left, short = _claim(out, planned, produced, stage, tree, record)
             try:
                 _install(tree, stage, produced, delete)
             finally:
                 _record(tree, produced)
+                if keep_record:
+                    unkept = _keep_record(out, tree, produced, stage, record)
         finally:
             tree.close()
     if left:
-        why = (f"provenance unavailable: {unavailable}" if unavailable
-               else "provenance unproven: not a blob the source repository committed at its source path")
+        why = (f"provenance short: {'; '.join(short)}" if short else
+               "provenance unproven: neither what the build record outside --out says a build wrote "
+               "there nor a blob the source repository committed at its source path")
         print(f"bundle: left {len(left)} stale file(s) in place ({why}): {', '.join(left[:10])}"
               f"{' …' if len(left) > 10 else ''} — remove them by hand if they are the bundle's; the "
               "marker no longer lists them", file=sys.stderr)
+    if unkept:
+        print(f"bundle: kept no build record ({unkept}): the next rebuild into {out} cannot prove "
+              "this build's files its own, so it refuses to overwrite any it changes", file=sys.stderr)
     return result
 
 
@@ -947,7 +1051,7 @@ def main(argv=None):
     try:
         if args.check:
             with tempfile.TemporaryDirectory() as tmp:
-                built, problems = build(tmp)
+                built, problems = build(tmp, keep_record=False)
         else:
             built, problems = build(args.out)
     except BundleRefused as refusal:

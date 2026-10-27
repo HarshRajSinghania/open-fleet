@@ -304,21 +304,37 @@ def anchor_drift(data, anchored, commit):
     return drift
 
 
+def _merged_refs(*records):
+    """Each ref list (`blocking`, `related`) as the union of `records`, first record's order."""
+    merged = {}
+    for key in ("blocking", "related"):
+        merged[key] = []
+        for record in records:
+            merged[key] += [r for r in record[key] if r not in merged[key]]
+    return merged
+
+
 def close_view(data, pub=None, sound=False, anchored=None, commit=None):
-    """[(gate, effective status, blocked refs, note)] — every gate the close predicate reads: this
-    batch's, then each anchored gate it lacks (the anchor's record). A drifted gate is owed and
-    blocks every ref it or its anchored record names; `note` says why (None when it agrees)."""
+    """[(gate, effective status, blocked refs, note)] — every gate the close predicate and the
+    views (list, stale, show) read: this batch's, then each anchored gate it lacks. A gate that
+    drifted from the anchor (missing, re-worded, re-dated, another run) is owed and is shown FROM
+    THE ANCHOR'S RECORD — its title, question, asked date and recorded answer — so a moved date
+    cannot drop it out of `stale` and a substituted question is never what `show` prints (PR
+    #719 review round 4). Every gate carries the union of both records' blocking and related
+    refs; `note` says why a gate drifted (None when it agrees)."""
     drift = anchor_drift(data, anchored, commit)
     theirs = {g["id"]: g for g in (anchored or {}).get("gates", [])}
     view = []
     for gate in data["gates"]:
-        refs = list(gate["blocking"]) + [r for r in theirs.get(gate["id"], {}).get("blocking", ())
-                                         if r not in gate["blocking"]]
+        anchor = theirs.get(gate["id"])
         note = drift.get(gate["id"])
-        view.append((gate, "owed" if note else effective_status(data, gate, pub, sound), refs,
-                     note))
+        shown = "owed" if note else effective_status(data, gate, pub, sound)
+        record = dict(anchor if note else gate)
+        if anchor is not None:
+            record.update(_merged_refs(record, gate if note else anchor))
+        view.append((record, shown, record["blocking"], note))
     here = {g["id"] for g in data["gates"]}
-    view += [(g, "owed", list(g["blocking"]), drift[g["id"]]) for g in theirs.values()
+    view += [(dict(g), "owed", list(g["blocking"]), drift[g["id"]]) for g in theirs.values()
              if g["id"] not in here]
     return view
 

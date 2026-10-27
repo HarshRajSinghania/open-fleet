@@ -848,7 +848,7 @@ class TheOwedSetIsReadWhereTheKeyIsRead(unittest.TestCase):
         self.batch = self.tmp / "docs" / "runs" / "r" / "gate-batch.json"
         data = gb.init_batch(self.batch, run_id="run_set", run_title="set")
         add_owed(data, "G1", blocking=["#1"])
-        add_owed(data, "G2", blocking=["#1", "#2"])
+        add_owed(data, "G2", blocking=["#1", "#2"], related=["#9"])
         gb.save_batch(self.batch, data)
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "the owed gates land")
@@ -935,6 +935,43 @@ class TheOwedSetIsReadWhereTheKeyIsRead(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("status: owed", r.stdout)
         self.assertIn("missing here", r.stdout)
+
+    def test_a_re_dated_gate_stays_stale_from_its_anchored_date(self):
+        # Codex round 4 (P2): the drifted gate was owed but its WORKER record was what the views
+        # read, so an `asked` moved into the future hid an overdue anchored question from stale.
+        self.edit(lambda d: d["gates"][0].update(asked="2099-01-01"))
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "stale", "--days", "7",
+                     "--today", "2026-10-27")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("G1 owed 43 days (asked 2026-09-14)", r.stdout)
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "show", "G1")
+        self.assertIn("asked 2026-09-14", r.stdout)
+        self.assertNotIn("2099", r.stdout)
+        self.assertIn("G1 [owed] asked 2026-09-14", self.owed())
+
+    def test_a_reworded_gate_shows_the_anchored_question_title_and_refs(self):
+        def reword(d):
+            d["gates"][1].update(title="a harmless title", question="is the sky blue?",
+                                 blocking=["#1"], related=[])
+        self.edit(reword)
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "show", "G2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("the question G2", r.stdout)
+        self.assertIn("ask G2", r.stdout)
+        self.assertIn("#2", r.stdout)
+        self.assertIn("#9", r.stdout)
+        for planted in ("sky", "harmless"):
+            self.assertNotIn(planted, r.stdout)
+        out = self.owed("--blocking", "#2")
+        self.assertIn("G2 [owed] asked 2026-09-14 \u00b7 ask G2", out)
+        self.assertNotIn("harmless", out)
+
+    def test_refs_dropped_from_an_otherwise_unchanged_gate_still_show(self):
+        self.edit(lambda d: d["gates"][1].update(blocking=["#1"], related=[]))
+        r = self.cli("--pin-ref", "refs/remotes/origin/main", "show", "G2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("related: #9", r.stdout)
+        self.assertIn("blocking: #1, #2", r.stdout)
 
     def test_show_names_a_typed_answer_as_owed(self):
         self.edit(lambda d: d["gates"][0].update(status="answered", answer="typed",

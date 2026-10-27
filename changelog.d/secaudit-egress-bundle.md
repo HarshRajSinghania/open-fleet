@@ -37,4 +37,5 @@
   only a SQLite store's plain tables' stored columns (never a view, virtual table or generated
   column), capped per file and per scan as the bytes arrive; a `.zst` transcript is walked frame
   by frame in linear work, a damaged tail kept up to its last whole frame and said; a record nested
-  past the parser's depth is skipped, never fatal.
+  past the parser's depth is skipped, never fatal; and a store swapped for a FIFO during SQLite's own
+  open fails closed and is said, never hangs recall.

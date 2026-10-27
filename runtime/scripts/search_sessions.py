@@ -30,8 +30,10 @@ reader that follows its upstream on-disk format (see the per-reader comments).
 It is a token scan, not an index: every query re-reads the stores, each file up to
 MAX_FILE_BYTES and the whole scan up to MAX_RUN_BYTES (a skip is said on stderr; the
 episodic hint's manifests too), regular files only (a link, FIFO or device is said and
-never opened), a SQLite store's plain tables' stored columns only (never a view, a virtual
-table or a computed column), every whole frame of a .zst (each frame charged; a damaged
+never read; a store, -wal or -shm swapped for one during SQLite's open fails it closed, and
+an open stalled past SQLITE_OPEN_SECONDS is abandoned), a SQLite store's plain tables'
+stored columns only (never a view, a virtual table or a computed column), every whole
+frame of a .zst (each frame charged; a damaged
 tail is said), and a record nested past the parser's depth skipped, never fatal. One hit per
 session; --since drops undated records; --path matches the session's cwd;
 --cursor pages with the ``local:<offset>`` NEXT_CURSOR it printed (any other
@@ -70,6 +72,8 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import threading
+import time
 
 
 class _Siblings:
@@ -123,6 +127,8 @@ class _ReadBudget:
                     "run": f"files past the scan's byte budget ({MAX_RUN_BYTES} bytes)",
                     "irregular": "a link or a file that is not a regular file (never followed or read)",
                     "damaged": "the rest of a damaged or truncated compressed transcript",
+                    "stalled": f"a SQLite store whose open did not return in {SQLITE_OPEN_SECONDS} s (abandoned)",
+                    "blocked": "SQLite stores after an open that is still blocked (it may hold SQLite's lock)",
                     "zstd": "compressed transcripts (a .zst needs Python 3.14's compression.zstd)"}[why]
             print(f"search_sessions: skipped {what}, first {path}: recall is partial", file=sys.stderr)
 
@@ -1063,6 +1069,89 @@ def _glob(root, *patterns):
     return sorted(found)
 
 
+# How long one SQLite store's open and first read may take. SQLite opens the store, its -wal and
+# its -shm BY NAME with blocking calls, after every check here: a FIFO put at any of the three
+# names in between blocked recall forever, and a 0444 FIFO cannot be unblocked by opening it for
+# writing (2026-10-27 re-check, W5-21). So the open runs in a worker thread while the three names
+# are watched: a name that stops being a regular file fails the store closed (and a FIFO there is
+# opened for writing and closed, so the blocked open returns), and an open still blocked at this
+# deadline -- on a FIFO swapped back out of sight, say -- is abandoned. Either is said.
+SQLITE_OPEN_SECONDS = 10.0
+_WATCH_SECONDS = 0.02
+# Set once an abandoned open is still blocked: SQLite blocks on a FIFO at -shm holding its
+# process-wide VFS lock, so every later open in this process would queue behind it. Later stores
+# are then skipped at once, and that is said, instead of each waiting out the deadline.
+_SQLITE_BLOCKED = False
+
+
+def _regular_or_absent(name):
+    try:
+        return stat.S_ISREG(os.stat(name, follow_symlinks=False).st_mode)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def _unblock(name):
+    """Open a FIFO at `name` for writing and close it, so an open() blocked reading it returns."""
+    try:
+        if stat.S_ISFIFO(os.stat(name, follow_symlinks=False).st_mode):
+            os.close(os.open(name, os.O_WRONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+                             | getattr(os, "O_CLOEXEC", 0)))
+    except OSError:
+        pass  # no reader waiting, no write permission (0444), or gone: the deadline still holds
+
+
+def _open_watched(uri, names):
+    """(connection, None) once `uri` opened and answered a first read; (None, None) on a SQLite
+    error; (None, "irregular" | "stalled") when a name in `names` stopped being a regular file
+    during the open, or the open outlived SQLITE_OPEN_SECONDS. A connection the caller does not
+    get is closed, by the worker if it is still blocked when given up on."""
+    lock, state, done = threading.Lock(), {"conn": None, "abandoned": False}, threading.Event()
+
+    def work():
+        conn = None
+        try:
+            conn = sqlite3.connect(uri, uri=True, factory=_Store, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchall()
+            with lock:
+                if not state["abandoned"]:
+                    state["conn"], conn = conn, None
+        except sqlite3.Error:
+            pass
+        finally:
+            if conn is not None:
+                conn.close()  # a failed probe, or one given up on, must not leak its connection
+            done.set()
+
+    threading.Thread(target=work, name="search_sessions-sqlite-open", daemon=True).start()
+    deadline, why = time.monotonic() + SQLITE_OPEN_SECONDS, None
+    while not done.wait(_WATCH_SECONDS):
+        if not all(_regular_or_absent(name) for name in names):
+            why = "irregular"
+            for name in names:
+                _unblock(name)
+            done.wait(1.0)  # an unblocked open returns at once; one that cannot be stays behind
+            break
+        if time.monotonic() >= deadline:
+            why = "stalled"
+            break
+    if why is None and not all(_regular_or_absent(name) for name in names):
+        why = "irregular"  # it finished, but through a name that is no longer a regular file
+    with lock:
+        state["abandoned"] = why is not None
+        conn, state["conn"] = state["conn"], None
+    if why is not None and conn is not None:
+        conn.close()
+        conn = None
+    if not done.is_set():
+        global _SQLITE_BLOCKED
+        _SQLITE_BLOCKED = True
+    return conn, why
+
+
 def _sqlite_ro(path):
     """Read-only connection that never creates, migrates, or journals a harness DB.
 
@@ -1081,27 +1170,46 @@ def _sqlite_ro(path):
         return None
     if not path.is_file():
         return None
+    if _SQLITE_BLOCKED:
+        _BUDGET.omit(path, "blocked")
+        return None
     resolved = path.resolve()
     uri = resolved.as_uri()
     wal = Path(str(resolved) + "-wal")
     shm = Path(str(resolved) + "-shm")
-    # Its rows are charged as _rows reads them, not by the file's size, which says nothing of what
-    # a query returns (W5-21).
-    suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
-        else ("?mode=ro&immutable=1",)
-    for suffix in suffixes:
-        conn = None
-        try:
-            conn = sqlite3.connect(uri + suffix, uri=True, factory=_Store)
-            conn.path = path
-            conn.row_factory = sqlite3.Row
-            conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchall()
-            return conn
-        except sqlite3.Error:
+    names = (str(resolved), str(wal), str(shm))
+    # The store, as checked: held open across the connect, and compared after it, so a store
+    # replaced in between is never the one read (and a FIFO or link at any name is refused first).
+    try:
+        fd = os.open(names[0], _READ_FLAGS | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        _BUDGET.omit(path, "irregular")
+        return None
+    try:
+        checked = os.fstat(fd)
+        if not (stat.S_ISREG(checked.st_mode) and all(_regular_or_absent(name) for name in names[1:])):
+            _BUDGET.omit(path, "irregular")
+            return None
+        # Its rows are charged as _rows reads them, not by the file's size, which says nothing of
+        # what a query returns (W5-21).
+        suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
+            else ("?mode=ro&immutable=1",)
+        for suffix in suffixes:
+            conn, why = _open_watched(uri + suffix, names)
+            if why is None and conn is not None:
+                now = os.stat(names[0], follow_symlinks=False)
+                if (now.st_dev, now.st_ino) != (checked.st_dev, checked.st_ino):
+                    conn.close()
+                    conn, why = None, "irregular"
+            if why is not None:
+                _BUDGET.omit(path, why)
+                return None
             if conn is not None:
-                conn.close()  # a failed probe must not leak its connection
-            continue
-    return None
+                conn.path = path
+                return conn
+        return None
+    finally:
+        os.close(fd)
 
 
 def _tables(conn):

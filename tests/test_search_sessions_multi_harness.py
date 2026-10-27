@@ -34,6 +34,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1027,6 +1028,98 @@ class TestARefusedFileIsSaid(_Base):
             ns = self.mod.parse_args(["upsilon_token", "--local-harnesses", "--agent", "goose"])
             self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
         self.assertIn(f"first {link}: recall is partial", err.getvalue())
+
+
+
+class TestAStoreSwappedForAFifoNeverHangsRecall(_Base):
+    """Re-check of a5f39065 (W5-21): the checks before a SQLite store is opened see a regular file,
+    but SQLite then opens the store, its -wal and its -shm by NAME, with blocking calls. A FIFO
+    put at any of the three right before the open blocked recall forever (a 0444 FIFO cannot even
+    be unblocked by opening it for writing, and at -shm SQLite blocks holding its process-wide VFS
+    lock, so every later store open in the process hung behind it), and a 0600 FIFO at -wal was
+    read as an empty WAL in silence. Each case runs in a child under a timeout, whose hook swaps
+    the name for a FIFO immediately before the real connect, then opens a second, regular store."""
+
+    DRIVER = (
+        "import importlib.util, os, sqlite3, sys\n"
+        "from pathlib import Path\n"
+        "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+        "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+        "mod.SQLITE_OPEN_SECONDS = 600.0  # the watch, not the deadline, must catch these\n"
+        "db, other, side, mode = sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5], 8)\n"
+        "real = sqlite3.connect\n"
+        "def swap(*args, **kwargs):\n"
+        "    sqlite3.connect = real\n"
+        "    os.rename(db + side, db + side + '.away'); os.mkfifo(db + side, mode)\n"
+        "    return real(*args, **kwargs)\n"
+        "sqlite3.connect = swap\n"
+        "for path in (db, other):\n"
+        "    conn = mod._sqlite_ro(Path(path))\n"
+        "    print('OPENED' if conn is not None else 'REFUSED', flush=True)\n"
+    )
+
+    def store(self, where):
+        db = self.tmp / where / "sessions.db"
+        db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("CREATE TABLE sessions (id TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('s1')")
+            conn.commit()
+        for side in ("-wal", "-shm"):  # both present: the store is opened through its WAL
+            Path(f"{db}{side}").touch()
+        return db
+
+    def test_a_fifo_at_the_store_its_wal_or_its_shm_fails_closed_and_is_said(self):
+        for side in ("", "-wal", "-shm"):
+            for mode in (0o600, 0o444):
+                with self.subTest(name=f"sessions.db{side}", mode=oct(mode)):
+                    db, other = self.store(f"swap{side}-{mode:o}"), self.store(f"other{side}-{mode:o}")
+                    try:
+                        proc = subprocess.run(
+                            [sys.executable, "-I", "-c", self.DRIVER, str(SEARCH_PY), str(db), str(other),
+                             side, oct(mode)[2:]], capture_output=True, text=True, timeout=30)
+                    except subprocess.TimeoutExpired:
+                        self.fail("recall hung opening a store swapped for a FIFO (or the store after it)")
+                    finally:
+                        with contextlib.suppress(OSError):
+                            os.chmod(f"{db}{side}", 0o600)
+                    first, second = (proc.stdout.split() + ["", ""])[:2]
+                    self.assertEqual(first, "REFUSED", f"a store read through a FIFO was used: {proc.stderr}")
+                    self.assertIn(f"first {db}: recall is partial", proc.stderr)
+                    self.assertIn(second, ("OPENED", "REFUSED"), proc.stderr)
+                    if mode == 0o600:  # a FIFO the watch can unblock leaves nothing stuck behind it
+                        self.assertEqual(second, "OPENED", proc.stderr)
+
+    def test_an_open_that_never_returns_is_abandoned_at_the_deadline(self):
+        # The backstop for a FIFO the watch cannot see (swapped back once the open blocked on it):
+        # an open that does not return in SQLITE_OPEN_SECONDS is abandoned, and said.
+        db, release, found, err = self.store("stuck"), threading.Event(), [], io.StringIO()
+        self.addCleanup(release.set)
+
+        def stuck(*args, **kwargs):
+            release.wait()
+            raise sqlite3.OperationalError("released")
+
+        def run():
+            with contextlib.redirect_stderr(err):
+                self.mod._new_scan()
+                found.append(self.mod._sqlite_ro(db))
+        with mock.patch.object(self.mod, "SQLITE_OPEN_SECONDS", 0.5, create=True), \
+                mock.patch.object(sqlite3, "connect", stuck):
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+            worker.join(15)
+        self.assertFalse(worker.is_alive(), "recall hung on an open that never returns")
+        self.assertEqual(found, [None])
+        self.assertIn(f"first {db}: recall is partial", err.getvalue())
+        release.set()
+
+    def test_a_regular_store_still_opens(self):
+        self.mod._new_scan()
+        conn = self.mod._sqlite_ro(self.store("plain"))
+        self.assertIsNotNone(conn)
+        conn.close()
 
 
 if __name__ == "__main__":

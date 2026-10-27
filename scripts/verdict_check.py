@@ -122,6 +122,9 @@ GATE_SCRIPTS = (
 TOP_LEVEL_DIRS = frozenset({".claude-plugin", ".github", "bench", "changelog.d", "docs", "evals",
                             "hooks", "playbooks", "runtime", "scripts", "skills", "tests"})
 ROOT_MODULE_SUFFIXES = (".py", ".pyc", ".pyd", ".so", ".pth")
+# 4. What the test runner imports before any test: every shard runs `-m unittest tests.<module>`,
+#    so a `tests/__init__.py` would run first in each and could rewrite the runner.
+RUNNER_FILES = ("tests/__init__.py",)
 # The compare API lists at most 300 changed files; a list that long may be missing the one that
 # matters.
 FILES_LIST_CAP = 300
@@ -302,8 +305,11 @@ def grader_paths(files):
 
 
 def _is_grader(path):
-    if path in GRADER_FILES or path in GATE_SCRIPTS or path.startswith(GRADER_DIRS):
+    if path in GRADER_FILES or path in GATE_SCRIPTS or path in RUNNER_FILES \
+            or path.startswith(GRADER_DIRS):
         return True
+    if any(directory.startswith(path.rstrip("/") + "/") for directory in GRADER_DIRS):
+        return True  # the directory itself, or a parent, changed as a path (a file or a symlink)
     top, slash, _rest = path.partition("/")
     if not slash:
         return path.endswith(ROOT_MODULE_SUFFIXES)

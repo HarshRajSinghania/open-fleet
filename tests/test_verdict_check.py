@@ -798,6 +798,17 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
                 _code, posted, out = self._run(self._files(path))
                 self.assertEqual(posted[0]["state"], "success", out)
 
+    def test_a_grader_directory_itself_and_the_test_package_init_are_the_grader(self):
+        # PR #718 re-attack PoC: `.github/workflows` changed as a path of its own (a file or a
+        # symlink where the directory was) passed. And `tests/__init__.py` runs in every shard
+        # before any test (`-m unittest tests.<module>`), so it could rewrite the runner.
+        for path in (".github", ".github/workflows", ".github/actions/", "tests/__init__.py"):
+            with self.subTest(path=path):
+                _code, posted, out = self._run(self._files(path))
+                self.assertEqual(posted[0]["state"], "failure", out)
+        _code, posted, out = self._run(self._files(".github/Workflows/x.yml"))
+        self.assertEqual(posted[0]["state"], "success", "GitHub reads .github/workflows only")
+
     def test_the_top_level_list_is_this_repositorys(self):
         listed = subprocess.run(["git", "-C", str(_ROOT), "ls-tree", "-d", "--name-only", "HEAD"],
                                 capture_output=True, text=True, check=True).stdout.split()

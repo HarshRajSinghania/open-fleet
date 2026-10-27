@@ -99,7 +99,8 @@ from a branch of this repository: the PR's `author_association` is `OWNER` (or i
 owner's login) and its head repository is this repository. An owner-opened PR whose head is a
 fork's branch gets no exemption, because the fork keeps push access to that branch. The grader:
 - `.github/workflows/`: every job, step, `needs:` and `if:` of the three build contexts, and
-  `verdict-check.yml`, which wakes this gate.
+  `verdict-check.yml`, which wakes this gate. The directory itself, or `.github`, changed as a
+  path of its own (a file or a symlink where the directory was) counts too.
 - `.github/actions/`: a local action a workflow can `uses: ./.github/actions/…` (none today).
 - `.github/ci-tools.lock`: which build of coverage, ruff and agentskills those jobs install and
   run. A PR could lock a package it published itself.
@@ -111,6 +112,8 @@ fork's branch gets no exemption, because the fork keeps push access to that bran
   `replay.py`, `heldout.py` and `evals/demo/negative-control/run.sh` (`GATE_SCRIPTS` in the
   script; `tests/test_verdict_check.py` holds the list to the workflows). `guard` runs the base
   branch's `floor_guard.py`, which no PR can edit.
+- `tests/__init__.py`: every shard runs `-m unittest tests.<module>`, which would import it
+  before any test, so it could rewrite the runner.
 - A module file at the root (`*.py`, `*.pyc`, `*.pyd`, `*.so`, `*.pth`) or a top-level directory
   this repository does not have: `shard-tests.py` runs `python -m coverage` and `-m unittest`
   from the root, so a root `coverage/` or `unittest.py` would run instead of the locked tool.

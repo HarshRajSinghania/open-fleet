@@ -336,9 +336,9 @@ def resolve_cli(environ=None, platform=None, which=shutil.which):
     platform = sys.platform if platform is None else platform
     explicit = (environ.get("ORCA_CLI_COMMAND") or "").strip()
     if explicit:
-        if which(explicit) is None:
-            raise ProbeError(f"ORCA_CLI_COMMAND={explicit!r} is not on PATH "
-                             "(it must name one executable, without arguments)")
+        problem = orca_cli.cli_command_problem(explicit, "ORCA_CLI_COMMAND", which)
+        if problem:  # the one policy orca_cli.resolve applies too (W4-15/W2-03)
+            raise ProbeError(problem)
         return explicit, "ORCA_CLI_COMMAND"
     if environ.get("ORCA_DEV_REPO_ROOT") and which("orca-dev") is not None:
         return "orca-dev", "ORCA_DEV_REPO_ROOT is set and orca-dev is on PATH"

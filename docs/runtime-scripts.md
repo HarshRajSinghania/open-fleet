@@ -1592,7 +1592,7 @@ or refused input · 3 not the owner (fenced, lease held, unknown token).
 ## `orca_cli.py`
 
 Resolves the Orca CLI command name once, for every script that talks to Orca. Source
-`runtime/scripts/orca_cli.py:1-46`; behavior pinned by `tests/test_orca_cli.py`, which also
+`runtime/scripts/orca_cli.py:1-51`; behavior pinned by `tests/test_orca_cli.py`, which also
 fails on any script under `runtime/scripts/` that spells the executable itself.
 
 Usage: `orca_cli.py [--path | --version | <domain> ARGS…]`; library `from orca_cli import resolve, run_json`.
@@ -1613,9 +1613,16 @@ sessions it manages; the test suite points it at a stub) → `orca_cli.py` itsel
 `OPEN_FLEET_RUNTIME`/`ORCA_FLEET_RUNTIME` selects a non-Orca runtime → `orca-dev` when
 `ORCA_DEV_REPO_ROOT` is set → `orca-ide` on Linux and WSL → `orca` elsewhere. Resolution never consults PATH; `--path` additionally
 looks the resolved name up and fails when it is absent.
+A configured command must name ONE executable — a bare name or an absolute path; a command line
+(`python3 /tmp/orca.py`), an option-shaped value, a cwd-relative path or a control character is
+refused by name, "(it must name one executable, without arguments)", and `run_json` also refuses
+a configured name that is not on PATH with that message instead of an errno. The rule lives in
+`cli_command_problem`, which `upstream_probe.py`'s `capture` resolver calls too: one policy
+for both resolvers (W4-15/W2-03).
 
 Exits: 0 printed · 1 (`--path`) the resolved command is not on PATH, or a provider dispatch
-failed · 2 usage, or an unknown `OPEN_FLEET_RUNTIME`.
+failed · 2 usage, a configured command that is not one executable, or an unknown
+`OPEN_FLEET_RUNTIME`.
 
 > Why: Orca's Linux executable, `.deb` and `.rpm` are all `orca-ide` by construction
 > (`src/main/cli/bundled-cli-launcher-path.ts` LINUX_CLI_COMMAND_NAME), and bare `orca` on a

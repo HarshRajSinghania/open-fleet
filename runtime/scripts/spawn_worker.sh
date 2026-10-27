@@ -178,7 +178,7 @@ step=resolve-cli
 task="?"
 trap 'rc=$?; echo "SPAWN=FAILED task=${task} step=${step} rc=${rc}" >&2; exit "${rc}"' ERR
 if ! ORCA_BIN="$(python3 "$HERE/orca_cli.py")"; then
-  echo "SPAWN=REFUSED task=? the runtime CLI could not be resolved (OPEN_FLEET_RUNTIME / ORCA_CLI_COMMAND; see runtime/scripts/orca_cli.py)" >&2
+  echo "SPAWN=REFUSED task=? the runtime CLI could not be resolved (OPEN_FLEET_RUNTIME / OPEN_FLEET_CLI_COMMAND / ORCA_CLI_COMMAND; see runtime/scripts/orca_cli.py)" >&2
   exit 2
 fi
 step=parse-args

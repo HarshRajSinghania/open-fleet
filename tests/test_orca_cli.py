@@ -159,6 +159,85 @@ class SharedEnvelopeReader(unittest.TestCase):
                 self.m.run_json(["x"], timeout=5, error=self.Boom)
 
 
+class TheConfiguredCommandIsOneExecutable(unittest.TestCase):
+    """W4-15 / W2-03 (2026-10-27 audit): OPEN_FLEET_CLI_COMMAND / ORCA_CLI_COMMAND was returned
+    verbatim and became argv[0] everywhere. `python3 /tmp/orca.py` died as an opaque `[Errno 2]`
+    on every call, and an option-shaped or cwd-relative value was not special-cased at all.
+    upstream_probe.resolve_cli already refused what is not on PATH with a named rule; now both
+    resolvers apply ONE policy, with the same message."""
+
+    RULE = "(it must name one executable, without arguments)"
+
+    class Boom(Exception):
+        pass
+
+    def setUp(self):
+        self.m = _load()
+
+    def test_a_command_line_an_option_or_a_relative_path_is_refused_by_name(self):
+        for var in ("OPEN_FLEET_CLI_COMMAND", "ORCA_CLI_COMMAND"):
+            for value in ("python3 /tmp/orca.py", "orca --verbose", "-x", "--help", "bin/orca",
+                          "./orca", "orca\nterminal", "orca\x1b[2J"):
+                with self.subTest(var=var, value=value):
+                    with self.assertRaises(self.m.CliCommandError) as ctx:
+                        self.m.resolve({var: value}, "Linux")
+                    self.assertIn(var, str(ctx.exception))
+                    self.assertIn(self.RULE, str(ctx.exception))
+                    self.assertNotIn("\n", str(ctx.exception))
+                    self.assertNotIn("\x1b", str(ctx.exception))
+
+    def test_a_bare_name_or_an_absolute_path_still_resolves_without_consulting_path(self):
+        for value in ("orca-stub", "/opt/x/orca", "/Applications/Orca IDE.app/bin/orca"):
+            with self.subTest(value=value):
+                self.assertEqual(self.m.resolve({"ORCA_CLI_COMMAND": value}, "Linux"), value)
+
+    def test_run_json_names_the_cause_instead_of_an_errno(self):
+        for value in ("python3 /tmp/orca.py", "ghost-orca-not-on-path"):
+            with self.subTest(value=value), \
+                    mock.patch.dict(os.environ, {"OPEN_FLEET_CLI_COMMAND": value}):
+                with self.assertRaises(self.Boom) as ctx:
+                    self.m.run_json(["orchestration", "check"], timeout=5, error=self.Boom)
+                self.assertIn("could not run orca", str(ctx.exception))
+                self.assertIn(f"OPEN_FLEET_CLI_COMMAND={value!r}", str(ctx.exception))
+                self.assertIn(self.RULE, str(ctx.exception))
+                self.assertNotIn("Errno", str(ctx.exception))
+
+    def test_the_cli_entry_point_refuses_with_usage_and_the_named_rule(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {"PATH": os.environ["PATH"],
+                                          "ORCA_CLI_COMMAND": "python3 /tmp/orca.py"}, clear=True), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = self.m.main([])
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn(self.RULE, err.getvalue())
+
+    def test_spawn_worker_refuses_before_any_call(self):
+        p = subprocess.run(["bash", str(SCRIPTS / "spawn_worker.sh"), "t1", "current", "t"],
+                           env={"PATH": "/usr/bin:/bin", "SW_SELFTEST": "1",
+                                "ORCA_CLI_COMMAND": "python3 /tmp/orca.py"},
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("SPAWN=REFUSED", p.stderr)
+        self.assertIn(self.RULE, p.stderr)
+
+    def test_upstream_probe_applies_the_same_policy(self):
+        spec = importlib.util.spec_from_file_location("upstream_probe_for_cli",
+                                                      SCRIPTS / "upstream_probe.py")
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+        def everything(name):
+            """A which() that finds anything: only the shape can refuse."""
+            return f"/bin/{name}"
+
+        for value in ("-x", "bin/orca", "python3 /tmp/orca.py"):
+            with self.subTest(value=value), self.assertRaises(probe.ProbeError) as ctx:
+                probe.resolve_cli({"ORCA_CLI_COMMAND": value}, "linux", which=everything)
+            self.assertIn(self.RULE, str(ctx.exception))
+        self.assertEqual(probe.resolve_cli({"ORCA_CLI_COMMAND": "my-orca"}, "linux", which=everything),
+                         ("my-orca", "ORCA_CLI_COMMAND"))
+
+
 class NoScriptNamesTheExecutable(unittest.TestCase):
     """The contract: the executable is a policy decision made once, in orca_cli.py."""
 

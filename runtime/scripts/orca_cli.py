@@ -5,8 +5,11 @@ Every fleet script that talks to Orca resolves the executable through this modul
 rule holds everywhere. The order is upstream's own, from `skill-stubs/_shared/cli-resolution.md`
 in stablyai/orca:
 
-  1. `ORCA_CLI_COMMAND` when set. Orca exports it inside the sessions it manages (structured
-     worker sessions, managed WSL sessions), and the test suite points it at a stub.
+  1. `OPEN_FLEET_CLI_COMMAND`, else `ORCA_CLI_COMMAND`, when set. Orca exports the latter inside
+     the sessions it manages (structured worker sessions, managed WSL sessions), and the test
+     suite points it at a stub. It must name ONE executable — a bare name or an absolute path,
+     never a command line, an option or a cwd-relative path — or resolution refuses by name
+     (`cli_command_problem`, the one policy upstream_probe.resolve_cli applies too).
   2. `orca-dev` when `ORCA_DEV_REPO_ROOT` is set — a dev checkout's launcher.
   3. `orca-ide` on Linux, WSL included. Orca's Linux executable, `.deb` and `.rpm` are all
      `orca-ide` by construction (`src/main/cli/bundled-cli-launcher-path.ts`
@@ -16,7 +19,8 @@ in stablyai/orca:
   4. `orca` everywhere else (macOS, Windows).
 
 Resolution never consults PATH: the name is a policy decision, and a missing executable is
-reported by the caller (or by `--path` below), never silently swapped for another build.
+reported by the caller (`run_json` names a configured command that is not on PATH, `--path`
+below any), never silently swapped for another build.
 
 Usage:
   python3 orca_cli.py            # print the resolved command name
@@ -41,8 +45,9 @@ the `result` object (`{}` when absent). `nonzero` keeps each caller's exit-statu
 there is no result either), "ignore" (the envelope alone decides).
 
 Exit: 0 printed · 1 (`--path`) the resolved command is not on PATH, or a `<domain>` dispatch
-failed (its error envelope is still printed on stdout) · 2 usage, or an unknown
-OPEN_FLEET_RUNTIME (else legacy ORCA_FLEET_RUNTIME) value, checked first whatever the arguments.
+failed (its error envelope is still printed on stdout) · 2 usage, a configured CLI command that
+is not one executable, or an unknown OPEN_FLEET_RUNTIME (else legacy ORCA_FLEET_RUNTIME) value,
+checked first whatever the arguments.
 """
 import sys
 
@@ -67,6 +72,7 @@ from pathlib import Path
 LINUX_COMMAND = "orca-ide"
 DEFAULT_COMMAND = "orca"
 DEV_COMMAND = "orca-dev"
+CLI_COMMAND_RULE = "it must name one executable, without arguments"
 
 _PROVIDER_DOMAINS = frozenset({
     "orchestration", "worktree", "terminal", "vm",
@@ -114,14 +120,56 @@ def _load_providers():
     return providers
 
 
+class CliCommandError(ValueError):
+    """A configured CLI command (OPEN_FLEET_CLI_COMMAND / ORCA_CLI_COMMAND) that is not one executable."""
+
+
+def cli_command_problem(value, var, which=None):
+    """Why `value`, read from the env var `var`, cannot be the CLI command; None when it can.
+
+    ONE policy for every resolver (upstream_probe.resolve_cli calls this too, W4-15/W2-03): the
+    value becomes argv[0] of every fleet call, so it names one executable — a bare name found
+    on PATH, or an absolute path — never a command line (`python3 /tmp/orca.py` died as an
+    opaque errno), an option (`-x`), a path relative to whatever cwd the caller has, or a control
+    character. `which` (shutil.which) adds the on-PATH check; without it only the shape is
+    judged, because resolve() never consults PATH. The value is shown repr()-quoted.
+    """
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        why = "holds a control character"
+    elif value.startswith("-"):
+        why = "is option-shaped"
+    elif not os.path.isabs(value) and any(c.isspace() for c in value):
+        why = "is a command line, not one executable"
+    elif not os.path.isabs(value) and "/" in value:
+        why = "is a relative path"
+    elif which is not None and which(value) is None:
+        why = "is not on PATH"
+    else:
+        return None
+    return f"{var}={value!r} {why} ({CLI_COMMAND_RULE})"
+
+
+def _configured(env):
+    """(var, value) of the CLI-command override in force, or ("", "") when none is set."""
+    for var in ("OPEN_FLEET_CLI_COMMAND", "ORCA_CLI_COMMAND"):
+        value = (env.get(var) or "").strip()
+        if value:
+            return var, value
+    return "", ""
+
+
 def resolve(env=None, system=None) -> str:
     """The command name to execute, per the order in the module docstring.
 
-    `env` and `system` are injectable for tests; production callers pass nothing.
+    `env` and `system` are injectable for tests; production callers pass nothing. A configured
+    command that is not one executable raises CliCommandError (cli_command_problem).
     """
     env = os.environ if env is None else env
-    configured = (env.get("OPEN_FLEET_CLI_COMMAND") or env.get("ORCA_CLI_COMMAND") or "").strip()
+    var, configured = _configured(env)
     if configured:
+        problem = cli_command_problem(configured, var)
+        if problem:
+            raise CliCommandError(problem)
         return configured
     if _active_non_orca_runtime(env):
         return str(Path(__file__).resolve())
@@ -146,7 +194,15 @@ def run_json(argv, *, timeout, error, nonzero="strict"):
         except Exception as exc:
             raise error(f"could not run orca: {exc}")
     try:
-        proc = subprocess.run([resolve(), *argv, "--json"],
+        cli = resolve()
+    except CliCommandError as exc:
+        raise error(f"could not run orca: {exc}")
+    var, configured = _configured(os.environ)
+    problem = cli_command_problem(configured, var, shutil.which) if configured else None
+    if problem:
+        raise error(f"could not run orca: {problem}")
+    try:
+        proc = subprocess.run([cli, *argv, "--json"],
                               capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         raise error(f"could not run orca: {exc}")
@@ -186,11 +242,16 @@ def main(argv=None) -> int:
     if bad_runtime:
         print(f"orca_cli: {bad_runtime}", file=sys.stderr)
         return 2
+    if argv in ([], ["--path"]):
+        try:
+            name = resolve()
+        except CliCommandError as exc:
+            print(f"orca_cli: {exc}", file=sys.stderr)
+            return 2
     if argv == []:
-        print(resolve())
+        print(name)
         return 0
     if argv == ["--path"]:
-        name = resolve()
         found = (name if (os.path.isabs(name) and os.path.isfile(name) and os.access(name, os.X_OK))
                  else shutil.which(name))
         if not found:

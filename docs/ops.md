@@ -223,6 +223,9 @@ Run the repository gates, including `python3 scripts/validate.py`,
 before the cut.
 Every published heading still needs its commit and annotated tag; only the sole
 newest preparing heading has no cut SHA. Green checks do not authorize publication.
+`release_check.py`'s CI checks read the latest `validate` and `install` runs on this release
+branch and need both green at its HEAD, so push the branch and open its pull request first
+([checklist](release-1.0-checklist.md), gates 0 and 4).
 
 <!-- release:cut -->
 ```bash

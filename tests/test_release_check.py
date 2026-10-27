@@ -367,10 +367,13 @@ class GatesFailOnAFixtureThatViolatesThem(unittest.TestCase):
                 self.assertEqual(find(checks, name)[1], rc.FAIL, name)
             wf = root / ".github" / "workflows"
             wf.mkdir(parents=True)
-            (wf / "validate.yml").write_text("run: python3 bench/vf-bench/gate.py\n",
-                                             encoding="utf-8")
-            (wf / "negative-control.yml").write_text("run: sh evals/demo/negative-control/run.sh\n",
-                                                     encoding="utf-8")
+            # Workflows as GitHub reads them: a job, a step, a run: line that invokes the script.
+            (wf / "validate.yml").write_text(
+                "jobs:\n  vfbench:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
+                encoding="utf-8")
+            (wf / "negative-control.yml").write_text(
+                "jobs:\n  pinned-demo:\n    steps:\n"
+                "      - run: sh evals/demo/negative-control/run.sh\n", encoding="utf-8")
             (root / "README.md").write_text("git clone … && sh scripts/install.sh\n",
                                             encoding="utf-8")
             (root / "docs" / "distribution.md").write_text("`sh scripts/install.sh`\n",

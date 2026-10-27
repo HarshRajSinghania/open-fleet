@@ -141,6 +141,10 @@ Key recovery invariants (tested across `setsid` and real Docker `danger` contain
 - **Lock-fenced ownership:** Active launches hold `<state_dir>/intents/<intent>.lock` (`flock`), and recovery holds `<intent>.recovery.lock`. Passing `--takeover` bumps the epoch so any stale writer fails with `launch_fenced`.
 - **Zero data loss on `danger` containers:** Before declaring a crashed Docker `danger` worker dead, reconciliation stops the container and syncs its private git directory back to `refs/open-fleet/sandbox/<dispatch>`.
 
+### `posix` git custody
+
+Every git the `posix` provider runs is coordinator-side over a `.git` a worker can write (linked worktrees share one config; the same uid shares `~/.gitconfig`), so it runs through [`runtime/scripts/gitexec.py`](../runtime/scripts/gitexec.py): one absolute git, no global or system config, hooks in `/dev/null`, `core.fsmonitor` off, replace refs and grafts off, and every declared filter/diff/merge driver blanked on a call that materialises content (W4-01). `worktree create` therefore checks out in a second step inside the new worktree, so a repository using Git LFS or another smudge filter gets the committed (pointer) bytes, and its `post-checkout` hook does not run. `worktree rm` decides from the repository's own `worktree list`, never the worktree's `.git` pointer (W4-08).
+
 ---
 
 ## Supported coding-agent harnesses & sandbox profiles

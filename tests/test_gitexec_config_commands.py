@@ -562,8 +562,9 @@ class RequiredFilters(unittest.TestCase):
 # from HEAD and a good run read as STALE. Mapping those bytes back to the committed clean blob
 # needs the repository's own command, which the coordinator must not run. wtree.sh therefore says
 # so: exit 3 with the reason, which evidence-run.py records and verify.py check_commands reports in
-# place of "STALE". An untouched file still fingerprints as HEAD (the stat cache never re-hashes),
-# and a filter declared in the coordinator's OWN global config still runs, so it keeps fidelity.
+# place of "STALE". An untouched file still fingerprints as HEAD (the stat cache never re-hashes).
+# A filter declared in the global config is held to the same rule (W4-02): on a one-uid host the
+# worker writes ~/.gitconfig too, so it never runs and a changed path it selects is unverifiable.
 _UNVERIFIABLE = "cannot be compared to the committed tree without running repository-supplied commands"
 
 
@@ -653,13 +654,17 @@ class FilteredFileFidelity(unittest.TestCase):
         self.assertIn("clean", p.fired(), "control: the stripped wtree.sh must run the filter")
         self.assertEqual(r.stdout.strip(), self.head_tree)
 
-    def test_a_filter_from_the_coordinators_own_global_config_keeps_fidelity(self):
+    def test_a_filter_from_the_same_uid_global_config_is_unverifiable_not_run(self):
+        # W4-02: the global file is not the coordinator's own on a one-uid host — the worker can
+        # write it — so its filter is held to the repo rule: never run, and exit 3 for a changed
+        # path it selects (the earlier "it still runs, for fidelity" let it choose the value).
         p = self._repo(scope="global")
         self._touch(p)
         out, err = self._fingerprint(p)
-        self.assertIsNone(err, err)
-        self.assertEqual(out, self.head_tree)
-        self.assertIn("clean", p.fired(), "the global (coordinator-supplied) filter should run")
+        self.assertIsNone(out, "a fingerprint was produced for content it cannot compare")
+        self.assertIn(_UNVERIFIABLE, err)
+        self.assertIsInstance(err, evidence_run.WtreeUnverifiable)
+        self.assertEqual(p.fired(), set(), "the global filter ran in the coordinator")
 
     def test_a_repo_key_shadowing_a_global_driver_is_still_blanked(self):
         p = self._repo(scope="global")

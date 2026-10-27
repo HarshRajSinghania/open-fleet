@@ -2954,6 +2954,40 @@ class TestInterpreterTableCoversTheClass(ReviewHookBase):
             "sed 's/a/b/e' f", "sed 's/a/b/ge' f", "sed 's/foo/bar/g' f",
         ), bounded_modes=self.BOTH)
 
+    def test_awk_pipe_and_coprocess_shell_channels_are_judged(self):
+        # Re-attacker g1 #1 (W1-03): awk's output pipe `print | "cmd"`, input pipe `"cmd" | getline`
+        # and `|&` coprocess all hand a string to a shell; only system() was scanned by name.
+        self.expect("deny", (
+            "awk 'BEGIN{print \"x\" | \"rm -rf /\"}'",
+            "awk 'BEGIN{\"rm -rf /\" | getline line}'",
+            "awk 'BEGIN{print \"x\" |& \"git push --force origin main\"}'",
+            "awk 'BEGIN{print \"rm -rf /\" | \"sh\"}'",
+            "gawk 'BEGIN{\"orca orchestration reset\" |& getline}'",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "awk 'BEGIN{print $1 | \"sort\"}' f", "awk 'BEGIN{\"date\" | getline d}' f",
+        ), bounded_modes=self.BOTH)
+
+    def test_versioned_and_variant_interpreter_heads_are_matched(self):
+        # Re-attacker g1 #1 (W1-03): versioned/variant interpreter names and gawk's option spellings
+        # were missed by the exact-name table.
+        self.expect("deny", (
+            "lua5.4 -e 'os.execute(\"rm -rf /\")'", "lua5.1 -e 'os.execute(\"rm -rf /\")'",
+            "luajit2.1 -e 'os.execute(\"rm -rf /\")'",
+            "R -e 'system(\"rm -rf /\")'", "julia -E 'run(`rm -rf /`)'",
+            "goawk 'BEGIN{system(\"rm -rf /\")}'", "original-awk 'BEGIN{system(\"rm -rf /\")}'",
+            "toybox awk 'BEGIN{system(\"rm -rf /\")}'",
+            "gawk --source='BEGIN{system(\"rm -rf /\")}'",
+            "gawk --source 'BEGIN{system(\"rm -rf /\")}'",
+            "gawk -e 'BEGIN{system(\"rm -rf /\")}'",
+            "gawk -i inplace 'BEGIN{system(\"rm -rf /\")}'",
+            # the same canonical name where the program is fed on stdin (sweep)
+            "printf 'os.execute(\"git push --force origin main\")' | lua5.4",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "lua5.4 -e 'print(1+1)'", "goawk '{print $1}' f", "R -e 'cat(1:3)'",
+        ), bounded_modes=self.BOTH)
+
     def test_an_interpreter_writing_a_guard_path_is_denied(self):
         self.expect("deny", (
             "awk 'BEGIN{print \"x\" > \".claude/settings.json\"}'",

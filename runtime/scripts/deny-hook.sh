@@ -2355,16 +2355,34 @@ _SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh")
 # code operand after its `eval` subcommand, so both are read in _inline_code own branches,
 # not here (W1-03, 2026-10-27 audit).
 _INLINE_FLAGS = {"python": "c", "perl": "eE", "ruby": "e", "node": "ep", "nodejs": "ep",
-                 "bun": "e", "php": "r", "lua": "e", "luajit": "e", "julia": "e", "Rscript": "e"}
+                 "bun": "e", "php": "r", "lua": "e", "luajit": "e", "julia": "eE", "Rscript": "e",
+                 "R": "e"}
 _AWKS = ("awk", "gawk", "mawk", "nawk")
 # busybox <applet> ARGS runs the applet: peel it so `busybox awk …` is judged as awk (W1-03/W1-05).
+# toybox is the same multi-call shape.
 _BUSYBOX_APPLETS = set(_AWKS) | {"sh", "ash", "sed", "tar", "unzip", "cpio", "rm", "rmdir", "cp",
                                  "mv", "dd", "tee", "wget", "vi", "ln", "install", "chmod"}
 
 
+def _is_awk(head):
+    """Any awk build: awk/gawk/mawk/nawk/goawk/original-awk, etc. (re-attacker g1 #1)."""
+    return head in _AWKS or head in ("goawk", "original-awk") or bool(re.fullmatch(r"[a-z]*awk", head))
+
+
+def _canon_interp(head):
+    """Canonical _INLINE_FLAGS key for a versioned or variant interpreter spelling (g1 #1):
+    python3.12 -> python, lua5.4 -> lua, luajit2.1 -> luajit, ruby3 -> ruby, R -> R."""
+    for pat, key in ((r"python[0-9.]*", "python"), (r"luajit[0-9.]*", "luajit"),
+                     (r"lua[0-9.]*", "lua"), (r"ruby[0-9.]*", "ruby"), (r"php[0-9.]*", "php"),
+                     (r"perl[0-9.]*", "perl")):
+        if re.fullmatch(pat, head):
+            return key
+    return head
+
+
 def _peel_busybox(head, rest):
-    """(head, rest) with a leading busybox applet peeled: busybox awk PROG -> awk PROG."""
-    if head in ("busybox", "busybox.static") and rest and rest[0] in _BUSYBOX_APPLETS:
+    """(head, rest) with a leading busybox/toybox applet peeled: busybox awk PROG -> awk PROG."""
+    if head in ("busybox", "busybox.static", "toybox") and rest and rest[0] in _BUSYBOX_APPLETS:
         return rest[0], rest[1:]
     return head, rest
 _CODE_LITERAL = re.compile(r"\x22((?:[^\x22\\]|\\.)*)\x22|\x27([^\x27]*)\x27", re.DOTALL)
@@ -2401,34 +2419,49 @@ def _inline_code(head, rest):
     program, deno eval operand, ... (W1-03). The code is scanned by _code_commands for the
     shell lines it hands the system, so an interpreter laundering a refused command is seen."""
     head, rest = _peel_busybox(head, rest)
-    if head in _AWKS:
-        # awk PROGRAM FILE...: the program is the first word that is not an option and not the
-        # operand of -f/-v/-F. -f names a program FILE (not inline code), so an -f form has none.
-        i, prog = 0, None
+    if _is_awk(head):
+        # awk PROGRAM FILE...: the program is the first non-option word. gawk also takes the
+        # program from -e/--source[=] (which may repeat); -f/-E name a program FILE (no inline
+        # code here); -v/-F/-i/-l take an operand (re-attacker g1 #1).
+        progs, i = [], 0
+        _takes = ("-v", "--assign", "-F", "--field-separator", "-i", "--include", "-l", "--load")
         while i < len(rest):
             w = rest[i]
             if w == "--":
-                prog = rest[i + 1] if i + 1 < len(rest) else None
+                if i + 1 < len(rest):
+                    progs.append(rest[i + 1])
                 break
-            if w in ("-f", "--file", "-v", "--assign", "-F", "--field-separator"):
-                if w in ("-f", "--file"):
-                    return []   # program is in a file, not on the line
+            if w in ("-f", "--file", "-E", "--exec"):
+                return []                                   # program is in a file
+            if w in ("-e", "--source") and i + 1 < len(rest):
+                progs.append(rest[i + 1])
+                i += 2
+                continue
+            if w.startswith("--source="):
+                progs.append(w.split("=", 1)[1])
+                i += 1
+                continue
+            if w.startswith("-e") and len(w) > 2 and not w.startswith("--"):
+                progs.append(w[2:])
+                i += 1
+                continue
+            if w in _takes:
                 i += 2
                 continue
             if w.startswith("-") and len(w) > 1:
-                if w[1] == "f":
+                if "f" in w[1:] or "E" in w[1:]:
                     return []
                 i += 1
                 continue
-            prog = w
+            progs.append(w)                                 # the first bare word is the program
             break
-        return [prog] if prog else []
+        return progs
     if head == "deno":
         ops = [w for w in rest if not w.startswith("-")]
         if ops[:1] == ["eval"] and len(ops) > 1:
             return [ops[1]]
         return []
-    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    key = _canon_interp(head)
     letters = _INLINE_FLAGS.get(key)
     codes, i = [], 0
     while letters and i < len(rest):
@@ -2498,6 +2531,27 @@ def _code_commands(code):
         out += [lm[1] if lm[1] is not None else lm[2] for lm in _CODE_LITERAL.finditer(argtext)]
     out += re.findall(r"\x60([^\x60]*)\x60", code)
     return [line for line in out if line.strip()]
+
+
+_AWK_STR = r"(\x22(?:[^\x22\\]|\\.)*\x22|\x27[^\x27]*\x27)"
+_AWK_PIPE_TOK = r"\|(?!\|)&?"   # a single `|` (not the logical `||`), optional coprocess `&`
+# A string that is the command on either side of an awk pipe/coprocess: `"cmd" | getline` (before)
+# and `print … | "cmd"` (after). Two passes so one match does not consume the pipe of the other.
+_AWK_PIPE_BEFORE = re.compile(_AWK_STR + r"[ \t]*" + _AWK_PIPE_TOK)
+_AWK_PIPE_AFTER = re.compile(_AWK_PIPE_TOK + r"[ \t]*" + _AWK_STR)
+
+
+def _awk_pipe_cmds(code):
+    """Shell command strings an awk program pipes to or from (re-attacker g1 #1): the output pipe
+    `print … | "cmd"`, the input pipe `"cmd" | getline`, and the `|&` coprocess. The string on
+    either side of a pipe may be the command (or the data fed to a shell), so both are judged."""
+    out = []
+    for rx in (_AWK_PIPE_BEFORE, _AWK_PIPE_AFTER):
+        for m in rx.finditer(code):
+            cm = _CODE_LITERAL.match(m[1])
+            if cm:
+                out.append(cm[1] if cm[1] is not None else cm[2])
+    return [c for c in out if c and c.strip()]
 
 
 def _note_assigns(assigns, ws):
@@ -2860,8 +2914,11 @@ def _inner_body(ws):
     elif head in ("sqlite3", "sed") or _peel_busybox(head, ws[1:])[0] == "sed":
         bodies += _shell_launcher_lines(*_peel_busybox(head, ws[1:]))
     else:
+        _awk = _is_awk(_peel_busybox(head, ws[1:])[0])
         for code in _inline_code(head, ws[1:]):
             bodies += _code_commands(code)
+            if _awk:
+                bodies += _awk_pipe_cmds(code)   # print | "cmd", "cmd" | getline, |& (g1 #1)
     bodies += _head_bodies(ws)
     if not bodies:
         return None
@@ -2893,7 +2950,7 @@ def _stdin_kind(ws):
             else:
                 break
         return "shell" if from_stdin or i >= len(ws) else None
-    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    key = _canon_interp(head)   # python3.12, lua5.4, perl5.36 read stdin too (g1 #1 sweep)
     if key in _INLINE_FLAGS and not _inline_code(head, ws[1:]):
         ops = [w for w in ws[1:] if not w.startswith("-") or w == "-"]
         flags = [w for w in ws[1:] if w.startswith("-") and w != "-"]
@@ -3170,8 +3227,7 @@ def _reader_kind(ws):
         return None
     if head in _SHELLS or head in ("source", "."):
         return "shell"
-    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
-    return "interp" if key in _INLINE_FLAGS else None
+    return "interp" if _canon_interp(head) in _INLINE_FLAGS else None
 
 
 def _xargs_lines(args, ws, stdin):
@@ -4518,7 +4574,7 @@ _RUNNERS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh", "
 def _code_words(ws):
     """The words a runner executes as code: a -c/-e string, else its script operand."""
     head = ws[0].rsplit("/", 1)[-1] if ws else ""
-    if not (head in _RUNNERS or re.fullmatch(r"python[0-9.]*", head)):
+    if not (head in _RUNNERS or _canon_interp(head) in ("python", "perl", "ruby", "php")):
         return None
     if head in ("eval", "source", "."):
         return ws[1:]

@@ -9,8 +9,10 @@ import ast
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -262,6 +264,63 @@ class TheSecretWaiverCarriesIdentityNotContent(unittest.TestCase):
             with self.subTest(scan=scan):
                 self.assertIn('GIT_ATTR_SOURCE="$no_attributes" "$gl" detect', scan)
         self.assertRegex(run, r"printf '\* -diff\\n' > \"\$canary/\.gitattributes\"")
+
+    def test_a_binary_classified_credential_is_read_as_text(self):
+        """PR #718 review round 5 (W6-03 class): a file with a NUL byte in it (or marked `binary`
+        or `-diff`) is "Binary files differ" to `git log -p` even with attributes read from the
+        empty tree, so gitleaks 8.30.1 reported no leak in it. Both scans first run the step's own
+        every_path_text, which sets `diff` for every path in $GIT_DIR/info/attributes. Run here
+        exactly as written in a throwaway repository, against a fixture whose fake key is
+        assembled at test time, through gitleaks when it is installed and through the `git log`
+        it runs (GIT_TRACE, 8.30.1) either way."""
+        wf = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        run = "\n".join(ln for ln in wf.splitlines() if not ln.lstrip().startswith("#"))
+        defined = re.findall(r"(?m)^ *(every_path_text\(\) \(.*\))$", run)
+        self.assertEqual(len(defined), 1, "the step no longer defines every_path_text")
+        self.assertRegex(run, r'(?s)every_path_text \.\n *GIT_ATTR_SOURCE="\$no_attributes" "\$gl" '
+                              r'detect --redact --no-banner --source \.\n')
+        self.assertRegex(run, r'(?s)git clone --quiet \. "\$canary"\n *every_path_text "\$canary"\n')
+        self.assertRegex(run, r"printf 'x\\000CANARY = .*> \"\$canary/gitleaks-canary\.dat\"")
+        self.assertIn("planted+=(gitleaks-canary.dat)", run)
+        key = "AKIA" + "ZYXWVUTSRQPONMLK"  # gitleaks' aws-access-token shape, not a real key
+        empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "r"
+
+            def git(*args, **extra):
+                return subprocess.run(["git", "-C", str(repo), *args], env={**env, **extra},
+                                      capture_output=True, check=True, timeout=60).stdout
+
+            subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True, timeout=60)
+            (repo / "credential.dat").write_bytes(b"x\x00CANARY = \"" + key.encode() + b"\"\n")
+            (repo / ".gitattributes").write_text("credential.dat binary\n* -diff\n",
+                                                 encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", "a binary-classified credential")
+
+            def history():
+                return git("log", "-p", "-U0", "--full-history", "--all", "--diff-filter=tuxdb",
+                           GIT_ATTR_SOURCE=empty_tree)
+
+            self.assertNotIn(key.encode(), history(), "the fixture is not binary to git")
+            subprocess.run(["bash", "-c", defined[0] + "\nevery_path_text \"$1\"", "_",
+                            str(repo)], env=env, check=True, timeout=60)
+            self.assertIn(b"+x\x00CANARY = \"" + key.encode(), history(),
+                          "the scan's history still hides the binary-classified credential")
+            gitleaks = shutil.which("gitleaks")
+            if gitleaks:
+                report = Path(tmp) / "report.json"
+                proc = subprocess.run(
+                    [gitleaks, "detect", "--redact", "--no-banner", "--source", str(repo),
+                     "--report-format", "json", "--report-path", str(report)],
+                    env={**env, "GIT_ATTR_SOURCE": empty_tree}, capture_output=True,
+                    timeout=120)
+                self.assertNotEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual({f["File"] for f in json.loads(report.read_text())},
+                                 {"credential.dat"})
 
     def test_the_scanner_config_is_on_the_frozen_guard_surface(self):
         # The allowlist file is a waiver mechanism: an edit to it must need a recorded human

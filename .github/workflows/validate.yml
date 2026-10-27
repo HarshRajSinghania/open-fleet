@@ -262,6 +262,13 @@ jobs:
           # differ": a live key there went unreported (PR #718 re-attack, W6-03 class).
           # Both scans read attributes from the empty tree, never from the PR's.
           no_attributes="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+          # That is not enough: git still renders a file it classifies as binary (a NUL byte in
+          # it, or past core.bigFileThreshold) as "Binary files differ", and gitleaks cannot be
+          # handed --text (PR #718 review round 5). `diff` SET in $GIT_DIR/info/attributes, which
+          # outranks every attribute a tree can carry and which no PR can write, makes git diff
+          # every path as text, a big file included; a `binary` or `-diff` line cannot undo it.
+          every_path_text() (cd "$1" && f="$(git rev-parse --git-path info/attributes)" && mkdir -p "$(dirname "$f")" && printf '* diff\n' >> "$f")
+          every_path_text .
           GIT_ATTR_SOURCE="$no_attributes" "$gl" detect --redact --no-banner --source .
           # An ignore file IS a waiver, so prove it waives only what it lists.
           # Plant a real-shaped key in the waived file itself, in a throwaway
@@ -281,6 +288,7 @@ jobs:
           # tree's attributes would miss every planted key and fail here.
           canary="$RUNNER_TEMP/canary"
           git clone --quiet . "$canary"
+          every_path_text "$canary"
           printf 'CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' >> "$canary/tests/test_decisions.py"
           planted=(tests/test_decisions.py)
           for dir in . $(git -C "$canary" ls-tree -d --name-only HEAD); do
@@ -290,6 +298,10 @@ jobs:
             planted+=("$file")
           done
           printf '* -diff\n' > "$canary/.gitattributes"
+          # And a file git classifies as binary by its content (a NUL byte) and by attribute.
+          printf 'x\000CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' > "$canary/gitleaks-canary.dat"
+          printf 'gitleaks-canary.dat binary\n' >> "$canary/.gitattributes"
+          planted+=(gitleaks-canary.dat)
           git -C "$canary" add -A
           git -C "$canary" -c user.email=ci@local -c user.name=ci commit -qm canary
           if (cd "$canary" && GIT_ATTR_SOURCE="$no_attributes" "$gl" detect --redact --no-banner --source . --report-format json --report-path "$RUNNER_TEMP/canary.json"); then
@@ -304,7 +316,7 @@ jobs:
               print(f"::error::the credential planted in {path} was not reported: a waiver covers that path")
           sys.exit(1 if missed else 0)
           PY
-          echo "negative control: a planted credential is caught in the waived file and under every top-level directory, whatever the attributes say"
+          echo "negative control: a planted credential is caught in the waived file, under every top-level directory and in a binary file, whatever the attributes say"
       - name: Ruff (syntax / undefined names)
         # Installed from the hashed lock above (#301), not re-resolved here.
         run: ruff check scripts runtime/scripts tests bench evals/demo

@@ -7,7 +7,8 @@
   a green gate proves and records the fork-token read-back. The coverage floor no longer reads a
   `.coverage.*` file planted in the PR's tree (coverage remains the PR's own measurement of
   itself, an accepted residual); `.gitleaks.toml` is on the floor guard's frozen surface, the
-  secret scan ignores the tree's `.gitattributes`, and its canary proves no waiver covers a
+  secret scan ignores the tree's `.gitattributes` and reads every file as text (a binary one
+  included), and its canary proves no waiver covers a
   top-level directory wholesale (a narrower allowlist is the floor guard's to stop); no checkout keeps its token; every
   `uses:` and every demo-stack image is pinned by test, and every workflow must stay in the
   block YAML subset those tests and release gate 3 read line by line. The publishers check the tag before

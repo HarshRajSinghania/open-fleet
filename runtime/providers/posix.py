@@ -397,6 +397,50 @@ def install_worktree_hooks(
     return installed
 
 
+# Harnesses whose deny-hook registration install_worktree_hooks writes as a settings FILE the
+# hook can re-verify by name (hermes/jcode wire theirs through env, not a file, so they are not
+# here). The key is both the hooks_map key and the deny-hook.sh --harness name.
+_GUARD_VERIFIABLE_HARNESSES = ("claude", "codex", "openhands", "goose", "opencode", "omp", "pi",
+                               "crush")
+
+
+def verify_installed_guard(wt_path: str | Path, agent: str, profile: str,
+                           hooks_map: dict[str, str], hook_script: str | None = None) -> None:
+    """Prove the deny-hook registration this worktree just received is armed, BEFORE the agent
+    process starts (W4-06). The previous story verified a guard only in the coordinator's
+    pre-launch gate, which a `new-child` spawn cannot reach (no worktree, no settings file yet);
+    the real enforcement point is here, where the registration is installed and the launch is
+    about to run. Runs `deny-hook.sh --verify-settings <registration> --harness <agent>
+    --boundary <wt>`: the file must exist, name the hook that will load, pin the boundary and
+    answer a live deny probe. Raise ProviderError('deny_hook_unverified') on any failure so the
+    caller aborts the launch and no agent starts. Scoped to the file-registration harnesses; a
+    `danger` worker (sandbox is its boundary), harnesses with no settings-file registration, and
+    crush `ro` (its installed file is a disabled-tools restriction, not a hook registration) are
+    left to their own mechanisms. The probe runs under the env worker_start gives the agent: the
+    opencode/omp/pi bridges read the hook path and boundary from it, so that IS what loads."""
+    if profile == "danger" or agent not in _GUARD_VERIFIABLE_HARNESSES:
+        return
+    if agent == "crush" and profile == "ro":
+        return
+    registration = hooks_map.get(agent)
+    if not registration:
+        return
+    hook = hook_script or hooks_map.get("deny_hook") or str(CANONICAL_DENY_HOOK)
+    launch_env = {**os.environ, "OPEN_FLEET_DENY_HOOK": str(hook), "ORCA_DENY_HOOK_PATH": str(hook),
+                  "OPEN_FLEET_UNIT_WORKTREE": str(wt_path), "ORCA_UNIT_WORKTREE": str(wt_path)}
+    proc = subprocess.run(
+        ["sh", str(hook), "--verify-settings", str(registration), "--harness", agent,
+         "--boundary", str(wt_path)],
+        capture_output=True, text=True, timeout=60, env=launch_env,
+    )
+    if proc.returncode != 0:
+        raise ProviderError(
+            "deny_hook_unverified",
+            f"the deny-hook registration installed for {agent} at {registration} is not armed, so "
+            f"the agent is not started (W4-06): {(proc.stderr or proc.stdout).strip()[:300]}",
+        )
+
+
 # Fleet-custody secrets a worker never receives: the dispatch signing seeds (it could sign its
 # own dispatches) and the coordinator's orchestrator/cloud credentials (2026-10-26 review). The
 # rest of the coordinator's environment still reaches the worker — harness credentials and proxy
@@ -2182,6 +2226,10 @@ if {repr(self.backend)} == "cmux":
                 deny_hook_path=hook_script,
                 bridge_dir=str(Path(wt_path) / ".open-fleet" / "bridges"),
             )
+            # The guard is installed; prove it is armed before the agent starts (W4-06). A
+            # new-child spawn cannot be verified in the coordinator's pre-launch gate (no
+            # worktree yet), so enforcement lives here, at the installation point.
+            verify_installed_guard(wt_path, agent, profile, hooks_map, hook_script)
         except BaseException as exc:
             self._abort_launch(intent_id, token, exc, task_id=task_id, dispatch_id=dispatch_id, term_handle=term_handle)
             raise

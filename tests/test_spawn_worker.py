@@ -1506,7 +1506,7 @@ class TestParentProfileNarrowing(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --dangerously-skip-permissions"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_SANDBOX_PROFILE": "rw",
                    "OPEN_FLEET_PARENT_PROFILE": "danger"}
@@ -1550,7 +1550,7 @@ case "$*" in
 esac
 """)
             stub.chmod(0o755)
-            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "danger",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1",
                    "ORCA_SANDBOX_RECIPE": "lane-7"}
@@ -1675,7 +1675,7 @@ esac
             repo = _git_repo(tmp)
             created = str(Path(tmp) / "wts" / "unit-1")
             stub, log = self.stub(tmp, created)
-            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro"}
             if print_launch:
                 env["SW_PRINT_LAUNCH"] = "1"
@@ -1736,7 +1736,7 @@ esac
             (Path(tmp) / "ws.json").write_text(json.dumps({"result": {
                 "state": "ready", "dispatchId": "d1",
                 "launch": {"effective": {"args": "--dangerously-bypass-approvals-and-sandbox"}}}}))
-            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro"}
             p = subprocess.run(["bash", str(SPAWN), "task_x", "current", "t", "codex", "high"],
                                env=env, capture_output=True, text=True, cwd=str(repo))
@@ -1755,7 +1755,7 @@ esac
         # base.py's ro line in a created worktree, carrying the task spec as its prompt.
         with tempfile.TemporaryDirectory() as tmp:
             repo = _git_repo(tmp)
-            env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "OPEN_FLEET_STATE_DB": str(Path(tmp) / "state" / "s.db"),
                    "OPEN_FLEET_POSIX_BACKEND": "dry-run", "PROFILE": "ro"}
             p = subprocess.run(["bash", str(SPAWN), "--spec", "review the README", "new-child", "rev",

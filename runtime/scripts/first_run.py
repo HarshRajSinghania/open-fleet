@@ -632,10 +632,10 @@ class FirstRun:
         return task
 
     def dispatch(self) -> str:
-        # The named opt-out of spawn_worker.sh's arming gate (W4-06): a new-child spawn names no
-        # tree yet, so no registration can be handed to the gate before launch -- the provider
-        # installs the guard inside worker-start, and the `guard` step below verifies it.
-        env = {"PROFILE": self.args.profile, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
+        # Off Orca (OPEN_FLEET_RUNTIME=posix) the provider installs and verifies the deny hook
+        # inside worker-start, before the agent starts, so spawn_worker's pre-launch gate defers
+        # for a new-child spawn with no opt-out (W4-06); the `guard` step below re-checks it.
+        env = {"PROFILE": self.args.profile}
         if self.args.profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"
         proc = self.rec.run(["bash", str(SCRIPTS / "spawn_worker.sh"), self.facts["task"], "new-child",
@@ -923,9 +923,7 @@ def parse_mail(text: str) -> list[dict]:
 
 def probe_table(sb: Sandbox, unarmed: Path, garbage: Path) -> list[tuple]:
     """(name, why, argv, env, expected exit, refusal text) — `{task}` is a fresh ready task."""
-    # Each probe isolates ONE trigger: the rw ones carry the arming gate's named opt-out (W4-06)
-    # so an unset guard is not what refuses them (unarmed-deny-hook names its registration).
-    rw = {"PROFILE": "rw", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
+    rw = {"PROFILE": "rw", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"}
     spawn = ["bash", str(SCRIPTS / "spawn_worker.sh")]
     return [
         ("unsupported-profile", "PROFILE=ro for a harness with no verified read-only launch (cursor)",

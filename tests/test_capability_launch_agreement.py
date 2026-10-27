@@ -164,10 +164,7 @@ class OpenHandsLaunchesThroughTheWrapper(unittest.TestCase):
         self.env = {"PATH": os.pathsep.join([os.path.dirname(sys.executable), "/usr/bin", "/bin"]),
                     "HOME": str(self.tmp), "SP": str(self.tmp), "SHELL": "/bin/sh",
                     "OPEN_FLEET_RUNTIME": "openhands", "OPEN_FLEET_STATE_DB": str(self.tmp / "s.db"),
-                    "OPEN_FLEET_OPENHANDS_URL": self.url, "OPEN_FLEET_OPENHANDS_MODEL": "fixture-model",
-                    # the provider ships the guard in the conversation, after the arming gate
-                    # (W4-06 named opt-out; the hook_config assertions below check it)
-                    "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
+                    "OPEN_FLEET_OPENHANDS_URL": self.url, "OPEN_FLEET_OPENHANDS_MODEL": "fixture-model"}
 
     def task(self, spec: str) -> str:
         p = subprocess.run([sys.executable, str(ROOT / "runtime" / "scripts" / "orca_cli.py"), "orchestration",

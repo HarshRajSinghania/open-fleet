@@ -5,21 +5,28 @@
   unquoted `$IFS`/`${IFS}` separator is field-split so each candidate head is judged with its
   arguments (W1-02); the inline-interpreter class is closed beyond python/node — the awk family,
   lua/luajit/julia/Rscript `-e`, deno `eval`, a busybox applet, and sqlite3 `.shell`/`.system` and
-  sed `e` are read for the shell they launch (W1-03); `tar`/`unzip`/`patch`/busybox reach the self-guard — a guard
-  file named as `tar -cf`/`patch -o` output is denied and an extraction over the guard region is
-  asked (W1-05); the root/home delete class is normalised rather than spelled out, so `/*/`,
+  sed `e` are read for the shell they launch, awk collects EVERY program source so a benign `-f`
+  file never hides a refused `-e` and an unreadable `-f`/`-E` program file fails closed, and an
+  arg-taking option (`python -W error`) no longer hides the `-c` after it (W1-03); `tar`/`unzip`/
+  `patch`/`cpio`/`pax`/`bsdtar`/busybox reach the self-guard — a guard file named as `tar -cf`/
+  `patch -o` output is denied, and an extraction or patch whose destination equals, sits inside or
+  contains a guard directory (`tar -C .claude …`, any `-C`/`-d`/`--directory` spelling) is asked (W1-05); the root/home delete class is normalised rather than spelled out, so `/*/`,
   `~/.`, `${HOME}/*` and `/dev/../` deny (W1-06); `--settings` shell-quotes the hook path and pins
   both boundary names so a space in the install path or a stale inherited variable cannot disarm
   it (W1-07, W1-08); `lexical_abs` no longer pathname-expands a path segment and a glob in a shell
   write target is judged by every path it expands to (W4-09). The spawn arming gate now receives
   the worktree for every selector that names an existing tree, not just `path:` (W4-03), and runs
-  for every profile including `ro`, which used to skip it entirely; an unset guard settings var now
-  REFUSES the spawn, every profile, unless `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1` is the explicit
-  opt-out (`first_run.py` and `wip_curve.py` pass it: off Orca the provider installs the guard
-  inside `worker-start`, after the gate), and `OPEN_FLEET_REQUIRE_DENY_HOOK=1` makes that opt-out
-  ignored (W4-06). A new `OPEN_FLEET_HOOK_READONLY` write floor (wired with `deny-hook.sh
-  --settings <wt> --readonly`; no provider sets it on its own) lets the hook deny every write it
-  can see on the `ro` tier — in a `-c` body, a substitution or a program piped to a shell too —
-  and refuse a shell fed a program it cannot read (`cat f | sh`, `sh < f`): defense-in-depth over
-  the channels plan-mode `Bash` left open, not a filesystem sandbox, which stays the disposable
-  environment's job (W4-05).
+  for every profile including `ro`, which used to skip it entirely (W4-03). W4-06 now enforces the
+  guard where it is installed: the posix provider verifies the registration inside `worker-start`
+  — the file exists, names the hook that loads, pins the boundary, answers a deny probe — AFTER
+  installing it and BEFORE the agent process starts, and aborts the launch (`deny_hook_unverified`)
+  if any check fails, so a `new-child` spawn that the coordinator's pre-launch gate cannot verify
+  is still enforced. Off Orca `spawn_worker.sh` defers to that and ordinary dispatch needs no
+  opt-out; on Orca (whose `worker-start` wires no open-fleet guard) an unset settings var still
+  refuses, every profile, unless `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1` opts out, with
+  `OPEN_FLEET_REQUIRE_DENY_HOOK=1` overriding that opt-out. A new `OPEN_FLEET_HOOK_READONLY` write
+  floor (wired with `deny-hook.sh --settings <wt> --readonly`; no provider sets it on its own)
+  lets the hook deny every write it can see on the `ro` tier — in a `-c` body, a substitution or a
+  program piped to a shell too, and `echo x > -` writes a file named `-` — and refuse a shell fed
+  a program it cannot read (`cat f | sh`, `sh < f`): defense-in-depth over the channels plan-mode
+  `Bash` left open, not a filesystem sandbox, which stays the disposable environment's job (W4-05).

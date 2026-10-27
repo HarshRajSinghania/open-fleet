@@ -27,28 +27,7 @@ from typing import Callable
 
 from .base import ProviderError, fence_state, normalize_show, parse_json_strict
 from .local_state import LocalStateStore
-from .posix import HOOK_ARTIFACTS, gitexec
-
-def _git_location(argv: list[str], cwd: str | None) -> tuple[str, str | None]:
-    """`(repo, git_dir)` a `git` argv runs in: its leading `-C <dir>` options (each relative to the
-    one before, from the launch cwd), or a `--git-dir`, else the launch cwd itself."""
-    repo, git_dir, i = cwd or os.getcwd(), None, 1
-    while i < len(argv):
-        tok = argv[i]
-        if tok in ("-C", "-c", "--git-dir", "--work-tree") and i + 1 < len(argv):
-            if tok == "-C":
-                repo = os.path.join(repo, argv[i + 1])
-            elif tok == "--git-dir":
-                git_dir = argv[i + 1]
-            i += 2
-        elif tok.startswith("--git-dir="):
-            git_dir, i = tok.split("=", 1)[1], i + 1
-        elif tok.startswith("-"):
-            i += 1
-        else:
-            break
-    return repo, (os.path.join(repo, git_dir) if git_dir else None)
-
+from .posix import HOOK_ARTIFACTS, git_location, gitexec
 
 def _git_launch(argv: list[str], env: dict[str, str] | None, cwd: str | None = None) -> tuple[list[str], dict[str, str] | None, dict[str, Any]]:
     """`(argv, env, stdin kwargs)` to launch one upstream command. A `git` an adapter runs is
@@ -61,7 +40,7 @@ def _git_launch(argv: list[str], env: dict[str, str] | None, cwd: str | None = N
     config) are OSErrors."""
     if not argv or argv[0] != "git":
         return argv, env, {}
-    repo, git_dir = _git_location(argv, cwd)
+    repo, git_dir = git_location(argv[1:], cwd)
     blanks = gitexec.driver_blanks(repo, git_dir=git_dir)
     return gitexec.argv(*argv[1:]), gitexec.env(env, blanks=blanks), {"stdin": subprocess.DEVNULL}
 

@@ -877,6 +877,27 @@ class TestCoordinatorGitRunsNothingTheRepoNames(PosixRealProcessBase):
             self.posix.prepare_sandbox_git(str(wt), lane)
         self.assertEqual(self.fired(), [], "the sandbox seed's index refresh ran a global clean filter")
 
+    def test_a_git_call_made_without_blanks_still_runs_no_planted_filter(self):
+        # A future content call written without `blanks=` must not reopen W4-01: _git blanks the
+        # drivers declared where it runs by default, located by its `-C`/cwd or its `--git-dir`.
+        wt = Path(self.prov.worktree_create("noblanks")["worktree"]["path"])
+        admin = self.repo / ".git" / "worktrees" / "noblanks"
+        for key, value in (("user.email", "t@e"), ("user.name", "t")):
+            _git("config", key, value, cwd=self.repo)
+        self.plant_repo()
+        (wt / "a.txt").write_text("changed\n", encoding="utf-8")
+        calls = ((["commit", "-qam", "w"], {"cwd": wt}),
+                 (["checkout", "--", "a.txt"], {"cwd": wt}),
+                 (["--git-dir", str(admin), "--work-tree", str(wt), "reset", "--hard", "-q"], {}))
+        for args, kw in calls:
+            if args[0] == "checkout":
+                (wt / "a.txt").write_text("dirty\n", encoding="utf-8")
+            with self.subTest(args=args[:3]):
+                proc = self.posix._git(args, **kw)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(self.fired(), [], f"_git {args[0]} ran a planted command without blanks=")
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "changed\n")
+
     def test_no_bare_git_argv_is_left_in_the_provider(self):
         # Every git the provider (and the monitor script it generates) runs goes through _git, so
         # through gitexec's absolute git and floor; a literal `["git", ...]` argv is the bypass.

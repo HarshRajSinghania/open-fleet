@@ -738,13 +738,36 @@ def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, 
     return {"HERMES_HOME": str(home), "HERMES_ACCEPT_HOOKS": "1", "HERMES_SAFE_MODE": "0"}
 
 
+def git_location(args: list[str], cwd: str | Path | None) -> tuple[str, str | None]:
+    """`(repo, git_dir)` git runs in for the arguments `args` (everything after the program name):
+    their leading `-C <dir>` options (each relative to the one before, from the launch cwd), or a
+    `--git-dir`, else the launch cwd itself. Shared with the adapters' launcher
+    (_external._git_launch)."""
+    repo, git_dir, i = str(cwd or os.getcwd()), None, 0
+    while i < len(args):
+        tok = args[i]
+        if tok in ("-C", "-c", "--git-dir", "--work-tree") and i + 1 < len(args):
+            if tok == "-C":
+                repo = os.path.join(repo, args[i + 1])
+            elif tok == "--git-dir":
+                git_dir = args[i + 1]
+            i += 2
+        elif tok.startswith("--git-dir="):
+            git_dir, i = tok.split("=", 1)[1], i + 1
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            break
+    return repo, (os.path.join(repo, git_dir) if git_dir else None)
+
+
 def _git(
     args: list[str],
     *,
     cwd: str | Path | None = None,
     env: dict[str, str] | None = None,
     timeout: int = 120,
-    blanks: list[tuple[str, str]] | tuple = (),
+    blanks: list[tuple[str, str]] | None = None,
 ) -> subprocess.CompletedProcess:
     """Every git the provider runs, and the only way it runs one (W4-01).
 
@@ -756,10 +779,16 @@ def _git(
     import is exit 127 here, never a PATH re-resolution) under its floor — no global or system
     config (the same-uid `~/.gitconfig` is the worker's to write too), hooks looked up in
     /dev/null, core.fsmonitor off, replace refs and grafts off, no `ext::` transport,
-    `safe.directory=*` — and stdin closed. A call that materialises content passes `blanks`
-    (`_driver_blanks`, read where that call runs), so no attribute-selected filter runs either."""
+    `safe.directory=*` — and stdin closed. EVERY call also blanks the filter/diff/merge drivers the
+    config declares where it runs (its `-C`/cwd or `--git-dir`), so a content call written without
+    thought for drivers cannot reopen W4-01; an unreadable config is exit 127 and the call never
+    runs. `blanks` overrides that only for a call whose drivers live elsewhere (`worktree remove`
+    runs its clean check inside the target worktree)."""
     full = [*(["-C", str(cwd)] if cwd else []), *args]
     try:
+        if blanks is None:
+            repo, git_dir = git_location(full, None)
+            blanks = gitexec.driver_blanks(repo, git_dir=git_dir)
         return subprocess.run(gitexec.argv(*full), capture_output=True, text=True,
                               env=gitexec.env(env, blanks=blanks), timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -818,9 +847,9 @@ def prepare_sandbox_git(wt_path: str, lane_dir: Path) -> dict[str, str]:
         _git_ok(sb + ["update-ref", "--no-deref", "HEAD", head], "pin sandbox detached HEAD")
     # Index = HEAD; the worktree's uncommitted edits stay as working-tree modifications.
     _git_ok(sb + ["--work-tree", str(wt), "read-tree", "HEAD"], "seed sandbox index")
-    # The refresh re-hashes every worktree file through any filter the sandbox config declares.
-    _git(sb + ["--work-tree", str(wt), "update-index", "-q", "--refresh"],
-         blanks=_driver_blanks("sandbox_git_failed", git_dir=str(sandbox)))
+    # The refresh re-hashes every worktree file through any filter the sandbox config declares;
+    # _git blanks those, read from the `--git-dir` it names.
+    _git(sb + ["--work-tree", str(wt), "update-index", "-q", "--refresh"])
     meta = {
         "sandbox_git": str(sandbox),
         "common_dir": str(common),
@@ -907,15 +936,10 @@ def sync_sandbox_git(meta: dict[str, str], dispatch_id: str) -> dict[str, Any]:
         return res
     _git_ok(["--git-dir", common, "update-ref", branch, new_head, old], "fast-forward host branch")
     # Explicit git dir: never trust the (container-writable) worktree's `.git` pointer. Its config
-    # is the SHARED host config, so the drivers are read from that same git dir (W4-01). The
-    # refresh is best-effort: with that config unreadable the index stays stale, never refreshed
-    # with a planted filter live.
-    try:
-        blanks = _driver_blanks("sandbox_git_failed", git_dir=meta["wt_gitdir"])
-    except ProviderError:
-        blanks = None
-    if blanks is not None:
-        _git(["--git-dir", meta["wt_gitdir"], "--work-tree", meta["worktree"], "reset", "-q"], blanks=blanks)
+    # is the SHARED host config; _git reads the drivers from that same git dir (W4-01). The refresh
+    # is best-effort: with that config unreadable _git runs nothing and the index stays stale,
+    # never refreshed with a planted filter live.
+    _git(["--git-dir", meta["wt_gitdir"], "--work-tree", meta["worktree"], "reset", "-q"])
     res["branchUpdated"] = True
     return res
 
@@ -1047,11 +1071,8 @@ class PosixWorktreeProvider(RuntimeProvider):
             # The checkout `worktree add` would run is done here, IN the new worktree, as the same
             # `reset --hard --no-recurse-submodules` git runs: its filter drivers are read where it
             # checks out (an `includeIf gitdir:`/`onbranch:` matches only there) and blanked (W4-01).
-            try:
-                blanks = _driver_blanks("worktree_create_failed", wt_path)
-                proc = _git(["reset", "--hard", "--no-recurse-submodules", "-q"], cwd=wt_path, blanks=blanks)
-            except ProviderError as exc:
-                proc = subprocess.CompletedProcess([], 1, "", exc.message)
+            # _git reads them at its cwd, the new worktree; an unreadable config fails the call.
+            proc = _git(["reset", "--hard", "--no-recurse-submodules", "-q"], cwd=wt_path)
             if proc.returncode != 0:
                 _git(["worktree", "remove", "--force", "--", str(wt_path)], cwd=root)
                 raise ProviderError(

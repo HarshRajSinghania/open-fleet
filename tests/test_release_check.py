@@ -369,10 +369,10 @@ class GatesFailOnAFixtureThatViolatesThem(unittest.TestCase):
             wf.mkdir(parents=True)
             # Workflows as GitHub reads them: a job, a step, a run: line that invokes the script.
             (wf / "validate.yml").write_text(
-                "jobs:\n  vfbench:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
-                encoding="utf-8")
+                "on:\n  pull_request:\n\njobs:\n  vfbench:\n    steps:\n"
+                "      - run: python3 bench/vf-bench/gate.py\n", encoding="utf-8")
             (wf / "negative-control.yml").write_text(
-                "jobs:\n  pinned-demo:\n    steps:\n"
+                "on:\n  pull_request:\n\njobs:\n  pinned-demo:\n    steps:\n"
                 "      - run: sh evals/demo/negative-control/run.sh\n", encoding="utf-8")
             (root / "README.md").write_text("git clone … && sh scripts/install.sh\n",
                                             encoding="utf-8")
@@ -736,6 +736,10 @@ class CiRunsMeansARunStep(unittest.TestCase):
     comment, a step name, an `if:` — so gate3 could PASS on a check CI never executes."""
 
     def gate3(self, workflow):
+        # Every pull request runs the fixture, as it runs the real ones, unless the case under
+        # test names its own triggers.
+        if not re.search(r"(?m)^on:", workflow):
+            workflow = "on:\n  pull_request:\n\n" + workflow
         with tempfile.TemporaryDirectory() as tmp:
             root = make_fixture(tmp)
             wf = root / ".github" / "workflows"

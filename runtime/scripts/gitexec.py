@@ -42,8 +42,8 @@ The attribute-selected channels — ``filter.<driver>.clean/smudge/process`` and
 cannot enumerate an unknown ``<driver>`` name, and ``$GIT_DIR/info/attributes`` outranks
 any ``--attr-source`` the belt could set). ``driver_blanks(repo)`` closes them by reading
 the driver names the repo's OWN config declares and blanking each — the only place such a
-command can come from. A worktree-materialising read (floor_guard's and diff_scope's
-``diff`` of the working tree, verify.py's negative-control ``checkout``) passes its pairs;
+command can come from. A worktree-materialising read (floor_guard's, diff_scope's and
+hint_provenance's ``diff`` of the working tree, verify.py's negative-control ``checkout``) passes its pairs;
 a read of committed objects alone (inventory, decisions ``--pin-ref``) never selects a
 filter and does not need them.
 

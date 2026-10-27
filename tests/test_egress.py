@@ -889,11 +889,68 @@ class TestANestedRepositoryNeverMovesTheLedgerSilently(EgressBase):
         worktree = self.repo / "wt"
         worktree.mkdir()
         (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+        (admin / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")  # git's back-link
         r = self.bare(*self.WRITE, cwd=worktree)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue((worktree / ".orca" / "egress.jsonl").is_file())
         self.assertIn("linked worktree", r.stderr)
         self.assertIn(str(self.repo), r.stderr)
+
+    def test_a_gitfile_that_only_names_the_worktrees_directory_is_not_a_linked_worktree(self):
+        # Re-check of 4b24dfde (W5-03): a planted `.git` FILE reading `gitdir: <repo>/.git/worktrees/x`
+        # passed as a linked worktree on its text alone -- no such worktree, or one that is another
+        # directory's -- and moved receipts into `<subdir>/.orca`. git's own back-link
+        # (`worktrees/<name>/gitdir` naming this `.git`) must agree.
+        other = self.repo / "elsewhere"
+        other.mkdir()
+        for case in ("no admin directory", "admin without a back-link", "back-link to another worktree"):
+            with self.subTest(case=case):
+                admin = self.repo / ".git" / "worktrees" / case.replace(" ", "-")
+                nested = self.repo / "vendor" / case.replace(" ", "-")
+                nested.mkdir(parents=True)
+                (nested / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+                if case != "no admin directory":
+                    admin.mkdir(parents=True)
+                if case == "back-link to another worktree":
+                    (admin / "gitdir").write_text(f"{other / '.git'}\n", encoding="utf-8")
+                r = self.bare(*self.WRITE, cwd=nested)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertIn("nested inside the repository", r.stderr)
+                self.assertFalse((nested / ".orca").exists())
+                self.assertFalse((self.repo / ".orca").exists())
+
+    def test_naming_the_nested_roots_ledger_explicitly_is_still_said(self):
+        # Re-check of 4b24dfde (W5-03): `_routing_note` compared an explicit ledger with the NEAREST
+        # root's default, so `--ledger .orca/egress.jsonl` (or the env var) from under a planted
+        # `.git` wrote into that subdirectory with nothing on stderr, while the default refused.
+        nested = self.repo / "vendor" / "x"
+        nested.mkdir(parents=True)
+        (nested / ".git").mkdir()
+        for how in ("--ledger", "env"):
+            with self.subTest(how=how):
+                args = ("--ledger", ".orca/egress.jsonl", *self.WRITE) if how == "--ledger" else self.WRITE
+                env = {**self.env, egress.PRIMARY_LEDGER_ENV: ".orca/egress.jsonl"} if how == "env" else self.env
+                r = subprocess.run([sys.executable, str(EGRESS), *args], capture_output=True, text=True,
+                                   cwd=nested, env=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(f"receipt written to {nested / '.orca' / 'egress.jsonl'}", r.stderr)
+                self.assertIn("no repository ledger", r.stderr)
+
+    def test_a_real_git_worktree_inside_the_repository_is_a_linked_worktree(self):
+        repo = Path(self.tmp) / "real"
+        env = {**self.env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+        def git(*args):
+            subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+
+        repo.mkdir()
+        git("init", "-q")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
+        git("worktree", "add", "-q", str(repo / "wt"))
+        r = self.bare(*self.WRITE, cwd=repo / "wt")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((repo / "wt" / ".orca" / "egress.jsonl").is_file())
+        self.assertIn("linked worktree", r.stderr)
 
 
 class TestDurability(EgressBase):

@@ -581,7 +581,7 @@ Exits: n/a (library).
 
 Content-free, hash-chained receipts for everything the fleet sends off-repo. One canonical JSON
 object per line in `<repository root>/.orca/egress.jsonl` (mode 0600), appended BEFORE the send.
-Source `runtime/scripts/egress.py:1-100`; behavior pinned by `tests/test_egress.py`.
+Source `runtime/scripts/egress.py:1-101`; behavior pinned by `tests/test_egress.py`.
 
 Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
 refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
@@ -600,9 +600,11 @@ Flags: `--ledger` (default `$OPEN_FLEET_EGRESS_LEDGER`, legacy `$ORCA_EGRESS_LED
 `.orca/egress.jsonl` under the repository root — the nearest directory at or above the working
 directory holding `.git`; outside a repository the default refuses, exit 3, and so does a root
 nested inside another repository — a submodule, a vendored repository or a planted `.git` — unless
-it is a linked worktree of it, whose own ledger `write` then names on stderr). A ledger named by
-flag or variable, or reached through a symlinked directory, is reported on `write`'s stderr, and
-`verify` prints the absolute path and where it came from. Only the ledger's own directory is
+it is a linked worktree of it, whose own ledger `write` then names on stderr; a `.git` file counts
+as a linked worktree only when git's back-link, `.git/worktrees/<name>/gitdir`, names it again). A
+ledger named by flag or variable that is not the repository's own (the ledger of a nested root
+included), or reached through a symlinked directory, is reported on `write`'s stderr, and `verify`
+prints the absolute path and where it came from. Only the ledger's own directory is
 ever created. `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file` (streamed),
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything

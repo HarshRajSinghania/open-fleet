@@ -27,10 +27,11 @@ Record (format v2: one canonical JSON object per line, mode 0600)::
 * **Where.** ``<repository root>/.orca/egress.jsonl`` -- the root is the nearest directory at or
   above the working directory holding ``.git``, so a send from a subdirectory lands in the same
   ledger; outside a repository the default refuses, and so does a root nested in another
-  repository unless it is a linked worktree of it (whose own ledger is then named on stderr): a
-  planted or vendored ``.git`` never moves it silently. ``--ledger``, ``$OPEN_FLEET_EGRESS_LEDGER``
-  or ``$ORCA_EGRESS_LEDGER`` name another file, and ``write`` then says so on stderr (as it does
-  when the path resolves through a symlink): a receipt never lands elsewhere silently. Only the
+  repository unless it is a linked worktree of it (git's back-link in ``.git/worktrees/<name>``
+  agreeing; its own ledger is then named on stderr): a planted or vendored ``.git`` never moves it
+  silently. ``--ledger``, ``$OPEN_FLEET_EGRESS_LEDGER`` or ``$ORCA_EGRESS_LEDGER`` name another
+  file, and ``write`` then says so on stderr (as it does when the path resolves through a symlink,
+  or names a nested root's ledger): a receipt never lands elsewhere silently. Only the
   ledger's own directory is created, never a tree above it. And ``verify`` never passes on no
   receipts (no ledger file, or an empty one: exit 4) unless the caller says none were expected.
 * **Content-free.** Never the payload text: a sha256 of the exact bytes sent
@@ -170,35 +171,48 @@ def repo_root(start=None):
     return _repositories(start)[0]
 
 
+def _read_small(path):
+    """A small regular text file's stripped content, never through a symlink; None otherwise."""
+    try:
+        fd = os.open(path, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, 4096).decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        os.close(fd)
+
+
 def _linked_worktree_of(root, outer):
     """True when `root` is a linked worktree of `outer` (`git worktree add`): its `.git` is a file
-    naming a directory under `outer`'s own `.git/worktrees/`."""
+    naming a directory directly under `outer`'s own `.git/worktrees/`, and that directory's
+    `gitdir` -- git's back-link -- names this `.git` again. The text of a `.git` file alone is
+    no proof: one planted in a subdirectory could name any path there (W5-03)."""
     gitfile, admin = root / ".git", outer / ".git" / "worktrees"
-    if gitfile.is_symlink() or not gitfile.is_file() or outer.joinpath(".git").is_symlink():
+    if outer.joinpath(".git").is_symlink():
         return False
-    try:
-        with open(gitfile, "rb") as fh:
-            text = fh.read(4096).decode("utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        return False
-    if not text.startswith("gitdir:"):
+    text = _read_small(gitfile)
+    if not text or not text.startswith("gitdir:"):
         return False
     target = Path(text[len("gitdir:"):].strip())
-    target = target if target.is_absolute() else root / target
-    return os.path.realpath(target).startswith(os.path.realpath(admin) + os.sep)
+    target = Path(os.path.realpath(target if target.is_absolute() else root / target))
+    if target.parent != Path(os.path.realpath(admin)) or not target.is_dir():
+        return False
+    back = _read_small(target / "gitdir")
+    if not back:
+        return False
+    back = Path(back) if Path(back).is_absolute() else target / back
+    return os.path.realpath(back) == os.path.realpath(gitfile)
 
 
-def resolve_ledger(explicit=None):
-    """(absolute ledger path, where it came from). The default is the repository's own ledger,
-    never one relative to wherever the command happens to run (W5-03), and never a ledger a
-    `.git` below the repository moved silently: a nested root that is not a linked worktree of
-    the repository around it (a submodule, a vendored repository, a planted `.git`) refuses."""
-    if explicit:
-        return Path(os.path.abspath(explicit)), "--ledger"
-    for var in (PRIMARY_LEDGER_ENV, LEDGER_ENV):
-        env = os.environ.get(var)
-        if env:
-            return Path(os.path.abspath(env)), f"${var}"
+def _default_ledger():
+    """(absolute path, where it came from) of the repository's own ledger, or EgressError when the
+    working directory has none: outside a repository, or under a `.git` nested in another
+    repository that is not a linked worktree of it."""
     root, outer = _repositories()
     if root is None:
         raise EgressError(f"no repository at or above {os.getcwd()} (no .git): the default ledger is "
@@ -214,25 +228,48 @@ def resolve_ledger(explicit=None):
     return root / DEFAULT_LEDGER, "the repository default"
 
 
+def resolve_ledger(explicit=None):
+    """(absolute ledger path, where it came from). The default is the repository's own ledger,
+    never one relative to wherever the command happens to run (W5-03), and never a ledger a
+    `.git` below the repository moved silently: a nested root that is not a linked worktree of
+    the repository around it (a submodule, a vendored repository, a planted `.git`) refuses."""
+    if explicit:
+        return Path(os.path.abspath(explicit)), "--ledger"
+    for var in (PRIMARY_LEDGER_ENV, LEDGER_ENV):
+        env = os.environ.get(var)
+        if env:
+            return Path(os.path.abspath(env)), f"${var}"
+    return _default_ledger()
+
+
 def ledger_path(explicit=None):
     return resolve_ledger(explicit)[0]
 
 
 def _routing_note(path, source):
     """Why `path` is not the repository's own ledger, or None when it is. The ledger itself is
-    never a symlink (it is opened O_NOFOLLOW); its directory being one routes it just as well."""
+    never a symlink (it is opened O_NOFOLLOW); its directory being one routes it just as well.
+    An explicit path is compared with the ledger the DEFAULT would pick, not with the nearest
+    root's: naming the ledger of a planted `.git` is said like any other route (W5-03)."""
     via_link = os.path.islink(path.parent)
     if source == "the repository default" and not via_link:
         return None
     if source.startswith("the default of linked worktree") and not via_link:
         return f"egress: receipt written to {path}: {source}, not to that repository's ledger"
-    root = repo_root()
-    default = root / DEFAULT_LEDGER if root else None
-    if default is not None and default == path and not via_link:
+    try:
+        default, default_source = _default_ledger()
+    except EgressError:
+        default, default_source = None, None
+    if default == path and default_source == "the repository default" and not via_link:
         return None
     real = os.path.realpath(path)
     where = f"{path} ({source}" + (f", its directory a symlink to {os.path.dirname(real)}" if via_link else "") + ")"
-    other = f"not the repository ledger {default}" if default else "no repository ledger to compare"
+    if default is None:
+        other = "no repository ledger to compare (the default refuses here)"
+    elif default_source == "the repository default":
+        other = f"not the repository ledger {default}"
+    else:
+        other = f"{default_source}, not that repository's ledger"
     return f"egress: receipt written to {where}; {other}"
 
 

@@ -11,13 +11,15 @@ review by a trusted account)::
     VERDICT: GO
     reviewed_sha: <full 40-hex head sha>
 
-A GO counts from an APPROVED review (GitHub restricts Approve to collaborators
-with write access), or from a COMMENTED review whose author_association is
+A GO counts from an APPROVED or a COMMENTED review whose author_association is
 OWNER / MEMBER / COLLABORATOR — which covers the owner binding a verdict on
-their own PR, the normal fleet flow, since GitHub forbids approving your own
-PR. A drive-by COMMENTED GO from anyone else never counts (PR #460 review, P1),
-and neither does a fork author's GO on their own PR: being the PR's author is
-no trust tier (2026-10-27 security audit, W6-06).
+their own PR with a COMMENTED review, the normal fleet flow, since GitHub
+forbids approving your own PR. The review state proves nothing about its
+author: on a public repository any account can submit an APPROVED review (it
+only fails to count toward native required reviews), so an APPROVED GO from
+anyone else never counts (PR #718 review, P1), nor does a drive-by COMMENTED
+GO (PR #460 review, P1), nor a fork author's GO on their own PR: being the
+PR's author is no trust tier (2026-10-27 security audit, W6-06).
 
 A GO is a SHA binding, NOT evidence that anyone read the diff: it proves that a
 trusted account claimed to have checked this exact head, nothing more. With one
@@ -99,7 +101,7 @@ FILES_LIST_CAP = 3000
 
 
 def _author_trusted(review, pr_author):
-    """Whether a COMMENTED review's author is a trusted tier. ``pr_author`` grants nothing: a
+    """Whether a review's author is a trusted tier, whatever the review's state. ``pr_author`` grants nothing: a
     fork author's GO on their own PR is self-assertion, not a binding (W6-06). The owner's
     own-PR GO still counts, through the OWNER tier."""
     del pr_author
@@ -119,14 +121,11 @@ def go_reviews_at_tip(reviews, head_sha, pr_author=None):
     hits = []
     for review in reviews:
         state = review.get("state")
-        if state == "APPROVED":
-            pass  # Approve is collaborator-only; the state is the signal.
-        elif state == "COMMENTED" and _author_trusted(review, pr_author):
-            pass  # own-PR SHA binding or trusted tier (PR #460 P1).
-        else:
+        if state not in ("APPROVED", "COMMENTED") or not _author_trusted(review, pr_author):
             # DISMISSED never counts; CHANGES_REQUESTED with a GO marker is
-            # self-contradictory; COMMENTED from an untrusted author is a
-            # drive-by and must not satisfy a required check.
+            # self-contradictory; an APPROVED or COMMENTED review from an untrusted
+            # author is a drive-by: any account can submit either on a public
+            # repository (PR #460 review, P1; PR #718 review, P1).
             continue
         body = review.get("body") or ""
         if not VERDICT_RE.search(body):
@@ -347,15 +346,14 @@ def main(argv=None):
         passed, reason = True, "GO verdict binds the merge tip"
     else:
         passed = False
-        trusted = [r for r in gos
-                   if r.get("state") == "APPROVED"
-                   or (r.get("state") == "COMMENTED" and _author_trusted(r, pr_author))]
+        trusted = [r for r in gos if r.get("state") in ("APPROVED", "COMMENTED")
+                   and _author_trusted(r, pr_author)]
         if trusted:
             reason = ("GO verdicts exist but none binds the current head "
                       "(post a fresh VERDICT: GO with reviewed_sha == head)")
         elif gos:
             reason = ("GO markers exist only from untrusted authors "
-                      "(drive-by COMMENTED reviews never count)")
+                      "(drive-by APPROVED or COMMENTED reviews never count)")
         else:
             reason = "no GO verdict review on this PR"
     for path in graded:

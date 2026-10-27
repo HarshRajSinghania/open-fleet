@@ -520,6 +520,32 @@ class AForkAuthorCannotGoTheirOwnPr(unittest.TestCase):
                               association=association)
                 self.assertFalse(verdict_at_tip([mine], HEAD, pr_author="forker"))
 
+    def test_an_approved_go_from_an_untrusted_account_never_counts(self):
+        # PR #718 review (Codex, P1): any GitHub account can submit an APPROVED review on a public
+        # repository; it only fails to count toward native required reviews. The state proves
+        # nothing about the author, so APPROVED passes the same trust tiers as COMMENTED.
+        for association in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", None):
+            for login, pr_author in (("outsider", "coord"), ("forker", "forker")):
+                with self.subTest(association=association, login=login):
+                    approved = review(go_body(HEAD), state="APPROVED", login=login,
+                                      association=association)
+                    self.assertFalse(verdict_at_tip([approved], HEAD, pr_author=pr_author))
+
+    def test_the_gate_reports_an_untrusted_approval_as_untrusted(self):
+        pr = {"number": 7, "head": {"sha": HEAD}, "user": {"login": "coord"},
+              "author_association": "OWNER", "changed_files": 0}
+        approved = review(go_body(HEAD), state="APPROVED", login="outsider", association="NONE")
+
+        def fake_api(path, repo, paginate=False):
+            return {"pulls/7": pr, "pulls/7/reviews": [approved]}.get(path, [])
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check, "_gh_api", side_effect=fake_api):
+            code = verdict_check.main(["--pr", "7", "--repo", "o/r"])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("untrusted", err.getvalue())
+
     def test_the_owners_self_go_still_binds(self):
         mine = review(go_body(HEAD), state="COMMENTED", login="ravidsrk", association="OWNER")
         self.assertTrue(verdict_at_tip([mine], HEAD, pr_author="ravidsrk"))

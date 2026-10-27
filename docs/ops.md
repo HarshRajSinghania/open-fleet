@@ -71,8 +71,10 @@ The trusted check for a GO verdict is the `verdict-gate` commit status, posted b
 where the PR can rewrite it.
 
 **What a green `verdict-gate` proves.** A trusted account bound `VERDICT: GO` to this exact head
-SHA (an APPROVED review, or a COMMENTED one whose author is OWNER, MEMBER or COLLABORATOR), and
-the PR changes no grader path unless the owner opened it (below). It does not prove that anyone
+SHA: an APPROVED or COMMENTED review whose author's association is OWNER, MEMBER or
+COLLABORATOR. The review state alone proves nothing, because on a public repository any account
+can submit an APPROVED review (PR #718 review). And the PR changes no grader path unless the
+owner opened it (below). It does not prove that anyone
 read the diff: with one human maintainer, the owner's GO on their own PR is the normal case.
 Being the PR's author is no trust tier, so a fork author's GO on their own PR never counts
 (2026-10-27 security audit, W6-06).

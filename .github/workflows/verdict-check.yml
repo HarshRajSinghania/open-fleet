@@ -9,7 +9,8 @@
 #
 # GitHub cannot express reviewed_sha == head_sha natively, so this workflow
 # runs scripts/verdict_check.py against the PR: it passes iff a trusted review
-# (APPROVED, or COMMENTED by OWNER / MEMBER / COLLABORATOR) carries
+# (APPROVED or COMMENTED, by OWNER / MEMBER / COLLABORATOR: the state proves
+# nothing, since any account can approve on a public repository) carries
 # "VERDICT: GO" with reviewed_sha == head, and the PR changes no CI grader path
 # (.github/workflows/, .github/actions/, .github/ci-tools.lock) unless the owner
 # opened it (2026-10-27 security audit, W6-01). The PR author's own GO counts

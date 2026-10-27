@@ -1785,10 +1785,10 @@ host), or usage.
 ## `search_sessions.py`
 
 `orca search` behind an `--index-status` precheck: never query an index the host
-reports broken. Source `runtime/scripts/search_sessions.py:1-43`; behavior pinned by
+reports broken. Source `runtime/scripts/search_sessions.py:1-45`; behavior pinned by
 `tests/test_search_sessions.py` and (episodic hints) `tests/test_hint_provenance.py`.
 
-Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`.
+Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`. Every read is bounded: a store file or run manifest over `MAX_FILE_BYTES` (64 MiB) is skipped, a scan reads at most `MAX_RUN_BYTES` (512 MiB) in all, and either skip is said on stderr, so a partial recall is never silent (2026-10-27 audit, W5-21).
 
 The precheck runs first: `enabled=false` or phase `degraded`/`closed` refuses with
 exit 2 before the query fires; `current`/`idle`/`indexing` proceed (`--fresh` asks

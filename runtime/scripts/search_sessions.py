@@ -27,7 +27,9 @@ search whose Orca/provider call FAILS — the exit-1 class; a precheck refusal n
 falls back) scans the ten harnesses' own session stores read-only — claude-code,
 codex, opencode, omp, pi, jcode, goose, hermes, crush, openhands — each through a
 reader that follows its upstream on-disk format (see the per-reader comments).
-It is a token scan, not an index: every query re-reads the stores. One hit per
+It is a token scan, not an index: every query re-reads the stores, each file up to
+MAX_FILE_BYTES and the whole scan up to MAX_RUN_BYTES (a skip is said on stderr; the
+episodic hint's manifests too). One hit per
 session; --since drops undated records; --path matches the session's cwd;
 --cursor pages with the ``local:<offset>`` NEXT_CURSOR it printed (any other
 cursor is refused). On EVERY path (Orca results included) every untrusted
@@ -95,6 +97,64 @@ GOOD_PHASES = ("current", "idle", "indexing")
 SCOPES = ("conversation", "all")
 SORTS = ("relevance", "newest")
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "runs"
+# Recall reads every session store under $HOME and every manifest under --runs-dir, and only the
+# OUTPUT was bounded (2026-10-27 audit, W5-21). A file over MAX_FILE_BYTES is skipped, and a scan
+# reads at most MAX_RUN_BYTES in all; either is said once on stderr, so a partial recall is never
+# silent. A transcript's records are kept whole, so this is the memory a scan can hold.
+MAX_FILE_BYTES = 64 << 20
+MAX_RUN_BYTES = 512 << 20
+
+
+class _ReadBudget:
+    """Bytes read so far in this process's scans, and what was skipped (reported once each)."""
+
+    def __init__(self):
+        self.used, self.said = 0, set()
+
+    def skip(self, path, why):
+        if why not in self.said:
+            self.said.add(why)
+            limit = MAX_FILE_BYTES if why == "file" else MAX_RUN_BYTES
+            what = ("a file over the per-file cap" if why == "file"
+                    else "files past the scan's byte budget")
+            print(f"search_sessions: skipped {what} ({limit} bytes), first {path}: recall is partial",
+                  file=sys.stderr)
+
+
+_BUDGET = _ReadBudget()
+
+
+def _new_scan():
+    """One budget per scan: main() and each local-harness search start a fresh one."""
+    global _BUDGET
+    _BUDGET = _ReadBudget()
+
+
+def _charge(fp, size):
+    """True when `size` more bytes of `fp` fit both caps (and are now counted), else False."""
+    if size > MAX_FILE_BYTES:
+        _BUDGET.skip(fp, "file")
+        return False
+    if _BUDGET.used + size > MAX_RUN_BYTES:
+        _BUDGET.skip(fp, "run")
+        return False
+    _BUDGET.used += size
+    return True
+
+
+def _read_capped(fp):
+    """`fp`'s bytes, or None when it is unreadable, over MAX_FILE_BYTES, or past MAX_RUN_BYTES."""
+    try:
+        with open(fp, "rb") as fh:
+            if not _charge(fp, os.fstat(fh.fileno()).st_size):
+                return None
+            data = fh.read(MAX_FILE_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > MAX_FILE_BYTES:  # it grew while being read
+        _BUDGET.skip(fp, "file")
+        return None
+    return data
 
 
 class Refused(Exception):
@@ -354,10 +414,12 @@ def _prior_hints(clean_paths, rdir):
     if not (rdir.is_dir() and clean_paths):
         return hints
     for order, mf in enumerate(sorted(rdir.rglob("*manifest*.json"))):
+        raw_bytes = _read_capped(mf)
+        if raw_bytes is None:
+            continue
         try:
-            raw_bytes = mf.read_bytes()
             data = json.loads(raw_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeDecodeError, json.JSONDecodeError):
             continue
         digest = hashlib.sha256(raw_bytes).hexdigest()
         run_id = mf.parent.name if mf.parent != rdir else mf.stem
@@ -923,10 +985,10 @@ def _rec(harness, sid, title, cwd, ts, role, content, fp):
 
 
 def _read_jsonl(fp):
-    try:
-        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
+    data = _read_capped(fp)
+    if data is None:
         return []
+    lines = data.decode("utf-8", errors="replace").splitlines()
     out = []
     for raw in lines:
         raw = raw.strip()
@@ -942,11 +1004,13 @@ def _read_jsonl(fp):
 
 
 def _read_json(fp):
-    try:
-        data = json.loads(fp.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
+    raw = _read_capped(fp)
+    if raw is None:
         return None
-    return data
+    try:
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
 
 
 def _glob(root, *patterns):
@@ -977,6 +1041,13 @@ def _sqlite_ro(path):
     uri = resolved.as_uri()
     wal = Path(str(resolved) + "-wal")
     shm = Path(str(resolved) + "-shm")
+    # Its rows are read whole, so the store (and its WAL) count against the recall caps (W5-21).
+    try:
+        size = resolved.stat().st_size + (wal.stat().st_size if wal.exists() else 0)
+    except OSError:
+        return None
+    if not _charge(path, size):
+        return None
     suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
         else ("?mode=ro&immutable=1",)
     for suffix in suffixes:
@@ -1052,10 +1123,20 @@ def _codex_lines(fp):
             from compression import zstd  # Python 3.14+ stdlib
         except ImportError:
             return []
+        packed = _read_capped(fp)
+        if packed is None:
+            return []
         try:
-            raw = zstd.decompress(fp.read_bytes()).decode("utf-8", errors="replace")
+            # Decompressed output is capped too: a small .zst can expand without bound (W5-21).
+            unpacker = zstd.ZstdDecompressor()
+            plain = unpacker.decompress(packed, max_length=MAX_FILE_BYTES + 1)
         except Exception:
             return []
+        if len(plain) > MAX_FILE_BYTES or not unpacker.eof or not _charge(fp, len(plain)):
+            if len(plain) > MAX_FILE_BYTES or not unpacker.eof:
+                _BUDGET.skip(fp, "file")
+            return []
+        raw = plain.decode("utf-8", errors="replace")
         out = []
         for line in raw.splitlines():
             try:
@@ -1507,8 +1588,9 @@ def search_local_harnesses(ns):
     --since drops records with no readable timestamp: undated is not "recent".
     --path matches the session's working directory (the store path only when
     the harness recorded no cwd). --cursor pages with the ``local:<offset>``
-    NEXT_CURSOR a previous local page printed.
+    NEXT_CURSOR a previous local page printed. Reads are capped per file and per scan (W5-21).
     """
+    _new_scan()
     build_search_argv(ns)
     query = (ns.query if ns.query is not None else ns.query_flag) or ""
     tokens = [t.lower() for t in query.split() if t.strip()]
@@ -1587,6 +1669,7 @@ def run_orca(argv):
 
 
 def main(argv=None):
+    _new_scan()
     try:
         ns = parse_args(sys.argv[1:] if argv is None else argv)
     except SystemExit as exc:
@@ -1621,9 +1704,13 @@ def main(argv=None):
                     live = hp.LiveSource(_nonempty(ns.repo, "--repo"),
                                          rev=_nonempty(ns.live_rev, "--live-rev"))
                 if ns.current_evidence is not None:
-                    evidence = json.loads(Path(ns.current_evidence).read_text(encoding="utf-8"))
+                    raw = _read_capped(Path(ns.current_evidence))
+                    if raw is None:
+                        raise Refused(f"episodic hint: --current-evidence {ns.current_evidence} is unreadable "
+                                      f"or over {MAX_FILE_BYTES} bytes")
+                    evidence = json.loads(raw.decode("utf-8"))
                     hp.load_observations(evidence)
-            except (OSError, json.JSONDecodeError, hp.ProvenanceError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, hp.ProvenanceError) as exc:
                 raise Refused(f"episodic hint: {exc}")
             hits = None
             if has_query:

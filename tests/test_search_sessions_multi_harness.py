@@ -614,5 +614,57 @@ class TestInjectionFencing(_Base):
         self.assertIsNone(re.search(r"<<<\s*END\s+UNTRUSTED", out))
 
 
+class TestRecallReadsAreBounded(_Base):
+    """2026-10-27 security audit, W5-21: only the OUTPUT was bounded. Every session store and
+    every run manifest was read whole, so one huge transcript or manifest held the recall scan
+    in memory before any output. A file past MAX_FILE_BYTES is skipped, a scan stops reading at
+    MAX_RUN_BYTES, and either is said on stderr so a partial recall is never silent."""
+
+    def big_claude_session(self, nbytes):
+        path = self.tmp / "claude" / "projects" / "-workspace-big" / "big-session.jsonl"  # CLAUDE_CONFIG_DIR
+        record = {"type": "user", "sessionId": "big-session", "cwd": "/workspace/big",
+                  "timestamp": "2026-10-10T12:00:00Z",
+                  "message": {"role": "user", "content": "omega_token " + "x" * nbytes}}
+        _jsonl(path, [record])
+        return path
+
+    def scan(self, *argv):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args([*argv, "--local-harnesses"])
+            hits = self.mod.search_local_harnesses(ns)["hits"]
+        return hits, err.getvalue()
+
+    def test_a_file_over_the_per_file_cap_is_skipped_and_said(self):
+        # 300 KB against a 200 KB cap: every other fixture (the SQLite stores included) fits.
+        self.big_claude_session(300_000)
+        self.assertEqual(len(self.scan("omega_token")[0]), 1, "the fixture is not where the reader looks")
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 200_000, create=True):
+            hits, err = self.scan("omega_token")
+            self.assertEqual(hits, [], "a file over the per-file cap was read whole")
+            self.assertIn("skipped", err)
+            # Everything under the cap is still read.
+            self.assertEqual(len(self.scan("zeta_token", "--limit", "50")[0]), 10)
+
+    def test_a_scan_stops_reading_at_the_per_run_budget(self):
+        self.big_claude_session(4096)
+        with mock.patch.object(self.mod, "MAX_RUN_BYTES", 1024, create=True):
+            hits, err = self.scan("omega_token")
+        self.assertEqual(hits, [], "the scan read past its byte budget")
+        self.assertIn("budget", err)
+
+    def test_an_oversized_run_manifest_is_never_read_whole(self):
+        runs = self.tmp / "runs" / "run-a"
+        runs.mkdir(parents=True)
+        manifest = {"units": [{"id": "U-1", "status": "merged", "files_touched": ["src/app.py"],
+                               "head_sha": "a" * 40, "pad": "x" * 4096}]}
+        (runs / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        found = self.mod._prior_hints(["src/app.py"], self.tmp / "runs")
+        self.assertEqual(len(found), 1, "the fixture manifest does not match the query path")
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 2048, create=True), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.mod._prior_hints(["src/app.py"], self.tmp / "runs"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

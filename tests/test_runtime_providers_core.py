@@ -130,7 +130,7 @@ class TestFlagValuesAndEnvKeysStayData(unittest.TestCase):
             env = {**os.environ, "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s" / "runtime.db"),
                    "OPEN_FLEET_CLI_CWD": tmp, "OPEN_FLEET_POSIX_BACKEND": "dry-run"}
             prov = posix.PosixWorktreeProvider(env=env)
-            for argv in (["terminal", "send", "--terminal", "t1", "--text", "--hello"],
+            for argv in (["terminal", "send", "--terminal", "t1", "--text", "--"],
                          ["terminal", "send", "--terminal", "t1", "--text"],
                          ["terminal", "send", "--terminal", "t1", "--text", "a", "--text", "b"]):
                 with self.subTest(argv=argv):

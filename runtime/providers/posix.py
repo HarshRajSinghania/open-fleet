@@ -738,6 +738,27 @@ def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, 
     return {"HERMES_HOME": str(home), "HERMES_ACCEPT_HOOKS": "1", "HERMES_SAFE_MODE": "0"}
 
 
+# Variables that choose the repository, worktree, index, object store or attribute source a git
+# call reads, or that inject config or git's own helper programs. Handed to a provider's git in a
+# caller-supplied env, they pointed the call at a repository whose drivers were never listed, and
+# its smudge filter ran (PR #720 Codex round 2): `-C`/cwd/`--git-dir` is the only way a provider
+# names its repository.
+GIT_SELECTOR_ENV = frozenset({
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_ATTR_SOURCE", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_EXEC_PATH",
+})
+
+
+def git_call_base(env: dict[str, str] | None) -> dict[str, str]:
+    """The env a provider git call starts from (os.environ when None) with GIT_SELECTOR_ENV and
+    every GIT_CONFIG_KEY_n/VALUE_n removed: the one base the driver listing AND the call run under,
+    so both resolve the same repository. Shared with _external._git_launch."""
+    return {k: v for k, v in (os.environ if env is None else env).items()
+            if k not in GIT_SELECTOR_ENV and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+
+
 def git_location(args: list[str], cwd: str | Path | None) -> tuple[str, str | None]:
     """`(repo, git_dir)` git runs in for the arguments `args` (everything after the program name):
     their leading `-C <dir>` options (each relative to the one before, from the launch cwd), or a
@@ -786,11 +807,12 @@ def _git(
     runs its clean check inside the target worktree)."""
     full = [*(["-C", str(cwd)] if cwd else []), *args]
     try:
+        base = git_call_base(env)
         if blanks is None:
             repo, git_dir = git_location(full, None)
-            blanks = gitexec.driver_blanks(repo, git_dir=git_dir)
+            blanks = gitexec.driver_blanks(repo, git_dir=git_dir, base=base)
         return subprocess.run(gitexec.argv(*full), capture_output=True, text=True,
-                              env=gitexec.env(env, blanks=blanks), timeout=timeout, stdin=subprocess.DEVNULL)
+                              env=gitexec.env(base, blanks=blanks), timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(full, 127, "", str(exc))
 
@@ -812,7 +834,7 @@ def _driver_blanks(code: str, repo: str | Path | None = None, *, git_dir: str | 
     runs (an `includeIf gitdir:`/`onbranch:` resolves per worktree). A config that cannot be read
     refuses the call (`code`), never runs it with every planted driver live (W4-01)."""
     try:
-        return gitexec.driver_blanks(repo, git_dir=git_dir)
+        return gitexec.driver_blanks(repo, git_dir=git_dir, base=git_call_base(None))
     except gitexec.DriverQueryFailed as exc:
         raise ProviderError(code, f"cannot neutralise the repository's filter drivers: {exc}") from exc
 

@@ -27,7 +27,7 @@ from typing import Callable
 
 from .base import ProviderError, fence_state, normalize_show, parse_json_strict
 from .local_state import LocalStateStore
-from .posix import HOOK_ARTIFACTS, git_location, gitexec
+from .posix import HOOK_ARTIFACTS, git_call_base, git_location, gitexec
 
 def _git_launch(argv: list[str], env: dict[str, str] | None, cwd: str | None = None) -> tuple[list[str], dict[str, str] | None, dict[str, Any]]:
     """`(argv, env, stdin kwargs)` to launch one upstream command. A `git` an adapter runs is
@@ -35,14 +35,18 @@ def _git_launch(argv: list[str], env: dict[str, str] | None, cwd: str | None = N
     the same-uid `~/.gitconfig` — so it launches the way posix.py launches one (W4-01 sweep):
     gitexec.py's absolute git and floor, stdin closed, and EVERY launch carries the blanks for every
     driver the config declares where it runs (`-C`, `--git-dir`, or the launch cwd): no subcommand
-    allowlist a future `commit`/`restore`/`rebase` could fall outside (re-attack P3). Anything that
-    is not git passes as is. GitAbsent (git missing at import) and DriverQueryFailed (an unreadable
-    config) are OSErrors."""
+    allowlist a future `commit`/`restore`/`rebase` could fall outside (re-attack P3). The listing
+    and the call run under one base env with every repository-selecting or config-injecting GIT_*
+    variable removed (posix.git_call_base), so a supplied GIT_DIR cannot aim the call at a
+    repository whose drivers were never listed (PR #720 Codex round 2). Anything that is not git
+    passes as is. GitAbsent (git missing at import) and DriverQueryFailed (an unreadable config)
+    are OSErrors."""
     if not argv or argv[0] != "git":
         return argv, env, {}
+    base = git_call_base(env)
     repo, git_dir = git_location(argv[1:], cwd)
-    blanks = gitexec.driver_blanks(repo, git_dir=git_dir)
-    return gitexec.argv(*argv[1:]), gitexec.env(env, blanks=blanks), {"stdin": subprocess.DEVNULL}
+    blanks = gitexec.driver_blanks(repo, git_dir=git_dir, base=base)
+    return gitexec.argv(*argv[1:]), gitexec.env(base, blanks=blanks), {"stdin": subprocess.DEVNULL}
 
 # Files `posix.install_worktree_hooks` writes into a worktree: dirt limited to these paths is
 # ours, not the worker's, and never blocks a cleanup that has already preserved HEAD.

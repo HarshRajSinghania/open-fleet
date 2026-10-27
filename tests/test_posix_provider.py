@@ -917,6 +917,30 @@ class TestCoordinatorGitRunsNothingTheRepoNames(PosixRealProcessBase):
                 self.assertEqual(self.fired(), [], f"_git {args[0]} ran a planted command without blanks=")
         self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "changed\n")
 
+    def test_a_supplied_env_cannot_point_git_at_a_repository_never_enumerated(self):
+        # Codex round 2 (P2): the drivers were listed where `-C`/cwd/`--git-dir` points, but a
+        # caller-supplied GIT_DIR (or GIT_WORK_TREE, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_CONFIG*)
+        # made the call read ANOTHER repository, whose smudge filter then ran unblanked.
+        wt = Path(self.prov.worktree_create("envsel")["worktree"]["path"])
+        other = self.base / "other"
+        other.mkdir()
+        _git("init", "-q", "-b", "main", cwd=other)
+        (other / "a.txt").write_text("other\n", encoding="utf-8")
+        _git("add", "a.txt", cwd=other)
+        _git("-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "o", cwd=other)
+        _git("config", "filter.evil.smudge", self.probe("other-smudge"), cwd=other)
+        (other / ".git" / "info").mkdir(exist_ok=True)
+        (other / ".git" / "info" / "attributes").write_text("* filter=evil\n", encoding="utf-8")
+        (wt / "a.txt").write_text("dirty\n", encoding="utf-8")
+        for var, value in (("GIT_DIR", str(other / ".git")), ("GIT_COMMON_DIR", str(other / ".git")),
+                           ("GIT_INDEX_FILE", str(other / ".git" / "index"))):
+            with self.subTest(var=var):
+                proc = self.posix._git(["checkout", "--", "a.txt"], cwd=wt, env={**os.environ, var: value})
+                self.assertEqual(self.fired(), [], f"a supplied {var} ran another repository's filter")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "a\n", "checked out from wt's own repo")
+                (wt / "a.txt").write_text("dirty\n", encoding="utf-8")
+
     def test_no_bare_git_argv_is_left_in_the_provider(self):
         # Every git the provider (and the monitor script it generates) runs goes through _git, so
         # through gitexec's absolute git and floor; a literal `["git", ...]` argv is the bypass.

@@ -532,6 +532,25 @@ class TestAdapterGitRunsNothingTheRepoNames(_Base):
         self.assertTrue(conflicted, "a driver that runs nothing leaves the 3-way merge conflicted")
         self.assertEqual(self.fired(), [], "worktrunk's merge-tree ran a repo-planted merge driver")
 
+    def test_a_supplied_env_cannot_point_an_adapter_git_at_another_repository(self) -> None:
+        # Codex round 2 (P2): drivers were listed where `-C` points, but a GIT_DIR in the env the
+        # runner was handed made the call read another repository, whose smudge filter then ran.
+        clean = {**GIT_ENV, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        other = self.tmp / "other"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(other)], check=True, env=clean)
+        (other / "a.txt").write_text("other\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(other), "add", "a.txt"], check=True, env=clean)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "o"], check=True, env=clean)
+        subprocess.run(["git", "-C", str(other), "config", "filter.evil.smudge", self.probe("other-smudge")],
+                       check=True, env=clean)
+        (other / ".git" / "info").mkdir(exist_ok=True)
+        (other / ".git" / "info" / "attributes").write_text("* filter=evil\n", encoding="utf-8")
+        (self.wt / "a.txt").write_text("dirty\n", encoding="utf-8")
+        env = {**os.environ, "GIT_DIR": str(other / ".git")}
+        self.ext.run_cli_text(["git", "-C", str(self.wt), "checkout", "--", "a.txt"], "adapter", env=env)
+        self.assertEqual(self.fired(), [], "a supplied GIT_DIR ran another repository's filter")
+        self.assertEqual((self.wt / "a.txt").read_text(encoding="utf-8"), "a\n", "checked out from wt's own repo")
+
     def test_the_dirty_check_reads_paths_raw_never_quoted_or_split(self) -> None:
         # Codex round 2 sweep: `status --porcelain` without -z prints `x -> AGENTS.md` unquoted, and
         # the ` -> ` rename split read it as the artifact `AGENTS.md`, so a user's unsaved file

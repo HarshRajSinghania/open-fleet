@@ -1063,7 +1063,7 @@ command-bearing repository-config key that has a FIXED name: a worker's own `.gi
 `worktree add` / `checkout <paths>` among them), its external-diff program, the `ext::`
 transport, and — with the two object-rewrite env vars — a planted `refs/replace`/graft (#629).
 
-`driver_blanks(repo, git_dir=None)` closes the remaining channel a fixed `-c` cannot: a
+`driver_blanks(repo, git_dir=None, base=None)` closes the remaining channel a fixed `-c` cannot: a
 `filter.<driver>.clean/smudge/process`, a `diff.<driver>.textconv`/`command`, or a
 `merge.<driver>.driver` git runs when a `.gitattributes` (or `$GIT_DIR/info/attributes`, which
 outranks any `--attr-source`) line selects `<driver>`. `-c` cannot enumerate an unknown
@@ -1084,7 +1084,9 @@ key handed back through `os.fsdecode`, which `subprocess` reverses, because a dr
 bytes git accepts (`0xff`, an invalid UTF-8 sequence) and an attribute selects exactly those; a
 text decode named a different driver (PR #649 review). `git_dir` reads the config a named git
 directory resolves (`--git-dir`) instead of discovering one from `repo`, for a caller that never
-trusts a worktree's own `.git` pointer. A read that MATERIALISES working-tree
+trusts a worktree's own `.git` pointer; `base` is the environment the listing runs under, which a
+caller sets to the one its git call gets (the posix provider and the adapters strip every
+repository-selecting `GIT_*` variable from both). A read that MATERIALISES working-tree
 content passes its pairs (`hint_provenance.py` on every `diff` and `log`, `_trajectories.py`'s replay
 on every call after `init`, beside attributes from the empty tree; every git the posix provider
 runs, read at its `-C`/cwd or `--git-dir` (`worktree remove` reads the target worktree's); every

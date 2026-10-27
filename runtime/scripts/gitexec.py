@@ -158,14 +158,16 @@ def env(base=None, blanks=()):
     return out
 
 
-def driver_blanks(repo, *, git_dir=None):
+def driver_blanks(repo, *, git_dir=None, base=None):
     """``(key, value)`` config pairs that neutralise the command of every filter/diff/merge driver
     DECLARED in ``repo``'s config — the attribute-selected exec channel a fixed ``-c`` cannot name
     (#629). Pass them as ``env(blanks=...)``; never as ``-c`` argv, which splits a key at its
     first ``=``. ``git_dir`` reads the config the git directory it names resolves (``--git-dir``)
     instead of discovering one from ``repo``: for a caller that names its repository that way and
     never trusts a worktree's own ``.git`` pointer (posix.py's sandbox sync, W4-01), so the
-    drivers are read where its call runs. Filter and diff commands are blanked to empty; a merge driver is overridden to
+    drivers are read where its call runs. ``base`` is the environment the listing runs under (as
+    ``env(base)``); a caller whose git call runs under a base of its own passes the same one, so
+    the listing and the call resolve the same repository (PR #720 Codex round 2). Filter and diff commands are blanked to empty; a merge driver is overridden to
     ``exit 1`` (see ``_MERGE_KEY_RE``), so a git ``merge-tree``/``revert``/``apply``/``checkout``
     that would run it reads a conflict instead and runs nothing.
 
@@ -197,7 +199,7 @@ def driver_blanks(repo, *, git_dir=None):
     where = ("--git-dir", str(git_dir)) if git_dir is not None else ("-C", str(repo))
     try:
         out = subprocess.run(argv(*where, "config", "--list", "-z", "--name-only"),
-                             capture_output=True, timeout=30, env=env(),
+                             capture_output=True, timeout=30, env=env(base),
                              stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as err:
         raise DriverQueryFailed(f"git config --list could not run in {where[1]}: {err}") from err

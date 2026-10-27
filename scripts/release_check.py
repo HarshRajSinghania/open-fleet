@@ -556,13 +556,87 @@ _STEP_KEY_RE = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z_-]+):\s*(.*?)\s*$")
 # A step or job carrying one of these may not run its line, may not fail the build, or may run
 # it some other way than the line says (`shell: bash -n {0}`; `working-directory` or `defaults`
 # deciding which file the path names; `needs:` on a job whose prerequisite is skipped, which
-# GitHub then skips too). None of the real gate-3 steps or jobs carries one, so none is
+# GitHub then skips too; a `strategy:` matrix that can expand to no job at all; `uses:`, a
+# reusable workflow's jobs in place of the job's own steps; a `container:` image choosing what
+# `python3` or `sh` is). None of the real gate-3 steps or jobs carries one, so none is
 # allowlisted: a condition's truth is GitHub's to decide at run time, not this check's.
 _STEP_DISQUALIFIERS = frozenset({"if", "continue-on-error", "shell", "working-directory"})
-_JOB_DISQUALIFIERS = frozenset({"if", "continue-on-error", "defaults", "needs"})
+_JOB_DISQUALIFIERS = frozenset({"if", "continue-on-error", "defaults", "needs", "strategy", "uses",
+                                "container"})
 _GATE3_INTERPRETERS = frozenset({"python3", "bash", "sh"})
 # Anything that could make the line more than one command, redirect it or expand into one.
 _SHELL_METACHARACTERS = re.compile(r"[;&|<>`\n\r]|\$\(")
+
+# The block-style YAML that a line-by-line read of a workflow sees exactly as GitHub's parser
+# does: gate 3 here, and every workflow scan in tests/test_repo_hygiene.py. It is an allowlist.
+# Refusing the spellings that hide a key (a flow mapping, `uses :`, an anchor, then an explicit
+# `? uses` key, PR #718 reviews) missed one more each round, and a key hidden from a line scan is
+# a `needs:` or `if:` gate 3 never sees, or a `uses: …@v4` the pin test never sees.
+_YAML_KEY = r"[A-Za-z0-9_][A-Za-z0-9_.-]*"
+_YAML_QUOTED = r"\"(?:[^\"\\]|\\.)*\"|'(?:[^']|'')*'"
+# A plain scalar on one line: it opens with no YAML indicator (a tag `!`, an anchor `&`, an alias
+# `*`, an explicit key `?`, a flow collection, a quote...), holds no `: ` (a mapping) and stops
+# before a ` #` comment.
+_YAML_PLAIN = r"(?:[^-?:,\[\]{}#&*!|>'\"%@` ]|-(?=[^ ]))(?:[^ :]|:(?=[^ ])| +(?=[^ #]))*"
+_YAML_FLOW_ITEM = (_YAML_QUOTED + r"|(?:[^-?:,\[\]{}#&*!|>'\"%@` ]|-(?=[^ ,\[\]{}]))"
+                   r"(?:[^ :,\[\]{}]|:(?=[^ ,\[\]{}])| +(?=[^ #,\[\]{}]))*")
+# A value: a quoted or plain scalar, an empty `{}`, or a one-line `[...]` of scalars (never a
+# flow mapping, whose keys no line scan reads).
+_YAML_VALUE = (rf"(?:{_YAML_QUOTED}|\{{\}}"
+               rf"|\[ *(?:(?:{_YAML_FLOW_ITEM}) *(?:, *(?:{_YAML_FLOW_ITEM}) *)*)?\]|{_YAML_PLAIN})")
+# One line: spaces, at most one `- ` and then a plain `key:` (with a scalar, a block scalar
+# header or nothing after it), or `- ` and a scalar; a comment may follow.
+_YAML_LINE_RE = re.compile(
+    rf"(?P<indent> *)(?P<dash>- )?"
+    rf"(?:(?P<key>{_YAML_KEY}):(?:(?P<block> +[|>](?:[1-9][+-]?|[+-][1-9]?)?)"
+    rf"|(?P<value> +{_YAML_VALUE})?)|(?<=- ){_YAML_VALUE})(?: +#.*)? *")
+# A control character, or a character Python's str.splitlines() breaks a line at and YAML 1.2
+# does not (so a line scan and the parser would disagree on where a key starts).
+_YAML_FORBIDDEN_CHAR_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
+
+
+def block_yaml_offenders(text):
+    """[(line number, line)] for every line of `text` outside the block YAML subset a line scan
+    reads as GitHub does; [] when the whole file is inside it.
+
+    Inside it: each line, outside a block scalar's body, is blank, a comment, or matches
+    _YAML_LINE_RE (a plain key, at most one `- `, scalars only), and nests by exactly two spaces:
+    a key with nothing after it opens a block two columns right of the key, every other line
+    sits at a column some open block of its own kind (mapping or sequence) holds, so neither a
+    sequence at its parent key's column, a four-space job nor `-   uses:` passes. A block scalar's
+    body is every line indented past its key. No control character, and no Unicode line or
+    paragraph separator, anywhere. Not a YAML parser (none is installed in CI, and the suite is
+    stdlib-only): a file this accepts is one each line scan reads key by key as written.
+    """
+    lines = text.split("\n")
+    bad = [(n, line) for n, line in enumerate(lines, start=1)
+           if _YAML_FORBIDDEN_CHAR_RE.search(line)]
+    levels, opened, body = [("map", 0)], None, None
+    for n, line in enumerate(lines, start=1):
+        if body is not None:
+            if not line.strip(" ") or _indent(line) > body:
+                continue
+            body = None
+        if not line.strip(" ") or line.lstrip(" ").startswith("#"):
+            continue
+        m = _YAML_LINE_RE.fullmatch(line)
+        col, kind = (len(m["indent"]), "seq" if m["dash"] else "map") if m else (None, None)
+        if m and opened is not None and col == opened:
+            levels.append((kind, col))
+        elif m and (kind, col) in levels:
+            del levels[levels.index((kind, col)) + 1:]
+        else:
+            bad.append((n, line))
+            opened = None
+            continue
+        key_col, opened = col + 2 if m["dash"] else col, None
+        if m["dash"] and m["key"] is not None:
+            levels.append(("map", key_col))
+        if m["block"]:
+            body = key_col
+        elif m["key"] is not None and m["value"] is None:
+            opened = key_col + 2
+    return sorted(set(bad))
 
 
 def _indent(line):
@@ -693,18 +767,23 @@ def check_workflows_mention(ctx, name, patterns, landed):
     is a decidable one: a step under a top-level job counts only when its whole `run:` value,
     stripped, is one invocation (invoked_script says exactly what that is), neither the step nor
     its job carries `if:` or `continue-on-error:`, the job has no `needs:` (a skipped prerequisite
-    skips it, PR #718 review round 3), the step sets no `shell:` or `working-directory:`, neither
-    its job nor the workflow sets `defaults:`, and the workflow
-    runs on every pull request (runs_on_every_pull_request; a dispatch-only workflow counted, PR
-    #718 re-attack). Not read: the environment (`env:`, or `$GITHUB_ENV` written by an earlier
-    step), the runner or a container.
+    skips it, PR #718 review round 3), `strategy:`, `uses:` or `container:`, the step sets no
+    `shell:` or `working-directory:`, neither its job nor the workflow sets `defaults:`, the
+    workflow runs on every pull request (runs_on_every_pull_request; a dispatch-only workflow
+    counted, PR #718 re-attack), and every line of the workflow is in the block YAML subset
+    (block_yaml_offenders; a quoted `"needs":`, `needs :` or an explicit `? needs` key hid the
+    key from this read, PR #718 review round 3). Not read: the environment (`env:`, or
+    `$GITHUB_ENV` written by an earlier step), an earlier step, or the runner.
     """
     wf_dir = ctx.repo / ".github" / "workflows"
     files = sorted(p for p in wf_dir.iterdir() if p.is_file()) if wf_dir.is_dir() else []
-    hits = []
+    hits, unread = [], []
     for path in files:
         text = path.read_text(encoding="utf-8", errors="replace")
         if not runs_on_every_pull_request(text):
+            continue
+        if offenders := block_yaml_offenders(text):
+            unread.append(f"{path.name}:{offenders[0][0]}")
             continue
         invoked = [script for _job, step in workflow_steps(text)
                    if (script := invoked_script(_step_run(step)))]
@@ -714,8 +793,10 @@ def check_workflows_mention(ctx, name, patterns, landed):
     if hits:
         return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} run {what} as the whole of "
                             f"an unconditional job step ({landed} landed)")
+    skipped = (f"; not read, outside the block YAML subset: {', '.join(unread)}"
+               if unread else "")
     return (name, FAIL, f"no unconditional job step under .github/workflows/ is exactly one "
-                        f"invocation of {what} ({landed} has not landed)")
+                        f"invocation of {what} ({landed} has not landed){skipped}")
 
 
 def gate3(ctx):

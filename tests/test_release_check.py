@@ -901,6 +901,74 @@ class CiRunsMeansARunStep(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 self.assertEqual(self.gate3(workflow), rc.FAIL)
 
+    def test_a_key_spelled_outside_the_block_subset_counts_nothing(self):
+        # PR #718 review round 3: the job and step keys are read line by line, so a quoted
+        # `"needs":`, `needs :` or an explicit `? needs` key on a job a skipped prerequisite skips
+        # (or `'if': false`, or a step's `"shell": bash -n {0}`) was no key at all, and the step
+        # counted. A workflow with any line outside the block subset counts for nothing.
+        pre = "jobs:\n  prereq:\n    if: false\n    steps:\n      - run: true\n"
+        run = "    steps:\n      - name: x\n        run: python3 bench/vf-bench/gate.py\n"
+        step = "jobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+                pre + "  gates:\n    \"needs\": prereq\n" + run,
+                pre + "  gates:\n    needs : prereq\n" + run,
+                pre + "  gates:\n    ? needs\n    : prereq\n" + run,
+                pre + "  gates:\n    needs: &n prereq\n" + run,
+                "jobs:\n  gates:\n    'if': false\n" + run,
+                "jobs:\n  gates:\n    if : false\n" + run,
+                "jobs:\n  gates:\n    !!str if: false\n" + run,
+                step + "        \"shell\": bash -n {0}\n",
+                step + "        if : false\n",
+                step + "        ? continue-on-error\n        : true\n"):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+        check = rc.check_workflows_mention(ctx_for(ROOT), "x", VF_BENCH, "x")
+        self.assertEqual(check[1], rc.PASS, "the real workflows are inside the subset")
+
+    def test_the_block_subset_is_an_allowlist(self):
+        for text in ("jobs:\n  x:\n    steps:\n      -   uses: a/b@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - uses:\n          a/b@v4\n",
+                     "jobs:\n  x:\n    steps:\n    - uses: a/b@v4\n",
+                     "jobs:\n    x:\n      steps:\n        - run: echo\n",
+                     "jobs:\n  x:\n    steps:\n      - - uses: a/b@v4\n",
+                     "jobs:\n  x:\n    steps:\n      -\n        uses: a/b@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - uses: \"a/b@\n          v4\"\n",
+                     "jobs:\n  x:\n    steps: [uses: a/b@v4]\n",
+                     "jobs:\n  x:\n    steps: [\"uses\":a/b@v4]\n",
+                     "jobs:\n  x:\n    steps:\n      - {uses: a/b@v4}\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\u2028        uses: a/b@v4\n",
+                     # a byte GitHub's parser refuses the whole file for, and a line break only
+                     # Python's splitlines() sees: the line grammar alone accepts both
+                     "jobs:\n  x:\n    steps:\n      - name: a\x00b\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\x85b\n",
+                     "jobs:\n  x:\n\tsteps:\n",
+                     "---\njobs:\n  x:\n",
+                     "jobs:\n  x:\n    steps:\n      - run: |\n          echo\n"
+                     "        'uses': a/b@v4\n"):
+            with self.subTest(text=text):
+                self.assertTrue(rc.block_yaml_offenders(text))
+        ok = ("on:\n  pull_request:\n  push:\n    branches: [main, 'release/**']\n"
+              "permissions: {}\njobs:\n  x:\n    runs-on: ubuntu-latest  # c\n    steps:\n"
+              "      - run: |\n          a && b {x}, y: \"$ref\" # sh\n\n          - z: 1\n"
+              "      - uses: a/b@" + "c" * 40 + " # v1\n        with:\n          k: '1'\n"
+              "          if: ${{ github.event_name == 'push' }}\n")
+        self.assertEqual(rc.block_yaml_offenders(ok), [])
+
+    def test_a_job_with_a_matrix_a_reusable_workflow_or_a_container_does_not_count(self):
+        # PR #718 review round 3: a `strategy:` matrix can expand to no job at all (an empty
+        # vector, or an exclude covering every combination), a job-level `uses:` runs another
+        # workflow's jobs, and a `container:` image decides what `python3` is. No real gate-3
+        # job has any of them.
+        run = "    steps:\n      - name: x\n        run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+                "jobs:\n  gates:\n    strategy:\n      matrix:\n        x: []\n" + run,
+                "jobs:\n  gates:\n    strategy:\n      matrix:\n        x: [1]\n"
+                "        exclude:\n          - x: 1\n" + run,
+                "jobs:\n  gates:\n    uses: ./.github/workflows/other.yml\n" + run,
+                "jobs:\n  gates:\n    container: example/python3-stub\n" + run):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
     def test_a_condition_or_a_non_failing_step_does_not_count(self):
         """PR #718 review (P2): `_NEVER_RE` knew only literal false spellings, so
         `if: ${{ 1 == 2 }}` kept a dead job counting. A counted step and its job carry no `if:`

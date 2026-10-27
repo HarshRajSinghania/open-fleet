@@ -102,11 +102,16 @@ request (a bare `pull_request:` trigger, no filter under it) and hold a job step
 path and nothing else (no option before it, no argument after it), or `./<script>` alone, with
 no `;`, `&`, `|`, `<`, `>`, backtick, `$(` or line break anywhere. Neither the step nor its job may carry `if:` or
 `continue-on-error:`; the job may have no `needs:` (GitHub skips it when a prerequisite is
-skipped); the step may not set `shell:` or `working-directory:`; neither its job nor the
-workflow may set `defaults:`. So `exit 0` or `if false; then …` before the script, `bash -n`,
-`python3 -h`, `gate.py --help`, a second command on the line, or a dispatch-only workflow does
-not count
-(2026-10-27 security audit, W6-10; PR #718 reviews). Not read: the step's environment, the runner.
+skipped), `strategy:` (a matrix can expand to no job), `uses:` or `container:`; the step may not
+set `shell:` or `working-directory:`; neither its job nor the workflow may set `defaults:`. And
+the workflow is read only if every line of it is in the block YAML subset a line-by-line read
+sees as GitHub does (`block_yaml_offenders`: plain keys, two-space nesting, one `- ` per item,
+scalars only, no control characters), so a quoted `"needs":`, `needs :`, an explicit `? needs`
+key or an anchor cannot hide a key from the check. So `exit 0` or `if false; then …` before the
+script, `bash -n`, `python3 -h`, `gate.py --help`, a second command on the line, or a
+dispatch-only workflow does not count
+(2026-10-27 security audit, W6-10; PR #718 reviews). Not read: the step's environment, what an
+earlier step does, the runner.
 
 ## Gate 4 — install is one command (epic DoD 4)
 

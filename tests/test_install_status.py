@@ -295,6 +295,26 @@ class TestInstallerOperands(unittest.TestCase):
             self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
             self.assertIn("skills/-x is not a mission directory name", p.stderr)
 
+    def test_a_name_ending_in_a_newline_is_refused_before_any_mutation(self):
+        # W5-22 re-attack: `$(basename …)` strips a trailing newline, so `ok\n` passed the name
+        # check as `ok`, and the check ran after `mkdir -p`: a partial install. The directory
+        # entry itself is judged now, before the skills dir is created.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "root"
+            for sub in ("scripts", "playbooks", "runtime", "hooks", "skills/ok-mission", "skills/ok\n"):
+                (root / sub).mkdir(parents=True)
+            shutil.copy2(INSTALL, root / "scripts" / "install.sh")
+            shutil.copy2(ROOT / "runtime" / "pins.json", root / "runtime" / "pins.json")
+            (root / "scripts" / "validate.py").write_text("raise SystemExit(0)\n")
+            for m in ("ok-mission", "ok\n"):
+                (root / "skills" / m / "SKILL.md").write_text("---\nname: x\n---\n")
+            skills = Path(tmp) / "skills-out"
+            p = self.run_sh([f"--skills-dir={skills}"], dict(os.environ, HOME=tmp), tmp,
+                            script=root / "scripts" / "install.sh")
+            self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+            self.assertIn("is not a mission directory name", p.stderr)
+            self.assertFalse(skills.exists(), "the skills dir was created before the refusal")
+
 
 if __name__ == "__main__":
     unittest.main()

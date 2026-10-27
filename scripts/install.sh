@@ -76,6 +76,14 @@ case "$SKILLS_DIR" in
   "") die "--skills-dir needs a directory (--skills-dir=DIR)" ;;
   -*) die "skills dir '$SKILLS_DIR' starts with '-', so mkdir/ln would read it as an option — pass an absolute path, or prefix a relative one with ./" ;;
 esac
+# Every mission directory name is judged here, before anything is created or linked, and from
+# the directory entry itself: `$(basename …)` strips a trailing newline, so `ok<LF>` passed as `ok`.
+for d in "$ROOT"/skills/*/; do
+  [ -f "$d/SKILL.md" ] || continue
+  m="${d%/}"; m="${m##*/}"
+  case "$m" in .*|_*) continue ;; esac
+  mission_name_ok "$m"
+done
 
 # --- hard prerequisites -------------------------------------------------------
 command -v git >/dev/null 2>&1 || die "git not found in PATH (install git first)"
@@ -210,7 +218,7 @@ then re-run: sh scripts/install.sh"
   # later mission must refuse the whole install, not leave a partial one.
   for d in "$ROOT"/skills/*/; do
     [ -f "$d/SKILL.md" ] || continue
-    m="$(basename "$d")"
+    m="${d%/}"; m="${m##*/}"
     case "$m" in .*|_*) continue ;; esac
     mission_name_ok "$m"
     if [ -e "$SKILLS_DIR/$m" ] && [ ! -L "$SKILLS_DIR/$m" ]; then
@@ -232,7 +240,7 @@ then re-run: sh scripts/install.sh"
   n=0
   for d in "$ROOT"/skills/*/; do
     [ -f "$d/SKILL.md" ] || continue
-    m="$(basename "$d")"
+    m="${d%/}"; m="${m##*/}"
     case "$m" in .*|_*) continue ;; esac
     mission_name_ok "$m"
     if [ -e "$SKILLS_DIR/$m" ] && [ ! -L "$SKILLS_DIR/$m" ]; then
@@ -250,7 +258,7 @@ fi
 n=0
 for d in "$ROOT"/skills/*/; do
   [ -f "$d/SKILL.md" ] || continue
-  m="$(basename "$d")"
+  m="${d%/}"; m="${m##*/}"
   case "$m" in .*|_*) continue ;; esac
   mission_name_ok "$m"
   link="$SKILLS_DIR/$m"

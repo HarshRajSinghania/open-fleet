@@ -3090,6 +3090,40 @@ class TestArchiveAndPatchWritersReachTheGuard(ReviewHookBase):
                 got = block["permissionDecision"] if block else "allow"
                 self.assertEqual(got, "ask" if want == "deny" else "allow", command)
 
+    def test_a_guard_directory_symlinked_outside_the_worktree_is_still_the_guard(self):
+        # Codex g1 r3 P1 (W1-05): `_dest_covers_guard` returned False for any resolved destination
+        # outside the worktree root before comparing it with the guard directories, so with
+        # `.claude` -> a shared directory elsewhere, `tar -C <that dir> -xf e.tar` replaced its
+        # settings.json silently. A guard directory, and the directory of a guard FILE that is
+        # itself a symlink, are guards wherever they resolve.
+        wt = Path(tempfile.mkdtemp(prefix="dh-guardout-wt-"))
+        shared = Path(tempfile.mkdtemp(prefix="dh-guardout-claude-"))
+        hooks_home = Path(tempfile.mkdtemp(prefix="dh-guardout-codex-"))
+        elsewhere = Path(tempfile.mkdtemp(prefix="dh-guardout-other-"))
+        for d in (wt, shared, hooks_home, elsewhere):
+            self.addCleanup(shutil.rmtree, d, True)
+        (wt / ".claude").symlink_to(shared)
+        (wt / ".codex").mkdir()
+        (wt / ".codex" / "hooks.json").symlink_to(hooks_home / "hooks.json")
+        q = shlex.quote
+        asked = (f"tar -C {q(str(shared))} -xf e.tar", f"tar xf e.tar -C {q(str(shared))}",
+                 f"tar --directory={q(str(shared))} -xf e.tar",
+                 f"unzip e.zip -d {q(str(shared))}", f"unzip -d {q(str(shared))} e.zip",
+                 f"patch -d {q(str(shared))} -p1 < d.patch",
+                 f"patch --directory={q(str(shared))} -p1 < d.patch",
+                 f"tar -C {q(str(shared / 'sub'))} -xf e.tar",
+                 f"tar -C {q(str(hooks_home))} -xf e.tar", f"unzip e.zip -d {q(str(hooks_home))}",
+                 "tar -C .claude -xf e.tar", "unzip e.zip -d .claude",
+                 "patch -d .claude -p1 < d.patch")
+        allowed = (f"tar -C {q(str(elsewhere))} -xf e.tar", f"unzip e.zip -d {q(str(elsewhere))}",
+                   f"patch -d {q(str(elsewhere))} -p1 < d.patch")
+        for env in ({"OPEN_FLEET_UNIT_WORKTREE": str(wt)}, {}):
+            for command, want in [(c, "ask") for c in asked] + [(c, "allow") for c in allowed]:
+                with self.subTest(command=command, bounded=bool(env)):
+                    block = self.decision(self.fire(event("Bash", command=command), env, cwd=wt))
+                    got = block["permissionDecision"] if block else "allow"
+                    self.assertEqual(got, want, command)
+
     def test_tars_dashless_option_bundle_is_recognised(self):
         # Codex g1 P1 (W1-05): tar's traditional syntax puts the option bundle in the first
         # operand with no leading dash -- `tar cf FILE src` overwrites FILE, `tar xf e.tar`

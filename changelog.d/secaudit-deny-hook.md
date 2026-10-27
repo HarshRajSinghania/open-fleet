@@ -10,7 +10,9 @@
   arg-taking option (`python -W error`) no longer hides the `-c` after it (W1-03); `tar`/`unzip`/
   `patch`/`cpio`/`pax`/`bsdtar`/busybox reach the self-guard — a guard file named as `tar -cf`/
   `patch -o` output is denied, and an extraction or patch whose destination equals, sits inside or
-  contains a guard directory (`tar -C .claude …`, any `-C`/`-d`/`--directory` spelling) is asked (W1-05); the root/home delete class is normalised rather than spelled out, so `/*/`,
+  contains a guard directory (`tar -C .claude …`, any `-C`/`-d`/`--directory` spelling) is asked,
+  with every guard directory and guard file's directory compared wherever its symlinks resolve, so a
+  `.claude` linked outside the worktree is still the guard (W1-05); the root/home delete class is normalised rather than spelled out, so `/*/`,
   `~/.`, `${HOME}/*` and `/dev/../` deny (W1-06); `--settings` shell-quotes the hook path and pins
   both boundary names so a space in the install path or a stale inherited variable cannot disarm
   it (W1-07, W1-08); `lexical_abs` no longer pathname-expands a path segment and a glob in a shell

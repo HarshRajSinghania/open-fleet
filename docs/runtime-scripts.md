@@ -411,8 +411,10 @@ nothing) — and interpreter code (`python -c`, `perl -e`, `node -e`, …) namin
 beside a write call, whether from `-c` or fed on stdin or a heredoc; `touch` is not guarded and
 reading an anchor stays free (PR #648 review). A `tar`/`patch` naming a guard file as its own
 output (`tar -cf`, `patch -o`) is denied; an archive extraction (`tar -x`, `unzip`, `cpio -i`,
-`patch`) is ASKED when its destination covers the guard region, since the archive's member names
-are not visible to the hook and it cannot prove the guard files untouched (W1-05). A `grep`,
+`patch`) is ASKED when its destination covers the guard region (the root, a directory above it,
+or a guard directory or guard file's directory wherever its symlinks resolve, inside the worktree
+or out), since the archive's member names are not visible to the hook and it cannot prove the
+guard files untouched (W1-05). A `grep`,
 `sed` or `tr` that is missing or errors denies: a matcher's exit 2 or 127 is never read as no-match.
 
 Who reads a body (PR #648 review). Reader identification is structural, not positional: each

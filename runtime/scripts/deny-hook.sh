@@ -172,8 +172,10 @@
 # write to it; touch is not guarded (it changes no content or permission).
 # A tar/patch that names a guard file as its own output (tar -cf, patch -o) is
 # denied; an archive EXTRACTION (tar -x, unzip, cpio -i, patch) is asked when its
-# destination covers the guard region, since the member names are not visible
-# here and the hook cannot prove the guard files untouched (W1-05).
+# destination covers the guard region -- the root, a directory above it, or any
+# guard directory (or a guard file's directory) wherever its symlinks resolve, in
+# the worktree or outside it -- since the member names are not visible here and
+# the hook cannot prove the guard files untouched (W1-05).
 #
 # File touches (#590). With OPEN_FLEET_STATE_DB set, an allowed edit is recorded
 # with its line range, the path RELATIVE to the unit worktree so two workers'
@@ -4456,7 +4458,12 @@ def _dest_covers_guard(dest):
     name -- `tar -C .claude -xf e.tar` drops `settings.json` straight onto the guard, which the
     old contain-the-root test missed. An unknown destination (no -C/-d; the worker cwd
     this hook is not told) is assumed to be the root. A RELATIVE destination is resolved against
-    the root and its symlinks followed; an unresolvable one asks rather than allows."""
+    the root and its symlinks followed; an unresolvable one asks rather than allows.
+    The guard directories are resolved too, WHEREVER they land (Codex g1 r3 P1): with `.claude`
+    a symlink to /tmp/shared-claude, `tar -C /tmp/shared-claude -xf e.tar` replaces the guard
+    settings.json although the destination is outside the worktree, so the destination is
+    compared with every guard directory and the directory of every guard file (this hook
+    included), lexical and resolved, never only with the part of them under the root."""
     if dest is None:
         return True
     d = _home_path(dest)
@@ -4465,18 +4472,33 @@ def _dest_covers_guard(dest):
     base = d if d.startswith("/") else os.path.join(_GROOT, d)
     try:
         real = os.path.realpath(base).rstrip("/") or "/"
+        guard_dirs = _guard_dirs_resolved()
     except (OSError, ValueError):
         return True   # cannot resolve -> ask, never a silent allow
     root = _GROOT.rstrip("/") or "/"
-    if real == root or root.startswith(real + "/"):
-        return True   # the root itself, or any directory above it
-    if not real.startswith(root + "/"):
-        return False  # entirely outside the worktree: not a guard-self concern here
-    rel = os.path.relpath(real, root)
-    for gd in _GUARD_DIRS_REL:
-        if rel == gd or rel.startswith(gd + "/") or gd.startswith(rel + "/"):
-            return True   # equals / inside / contains a guard directory
+    if _within(root, real):
+        return True   # the root itself, or any directory above it (/ included)
+    for gd in guard_dirs:
+        if _within(real, gd) or _within(gd, real):
+            return True   # equals / inside / contains a guard directory, wherever it resolves
     return False
+
+
+def _within(path, top):
+    """True when path is top or sits under it; top `/` holds every absolute path."""
+    return path == top or path.startswith(top.rstrip("/") + "/")
+
+
+def _guard_dirs_resolved():
+    """Every guard directory and the directory holding every guard file, as the root spells it
+    and with its symlinks followed, so one resolving outside the worktree is still a guard."""
+    out = set()
+    for rel in _GUARD_DIRS_REL:
+        lexical = os.path.join(_GROOT, rel)
+        out.update((lexical, os.path.realpath(lexical)))
+    for g in [os.path.join(_GROOT, x) for x in GUARD_SAMPLES] + sorted(_GSELF):
+        out.add(os.path.dirname(os.path.realpath(g)))
+    return {p.rstrip("/") or "/" for p in out}
 
 
 def _extracts_over_guard(ws):

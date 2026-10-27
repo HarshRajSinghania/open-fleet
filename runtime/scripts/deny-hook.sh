@@ -230,10 +230,12 @@ Environment:
                       or empty.
   OPEN_FLEET_HOOK_READONLY (or ORCA_HOOK_READONLY)  ro-tier write floor: every
                       write the hook can see (a redirect, tee, file-tool edit or
-                      apply_patch) is denied regardless of the boundary, while
-                      read-only shell still runs. Defense-in-depth, not an fs
-                      sandbox (cp/mv/rm and an interpreter's own write are beyond
-                      it). See runtime/sandbox-policy.md.
+                      apply_patch, in a -c body or a program fed to a shell
+                      too) is denied regardless of the boundary, and so is a
+                      shell fed a program the hook cannot read (cat f | sh),
+                      while read-only shell still runs. Defense-in-depth, not an
+                      fs sandbox (cp/mv/rm and an interpreter's own write are
+                      beyond it). See runtime/sandbox-policy.md.
   OPEN_FLEET_HOOK_STRICT_EXIT=1, OPEN_FLEET_HOOK_EXIT2=1 or the legacy
   ORCA_HOOK_STRICT_EXIT=1  strict mode (any one): ask becomes deny, deny exits 2.
   CODEX_CI, CODEX_SANDBOX or OPEN_FLEET_HEADLESS_STRICT  set to anything but
@@ -855,11 +857,15 @@ if truthy "${ORCA_HOOK_STRICT_EXIT:-}" || truthy "${OPEN_FLEET_HOOK_STRICT_EXIT:
 fi
 # READ-ONLY tier (W4-05). When OPEN_FLEET_HOOK_READONLY (or ORCA_HOOK_READONLY) is set, every
 # write this hook can see is DENIED regardless of the boundary: the file tools, and a Bash
-# redirect, tee or apply_patch. This is the `ro` tier's defense-in-depth write floor -- plan-mode
-# Bash still runs read-only shell (git diff/log, cat, ls, running tests). It is a write floor,
-# NOT a filesystem sandbox: a mutation the hook does not model as a write record (cp/mv/rm
-# without a redirect, a package install, an interpreter writing through its own API) is out of
-# its reach, and the disposable sandbox is the real boundary for those (sandbox-policy.md).
+# redirect, tee or apply_patch in ANY command the line runs -- a -c body, a substitution, a
+# program fed to a shell by a pipe, -s, a heredoc or a here-string. A shell reading a program on
+# stdin that the hook cannot read (cat f | sh, sh < f, echo "$(cat f)" | sh) is denied too, and
+# so is a body the hook cannot split: a write inside either would be unseen. This is the `ro`
+# tier's defense-in-depth write floor -- plan-mode Bash still runs read-only shell (git
+# diff/log, cat, ls, running tests). It is a write floor, NOT a filesystem sandbox: a mutation
+# the hook does not model as a write record (cp/mv/rm without a redirect, a package install, an
+# interpreter writing through its own API, a script already on disk run as sh f) is out of its
+# reach, and the disposable sandbox is the real boundary for those (sandbox-policy.md).
 HOOK_READONLY=0
 if truthy "${OPEN_FLEET_HOOK_READONLY:-}" || truthy "${ORCA_HOOK_READONLY:-}"; then
   HOOK_READONLY=1
@@ -2399,6 +2405,7 @@ _SIMPLE_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-
 _DECLARERS = ("export", "declare", "typeset", "local", "readonly")
 _FED_SUB = []    # set when a substitution feeds a shell on stdin: echo "$(curl ...)" | sh
 _FED_INTERP = []  # interpreter programs fed on stdin (python3 <<EOF ...): judged for guard writes
+_FED_BLIND = []   # shell stages whose stdin program the hook cannot read (ro floor only, W4-05)
 # Launchers outside the peel table: each runs a -c string, a vector after operands of its own,
 # or a string it hands to a shell (_launcher_bodies, #598).
 _BODY_LAUNCHERS = ("su", "runuser", "flock", "script", "watch", "parallel", "ssh", "find", "fd",
@@ -3315,7 +3322,7 @@ def _flow(surface, docs, inherit=(), written=None):
             prev = pipes[-1][1][-1] if join == "|" and pipes else None
             if prev is None:
                 pipes.append((join, []))
-            fds, writes = {}, []
+            fds, writes, unread = {}, [], False
             for fd, op, target in redirs:
                 if op in ("<<", "<<-"):
                     src = [(docs[k_doc][2], True)] if not stray and k_doc < len(docs) else []
@@ -3330,9 +3337,13 @@ def _flow(surface, docs, inherit=(), written=None):
                     if fd in (1, "&") and target != "-" and not target.isdigit():
                         writes.append((target, op))
                     continue
+                unread = unread or (fd == 0 and not src)   # < FILE this line never wrote
                 fds.setdefault(fd, []).extend(src)
             own = (prev["out"] if prev else []) + fds.get(0, [])   # zsh order: the pipe first
             stdin = own + list(inherit) + later + extra.get(idx, [])
+            # blind: some of what reaches fd 0 cannot be read here -- a pipe from a stage whose
+            # output is unknown, or a < file the line never wrote (W4-05, ro floor only).
+            blind = unread or (prev is not None and prev["blind"])
             head = ws[0].rsplit("/", 1)[-1] if ws else ""
             data = _echo_data(ws)
             if data is not None:
@@ -3343,9 +3354,13 @@ def _flow(surface, docs, inherit=(), written=None):
                     flags.append(a)
                 newline = head == "echo" and not any("n" in f for f in flags)
                 out = [(data + (chr(10) if newline else ""), True)]
+                out_blind = False
             elif head in _PASS_THROUGH:
                 ops = [a for a in ws[1:] if not a.startswith("-")]
                 out = list(stdin)
+                out_blind = blind or not stdin
+                if head != "tee" and ops:   # cat FILE reads the file, not its stdin
+                    out_blind = any(not _file_texts(f, local) for f in ops)
                 # tee -a, and any short cluster holding a (-ai, -ia), appends (#654).
                 append = any(a == "--append" or re.fullmatch(r"-[A-Za-z]*a[A-Za-z]*", a)
                              for a in ws[1:])
@@ -3355,7 +3370,7 @@ def _flow(surface, docs, inherit=(), written=None):
                     else:
                         out += _file_texts(f, local)
             else:
-                out = []
+                out, out_blind = [], True
             for f, op in writes:
                 _write_file(local, f, [t for t, _a in out], op in (">>", "&>>"))
             kind, feeds = _reader_kind(ws), []
@@ -3384,7 +3399,9 @@ def _flow(surface, docs, inherit=(), written=None):
                             else shlex.join(ws[:i] + [new] + ws[i + 1:])
                         feeds.append(("shell", line.strip(), all(a for _t, a in stdin)))
             st = {"seg": seg, "args": args, "ws": ws, "stdin": stdin, "out": out,
-                  "reads": bool(kind), "feeds": feeds, "prev": prev}
+                  "reads": bool(kind), "feeds": feeds, "prev": prev, "blind": out_blind,
+                  "fed_blind": kind == "shell" and (blind or not stdin
+                                                    or any(_unread_heads(t) for t, _a in stdin))}
             pipes[-1][1].append(st)
             quiet = [(t, False) for t, _a in own]
             first = args[0] if args else ""
@@ -3403,7 +3420,22 @@ def _flow(surface, docs, inherit=(), written=None):
             break
         extra = given
     written.update(local)
+    _FED_BLIND.extend(st["seg"] for _j, stages in pipes for st in stages if st["fed_blind"])
     return pipes
+
+
+def _unread_heads(text):
+    """True when a program fed to a shell names a command the hook cannot read: a head built
+    from a variable or a substitution ($X, $(cat f), `...`), or text this reader cannot split.
+    Feeds the ro floor only (W4-05): the write such a program makes is invisible here."""
+    try:
+        for _j, seg in _split(text.replace(_QNL, chr(10))):
+            ws = _command_words(_tokenize(seg)[0])
+            if ws and ("$" in ws[0] or chr(96) in ws[0] or _SUB_MARK in ws[0]):
+                return True
+    except ValueError:
+        return True
+    return False
 
 
 def _flow_output(body, inherit=()):
@@ -4487,16 +4519,18 @@ _FILE_WRITE_OPS = (">", ">>", ">|", "&>", "&>>", "<>")
 def _has_write(text, depth=0):
     """True when text performs a file write the hook can see -- a redirect to a file (not an fd
     dup like 2>&1), or a tee -- anywhere, descending shell/-c bodies. The ro tier write floor
-    (W4-05) reads this, so a write hidden in a shell -c body is caught too."""
+    (W4-05) reads this, so a write hidden in a shell -c body is caught too. A body is descended
+    through _expand, so a program the body feeds a shell (sh -c "echo CMD | sh") is judged as
+    well; text this reader cannot split counts as a write (fail closed)."""
     try:
         segs = _split(text)
     except ValueError:
-        return False
+        return True
     for _j, seg in segs:
         try:
             words, redirs = _redirs(seg)
         except ValueError:
-            continue
+            return True
         for _fd, op, target in redirs:
             if not target or target == "-":
                 continue
@@ -4511,8 +4545,13 @@ def _has_write(text, depth=0):
             return True
         if depth < 4:
             body = _inner_body(ws)
-            if body and _has_write(body, depth + 1):
-                return True
+            if body:
+                try:
+                    parts = _expand(body)[0]
+                except ValueError:
+                    return True
+                if any(_has_write(part, depth + 1) for part in parts):
+                    return True
     return False
 
 
@@ -4636,10 +4675,6 @@ if _hard:
 # Y: a recursive rm whose every target is the root or home CLASS (W1-06), judged by the HIGH tier.
 if any(_root_wipe(_vw) for _vw, _w, _sg in _all_views):
     record("Y", "1")
-# Z: a file write the hook can see, anywhere (incl. a shell -c body), for the ro write floor (W4-05).
-if _has_write(raw_command):
-    record("Z", "1")
-
 
 # R: the line the as-written never-list pass reads (#598, from #602). That pass ran over the raw
 # text so curl … | sh still read as a pipe, and so it ASKED about a never-list shape that was
@@ -4697,6 +4732,15 @@ def _rline(text, depth=0):
 
 
 record("R", "=" + _rline(_judged))
+# Z: the ro write floor (W4-05), recorded LAST so the extra reads it makes move no other record.
+# "write": a file write the hook can see in any command the line runs -- the surface, every
+# substitution, every program fed to a shell or interpreter (_parts) and every -c body inside
+# them. "blind": a shell reads a program on stdin that the hook cannot read (_FED_BLIND), so a
+# write inside it would be unseen.
+if any(_has_write(_part) for _part in _parts):
+    record("Z", "write")
+elif _FED_BLIND:
+    record("Z", "blind")
 '
 FIELDS=$(printf '%s' "$PAYLOAD" | { printf '%s' "$_READER" | python3 -I - 3<&4 4<&- 2>/dev/null; } 4<&0) || {
   # Exit 2 UNCONDITIONALLY: OpenHands and jcode fail OPEN on exit 1 and on an
@@ -5641,13 +5685,21 @@ fi
 guard_check
 
 # READ-ONLY tier (W4-05): a ro worker may read and run read-only shell, but any write this hook
-# can see -- a redirect, a tee (both carry a W record) or an apply_patch (a P record) -- is
-# denied regardless of the boundary. A command the hook does not model as a write (cp/mv/rm, a
-# package install, an interpreter's own file write) is beyond this; the sandbox is the fs
-# boundary for those (sandbox-policy.md). Runs after the HIGH tier and the self-guard so a
-# refused shape keeps its own, more specific reason.
+# can see -- a redirect or a tee in any command the line runs, a -c body or a program fed to a
+# shell included (a Z record), or an apply_patch (a P record) -- is denied regardless of the
+# boundary. A shell reading a program on stdin that the hook cannot read (cat f | sh, sh < f, a
+# substitution or variable as its head) is denied too: a write inside it would be unseen. A
+# command the hook does not model as a write (cp/mv/rm, a package install, an interpreter's
+# own file write, a script already on disk) is beyond this; the sandbox is the fs boundary for
+# those (sandbox-policy.md). Runs after the HIGH tier and the self-guard so a refused shape
+# keeps its own, more specific reason.
 if [ "$HOOK_READONLY" = "1" ]; then
-  if [ -n "$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^Z //p' | sed -n '1p')" ] \
+  _RO_Z=$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^Z //p' | sed -n '1p')
+  if [ "$_RO_Z" = "blind" ]; then
+    decide deny "deny-hook[READONLY]: this worker runs read-only (ro tier), and this line feeds a shell a program on its standard input that the hook cannot read (a pipe from a file or command, a < file, a substitution or variable). A write inside it would be unseen, so it is refused; run the commands directly."
+    exit 0
+  fi
+  if [ -n "$_RO_Z" ] \
     || [ -n "$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^P //p' | sed -n '1p')" ]; then
     decide deny "deny-hook[READONLY]: this worker runs read-only (ro tier) and may not write to a file. A shell redirect, tee or apply_patch is refused; read-only shell (git diff/log, cat, running tests) is fine."
     exit 0

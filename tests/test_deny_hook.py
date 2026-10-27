@@ -3124,6 +3124,44 @@ class TestReadOnlyTierWriteFloor(HookBase):
                 r = self._fire(event("Bash", command=command))
                 self.assertEqual(r.stdout.strip(), "", command)
 
+    def test_a_write_in_a_program_fed_to_a_shell_is_denied(self):
+        # Re-attacker g1 #2 (W4-05): the floor descended `sh -c` and heredoc bodies but not a
+        # program fed to a shell through a pipe, `-s` or stdin; all four forms must agree.
+        wt = self.tmp / "fedwt"
+        wt.mkdir()
+        env = {**self.RO, "ORCA_UNIT_WORKTREE": str(wt)}
+        for command in ("echo 'echo x > f' | sh", "printf 'echo x>f' | sh -s",
+                        "sh -c 'echo x > f'", "sh <<EOF\necho x > f\nEOF",
+                        "cat <<'EOF' | bash\necho x > f\nEOF",
+                        "sh -c \"echo 'echo x > f' | sh\""):   # fed inside a -c body
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env_extra=env,
+                                                cwd=wt))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        for command in ("echo hello | cat", "echo 'ls -la' | sh"):
+            with self.subTest(command=command):
+                r = self.fire(event("Bash", command=command), env_extra=env, cwd=wt)
+                self.assertEqual(r.stdout.strip(), "", command)
+
+    def test_a_program_a_shell_reads_that_the_hook_cannot_read_is_denied(self):
+        # W4-05 fail-closed half: a shell reading its program from a pipe source, a < file or a
+        # substitution the hook cannot read would hide any write inside it, and a body the
+        # hook cannot split is a write it cannot rule out. A pipe into a non-shell still runs.
+        wt = Path(tempfile.mkdtemp(prefix="ro-blind-"))
+        self.addCleanup(shutil.rmtree, wt, True)
+        env = {**self.RO, "ORCA_UNIT_WORKTREE": str(wt)}
+        for command in ("cat prog.sh | sh", "sh < prog.sh", 'echo "$(cat prog.sh)" | sh',
+                        "bash -c \"echo 'x > f\""):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env_extra=env,
+                                                cwd=wt))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+                self.assertIn("READONLY", block["permissionDecisionReason"], command)
+        r = self.fire(event("Bash", command="cat prog.sh | grep x"), env_extra=env, cwd=wt)
+        self.assertEqual(r.stdout.strip(), "")
+
     def test_read_only_shell_still_runs_under_readonly(self):
         for command in ("git diff", "git log --oneline -5", "cat README.md", "ls -la",
                         "grep -rn needle .", "make 2>&1 | tail", "echo hello"):

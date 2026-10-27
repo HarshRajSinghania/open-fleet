@@ -29,7 +29,7 @@ codex, opencode, omp, pi, jcode, goose, hermes, crush, openhands — each throug
 reader that follows its upstream on-disk format (see the per-reader comments).
 It is a token scan, not an index: every query re-reads the stores, each file up to
 MAX_FILE_BYTES and the whole scan up to MAX_RUN_BYTES (a skip is said on stderr; the
-episodic hint's manifests too). One hit per
+episodic hint's manifests too), regular files only, SQLite tables never views. One hit per
 session; --since drops undated records; --path matches the session's cwd;
 --cursor pages with the ``local:<offset>`` NEXT_CURSOR it printed (any other
 cursor is refused). On EVERY path (Orca results included) every untrusted
@@ -65,6 +65,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 
 
 class _Siblings:
@@ -130,31 +131,55 @@ def _new_scan():
     _BUDGET = _ReadBudget()
 
 
-def _charge(fp, size):
-    """True when `size` more bytes of `fp` fit both caps (and are now counted), else False."""
+def _fits(fp, size):
+    """True when `size` bytes of `fp` would fit both caps; a miss is said once (no charge)."""
     if size > MAX_FILE_BYTES:
         _BUDGET.omit(fp, "file")
         return False
     if _BUDGET.used + size > MAX_RUN_BYTES:
         _BUDGET.omit(fp, "run")
         return False
+    return True
+
+
+def _charge(fp, size):
+    """True when `size` more bytes of `fp` fit both caps (and are now counted), else False."""
+    if not _fits(fp, size):
+        return False
     _BUDGET.used += size
     return True
 
 
-def _read_capped(fp):
-    """`fp`'s bytes, or None when it is unreadable, over MAX_FILE_BYTES, or past MAX_RUN_BYTES."""
+_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+def _read_capped(fp, follow=False):
+    """`fp`'s bytes, or None when it is not a regular file, unreadable, over MAX_FILE_BYTES, or
+    past MAX_RUN_BYTES. Never through a link unless `follow` (an argument the caller named), and
+    opened O_NONBLOCK, so a FIFO or a device named like a transcript or a manifest is refused by
+    its fstat, never waited on or read without end; the bytes actually read are what is charged
+    (2026-10-27 re-attack, W5-21)."""
+    flags = _READ_FLAGS | (0 if follow else getattr(os, "O_NOFOLLOW", 0))
     try:
-        with open(fp, "rb") as fh:
-            if not _charge(fp, os.fstat(fh.fileno()).st_size):
-                return None
-            data = fh.read(MAX_FILE_BYTES + 1)
+        fd = os.open(fp, flags)
     except OSError:
         return None
-    if len(data) > MAX_FILE_BYTES:  # it grew while being read
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or not _fits(fp, st.st_size):
+            return None
+        chunks, size = [], 0
+        while size <= MAX_FILE_BYTES and (chunk := os.read(fd, min(1 << 20, MAX_FILE_BYTES + 1 - size))):
+            chunks.append(chunk)
+            size += len(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if size > MAX_FILE_BYTES:  # it grew while being read
         _BUDGET.omit(fp, "file")
         return None
-    return data
+    return b"".join(chunks) if _charge(fp, size) else None
 
 
 class Refused(Exception):
@@ -1041,19 +1066,15 @@ def _sqlite_ro(path):
     uri = resolved.as_uri()
     wal = Path(str(resolved) + "-wal")
     shm = Path(str(resolved) + "-shm")
-    # Its rows are read whole, so the store (and its WAL) count against the recall caps (W5-21).
-    try:
-        size = resolved.stat().st_size + (wal.stat().st_size if wal.exists() else 0)
-    except OSError:
-        return None
-    if not _charge(path, size):
-        return None
+    # Its rows are charged as _rows reads them, not by the file's size, which says nothing of what
+    # a query returns (W5-21).
     suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
         else ("?mode=ro&immutable=1",)
     for suffix in suffixes:
         conn = None
         try:
-            conn = sqlite3.connect(uri + suffix, uri=True)
+            conn = sqlite3.connect(uri + suffix, uri=True, factory=_Store)
+            conn.path = path
             conn.row_factory = sqlite3.Row
             conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchall()
             return conn
@@ -1065,15 +1086,42 @@ def _sqlite_ro(path):
 
 
 def _tables(conn):
+    """The store's TABLES. Never its views: a view is any query, and a 4 KiB file can hold one that
+    yields gigabytes (2026-10-27 re-attack, W5-21)."""
     return {row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()}
+        "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+
+
+class _Store(sqlite3.Connection):
+    """A harness store's connection, carrying what its rows have cost so far."""
+    path, used = None, 0
 
 
 def _rows(conn, table):
+    """The rows of `table` (a table, never a view), fetched a few at a time and charged as they
+    arrive against MAX_FILE_BYTES for the store and MAX_RUN_BYTES for the scan; past either they
+    stop, and the skip is said."""
+    where, used, out = getattr(conn, "path", None) or table, getattr(conn, "used", 0), []
     try:
-        return [dict(r) for r in conn.execute(f'SELECT * FROM "{table}"').fetchall()]
+        if table not in _tables(conn):
+            return []
+        cursor = conn.execute(f'SELECT * FROM "{table}"')
+        while batch := cursor.fetchmany(8):
+            for row in batch:
+                cost = sum(len(v) if isinstance(v, (str, bytes)) else 8 for v in tuple(row))
+                if used + cost > MAX_FILE_BYTES:
+                    _BUDGET.omit(where, "file")
+                    return out
+                if not _charge(where, cost):
+                    return out
+                used += cost
+                out.append(dict(row))
+        return out
     except sqlite3.Error:
         return []
+    finally:
+        if isinstance(conn, _Store):
+            conn.used = used
 
 
 def _json_col(value):
@@ -1722,10 +1770,10 @@ def main(argv=None):
                     live = hp.LiveSource(_nonempty(ns.repo, "--repo"),
                                          rev=_nonempty(ns.live_rev, "--live-rev"))
                 if ns.current_evidence is not None:
-                    raw = _read_capped(Path(ns.current_evidence))
+                    raw = _read_capped(Path(ns.current_evidence), follow=True)
                     if raw is None:
-                        raise Refused(f"episodic hint: --current-evidence {ns.current_evidence} is unreadable "
-                                      f"or over {MAX_FILE_BYTES} bytes")
+                        raise Refused(f"episodic hint: --current-evidence {ns.current_evidence} is unreadable, "
+                                      f"not a regular file, or over {MAX_FILE_BYTES} bytes")
                     evidence = json.loads(raw.decode("utf-8"))
                     hp.load_observations(evidence)
             except (OSError, UnicodeDecodeError, json.JSONDecodeError, hp.ProvenanceError) as exc:

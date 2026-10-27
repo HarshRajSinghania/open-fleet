@@ -36,6 +36,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -665,6 +666,76 @@ class TestRecallReadsAreBounded(_Base):
         with mock.patch.object(self.mod, "MAX_FILE_BYTES", 2048, create=True), \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(self.mod._prior_hints(["src/app.py"], self.tmp / "runs"), [])
+
+
+class TestSqliteAndManifestReadsAreBounded(_Base):
+    """Re-attack of 82a2d00c (W5-21): a 4 KiB goose sessions.db whose `messages` is a recursive
+    VIEW yielding 800 rows of 512 KiB took the scan to 880 MB RSS with no partial note (only the
+    file's size was charged; views were read; every row was fetched at once). And 40
+    *manifest*.json symlinks to /dev/zero read 2.5 GiB charging 0, while a FIFO named
+    x-manifest.json hung --episodic-hint."""
+
+    def goose_db(self, build):
+        db = self.tmp / "only-goose" / "data" / "sessions" / "sessions.db"
+        db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE sessions (id TEXT, name TEXT, working_dir TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('s1', 'Goose', '/w')")
+            build(conn)
+            conn.commit()
+        only = self.tmp / "only-goose-home"
+        only.mkdir()
+        return {"HOME": str(only), "XDG_DATA_HOME": str(only / "xdg"), "GOOSE_PATH_ROOT": str(db.parents[2]),
+                "PATH": os.environ.get("PATH", "")}
+
+    def scan(self, query, env):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args([query, "--local-harnesses", "--agent", "goose", "--limit", "50"])
+            return self.mod.search_local_harnesses(ns)["hits"], err.getvalue()
+
+    def test_a_view_posing_as_a_table_is_never_read(self):
+        env = self.goose_db(lambda conn: conn.execute(
+            "CREATE VIEW messages AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) "
+            "SELECT 's1' AS session_id, 'user' AS role, "
+            "json_array(json_object('type', 'text', 'text', 'lambda_token ' || i)) AS content_json, "
+            "'2026-10-10T12:00:00Z' AS created_timestamp FROM n"))
+        hits, _err = self.scan("lambda_token", env)
+        self.assertEqual(hits, [], "a VIEW (any query a 4 KiB file can hide) was read as a store")
+
+    def test_rows_are_charged_as_they_are_read_and_a_skip_is_said(self):
+        # A table's rows are fetched a few at a time and charged as they arrive: past the cap the
+        # rest are never fetched, and the partial read is said (a store's file size says nothing
+        # of what a query returns, so it is not what is charged).
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE messages (session_id TEXT, content_json TEXT)")
+        conn.executemany("INSERT INTO messages VALUES ('s1', ?)", [("y" * 20000,)] * 50)
+        err = io.StringIO()
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 100_000, create=True), contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            rows = self.mod._rows(conn, "messages")
+        self.assertLess(len(rows), 50, "every row was read past the per-store cap")
+        self.assertGreater(len(rows), 0)
+        self.assertIn("skipped", err.getvalue())
+
+    def test_a_manifest_that_is_not_a_regular_file_is_never_read(self):
+        runs = self.tmp / "runs"
+        (runs / "real").mkdir(parents=True)
+        manifest = {"units": [{"id": "U-1", "status": "merged", "files_touched": ["src/app.py"], "head_sha": "a" * 40}]}
+        (runs / "real" / "elsewhere.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (runs / "linked").mkdir()
+        (runs / "linked" / "linked-manifest.json").symlink_to(runs / "real" / "elsewhere.json")
+        (runs / "fifo").mkdir()
+        os.mkfifo(runs / "fifo" / "x-manifest.json")
+        found = []
+        worker = threading.Thread(target=lambda: found.append(self.mod._prior_hints(["src/app.py"], runs)),
+                                  daemon=True)
+        worker.start()
+        worker.join(10)
+        self.assertFalse(worker.is_alive(), "a FIFO named *manifest*.json hung the recall")
+        self.assertEqual(found, [[]], "a manifest that is a symlink (to /dev/zero, or anywhere) was read")
 
 
 class _FrameZstd:

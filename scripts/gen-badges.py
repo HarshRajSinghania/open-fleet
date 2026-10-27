@@ -96,7 +96,7 @@ def mission_count() -> int:
     )
 
 
-def test_count() -> int:
+def test_count(tests_dir: Path | None = None) -> int:
     """Test definitions, PARSED rather than matched.
 
     A regex over the text counted `def test_thing():` inside a fixture string too, and this
@@ -108,7 +108,7 @@ def test_count() -> int:
     A file that does not parse is a real problem, not something to count around: it raises.
     """
     total = 0
-    for f in sorted(TESTS_DIR.glob("test_*.py")):
+    for f in sorted((TESTS_DIR if tests_dir is None else tests_dir).glob("test_*.py")):
         tree = ast.parse(f.read_text(encoding="utf-8"), filename=str(f))
         total += sum(1 for node in ast.walk(tree)
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -342,6 +342,8 @@ def write_readme() -> None:
 # Between releases the test badge must still read as an inventory, never a verdict.
 TESTS_BADGE = "tests.json"
 TESTS_MESSAGE_RE = re.compile(r"^[0-9]+ in source$")
+# A release row's commit reaches `git show` as part of an argument: only a full commit name may.
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def tests_badge_shape(have) -> list[str]:
@@ -369,13 +371,23 @@ def last_release_badge_errors(root: Path = ROOT) -> list[str]:
 
     The README labels it "at last release" (PR #670), so between releases it must equal the badge
     at the cut commit docs/releases.json names. While a cut is being prepared, the cut writes a
-    new one, so nothing is compared. An unreadable release commit is an error, never a pass.
+    new one: then it must be, byte for byte, the badge `--release` writes from this tree's own
+    tests/ (2026-10-27 security audit, W6-08: a `preparing` row used to switch the check off, so
+    a PR that merely claimed a cut could commit any number). An unreadable release commit is an
+    error, never a pass, and so is one that is not a full 40-hex commit name (W6-09: it is part of
+    `git show`'s argv, where `--output=<path>` would be read as an option).
     """
     data = json.loads((root / "docs" / "releases.json").read_text(encoding="utf-8"))
-    if data.get("preparing") or not data.get("releases"):
+    rel = f"{BADGES_REL}/{TESTS_BADGE}"
+    if data.get("preparing"):
+        return cut_badge_errors(root)
+    if not data.get("releases"):
         return []
     last = data["releases"][-1]
-    rel = f"{BADGES_REL}/{TESTS_BADGE}"
+    commit = last.get("commit") if isinstance(last, dict) else None
+    if not isinstance(commit, str) or not FULL_SHA_RE.fullmatch(commit):
+        return [f"docs/releases.json: the last release's commit {commit!r} is not a full 40-hex "
+                "commit name, so its badge is not read"]
     # The cut's own badge path: today's, or the pre-move one for a release cut before the move.
     for src in (rel, f"{LEGACY_BADGES_REL}/{TESTS_BADGE}"):
         shown = subprocess.run(["git", "-C", str(root), "show", f"{last['commit']}:{src}"],
@@ -395,6 +407,30 @@ def last_release_badge_errors(root: Path = ROOT) -> list[str]:
         return [f"{rel} is not byte for byte {last['tag']}'s ({last['commit'][:12]}): it says "
                 f"{message(have)!r} where the release says {message(shown.stdout)!r} — restore it "
                 f"with: git show {last['commit']}:{src} > {rel}"]
+    return []
+
+
+def cut_badge_errors(root: Path = ROOT) -> list[str]:
+    """Errors unless the committed tests badge is the one the release cut writes from this tree.
+
+    The bytes `write(include_tests=True)` would put there: today's count of test functions under
+    tests/, nothing else.
+    """
+    rel = f"{BADGES_REL}/{TESTS_BADGE}"
+    tests_dir = root / "tests"
+    if not tests_dir.is_dir():
+        return [f"a cut is being prepared, but there is no tests/ to count for {rel}"]
+    count = test_count(tests_dir)
+    want = (json.dumps(badge("test functions", f"{count} in source", "6e7781"), indent=2)
+            + "\n").encode("utf-8")
+    have = (root / rel).read_bytes()
+    if have != want:
+        try:
+            said = json.loads(have).get("message")
+        except (ValueError, AttributeError):
+            said = "unparseable"
+        return [f"{rel} says {said!r}, but a cut in preparation carries its own count, "
+                f"'{count} in source' — run: python3 scripts/gen-badges.py --release"]
     return []
 
 

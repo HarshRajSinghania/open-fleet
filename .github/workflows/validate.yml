@@ -179,7 +179,8 @@ jobs:
         run: python3 scripts/changelog.py check --base "$PR_BASE_SHA"
       - name: The tests badge is the last release's own
         # The README labels it "at last release": between cuts it must be the badge at the cut
-        # commit docs/releases.json names (PR #670 review); the cut writes a new one.
+        # commit docs/releases.json names (PR #670 review); the cut writes a new one, and while
+        # `preparing` is set it must be exactly that one, this tree's own count (W6-08).
         run: python3 scripts/gen-badges.py --check-last-release
       - name: Routing eval gate (description-based router)
         # #260: this is the gate, not the summary step below. It scores every

@@ -359,6 +359,39 @@ class TheBadgeIsTheLastReleasesOwn(unittest.TestCase):
         self.releases(preparing={"version": "0.9.0"})
         self.assertEqual(self.gb.last_release_badge_errors(self.root), [])
 
+    def test_a_claimed_cut_cannot_carry_any_number(self):
+        # 2026-10-27 security audit, W6-08: `preparing` returned [] before reading anything, so a
+        # PR that claimed a cut could commit a badge saying any number. A cut's badge is its own
+        # count; a claim of one now costs exactly that.
+        self.fixture_tests(2)
+        self.badge(4714)
+        self.releases(preparing={"version": "9.9.9", "cut_date": "2026-12-31"})
+        errors = self.gb.last_release_badge_errors(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("'4714 in source'", errors[0])
+        self.assertIn("'2 in source'", errors[0])
+        self.badge(3270)  # the last release's own bytes are not the cut's count either
+        self.assertTrue(self.gb.last_release_badge_errors(self.root))
+
+    def test_a_claimed_cut_with_nothing_to_count_is_an_error(self):
+        self.badge(0)
+        self.releases(preparing={"version": "9.9.9"})
+        errors = self.gb.last_release_badge_errors(self.root)
+        self.assertTrue(errors and "tests/" in errors[0], errors)
+
+    def test_a_release_commit_that_is_not_a_full_sha_never_reaches_git(self):
+        # W6-09: the commit became part of `git show`'s argv, so `--output=<path>` was read as
+        # an option and wrote a file. Only a full 40-hex commit name is passed on.
+        stray = self.root / "stray"
+        for commit in (f"--output={stray}", "HEAD", self.cut[:12], self.cut.upper(),
+                       self.cut + "\n", "-p"):
+            with self.subTest(commit=commit):
+                self.releases(preparing=None, commit=commit)
+                errors = self.gb.last_release_badge_errors(self.root)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("not a full 40-hex commit", errors[0])
+                self.assertEqual(list(self.root.glob("stray*")), [])
+
     def test_an_unreadable_release_commit_is_an_error_not_a_pass(self):
         self.releases(preparing=None, commit="0" * 40)
         errors = self.gb.last_release_badge_errors(self.root)

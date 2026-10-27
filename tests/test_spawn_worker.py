@@ -435,6 +435,33 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
         self.assert_refused(rc, err, "deny-hook arming UNVERIFIED")
         self.assertIn("OPEN_FLEET_REQUIRE_DENY_HOOK", err)
 
+    def test_require_deny_hook_is_checked_before_any_provider_deferral(self):
+        # W4-06 (Codex g1 r3 P1): the off-Orca deferral was checked FIRST, so with the settings var
+        # unset OPEN_FLEET_REQUIRE_DENY_HOOK=1 could not stop an OPEN_FLEET_RUNTIME=openhands (or
+        # posix, or any other non-Orca) launch. REQUIRE is the hardened lock: it refuses before
+        # any deferral, on every runtime.
+        for runtime, agent in (("openhands", "openhands"), ("posix", "claude"),
+                               ("gastown", "claude")):
+            for env in (dict(self.RW), {"PROFILE": "ro"}):
+                with self.subTest(runtime=runtime, profile=env["PROFILE"]):
+                    rc, _, err = run_spawn(self.BASE_ARGS + [agent], env_extra={
+                        **env, "OPEN_FLEET_RUNTIME": runtime, "OPEN_FLEET_REQUIRE_DENY_HOOK": "1"})
+                    self.assert_refused(rc, err, "deny-hook arming UNVERIFIED")
+                    self.assertIn("OPEN_FLEET_REQUIRE_DENY_HOOK", err)
+                    self.assertNotIn("NOTE deny-hook arming is verified", err)
+
+    def test_a_provider_that_does_not_verify_is_not_announced_as_verified(self):
+        # Only posix and openhands verify the installed guard before the agent starts; another
+        # non-Orca provider's deferral is named UNVERIFIED rather than claimed verified (W4-06).
+        for runtime, agent, verified in (("openhands", "openhands", True), ("posix", "claude", True),
+                                         ("gastown", "claude", False)):
+            with self.subTest(runtime=runtime):
+                _rc, _, err = run_spawn(self.BASE_ARGS + [agent], env_extra={
+                    **self.RW, "OPEN_FLEET_RUNTIME": runtime})
+                self.assertEqual("NOTE deny-hook arming is verified" in err, verified, err)
+                self.assertEqual(f"UNVERIFIED for PROFILE=rw on runtime {runtime}" in err,
+                                 not verified, err)
+
     def test_require_deny_hook_still_verifies_a_named_guard(self):
         # With the flag set, a correctly wired guard still passes (the refusal is only for unset).
         with tempfile.TemporaryDirectory() as tmp:

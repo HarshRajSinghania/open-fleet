@@ -405,7 +405,8 @@ _GUARD_VERIFIABLE_HARNESSES = ("claude", "codex", "openhands", "goose", "opencod
 
 
 def verify_installed_guard(wt_path: str | Path, agent: str, profile: str,
-                           hooks_map: dict[str, str], hook_script: str | None = None) -> None:
+                           hooks_map: dict[str, str], hook_script: str | None = None,
+                           verifier: str | None = None) -> None:
     """Prove the deny-hook registration this worktree just received is armed, BEFORE the agent
     process starts (W4-06). The previous story verified a guard only in the coordinator's
     pre-launch gate, which a `new-child` spawn cannot reach (no worktree, no settings file yet);
@@ -417,7 +418,10 @@ def verify_installed_guard(wt_path: str | Path, agent: str, profile: str,
     `danger` worker (sandbox is its boundary), harnesses with no settings-file registration, and
     crush `ro` (its installed file is a disabled-tools restriction, not a hook registration) are
     left to their own mechanisms. The probe runs under the env worker_start gives the agent: the
-    opencode/omp/pi bridges read the hook path and boundary from it, so that IS what loads."""
+    opencode/omp/pi bridges read the hook path and boundary from it, so that IS what loads.
+    `verifier` names the deny-hook.sh that RUNS the check when it should not be the registered
+    hook itself (the openhands provider passes this repo's own copy, so a stand-in hook that
+    answers --verify-settings with exit 0 is refused for its bytes, not trusted to grade itself)."""
     if profile == "danger" or agent not in _GUARD_VERIFIABLE_HARNESSES:
         return
     if agent == "crush" and profile == "ro":
@@ -429,7 +433,7 @@ def verify_installed_guard(wt_path: str | Path, agent: str, profile: str,
     launch_env = {**os.environ, "OPEN_FLEET_DENY_HOOK": str(hook), "ORCA_DENY_HOOK_PATH": str(hook),
                   "OPEN_FLEET_UNIT_WORKTREE": str(wt_path), "ORCA_UNIT_WORKTREE": str(wt_path)}
     proc = subprocess.run(
-        ["sh", str(hook), "--verify-settings", str(registration), "--harness", agent,
+        ["sh", str(verifier or hook), "--verify-settings", str(registration), "--harness", agent,
          "--boundary", str(wt_path)],
         capture_output=True, text=True, timeout=60, env=launch_env,
     )

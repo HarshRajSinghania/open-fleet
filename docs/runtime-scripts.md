@@ -1884,15 +1884,20 @@ It must also bound the tree the spawn launches into: every selector that names a
 tree reaches the gate as `--boundary` (`path:`, `id:<repoId>::<path>`, and `current`/`active`/
 `name:`/`branch:` resolved through the runtime's `worktree show`; a tree it cannot resolve
 refuses), and only `new-child`/`new-top-level` are checked without one (W4-03).
-When the settings var is unset, the enforcement point moves. Off Orca the provider installs the
-registration inside `worker-start` and verifies it there (`posix.verify_installed_guard`), after
-install and before the agent starts, aborting with `deny_hook_unverified` on any failure — so a
+When the settings var is unset, `OPEN_FLEET_REQUIRE_DENY_HOOK=1` (legacy `ORCA_REQUIRE_DENY_HOOK`)
+`SPAWN=REFUSED`s first, on every runtime, before any provider deferral or opt-out. Otherwise the
+enforcement point moves. The posix provider installs the registration inside `worker-start` and
+verifies it there (`posix.verify_installed_guard`), after install and before the agent starts; the
+openhands provider runs the same `--verify-settings` on the `hook_config` the agent-server executes
+(`openhands.verify_conversation_guard`), before creating the conversation for a named worktree and
+before its `/run` for a server-cut one; both abort with `deny_hook_unverified` on any failure — so a
 `new-child` spawn that has no settings file at this pre-launch gate is still enforced, and the gate
-**defers** with a NOTE (no opt-out; `first_run.py` and `scripts/wip_curve.py` need none). On Orca
-`worker-start` wires no open-fleet guard, so an unset var `SPAWN=REFUSED`s, every profile including
-`ro`; `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1` (legacy `ORCA_ALLOW_UNVERIFIED_DENY_HOOK`) is the
-Orca-lane opt-out to a loud `UNVERIFIED` warning, and `OPEN_FLEET_REQUIRE_DENY_HOOK=1` (legacy
-`ORCA_REQUIRE_DENY_HOOK`) overrides that opt-out. On Orca the custom-argv lane's
+**defers** with a NOTE (no opt-out; `first_run.py` and `scripts/wip_curve.py` need none). Any other
+non-Orca provider installs the guard without that check, so the gate proceeds with an `UNVERIFIED`
+warning naming the runtime. On Orca `worker-start` wires no open-fleet guard, so an unset var
+`SPAWN=REFUSED`s, every profile including `ro`; `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1` (legacy
+`ORCA_ALLOW_UNVERIFIED_DENY_HOOK`) is the Orca-lane opt-out to a loud `UNVERIFIED` warning, which
+REQUIRE overrides. On Orca the custom-argv lane's
 `terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
 `new-top-level` there are refused before any task is created, since only `worker-start` creates a
 worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,

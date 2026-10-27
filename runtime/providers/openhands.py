@@ -13,7 +13,11 @@ Source-verified against OpenHands/software-agent-sdk `openhands-agent-server` (`
   - Hooks: the server does NOT auto-load `.openhands/hooks.json`, so `hook_config` is sent in the
     request: a `PreToolUse` command hook running `deny-hook.sh` with `OPEN_FLEET_HOOK_EXIT2=1`
     (OpenHands blocks on exit code 2). A missing hook script exits 2 too (fail closed). The same
-    deny-hook configs are installed into the worktree when it is a local directory.
+    deny-hook configs are installed into the worktree when it is a local directory. The
+    `hook_config` the server will run is verified armed BEFORE the agent starts (W4-06), by the
+    same `deny-hook.sh --verify-settings` posix.verify_installed_guard runs: before the
+    conversation is created for a named worktree, and between create and `/run` (the call that
+    starts the agent) for a server-cut one, whose `$OPENHANDS_PROJECT_DIR` is known only then.
   - danger: the API has no per-conversation workspace type; isolation exists only when the server
     runs `conversation_runtime: docker` (read from `GET /server_info`). Anything else is refused.
   - `worker_read` -> `GET /api/conversations/{id}/events/search` (`items`, `next_page_id`) converted
@@ -26,6 +30,8 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -93,14 +99,78 @@ def deny_hook_config(profile: str, hook_path: str | None = None, unit_worktree: 
     hook = hook_path or str(DENY_HOOK)
     # OPENHANDS_PROJECT_DIR is the conversation's working dir (hooks/executor.py) — the real
     # boundary even when the server made a dedicated worktree for this conversation.
-    boundary = shlex.quote(unit_worktree) if unit_worktree else '"$OPENHANDS_PROJECT_DIR"'
+    boundary = shlex.quote(unit_worktree) if unit_worktree else _PROJECT_DIR
     q = shlex.quote(hook)
-    command = (
-        f"[ -f {q} ] || {{ echo 'open-fleet deny-hook missing: fail-closed' >&2; exit 2; }}; "
+    command = _hook_present(q) + (
         f"OPEN_FLEET_HOOK_EXIT2=1 OPEN_FLEET_HEADLESS_STRICT=1 OPEN_FLEET_SANDBOX_PROFILE={shlex.quote(profile)} "
         f"OPEN_FLEET_UNIT_WORKTREE={boundary} ORCA_UNIT_WORKTREE={boundary} sh {q}"
     )
     return {"pre_tool_use": [{"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": 60}]}]}
+
+
+_PROJECT_DIR = '"$OPENHANDS_PROJECT_DIR"'
+
+
+def _hook_present(quoted_hook: str) -> str:
+    """The fail-closed prefix of every hook command: a missing hook script blocks (exit 2)."""
+    return f"[ -f {quoted_hook} ] || {{ echo 'open-fleet deny-hook missing: fail-closed' >&2; exit 2; }}; "
+
+
+def verify_conversation_guard(hook_config: Any, profile: str, working_dir: str | None,
+                              conversation_id: str | None = None) -> None:
+    """Prove the `hook_config` an agent-server conversation runs is armed, BEFORE its agent starts
+    (W4-06, Codex g1 r3 P1). The agent-server flow never reached posix.verify_installed_guard,
+    so a broken registration accompanied an autonomous worker launch and the pre-launch gate's
+    deferral covered nothing. This runs the same `deny-hook.sh --verify-settings` on the command
+    the server will execute: the fail-closed existence prefix must be exactly the one this
+    provider writes, and the registration after it -- `$OPENHANDS_PROJECT_DIR` resolved to the
+    conversation's real working dir -- must name THIS repo's hook (bytes checked by this repo's
+    own copy, never by the hook under test), pin that boundary and answer the deny probes in
+    OpenHands' own tool names. A working dir that is not a local directory cannot be checked, so
+    it refuses too. Raises ProviderError('deny_hook_unverified'); the caller then never calls the
+    conversation's `/run`, so no agent starts."""
+    from .posix import CANONICAL_DENY_HOOK, verify_installed_guard
+
+    details = {"conversationId": conversation_id} if conversation_id else {}
+
+    def refuse(why: str) -> ProviderError:
+        return ProviderError("deny_hook_unverified",
+                             f"the OpenHands hook_config is not verified armed, so the agent is not started "
+                             f"(W4-06): {why}", details)
+
+    try:
+        [entry] = hook_config["pre_tool_use"]
+        [hook] = entry["hooks"]
+        command = str(hook["command"])
+        matcher = entry.get("matcher", "*")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise refuse(f"hook_config is not one pre_tool_use command hook ({exc!r})") from exc
+    if hook.get("type", "command") != "command":
+        raise refuse("the pre_tool_use hook is not a command hook")
+    if not working_dir or not os.path.isdir(working_dir):
+        raise refuse(f"the conversation's working dir {working_dir!r} is not a local directory, so the "
+                     "boundary the hook pins cannot be checked")
+    try:
+        words = shlex.split(command.split("}; ", 1)[1])
+    except (IndexError, ValueError) as exc:
+        raise refuse(f"the hook command has no registration after its existence check ({exc!r})") from exc
+    if not words or not command.startswith(_hook_present(shlex.quote(words[-1]))):
+        raise refuse("the hook command's fail-closed existence check is not the one this provider writes")
+    registration = command[len(_hook_present(shlex.quote(words[-1]))):]
+    registration = registration.replace(_PROJECT_DIR, shlex.quote(working_dir))
+    scratch = tempfile.mkdtemp(prefix="of-openhands-guard-")
+    try:
+        reg_file = Path(scratch) / "hooks.json"
+        reg_file.write_text(json.dumps({"hooks": {"PreToolUse": [
+            {"matcher": matcher, "hooks": [{"type": "command", "command": registration}]}]}}),
+            encoding="utf-8")
+        try:
+            verify_installed_guard(working_dir, "openhands", profile, {"openhands": str(reg_file)},
+                                   hook_script=words[-1], verifier=str(CANONICAL_DENY_HOOK))
+        except ProviderError as exc:
+            raise refuse(exc.message) from exc
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def _event_text(ev: dict[str, Any]) -> tuple[str, str]:
@@ -311,6 +381,9 @@ class OpenHandsProvider(RuntimeProvider):
         # In a docker conversation runtime the host hook path does not exist; the container is
         # the boundary, so danger sends no host hook (it would exit 2 and block every tool).
         hook_config = deny_hook_config(profile, unit_worktree=unit_boundary) if profile != "danger" else None
+        if hook_config is not None and not use_worktree:
+            # A named worktree: prove the guard before the conversation even exists (W4-06).
+            verify_conversation_guard(hook_config, profile, working_dir)
 
         conv_payload: dict[str, Any] = {
             "agent": {
@@ -329,8 +402,12 @@ class OpenHandsProvider(RuntimeProvider):
             conv_payload["hook_config"] = hook_config
         created = self._request("POST", "/api/conversations", conv_payload)
         conv_id = require_id(created, "id", provider=self.name, what="conversation id")
-        run_resp = self._request("POST", f"/api/conversations/{urllib.parse.quote(conv_id)}/run")
         actual_dir = (created.get("workspace") or {}).get("working_dir") if isinstance(created.get("workspace"), dict) else None
+        if hook_config is not None and use_worktree:
+            # A server-cut worktree: $OPENHANDS_PROJECT_DIR is known only now. The conversation was
+            # created with run=False, so no agent has started; verify before /run starts it (W4-06).
+            verify_conversation_guard(hook_config, profile, actual_dir, conversation_id=conv_id)
+        run_resp = self._request("POST", f"/api/conversations/{urllib.parse.quote(conv_id)}/run")
         real_worktree = str(actual_dir or working_dir)
 
         handle = f"openhands:{conv_id}"

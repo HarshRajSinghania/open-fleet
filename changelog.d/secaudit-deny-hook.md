@@ -23,10 +23,14 @@
   — the file exists, names the hook that loads, pins the boundary, answers a deny probe — AFTER
   installing it and BEFORE the agent process starts, and aborts the launch (`deny_hook_unverified`)
   if any check fails, so a `new-child` spawn that the coordinator's pre-launch gate cannot verify
-  is still enforced. Off Orca `spawn_worker.sh` defers to that and ordinary dispatch needs no
-  opt-out; on Orca (whose `worker-start` wires no open-fleet guard) an unset settings var still
-  refuses, every profile, unless `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1` opts out, with
-  `OPEN_FLEET_REQUIRE_DENY_HOOK=1` overriding that opt-out. A new `OPEN_FLEET_HOOK_READONLY` write
+  is still enforced; the openhands provider runs the same check on the `hook_config` its
+  agent-server executes, before the conversation exists (named worktree) or before the `/run`
+  that starts the agent (server-cut worktree). `spawn_worker.sh` defers to those two and ordinary
+  dispatch needs no opt-out; another non-Orca provider, which installs without verifying,
+  proceeds with an `UNVERIFIED` warning naming the runtime; on Orca (whose `worker-start` wires no
+  open-fleet guard) an unset settings var still refuses, every profile, unless
+  `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1` opts out. `OPEN_FLEET_REQUIRE_DENY_HOOK=1` is checked
+  before any deferral or opt-out and refuses an unset var on every runtime. A new `OPEN_FLEET_HOOK_READONLY` write
   floor (wired with `deny-hook.sh --settings <wt> --readonly`; no provider sets it on its own)
   lets the hook deny every write it can see on the `ro` tier — in a `-c` body, a substitution or a
   program piped to a shell too, and `echo x > -` writes a file named `-` — and refuse a shell fed

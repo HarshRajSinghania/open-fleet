@@ -233,6 +233,19 @@ class TestSpawnWorkerHardening(unittest.TestCase):
         rc, out, _ = run("short title")
         self.assertIn("safe_title=short-title-", out)
 
+    def test_the_label_is_never_option_shaped(self):
+        # W4-12 re-attack: `--force` (after `--`) became `--name --force-<cksum>`, an OPTION to the
+        # runtime's worktree create, and `!!!` squashed to `----<cksum>`.
+        for title in ("--force", "-x", "!!!", "---", "- -", "-" * 70 + "tail"):
+            with self.subTest(title=title):
+                p = subprocess.run(["bash", str(SPAWN), "--", "task_test", "active", title, "claude", "high"],
+                                   env={"SW_SELFTEST": "1", "PATH": "/usr/bin:/bin", "ORCA_CLI_COMMAND": "orca"},
+                                   capture_output=True, text=True)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                key = next(ln for ln in p.stdout.splitlines() if ln.startswith("safe_title="))[len("safe_title="):]
+                self.assertFalse(key.startswith("-"), key)
+                self.assertLessEqual(len(key), 80, key)
+
     def test_invalid_effort_is_refused(self):
         # #43: effort is interpolated into the codex launch command; an unknown value must
         # be rejected (fail closed), never interpolated verbatim. Same strict contract as

@@ -514,9 +514,13 @@ fi
 # <label>.json is the longest) and the worktree --name, so an unbounded 300-character title failed
 # `File name too long` after the task existed. The slug keeps its first 64 bytes (tr leaves it
 # ASCII); the checksum still covers the WHOLE title, so titles differing past the cut stay distinct.
+# Its leading dashes go too: `--force` became `--name --force-<cksum>`, an option to the runtime,
+# and `!!!` squashed to `----<cksum>`; a slug left empty reads `title`.
 title_hash=$(printf '%s' "$title" | cksum | cut -d' ' -f1)
 title_slug="$(printf '%s' "$title" | tr -c 'A-Za-z0-9._-' '-')"
-safe_title="${title_slug:0:64}-${title_hash}"
+title_slug="${title_slug:0:64}"
+while [ "${title_slug#-}" != "$title_slug" ]; do title_slug="${title_slug#-}"; done
+safe_title="${title_slug:-title}-${title_hash}"
 
 # Self-test hook: compute the two hardened values and exit before any orchestration side
 # effect. Lets the contract test assert effort-validation and title disambiguation without

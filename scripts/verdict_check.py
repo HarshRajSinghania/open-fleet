@@ -271,13 +271,21 @@ def _gh_api(path, repo, paginate=False):
     return merged
 
 
+# The PR object check_pr read, by (repo, number): grader_refusal decides the owner's own-branch
+# exemption from it, so no further read can turn the owner's PR into a failed gate.
+_PRS_READ = {}
+
+
+def _as_pr(value):
+    if isinstance(value, list):  # tolerate a wrapped single-object response
+        value = value[0] if value else {}
+    return value if isinstance(value, dict) else {}
+
+
 def check_pr(pr_number, repo):
     """Fetch the PR head SHA + reviews and evaluate the verdict rule."""
-    pr = _gh_api(f"pulls/{pr_number}", repo)
-    if isinstance(pr, list):  # tolerate a wrapped single-object response
-        pr = pr[0] if pr else {}
-    if not isinstance(pr, dict):
-        pr = {}
+    pr = _as_pr(_gh_api(f"pulls/{pr_number}", repo))
+    _PRS_READ[(repo, str(pr_number))] = pr
     head_sha = (pr.get("head") or {}).get("sha", "")
     pr_author = (pr.get("user") or {}).get("login", "")
     reviews = _gh_api(f"pulls/{pr_number}/reviews", repo, paginate=True)
@@ -335,34 +343,44 @@ def _is_owner(pr, repo):
 def grader_refusal(pr_number, repo, head_sha):
     """(grader paths, refusal reason or None) for the PR at ``head_sha`` (W6-01).
 
-    Re-reads the PR (its head must still be ``head_sha``), then reads what that exact commit
-    changes with the compare API, base...head_sha: the PR files list names no commit, so a head
-    flipped M -> benign -> M between the gate's reads passed it (PR #718 re-attack). The owner's
-    PR from a branch of this repository may change the grader; any other PR may not. A list the
-    API may have cut short fails closed, and so does a PR whose base cannot be named.
+    The owner's PR from a branch of this repository may change the grader, and is decided from
+    the PR object check_pr already read, before anything else is read: it gets no refusal, and
+    the compare read below only lists its grader paths, best-effort. An API failure there must
+    never fail the owner's PR, or one bad read would block every owner PR on main, the fix
+    included, with admins enforced (PR #718 review).
+
+    Any other PR fails closed, and every read failure is a refusal (a posted failure status, not
+    a missing one). The PR is re-read (its head must still be ``head_sha``), then what that exact
+    commit changes is read with the compare API, base...head_sha: the PR files list names no
+    commit, so a head flipped M -> benign -> M between the gate's reads passed it (PR #718
+    re-attack). A list the API may have cut short fails closed, and so does a PR whose base
+    cannot be named.
     """
-    pr = _gh_api(f"pulls/{pr_number}", repo)
-    if isinstance(pr, list):
-        pr = pr[0] if pr else {}
-    if not isinstance(pr, dict):
-        pr = {}
-    now = (pr.get("head") or {}).get("sha", "")
-    if not head_sha or now.lower() != head_sha.lower():
-        return [], (f"head moved to {now[:12] or 'nothing'} while it was read; "
-                    "re-run the gate on the new head")
-    base = pr.get("base") or {}
-    base_name = base.get("ref") if SAFE_REF_RE.match(base.get("ref") or "") \
-        and ".." not in base.get("ref") else base.get("sha")
-    if not base_name or not FULL_SHA_RE.match(head_sha) \
-            or (base_name == base.get("sha") and not FULL_SHA_RE.match(base_name)):
+    first = _PRS_READ.get((repo, str(pr_number)))
+    if first is not None and _is_owner(first, repo) and _same_repo(first):
+        try:
+            return _changed_grader_paths(first, repo, head_sha)[0] or [], None
+        except RuntimeError as exc:
+            print(f"verdict_check: owner's own-branch PR: grader paths not listed ({exc})",
+                  file=sys.stderr)
+            return [], None
+    try:
+        pr = _as_pr(_gh_api(f"pulls/{pr_number}", repo))
+        now = (pr.get("head") or {}).get("sha", "")
+        if not head_sha or now.lower() != head_sha.lower():
+            return [], (f"head moved to {now[:12] or 'nothing'} while it was read; "
+                        "re-run the gate on the new head")
+        if _is_owner(pr, repo) and _same_repo(pr):  # only when check_pr's read is not at hand
+            try:
+                return _changed_grader_paths(pr, repo, head_sha)[0] or [], None
+            except RuntimeError:
+                return [], None
+        paths, files = _changed_grader_paths(pr, repo, head_sha)
+    except RuntimeError as exc:
+        print(f"verdict_check: grader read failed: {exc}", file=sys.stderr)
+        return [], f"cannot read what this head changes, so the gate fails closed: {exc}"[:140]
+    if paths is None:
         return [], "cannot name the PR's base, so what this head changes cannot be read"
-    comparison = _gh_api(f"compare/{base_name}...{head_sha}", repo)
-    files = comparison.get("files") if isinstance(comparison, dict) else None
-    if not isinstance(files, list):
-        files = []
-    paths = grader_paths(files)
-    if _is_owner(pr, repo) and _same_repo(pr):
-        return paths, None
     changed = pr.get("changed_files")
     if len(files) >= FILES_LIST_CAP or (isinstance(changed, int) and len(files) < changed):
         return paths, (f"the files list may be cut short ({len(files)} listed of "
@@ -373,6 +391,23 @@ def grader_refusal(pr_number, repo, head_sha):
         return paths, (f"changes the CI grader ({paths[0]}{more}); only the owner's own-branch "
                        "PR may — this PR's checks ran its own copy")
     return paths, None
+
+
+def _changed_grader_paths(pr, repo, head_sha):
+    """(grader paths, the compare files list) for what ``head_sha`` changes against the PR's base
+    branch, or (None, None) when the base cannot be named. Raises RuntimeError when the read
+    fails."""
+    base = pr.get("base") or {}
+    ref = base.get("ref") or ""
+    base_name = ref if SAFE_REF_RE.match(ref) and ".." not in ref else base.get("sha")
+    if not base_name or not FULL_SHA_RE.match(head_sha or "") \
+            or (base_name == base.get("sha") and not FULL_SHA_RE.match(base_name)):
+        return None, None
+    comparison = _gh_api(f"compare/{base_name}...{head_sha}", repo)
+    files = comparison.get("files") if isinstance(comparison, dict) else None
+    if not isinstance(files, list):
+        files = []
+    return grader_paths(files), files
 
 
 def pr_for_head(head_sha, repo):

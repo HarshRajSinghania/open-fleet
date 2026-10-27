@@ -128,9 +128,13 @@ vf-bench pins) are the floor guard's frozen surface, which `guard` checks with t
 `floor_guard.py`. The gate reads what the PR's exact head changes with the compare API (base
 branch `...` head SHA), so a head flipped between its reads cannot pass. Those reads use the
 gate job's own `GITHUB_TOKEN` (Contents and Pull requests read); the app's token posts the
-status. A list the API may have cut short (300 files), or a head that moves while it is read,
-fails closed. An outside contributor's grader change lands when the owner re-opens it from a
-branch of this repository. The rule binds only once it is on `main`: the gate runs `main`'s copy
+status. A list the API may have cut short (300 files), a head that moves while it is read, or a
+read that fails, fails closed: the gate posts `verdict-gate` failure saying why. The owner's
+own-branch PR is the exception: it is recognised from the PR object the gate has already read,
+before any grader read, and decided on its verdict alone, so a failing API read can never block
+the owner's PR (the one that would fix the gate included; admins are enforced on `main`). An
+outside contributor's grader change lands when the owner re-opens it from a branch of this
+repository. The rule binds only once it is on `main`: the gate runs `main`'s copy
 of the script, so the PR that adds it is still graded by the copy it replaces.
 
 Activated on 2026-10-24 (#594):

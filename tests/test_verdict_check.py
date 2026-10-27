@@ -652,9 +652,11 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
             pr["changed_files"] = changed
         return pr
 
-    def _run(self, files, pr=None, pr_after=None, post=True, reviews=None, listed=None):
+    def _run(self, files, pr=None, pr_after=None, post=True, reviews=None, listed=None,
+             fail=()):
         """`files` is what the compare API says the exact head changed; `listed` is what the
-        PR's (SHA-less) files list says, which the gate must not read."""
+        PR's (SHA-less) files list says, which the gate must not read. `fail` names reads that
+        error the way a failed `gh api` does: "compare/", or "pulls/7#2" for the second PR read."""
         pr = pr or self._pr(changed=len(files))
         seen = {"pulls/7": 0}
         self.compared = []
@@ -664,7 +666,11 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
             self.assertEqual(repo, "o/r")
             if path == "pulls/7":
                 seen["pulls/7"] += 1
+                if seen["pulls/7"] >= 2 and "pulls/7#2" in fail:
+                    raise RuntimeError("gh api pulls/7 failed: HTTP 502")
                 return pr if seen["pulls/7"] == 1 or pr_after is None else pr_after
+            if any(path.startswith(prefix) for prefix in fail):
+                raise RuntimeError(f"gh api {path} failed: HTTP 404: No common ancestor")
             if path == "pulls/7/reviews":
                 self.assertTrue(paginate)
                 return [self.OWNER_GO] if reviews is None else reviews
@@ -808,6 +814,39 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
                 self.assertEqual(posted[0]["state"], "failure", out)
         _code, posted, out = self._run(self._files(".github/Workflows/x.yml"))
         self.assertEqual(posted[0]["state"], "success", "GitHub reads .github/workflows only")
+
+    def test_an_owner_own_branch_pr_never_waits_on_the_grader_read(self):
+        # PR #718 review (availability): the compare read ran before the owner exemption, and a
+        # failed `gh api` raised, so verdict-gate errored with no status on every owner PR,
+        # the PR that would fix it included, with admins enforced on main. The owner's
+        # own-branch PR is decided from the PR object already read, on its verdict alone.
+        owner = self._pr(login="o", association="OWNER", changed=1)
+        files = self._files(".github/workflows/validate.yml")
+        for fail in (("compare/",), ("compare/", "pulls/7#2")):
+            with self.subTest(fail=fail):
+                code, posted, out = self._run(files, pr=owner, fail=fail)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(posted[0]["state"], "success", out)
+                code, posted, out = self._run(files, pr=owner, fail=fail, reviews=[])
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("no GO verdict review", posted[0]["description"])
+        unnamed = self._pr(login="o", association="OWNER", changed=1)
+        unnamed["base"] = {"repo": {"full_name": "o/r"}}  # no ref, no sha: nothing to compare
+        code, posted, out = self._run(files, pr=unnamed)
+        self.assertEqual((code, posted[0]["state"]), (0, "success"), out)
+
+    def test_a_failed_read_fails_any_other_pr_closed_with_a_posted_status(self):
+        # Not a missing status: a clear failure the PR's checks list shows.
+        for fail in (("compare/",), ("pulls/7#2",)):
+            with self.subTest(fail=fail):
+                code, posted, out = self._run(self._files("docs/x.md"), fail=fail)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(len(posted), 1, out)
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("cannot read", posted[0]["description"])
+                self.assertLessEqual(len(posted[0]["description"]), 140)
+        code, posted, out = self._run(self._files("docs/x.md"), fail=("compare/",), post=False)
+        self.assertEqual((code, posted), (1, []))
 
     def test_the_top_level_list_is_this_repositorys(self):
         listed = subprocess.run(["git", "-C", str(_ROOT), "ls-tree", "-d", "--name-only", "HEAD"],

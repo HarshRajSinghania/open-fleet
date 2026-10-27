@@ -49,6 +49,19 @@ def _group_alive(pid):
         return False
 
 
+def _process_gone(pid):
+    """True once `pid` has exited. A zombie counts: its fds, a listening socket among them, are
+    closed, and an un-reaped daemon is a zombie wherever pid 1 does not reap."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return stat == "" or stat.startswith("Z")
+
+
 def _wait_for(pred, timeout=15.0, step=0.05):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -540,6 +553,10 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
 
     def setUp(self):
         super().setUp()
+        # The leak test reads OPENCODE_CONFIG_CONTENT, so only a WORKER's launch may put it there.
+        # A shell that already exports it (a coordinator running inside OpenCode) hands it to every
+        # worker as part of the coordinator's env, by design, and that read as "leaked" (2026-10-27).
+        self.env.pop("OPENCODE_CONFIG_CONTENT", None)
         self.has_tmux = bool(shutil.which("tmux"))
         if not self.has_tmux:
             # No tmux on this host: exercise the same env-file mechanism through setsid.
@@ -573,6 +590,16 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
             subprocess.run(["tmux", "-f", os.devnull, "new-session", "-d", "-s", "preexisting"], env=self.server_env, check=True)
             self.addCleanup(lambda: subprocess.run(["tmux", "kill-server"], env=self.server_env, capture_output=True))
         self.prov = self.providers.get_provider("posix", env=self.env)
+
+    def kill_tmux_server_and_wait(self):
+        """`tmux kill-server` returns before the server has exited, and a client that connects in
+        that window gets "server exited unexpectedly" (CI shard 6; 27 of 200 kill-then-new-session
+        rounds under CPU load here, 0 of 200 once the old pid is awaited). Wait until it is gone."""
+        pid = subprocess.run(["tmux", "display-message", "-p", "#{pid}"], env=self.server_env,
+                             capture_output=True, text=True).stdout.strip()
+        subprocess.run(["tmux", "kill-server"], env=self.server_env, capture_output=True)
+        if pid.isdigit():
+            self.assertTrue(_wait_for(lambda: _process_gone(int(pid))), "the old tmux server never exited")
 
     def test_env_survives_preexisting_tmux_server_and_stop_kills(self):
         out = Path(self.tmp.name) / "env.txt"
@@ -622,7 +649,7 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
         """The first spawn into NO server starts one, and that client's env becomes the server's
         global env for every later session (2026-10-23 review, P1-11)."""
         if self.has_tmux:
-            subprocess.run(["tmux", "kill-server"], env=self.server_env, capture_output=True)
+            self.kill_tmux_server_and_wait()
         first = Path(self.tmp.name) / "first-up"
         out = Path(self.tmp.name) / "second.txt"
         self.fake_agent("opencode", f'touch "{first}"; trap "" HUP TERM; while :; do sleep 0.1; done')

@@ -43,7 +43,9 @@ def _has_messages_key(node):
 # guard_text.py knows this category too and does the opposite with it — NFKC-folds and REMOVES it
 # — because that is for comparing two names, where an invisible character must not make them
 # differ. Here the string is being shown to a human, so it must not silently change either.
-_INVISIBLE = ("Cf", "Zl", "Zp")
+# Cs too: a lone surrogate (JSON "\ud800") cannot be encoded, so printing it raw crashed the
+# printer with UnicodeEncodeError (2026-10-27 audit re-attack).
+_INVISIBLE = ("Cf", "Zl", "Zp", "Cs")
 
 
 def _visible(value):
@@ -62,6 +64,21 @@ def _visible(value):
         else:
             out.append(ch)
     return "".join(out)
+
+
+def _visible_line(value):
+    """A single-line receipt field (KEY=value, a header part): _visible, with the newline and the
+    tab it keeps for bodies escaped too, so the field can neither split nor forge a line."""
+    return _visible(value).replace("\n", "\\n").replace("\t", "\\t")
+
+
+def _indent_continuations(text, headers=()):
+    """An already-_visible multi-line body, indented so no line of it can stand at column 0 and
+    pass for a header its printer writes there: every continuation line, and a first line that
+    starts like one of `headers`."""
+    lines = text.split("\n")
+    first = "  " + lines[0] if headers and lines[0].startswith(tuple(headers)) else lines[0]
+    return "\n".join([first] + ["  " + ln for ln in lines[1:]])
 
 
 def print_inbox(raw):

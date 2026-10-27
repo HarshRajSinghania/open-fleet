@@ -234,7 +234,7 @@ unreadable `SKILL.md` also exits 1, with a traceback) · 2 usage. An `audit --ro
 ## `check_reply.py`
 
 Fail-closed invoker for `check` and `reply` — pm.py parses the inbox, this issues
-it. Source `runtime/scripts/check_reply.py:1-22`; behavior pinned by
+it. Source `runtime/scripts/check_reply.py:1-24`; behavior pinned by
 `tests/test_check_reply.py`.
 
 Usage: `check_reply.py {check,reply} ...`
@@ -262,9 +262,13 @@ validation refusal (nothing invoked).
 
 > Why: at most one read mode, because the handler refuses more — and on older
 > runtimes an unknown `--peek` strips while `--unread` still marks read, so a
-> combined read would destroy what it meant to preview. Naming the sender is an
-> identity claim: a wrong `--from` speaks as a sibling worker, so disagreement with
-> the ambient handle refuses rather than misattributes.
+> combined read would destroy what it meant to preview. A `--from` that disagrees
+> with the ambient handle refuses rather than misattributes, but both are the
+> caller's own, so this catches an accidental mismatch only: the sender is
+> self-asserted here and the runtime is the authority (W5-19). Printed receipt
+> fields (`DELIVERY`, `REPLIED`, header parts, `SUBJ`) are inert and on one line,
+> and a body's continuation lines are indented, so a message cannot forge a
+> `--- <id> (<type>) from <handle>` header or another receipt line.
 
 ## `decisions.py`
 

@@ -441,9 +441,17 @@ def check_gate_batch_owed(ctx):
     where a deleted pin turned typed answers back on. That ref is what this clone's
     fetch of the reviewed default branch wrote, and a key lands there only by a
     reviewed one-way grant; the release HEAD is the thing being judged. No such
-    commit here is a FAIL: a missing key cannot be told from a deleted one."""
+    commit here is a FAIL: a missing key cannot be told from a deleted one.
+
+    PR #719 review round 3: the SET of gates is read at that same commit. gate-batch.py
+    --pin-ref lists every gate the anchored batch carries that the release tree's lacks or
+    altered as owed, so `"gates": []` and a re-rendered view no longer pass; a store the anchor
+    does not carry has no trusted set to hold the release to, and a view the anchor carries
+    must still be here and agree (render --check). Each is a FAIL."""
     name = "gate1/gate-batch-owed"
     tool = "runtime/scripts/gate-batch.py"
+    store = f"docs/runs/{GATE_BATCH_RUN}/gate-batch.json"
+    view_md = f"docs/runs/{GATE_BATCH_RUN}/gate-batch.md"
     anchor = "refs/remotes/origin/main"
     target = ctx.run(["git", "symbolic-ref", "-q", anchor], memo=False)
     ref = target.stdout.strip() if target.ok and target.stdout.strip() else anchor
@@ -461,9 +469,23 @@ def check_gate_batch_owed(ctx):
         return (name, FAIL, f"{label}: {r.stderr}")
     if not r.ok:
         return (name, FAIL, f"{label}: exit {r.returncode}: {tail(r.stderr)}")
+    carried = ctx.run(["git", "ls-tree", "--name-only", "--full-tree", pin, "--", store,
+                       view_md], memo=False)
+    if not carried.ok:
+        return (name, FAIL, f"cannot list {store} at {anchor} ({pin[:12]}): "
+                            f"{tail(carried.stderr)}")
+    carried = set(carried.stdout.splitlines())
+    if store not in carried:
+        return (name, FAIL, f"{anchor} ({pin[:12]}) carries no {store}: the set of owed gates "
+                            "is read there, and a store only the release tree carries could "
+                            "owe nothing (PR #719 review)")
+    if view_md in carried and ctx.read(view_md) is None:
+        return (name, FAIL, f"{view_md} is at {anchor} ({pin[:12]}) but not in the release tree: "
+                            "the store re-renders it on every mutation, so it is deleted, not "
+                            "stale (PR #719 review)")
     # W3-06: the human-readable view must say what the store says — a .md edited to disagree
-    # used to be caught by tests only. (No .md beside the store: no view to disagree.)
-    if ctx.read(f"docs/runs/{GATE_BATCH_RUN}/gate-batch.md") is not None:
+    # used to be caught by tests only. (No .md here or at the anchor: no view to disagree.)
+    if ctx.read(view_md) is not None:
         view = ctx.py(tool, "--run", GATE_BATCH_RUN, "render", "--check")
         if not view.ok:
             return (name, FAIL, f"gate-batch.py --run {GATE_BATCH_RUN} render --check: the .md "

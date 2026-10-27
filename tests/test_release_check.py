@@ -144,12 +144,15 @@ def make_fixture(root, *, harden_proof="self-run", witness="live", witnessed="20
 
 def anchor_fixture(root):
     """W3-06: gate 1 reads the human grant key at refs/remotes/origin/main, never from the tree
-    it judges — so the fixture is a clone with that ref (an empty anchor commit: nothing pinned,
-    the fixture's own files left for a test to commit), and gate-batch.py has the siblings it
+    it judges — so the fixture is a clone with that ref (an anchor commit carrying only the gate
+    batch, whose set of gates gate 1 reads there too — PR #719 review round 3; nothing pinned,
+    the fixture's other files left for a test to commit), and gate-batch.py has the siblings it
     reads and verifies the key with (decisions.py, ed25519.py, gitexec.py)."""
     for name in ("decisions.py", "ed25519.py", "gitexec.py"):
         shutil.copy(ROOT / "runtime" / "scripts" / name, root / "runtime" / "scripts" / name)
     subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    if (root / "docs" / "runs").is_dir():
+        subprocess.run(["git", "-C", str(root), "add", "docs/runs"], check=True)
     subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
                     "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m",
                     "the fixture's key anchor"], check=True)
@@ -517,6 +520,186 @@ class GateOneReadsTheHumanKeyAtTheAnchor(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.root), "update-ref", "-d",
                         "refs/remotes/origin/main"], check=True)
         self.answer(signed=True)
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+        self.assertIn("refs/remotes/origin/main", detail)
+
+
+class GateOneHoldsTheReleaseToTheAnchoredGateSet(unittest.TestCase):
+    """PR #719 review round 3 (P1): a signature protects each ANSWER, but nothing authenticated
+    the SET of owed gates. With the key pinned at refs/remotes/origin/main, `"gates": []` plus a
+    re-rendered view passed gate 1: validate_batch took the empty list and `list` owed nothing.
+    The set is now read where the key is read — the batch at that same commit — and every way of
+    making an anchored gate vanish from the release tree is owed (or could-not-run), each driven
+    through the real release_check → gate-batch.py → decisions.py path: emptied, deleted, renamed,
+    re-worded and then signed, duplicated, the store or its view deleted, a status typed without
+    a signature, a batch the anchor never carried. Reordering hides nothing and blocks nothing."""
+
+    SEED = bytes(range(11, 43))
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.root = make_fixture(self._td.name, owed=True)
+        spec = importlib.util.spec_from_file_location(
+            "ed25519_for_release_check_set", ROOT / "runtime" / "scripts" / "ed25519.py")
+        self.ed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.ed)
+        pin = self.root / ".orca" / "human-grant-pubkey"
+        pin.parent.mkdir()
+        pin.write_text(self.ed.publickey(self.SEED).hex() + "\n", encoding="utf-8")
+        self.store = self.root / "docs" / "runs" / rc.GATE_BATCH_RUN / "gate-batch.json"
+        data = gb.load_batch(self.store)
+        gb.add_gate(data, gid="G2", asked="2026-09-14", title="a second question",
+                    question="ship without the audit?")
+        gb.save_batch(self.store, data)
+        gb.refresh_view(self.store, data)
+        git_commit(self.root, "the key and the owed gates land on main")
+
+    def gate1(self, env=None):
+        with mock.patch.dict(os.environ, env or {}):
+            for var in ("ORCA_PROVENANCE", "OPEN_FLEET_PROVENANCE"):
+                if var not in (env or {}):
+                    os.environ.pop(var, None)
+            return find(rc.gate1(ctx_for(self.root)), "gate1/gate-batch-owed")
+
+    def assert_fails(self, *names):
+        for env in (None, {"ORCA_PROVENANCE": "ci"}):
+            with self.subTest(env=env):
+                _, status, detail = self.gate1(env)
+                self.assertEqual(status, rc.FAIL, detail)
+                for gid in names:
+                    self.assertIn(gid, detail)
+
+    def sign(self, data, gate):
+        gate["grant_sig"] = self.ed.signature(gb.answer_payload(data, gate), self.SEED,
+                                              self.ed.publickey(self.SEED)).hex()
+
+    def write(self, data, view=True):
+        """Save the store exactly as a worker would, and re-render the view so render --check
+        has nothing to say — the attack Codex ran."""
+        self.store.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        if view:
+            (self.store.parent / "gate-batch.md").write_text(gb.render_batch(data),
+                                                             encoding="utf-8")
+
+    def answer_all(self, data):
+        for gid in [g["id"] for g in data["gates"]]:
+            gate = gb.transition(data, gid, "answered", f"yes to {gid}", answered="2026-09-16",
+                                 source="human:lia")
+            self.sign(data, gate)
+        return data
+
+    def test_every_owed_gate_answered_and_signed_passes(self):
+        self.write(self.answer_all(gb.load_batch(self.store)))
+        for env in (None, {"ORCA_PROVENANCE": "ci"}):
+            with self.subTest(env=env):
+                _, status, detail = self.gate1(env)
+                self.assertEqual(status, rc.PASS, detail)
+
+    def test_an_emptied_batch_with_its_view_re_rendered_owes_every_anchored_gate(self):
+        data = gb.load_batch(self.store)
+        data["gates"] = []
+        self.write(data)
+        self.assert_fails("G1", "G2")
+
+    def test_deleting_one_owed_gate_owes_it(self):
+        data = self.answer_all(gb.load_batch(self.store))
+        data["gates"] = [g for g in data["gates"] if g["id"] != "G2"]
+        self.write(data)
+        self.assert_fails("G2")
+
+    def test_renaming_a_gate_owes_the_anchored_id(self):
+        data = self.answer_all(gb.load_batch(self.store))
+        renamed = next(g for g in data["gates"] if g["id"] == "G2")
+        renamed.update(id="G9", status="owed", answer=None, answered=None)
+        renamed.pop("source"), renamed.pop("grant_sig")
+        gate = gb.transition(data, "G9", "answered", "yes to G9", answered="2026-09-16",
+                             source="human:lia")
+        self.sign(data, gate)  # a genuine signature, over a gate the anchor never asked
+        self.write(data)
+        self.assert_fails("G2")
+
+    def test_a_question_re_worded_before_the_human_signed_is_owed(self):
+        # The human signs what the record says. A worker that re-words the anchored question
+        # into something harmless, and gets THAT signed, has not had the anchored one answered.
+        data = gb.load_batch(self.store)
+        next(g for g in data["gates"] if g["id"] == "G2")["question"] = "is the sky blue?"
+        self.write(self.answer_all(data))
+        self.assert_fails("G2")
+
+    def test_a_re_dated_or_re_titled_gate_is_owed(self):
+        for field, value in (("asked", "2026-09-15"), ("title", "a smaller question")):
+            with self.subTest(field=field):
+                data = gb.load_batch(self.store)
+                next(g for g in data["gates"] if g["id"] == "G1")[field] = value
+                self.write(self.answer_all(data))
+                self.assert_fails("G1")
+                subprocess.run(["git", "-C", str(self.root), "checkout", "-q", "--", "docs"],
+                               check=True)
+
+    def test_a_batch_claiming_another_run_owes_every_anchored_gate(self):
+        data = gb.load_batch(self.store)
+        data["run_id"] = "run_elsewhere"
+        self.write(self.answer_all(data))
+        self.assert_fails("G1", "G2")
+
+    def test_a_duplicated_gate_id_fails(self):
+        data = self.answer_all(gb.load_batch(self.store))
+        data["gates"].append(dict(data["gates"][0]))
+        self.write(data, view=False)
+        self.assert_fails()
+
+    def test_reordering_hides_nothing_and_blocks_nothing(self):
+        data = gb.load_batch(self.store)
+        data["gates"].reverse()
+        self.write(data)
+        self.assert_fails("G1", "G2")
+        data = self.answer_all(gb.load_batch(self.store))
+        data["gates"].reverse()
+        self.write(data)
+        _, status, detail = self.gate1({"ORCA_PROVENANCE": "ci"})
+        self.assertEqual(status, rc.PASS, detail)
+
+    def test_a_status_typed_without_a_signature_is_owed(self):
+        for status in ("answered", "waived", "overtaken"):
+            with self.subTest(status=status):
+                data = gb.load_batch(self.store)
+                for gid in ("G1", "G2"):
+                    gb.transition(data, gid, status, "typed", answered="2026-09-16",
+                                  source="human:lia")
+                self.write(data)
+                self.assert_fails("G1", "G2")
+                subprocess.run(["git", "-C", str(self.root), "checkout", "-q", "--", "docs"],
+                               check=True)
+
+    def test_deleting_the_store_fails(self):
+        self.store.unlink()
+        self.assert_fails()
+
+    def test_deleting_or_truncating_the_view_the_anchor_carries_fails(self):
+        self.write(self.answer_all(gb.load_batch(self.store)))
+        view = self.store.parent / "gate-batch.md"
+        view.write_text("", encoding="utf-8")
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+        view.unlink()
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+        self.assertIn("gate-batch.md", detail)
+
+    def test_a_batch_the_anchor_does_not_carry_fails(self):
+        # Drop the store from the anchor (a reviewed main without it), keep it in the release
+        # tree with every gate signed: there is no trusted set to hold the release to.
+        self.write(self.answer_all(gb.load_batch(self.store)))
+        rel = f"docs/runs/{rc.GATE_BATCH_RUN}"
+        subprocess.run(["git", "-C", str(self.root), "rm", "-q", "-r", "--cached", rel],
+                       check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "no batch"],
+                       check=True)
+        subprocess.run(["git", "-C", str(self.root), "update-ref", "refs/remotes/origin/main",
+                        "HEAD"], check=True)
         _, status, detail = self.gate1()
         self.assertEqual(status, rc.FAIL, detail)
         self.assertIn("refs/remotes/origin/main", detail)

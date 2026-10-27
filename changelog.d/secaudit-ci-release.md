@@ -9,9 +9,12 @@
   itself, an accepted residual); `.gitleaks.toml` is on the floor guard's frozen surface, the
   secret scan ignores the tree's `.gitattributes`, and its canary proves no waiver covers a
   top-level directory wholesale (a narrower allowlist is the floor guard's to stop); no checkout keeps its token; every
-  `uses:` and every demo-stack image is pinned by test. The publishers check the tag before
+  `uses:` and every demo-stack image is pinned by test, and every workflow must stay in the
+  block YAML subset those tests and release gate 3 read line by line. The publishers check the tag before
   fetching it, `release.yml` marks only the newest tag Latest, and `publish-dist` stages the
   bundle exactly. `gen-badges.py` checks a claimed cut's badge and the release commit's shape,
-  release gate 3 counts only an unconditional step of a pull-request workflow whose whole
+  release gate 3 counts only an unconditional step (no `needs:`, matrix, reusable workflow or
+  container) of a pull-request workflow whose whole
   `run:` is the script under python3, bash or sh and nothing else, gates 0 and 4 read CI on the branch
-  being cut, and both bookkeeping writers refuse raw HTML.
+  being cut, and both bookkeeping writers refuse raw HTML and a link scheme that runs or reads
+  something (javascript, vbscript, data, file), however it is escaped.

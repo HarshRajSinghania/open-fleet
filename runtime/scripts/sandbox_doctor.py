@@ -391,22 +391,44 @@ _RECIPE_OBJECT_IDS = ("id", "recipeid", "recipe_id", "name")
 _ID_FIELDS = ("id", "name")
 
 
-def declared_recipes(doc) -> list[str]:
-    """The recipe ids a JSON transcript DECLARES, read from recipe fields at any depth — never
-    from a dict key, never from any other value."""
-    out = []
+def _declaration(value):
+    """The recipe ids one recipe field declares, or None when its value declares nothing: a
+    non-empty string, a non-empty list of them, or an object whose first present id key
+    (id, recipeId, recipe_id, name) holds one. null, a number, a bool, an empty value, a list
+    holding anything else, an object without a usable id: none of these is a declaration."""
+    if isinstance(value, str):
+        return [value] if value.strip() else None
+    if isinstance(value, list):
+        return list(value) if value and all(isinstance(v, str) and v.strip() for v in value) else None
+    if isinstance(value, dict):
+        low = {str(k).lower(): v for k, v in value.items()}
+        key = next((k for k in _RECIPE_OBJECT_IDS if k in low), None)
+        ident = low.get(key) if key else None
+        return [ident] if isinstance(ident, str) and ident.strip() else None
+    return None
+
+
+def recipe_declarations(doc) -> tuple[list[str], list[str]]:
+    """(declared ids, malformed fields) of a JSON transcript, read from recipe fields at any depth,
+    never from a dict key or any other value. A recipe field that is present but declares nothing
+    is MALFORMED, not absent (Codex review of W4-10): dropping it let the `id`/`name` fallback
+    certify a recipe from an unrelated check id."""
+    declared, malformed = [], []
     for d in _dicts(doc):
         for key, value in d.items():
             if str(key).lower() not in RECIPE_FIELDS:
                 continue
-            if isinstance(value, str):
-                out.append(value)
-            elif isinstance(value, dict):
-                low = {str(k).lower(): v for k, v in value.items()}
-                ident = next((low[k] for k in _RECIPE_OBJECT_IDS if isinstance(low.get(k), str)), None)
-                if ident is not None:
-                    out.append(ident)
-    return out
+            ids = _declaration(value)
+            if ids is None:
+                malformed.append(f"{key}={value!r}"[:80])
+            else:
+                declared.extend(ids)
+    return declared, malformed
+
+
+def declared_recipes(doc) -> list[str]:
+    """The recipe ids a JSON transcript DECLARES (recipe_declarations, malformed fields aside)."""
+    return recipe_declarations(doc)[0]
 
 
 def names_recipe(doc, raw, recipe):
@@ -422,11 +444,15 @@ def names_recipe(doc, raw, recipe):
     `"recipe": "other"`. Recipe fields are authoritative — every one must name this recipe — and
     a portable backend's placement claim must say which recipe it binds. Only a report with no
     recipe field at all (Orca's doctor shape is source-, not binary-witnessed) falls back to an
-    `id`/`name` field equal to the id.
+    `id`/`name` field equal to the id; a recipe field that is present but malformed names no
+    recipe, and nothing falls back past it.
     """
     want = recipe.lower()
     if doc is not None:
-        declared = {d.lower() for d in declared_recipes(doc)}
+        found, malformed = recipe_declarations(doc)
+        if malformed:
+            return False
+        declared = {d.lower() for d in found}
         if declared:
             return declared == {want}
         if isinstance(doc, dict) and str(doc.get("backend") or "").strip().lower() in PORTABLE_BACKENDS:
@@ -468,6 +494,10 @@ def assess(raw, recipe):
     except ValueError:
         doc = None
 
+    malformed = recipe_declarations(doc)[1] if doc is not None else []
+    if malformed:
+        return False, ("doctor output carries a malformed recipe field (" + "; ".join(malformed[:3])
+                       + "): a recipe field that names no recipe is refused, never read past"), False
     if not names_recipe(doc, raw, recipe):
         return False, f"doctor output does not name recipe {recipe!r}", False
 

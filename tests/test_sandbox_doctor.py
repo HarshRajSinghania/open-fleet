@@ -215,6 +215,27 @@ class RecipeIdentityComesFromRecipeFields(unittest.TestCase):
                 clear, reason = self.clear(dict(doc, failures=[]))
                 self.assertTrue(clear, reason)
 
+    def test_a_malformed_recipe_field_refuses_and_never_falls_back(self):
+        # Codex review of W4-10 (P2): `"recipe": null` was silently dropped, so the report counted
+        # as having NO recipe field and the `id`/`name` fallback certified `web` from a check id.
+        # A recipe field that is present but not a declaration is a refusal, never a fallback.
+        for bad in (None, "", "   ", 7, True, [], [None], ["web", 3], {}, {"id": None},
+                    {"ref": "web"}, {"id": ""}):
+            for key in ("recipe", "recipeId", "recipe_id"):
+                with self.subTest(key=key, bad=bad):
+                    doc = {key: bad, "checks": [{"id": "web", "status": "pass"}],
+                           "name": "web", "failures": []}
+                    clear, reason = self.clear(doc)
+                    self.assertFalse(clear, f"{key}={bad!r} fell back to an unrelated identity")
+                    self.assertIn("malformed recipe field", reason)
+        # A malformed field beside a valid one still refuses: the report contradicts itself.
+        clear, reason = self.clear({"recipe": "web", "recipe_id": None, "failures": []})
+        self.assertFalse(clear)
+        self.assertIn("malformed recipe field", reason)
+        # ...and a list of whole ids is a declaration, held to the same every-field rule.
+        self.assertTrue(self.clear({"recipe": ["web"], "failures": []})[0])
+        self.assertFalse(self.clear({"recipe": ["web", "other"], "failures": []})[0])
+
     def test_a_portable_transcript_must_declare_its_recipe_in_a_recipe_field(self):
         # A placement claim that does not say WHICH recipe it binds certifies none.
         doc = {k: v for k, v in GOOD["docker"].items() if k != "recipe"}

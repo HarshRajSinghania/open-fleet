@@ -803,6 +803,53 @@ class TestTheLedgerIsWhereItSays(EgressBase):
         self.assertNotIn("chain intact", self.bare("verify", cwd=self.repo).stdout)
 
 
+class TestANonFileLedgerIsRefusedNeverWaitedOn(EgressBase):
+    """Re-attack of e281e130 (P3): `verify` -- and so the close's `verify --require-receipts` --
+    `head` and `grants` opened the ledger without O_NONBLOCK, so a FIFO at its path blocked them
+    forever (`write` already refused it). A ledger that is not a regular file is fail-closed (3),
+    said, at once: never a hang and never a pass."""
+
+    def test_a_fifo_ledger_is_refused_by_every_reader_at_once(self):
+        self.ledger.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(self.ledger)
+        for args in (("verify",), ("verify", "--require-receipts"), ("verify", "--expect-head", "(empty)"),
+                     ("head",), ("grants",), ("grants", "--json")):
+            with self.subTest(args=args):
+                try:
+                    r = subprocess.run([sys.executable, str(EGRESS), "--ledger", str(self.ledger), *args],
+                                       capture_output=True, text=True, timeout=20)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"egress.py {' '.join(args)} hung on a FIFO ledger")
+                self.assertEqual(r.returncode, egress.EXIT_FAIL_CLOSED, r.stdout + r.stderr)
+                self.assertIn("not a regular file", r.stderr)
+                self.assertNotIn("chain intact", r.stdout + r.stderr)
+
+    def test_the_library_readers_refuse_it_too(self):
+        # merge_queue.py reads the chain through verify_ledger()/load_ledger(), in-process.
+        import threading
+        self.ledger.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(self.ledger)
+        outcome = []
+
+        def read():
+            try:
+                egress.load_ledger(self.ledger)
+                outcome.append("read")
+            except egress.EgressError as err:
+                outcome.append(str(err))
+
+        worker = threading.Thread(target=read, daemon=True)
+        worker.start()
+        worker.join(10)
+        if worker.is_alive():
+            with open(self.ledger, "wb"):  # unblock the stuck open so the suite can go on
+                pass
+            worker.join(5)
+            self.fail("load_ledger() hung on a FIFO ledger")
+        self.assertEqual(len(outcome), 1)
+        self.assertIn("not a regular file", outcome[0])
+
+
 class TestGrantsAnswerOnlyForAVerifiedChain(EgressBase):
     """W5-04: `grants` printed whatever consent the file held without verifying the chain, and a
     consent was any free text."""

@@ -655,7 +655,7 @@ acts. That is the fail-closed design, not a fault to route around, and the proce
 4. *Resume.* The next `write` starts a new chain at genesis; until it does, the close verifies the
    new ledger without `--require-receipts`, and the next close anchors from the new chain's head.
 
-Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, or an anchor missing) · 4 `verify --require-receipts` found no receipts.
+Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, an anchor missing, or a ledger that is not a regular file — a FIFO there is refused at once by every command, never waited on) · 4 `verify --require-receipts` found no receipts.
 
 > Why: the integrity inventory hashes what a run produced, but nothing recorded what it
 > sent — this ledger is the second half. Receipts are content-free (hash + count + kind)

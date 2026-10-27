@@ -461,7 +461,7 @@ def _fsync_dir(directory):
 def _open_for_append(path):
     """(fd, created): the ledger opened read-write for append, never through a symlink. Creates the
     ledger's own directory (0700) when it is missing, and never anything above it."""
-    flags = os.O_RDWR | os.O_APPEND | O_NOFOLLOW | O_CLOEXEC
+    flags = os.O_RDWR | os.O_APPEND | O_NOFOLLOW | O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)  # never waits on a FIFO
     try:
         return os.open(path, flags), False
     except FileNotFoundError:
@@ -552,9 +552,12 @@ def write_receipt(path, sink, host, payload_class, consent, nbytes=0, payload_sh
 
 def load_ledger(path):
     """(exists, receipts, broken_line, reason, lines_read), read under a shared lock so a write in
-    progress is never seen half-done. A missing ledger is an empty chain that does not exist."""
+    progress is never seen half-done. A missing ledger is an empty chain that does not exist.
+    Opened O_NONBLOCK: a FIFO at the ledger's path opens at once and is refused as not a regular
+    file (fail-closed, exit 3), where a blocking open waited forever in `verify`, `head` and
+    `grants` (re-attack of e281e130)."""
     try:
-        fd = os.open(path, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return False, [], None, None, 0
     except OSError as err:

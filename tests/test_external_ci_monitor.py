@@ -4,8 +4,10 @@ import datetime as dt
 import importlib.util
 import io
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -189,6 +191,80 @@ class RestTransport(unittest.TestCase):
         self.assertIsNone(seen[0].get_header('Authorization'))
         self.assertEqual(seen[1].get_header('Authorization'), 'Bearer t0k')
         self.assertTrue(seen[0].full_url.startswith('https://api.github.com/repos/x/y'))
+        # get_header() reads both header maps, so it cannot tell where the token rides. It must
+        # ride the UNREDIRECTED one: urllib copies `headers` onto the request a 3xx makes, to
+        # whatever host the Location names (2026-10-27 audit, W5-08).
+        self.assertNotIn('Authorization', seen[1].headers, 'the token rides a header a redirect re-sends')
+        self.assertEqual(seen[1].unredirected_hdrs.get('Authorization'), 'Bearer t0k')
+
+    def test_the_token_never_follows_a_redirect_and_a_foreign_answer_is_refused(self):
+        seen = {}
+
+        def serve(handler):
+            server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            return server.server_address[1]
+
+        class Elsewhere(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                seen['elsewhere'] = self.headers.get('Authorization')
+                body = b'{"workflow_runs": []}'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        elsewhere = serve(Elsewhere)
+
+        class Redirector(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                seen['api'] = self.headers.get('Authorization')
+                self.send_response(302)
+                self.send_header('Location', f'http://localhost:{elsewhere}/collect')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+
+        api = serve(Redirector)
+        with patch.object(monitor, 'API', f'http://127.0.0.1:{api}'), \
+                patch.dict(monitor.os.environ, {'GITHUB_TOKEN': 'dummy-not-a-real-token'}, clear=True), \
+                self.assertRaises(RuntimeError):
+            monitor.rest_json('repos/x/y')
+        self.assertEqual(seen.get('api'), 'Bearer dummy-not-a-real-token')
+        self.assertIn('elsewhere', seen, 'the redirect was never followed: the test proves nothing')
+        self.assertIsNone(seen['elsewhere'], 'the token followed the redirect to another origin')
+
+    def test_a_body_over_the_cap_is_refused_unread(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        big = json.dumps({'pad': 'x' * 4096}).encode()
+        with patch.object(monitor, 'MAX_BODY', 1024, create=True), \
+                patch.object(monitor.urllib.request, 'urlopen', return_value=Response(big)), \
+                self.assertRaises(RuntimeError):
+            monitor.rest_json('repos/x/y')
+
+    def test_repo_must_be_owner_slash_name_before_it_reaches_a_url(self):
+        for repo in ('a/b?x=y', '../gists', 'a/b/c', 'a/..', '-a/b', 'a/b#c', 'a b/c', 'a/b%2F', 'a'):
+            for transport in ('rest', 'gh'):
+                with self.subTest(repo=repo, transport=transport), \
+                        patch.object(monitor, 'rest_json', return_value={'workflow_runs': []}) as rest, \
+                        patch.object(monitor, 'gh_json', return_value=[]) as gh, \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(monitor.main([f'--repo={repo}', '--transport', transport]), 2)
+                    self.assertEqual(json.loads(output.getvalue())['status'], 'monitor-error')
+                    self.assertEqual((rest.call_count, gh.call_count), (0, 0), 'the repo reached a request')
 
     def test_a_cut_off_response_is_a_monitor_error(self):
         # IncompleteRead is an http.client.HTTPException, not an OSError (PR #574 review).

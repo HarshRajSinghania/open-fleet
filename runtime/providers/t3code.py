@@ -153,7 +153,16 @@ class T3CodeProvider(RuntimeProvider):
         if os.path.exists(path):
             raise ProviderError("worktree_exists", f"t3code: worktree path {path!r} already exists; pass it as --worktree")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._git(["git", "-C", root, "worktree", "add", "-b", branch, path, base or "HEAD"])
+        # As posix.py does (W4-01 sweep): no checkout inside `worktree add`, then the same
+        # `reset --hard --no-recurse-submodules` git runs, IN the new worktree, so the drivers its
+        # config declares there (an `includeIf gitdir:`/`onbranch:` matches only there) are blanked
+        # by the git runner. `--` ends the options: a `-`-leading base is a commit-ish (W2-04).
+        self._git(["git", "-C", root, "worktree", "add", "--no-checkout", "-b", branch, "--", path, base or "HEAD"])
+        try:
+            self._git(["git", "-C", path, "reset", "--hard", "--no-recurse-submodules", "-q"])
+        except ProviderError:
+            self._git(["git", "-C", root, "worktree", "remove", "--force", "--", path])
+            raise
         if not os.path.isdir(path):
             raise ProviderError("worktree_unresolved", f"git worktree add reported success but {path!r} does not exist")
         return {"path": os.path.realpath(path), "branch": branch, "workspaceRoot": root}

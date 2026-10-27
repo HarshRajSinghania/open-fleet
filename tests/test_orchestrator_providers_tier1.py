@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from typing import Any
 
@@ -429,6 +430,118 @@ class TestT3CodeProvider(_Base):
         with self.assertRaises(ProviderError) as ctx:
             self.prov.worker_list()
         self.assertEqual(ctx.exception.code, "t3code_bad_json")
+
+
+# --------------------------------------------------------------------------------------
+# W4-01 class sweep: the adapters' own git
+# --------------------------------------------------------------------------------------
+class TestAdapterGitRunsNothingTheRepoNames(_Base):
+    """W4-01 swept to the external adapters. Their `git` (the dirty check before a removal, the
+    HEAD pin, t3code's worktree cut, worktrunk's merge prediction) runs in the COORDINATOR over a
+    worker's worktree, through the shared runners `run_cli` / `run_cli_text`. A hook, fsmonitor,
+    filter or merge driver planted in the shared `.git/config` or the same-uid `~/.gitconfig` must
+    never run. Each probe only appends its channel name to a marker in this test's temp dir."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ext = importlib.import_module("runtime.providers._external")
+        self.marker = self.tmp / "pwned"
+        self.repo = self.tmp / "repo"
+        self.wt = self.tmp / "wt"
+        clean = {**GIT_ENV, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True, env=clean)
+        (self.repo / "a.txt").write_text("a\n", encoding="utf-8")
+        (self.repo / "README.md").write_text("# r\n", encoding="utf-8")  # selected by the linked-only `inc`
+        subprocess.run(["git", "-C", str(self.repo), "add", "a.txt", "README.md"], check=True, env=clean)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "a"], check=True, env=clean)
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", "-b", "work", str(self.wt)],
+                       check=True, env=clean)
+
+    def probe(self, channel: str, passthrough: bool = True) -> str:
+        return f"sh -c 'echo {channel} >> \"{self.marker}\"" + ("; cat'" if passthrough else "'")
+
+    def hooks_dir(self, name: str) -> Path:
+        hooks = self.tmp / name
+        hooks.mkdir()
+        for hook in ("post-checkout", "reference-transaction", "post-index-change"):
+            (hooks / hook).write_text(f'#!/bin/sh\necho hook-{hook} >> "{self.marker}"\n', encoding="utf-8")
+            (hooks / hook).chmod(0o755)
+        return hooks
+
+    def config_file(self, name: str, pairs: tuple[tuple[str, str], ...]) -> Path:
+        path = self.tmp / name
+        for key, value in pairs:
+            subprocess.run(["git", "config", "-f", str(path), key, value], check=True, cwd=self.tmp)
+        return path
+
+    def plant(self) -> None:
+        """What a worker does from its own worktree; the test runs no bare git on the repo after."""
+        inc = self.config_file("linked-only.gitconfig", (("filter.inc.smudge", self.probe("inc-smudge")),
+                                                         ("filter.inc.clean", self.probe("inc-clean"))))
+        for key, value in (("core.hooksPath", str(self.hooks_dir("evilhooks"))),
+                           ("core.fsmonitor", self.probe("fsmonitor", passthrough=False)),
+                           ("filter.evil.smudge", self.probe("smudge")),
+                           ("filter.evil.clean", self.probe("clean")),
+                           ("merge.evil.driver", self.probe("merge-driver", passthrough=False)),
+                           ("includeIf.gitdir:**/worktrees/**.path", str(inc))):
+            subprocess.run(["git", "-C", str(self.repo), "config", key, value], check=True)
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text(
+            "* filter=evil merge=evil\nREADME.md filter=inc\n", encoding="utf-8")
+
+    def fired(self) -> list[str]:
+        return sorted(set(self.marker.read_text().split())) if self.marker.exists() else []
+
+    def text_runner(self, argv: list[str]) -> str:
+        return self.ext.run_cli_text(argv, "adapter")
+
+    def test_the_dirty_check_and_head_pin_run_no_planted_command(self) -> None:
+        self.plant()
+        later = os.path.getmtime(self.wt / "a.txt") + 5
+        os.utime(self.wt / "a.txt", (later, later))  # stat changed: the status refresh re-reads it
+        (self.wt / "new.txt").write_text("unsaved\n", encoding="utf-8")
+        self.assertEqual(self.ext.foreign_dirty_paths(self.text_runner, str(self.wt)), ["new.txt"])
+        pinned = self.ext.preserve_worker_head(self.text_runner, str(self.wt), "disp-1")
+        self.assertEqual(pinned["ref"], "refs/open-fleet/preserved/disp-1")
+        out = self.ext.run_cli(["git", "-C", str(self.wt), "status", "--porcelain"], provider="git")
+        self.assertIn("new.txt", out["stdout"])
+        self.assertEqual(self.fired(), [], "an adapter's git ran a repo-planted command")
+
+    def test_t3code_cuts_its_worktree_without_running_a_planted_command(self) -> None:
+        self.plant()
+        tools = ToolScript({"t3_project_read": mcp({"id": "p-1", "title": "p", "workspaceRoot": str(self.repo)})})
+        env = {"OPEN_FLEET_T3_PROJECT_ID": "p-1", "OPEN_FLEET_T3_WORKTREE_ROOT": str(self.tmp / "t3-wts")}
+        prov = t3code.T3CodeProvider(state=self.state, runner=tools, env=env)
+        cut = prov._cut_worktree("t3-cut", None)
+        self.assertEqual(self.fired(), [], "t3code's worktree cut ran a repo-planted command")
+        self.assertEqual(Path(cut["path"], "a.txt").read_text(encoding="utf-8"), "a\n", "checked out raw")
+        # W2-04: the base is a commit-ish after `--`, never an option.
+        with self.assertRaises(ProviderError):
+            prov._cut_worktree("t3-dash", "--force")
+        self.assertFalse((self.tmp / "t3-wts" / "t3-dash" / "a.txt").exists())
+
+    def test_worktrunk_merge_prediction_runs_no_planted_merge_driver(self) -> None:
+        clean = {**GIT_ENV, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        for where, body in ((self.wt, "work side\n"), (self.repo, "main side\n")):
+            (where / "a.txt").write_text(body, encoding="utf-8")
+            subprocess.run(["git", "-C", str(where), "commit", "-qam", "edit"], check=True, env=clean)
+        self.plant()
+        worktrunk = importlib.import_module("runtime.providers.worktrunk")
+        prov = worktrunk.WorktrunkProvider(state=self.state)
+        conflicted = prov._predict_conflicts({"path": str(self.wt), "raw": {}}, "work", "main")
+        self.assertTrue(conflicted, "a driver that runs nothing leaves the 3-way merge conflicted")
+        self.assertEqual(self.fired(), [], "worktrunk's merge-tree ran a repo-planted merge driver")
+
+    def test_the_same_uid_global_config_is_never_read(self) -> None:
+        glob = self.config_file("worker-written.gitconfig", (
+            ("core.hooksPath", str(self.hooks_dir("globalhooks"))),
+            ("core.fsmonitor", self.probe("global-fsmonitor", passthrough=False))))
+        later = os.path.getmtime(self.wt / "a.txt") + 5
+        os.utime(self.wt / "a.txt", (later, later))
+        with unittest.mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(glob)}):
+            self.ext.foreign_dirty_paths(self.text_runner, str(self.wt))
+            self.ext.preserve_worker_head(self.text_runner, str(self.wt), "disp-2")
+        self.assertEqual(self.fired(), [], "an adapter's git read the worker-writable global config")
 
 
 if __name__ == "__main__":

@@ -27,7 +27,28 @@ from typing import Callable
 
 from .base import ProviderError, fence_state, normalize_show, parse_json_strict
 from .local_state import LocalStateStore
-from .posix import HOOK_ARTIFACTS
+from .posix import HOOK_ARTIFACTS, gitexec
+
+# Subcommands that can run an attribute-selected driver: a clean filter on an index refresh
+# (`status`, `worktree remove`'s clean check), a smudge filter on a checkout, a merge driver on a
+# 3-way merge (`merge-tree`). Their drivers are blanked where they run (W4-01 sweep).
+_CONTENT_GIT = frozenset({"status", "worktree", "reset", "checkout", "merge-tree", "diff", "add",
+                          "stash", "merge", "read-tree", "update-index"})
+
+
+def _git_launch(argv: list[str], env: dict[str, str] | None) -> tuple[list[str], dict[str, str] | None, dict[str, Any]]:
+    """`(argv, env, stdin kwargs)` to launch one upstream command. A `git` an adapter runs is
+    COORDINATOR-side git over a worker's worktree — the shared `.git/config`, its `.gitattributes`,
+    the same-uid `~/.gitconfig` — so it launches the way posix.py launches one (W4-01 sweep):
+    gitexec.py's absolute git and floor, stdin closed, and for a content-materialising subcommand
+    every driver the config declares where it runs (`-C <dir>`) blanked. Anything else passes as is.
+    GitAbsent (git missing at import) and DriverQueryFailed (an unreadable config) are OSErrors."""
+    if not argv or argv[0] != "git":
+        return argv, env, {}
+    blanks: list[tuple[str, str]] = []
+    if len(argv) > 3 and argv[1] == "-C" and argv[3] in _CONTENT_GIT:
+        blanks = gitexec.driver_blanks(argv[2])
+    return gitexec.argv(*argv[1:]), gitexec.env(env, blanks=blanks), {"stdin": subprocess.DEVNULL}
 
 # Files `posix.install_worktree_hooks` writes into a worktree: dirt limited to these paths is
 # ours, not the worker's, and never blocks a cleanup that has already preserved HEAD.
@@ -49,13 +70,16 @@ def real_worktree(path: Any) -> str | None:
 def run_cli(argv: list[str], *, provider: str, timeout: float = 60, cwd: str | None = None) -> dict[str, Any]:
     """Run an upstream CLI; every failure mode is a ProviderError (never a silent success)."""
     try:
+        launch, env, stdin = _git_launch(argv, None)
         proc = subprocess.run(
-            argv, capture_output=True, text=True, check=False, timeout=timeout, cwd=cwd
+            launch, capture_output=True, text=True, check=False, timeout=timeout, cwd=cwd, env=env, **stdin
         )
     except FileNotFoundError as exc:
         raise ProviderError(f"{provider}_cli_missing", f"{argv[0]!r} not found on PATH", {"argv": argv}) from exc
     except subprocess.TimeoutExpired as exc:
         raise ProviderError(f"{provider}_timeout", f"{argv[0]} timed out after {timeout}s", {"argv": argv}) from exc
+    except OSError as exc:
+        raise ProviderError(f"{provider}_cli_error", f"{argv[0]} could not be launched: {exc}", {"argv": argv}) from exc
     if proc.returncode != 0:
         raise ProviderError(
             f"{provider}_cli_error",
@@ -294,14 +318,15 @@ def run_cli_text(
 ) -> str:
     """Run an upstream CLI; any launch failure, timeout, or non-zero exit is a ProviderError."""
     try:
+        launch, env, stdin = _git_launch(argv, env)
         proc = subprocess.run(
-            argv,
+            launch,
             capture_output=True,
             text=True,
             check=False,
             timeout=timeout,
             env=env,
-            input=input,
+            **({"input": input} if input is not None else stdin),
         )
     except FileNotFoundError as exc:
         raise ProviderError(f"{provider}_cli_missing", f"{argv[0]!r} is not installed or not on PATH", {"argv": argv}) from exc

@@ -797,7 +797,7 @@ def _publisher_steps(name):
 
 
 def _named_step(steps, title):
-    found = [s for s in steps if _step_name(s) == title]
+    found = [s for s in steps if _step_name(s).strip("\"'") == title]
     return found[0] if len(found) == 1 else None
 
 
@@ -970,6 +970,115 @@ class TheDistIndexIsExactlyTheBundle(unittest.TestCase):
         r, _ = self._stage(files)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("skills/m/gone.md", r.stdout)
+
+
+def _run_with_stub(script, env, cwd, stub_name, stub_body):
+    """Run a step script under `bash -e` with a stub command FIRST on PATH (nothing prepended,
+    unlike _bash), returning (result, the stub's argv log)."""
+    with tempfile.TemporaryDirectory() as bin_dir:
+        log = Path(bin_dir) / "argv.log"
+        stub = Path(bin_dir) / stub_name
+        stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_LOG\"\n" + stub_body,
+                        encoding="utf-8")
+        stub.chmod(0o755)
+        full = {**os.environ, **env, "STUB_LOG": str(log),
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+        r = subprocess.run(["bash", "-e", "-c", script], env=full, cwd=cwd,
+                           capture_output=True, text=True, timeout=60)
+        return r, (log.read_text(encoding="utf-8").splitlines() if log.is_file() else [])
+
+
+class TheCoverageFloorReadsOnlyTheShardsOwnFiles(unittest.TestCase):
+    """2026-10-27 security audit, W6-02: each shard uploaded `.coverage.*` from the checkout root
+    (the PR's tree) with hidden files included, and gates combined whatever landed in its own
+    checkout root, so a test that saved a padded data file as `./.coverage.pad` lifted the D9
+    floor. The shard's data now goes to the runner's temp dir, is renamed to one exact name per
+    shard and uploaded alone, and gates combines exactly those six files from a directory of
+    its own. Residual, by construction: the PR's tests run inside the measured process, so the
+    numbers are still the PR's own report of itself."""
+
+    TEXT = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+    SHARDS = ("1", "2", "3", "4", "5", "6")
+
+    def _step(self, job, title):
+        step = _named_step(_steps(_jobs(self.TEXT)[job]), title)
+        self.assertIsNotNone(step, f"validate.yml {job}: no step {title!r}")
+        return step
+
+    @staticmethod
+    def _with(step, key):
+        values = [m.group(1) for ln in step if (m := re.match(rf"^\s+{key}:\s*(.*?)\s*$", ln))]
+        return values[0] if values else None
+
+    def test_the_shard_writes_its_data_outside_the_checkout(self):
+        script = _step_script(self._step("tests", "Run suite shard without Gitleaks"))
+        export = script.find('export COVERAGE_FILE="$RUNNER_TEMP/coverage-data/shard"')
+        self.assertGreaterEqual(export, 0, "the shard's data file is not redirected")
+        self.assertLess(export, script.find("shard-tests.py"))
+
+    def test_one_exact_file_is_uploaded(self):
+        step = self._step("tests", "Upload the shard coverage data")
+        path = self._with(step, "path")
+        self.assertEqual(path, "${{ runner.temp }}/coverage-upload/"
+                               "coverage-shard-${{ matrix.shard }}.data")
+        self.assertNotRegex(path.replace("${{ runner.temp }}", "")
+                                .replace("${{ matrix.shard }}", ""), r"[*?\[]")
+        self.assertNotIn("include-hidden-files", self.TEXT)
+
+    def test_the_shard_names_exactly_one_data_file(self):
+        script = _step_script(self._step("tests", "Name the shard's one coverage data file"))
+        for written, ok in ((["shard.host.123.abc"], True), ([], False),
+                            (["shard.host.1.a", "shard.host.2.b"], False)):
+            with self.subTest(written=written), tempfile.TemporaryDirectory() as tmp:
+                data = Path(tmp) / "coverage-data"
+                data.mkdir()
+                for name in written:
+                    (data / name).write_text(name, encoding="utf-8")
+                r = _bash(script, {"RUNNER_TEMP": tmp, "SHARD": "3"}, cwd=tmp)
+                uploaded = Path(tmp) / "coverage-upload" / "coverage-shard-3.data"
+                self.assertEqual(r.returncode == 0, ok, r.stdout + r.stderr)
+                if ok:
+                    self.assertEqual(uploaded.read_text(encoding="utf-8"), written[0])
+                else:
+                    self.assertIn("::error::", r.stdout)
+                    self.assertFalse(uploaded.exists())
+
+    def test_gates_downloads_into_a_directory_of_its_own(self):
+        step = self._step("gates", "Download the shard coverage data")
+        self.assertEqual(self._with(step, "path"), "${{ runner.temp }}/coverage-shards")
+        self.assertEqual(self._with(step, "pattern"), "coverage-shard-*")
+
+    def _floor(self, downloaded, planted_in_tree=()):
+        script = _step_script(self._step(
+            "gates", "Coverage floor (D9: line >= 80% on scripts + runtime/scripts)"))
+        with tempfile.TemporaryDirectory() as tmp:
+            shards, tree = Path(tmp) / "coverage-shards", Path(tmp) / "tree"
+            shards.mkdir()
+            tree.mkdir()
+            for name in downloaded:
+                (shards / name).write_text("data", encoding="utf-8")
+            for name in planted_in_tree:
+                (tree / name).write_text("padded", encoding="utf-8")
+            r, calls = _run_with_stub(script, {"RUNNER_TEMP": tmp}, tree, "coverage", "exit 0\n")
+            return r, calls, tmp
+
+    def test_the_floor_combines_exactly_the_six_shard_files(self):
+        names = [f"coverage-shard-{n}.data" for n in self.SHARDS]
+        r, calls, tmp = self._floor(names, planted_in_tree=(".coverage.pad", ".coverage"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len(calls), 2, calls)
+        self.assertEqual(calls[0].split(), ["combine"] + [f"{tmp}/coverage-shards/{n}"
+                                                          for n in names])
+        self.assertEqual(calls[1].split(), ["report"])
+
+    def test_a_missing_or_extra_data_file_fails_before_anything_is_combined(self):
+        names = [f"coverage-shard-{n}.data" for n in self.SHARDS]
+        for downloaded in (names[:5], names + [".coverage.pad"], names + ["coverage-shard-7.data"]):
+            with self.subTest(downloaded=downloaded):
+                r, calls, _ = self._floor(downloaded)
+                self.assertNotEqual(r.returncode, 0, "the floor ran on the wrong data files")
+                self.assertIn("::error::", r.stdout)
+                self.assertEqual(calls, [])
 
 
 class TheNegativeControlDiagnosticIsReachable(unittest.TestCase):

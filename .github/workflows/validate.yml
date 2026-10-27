@@ -65,21 +65,36 @@ jobs:
             echo "::error::the scanner-absent test environment unexpectedly contains Gitleaks"
             exit 1
           fi
+          # The data file goes to the runner's temp dir, not the PR's tree (2026-10-27 security
+          # audit, W6-02): a `.coverage.*` glob over the checkout uploaded any data file a test
+          # saved there, and the combine in gates read it.
+          mkdir -p "$RUNNER_TEMP/coverage-data"
+          export COVERAGE_FILE="$RUNNER_TEMP/coverage-data/shard"
           python3 scripts/shard-tests.py --shard "$SHARD" --of 6 --with-coverage
+      - name: Name the shard's one coverage data file
+        # --parallel-mode writes shard.<host>.<pid>.<random>; exactly one process ran under the
+        # tracer, so exactly one file is expected, and it is uploaded under one exact name.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=("$RUNNER_TEMP"/coverage-data/shard.*)
+          if [ "${#found[@]}" -ne 1 ]; then
+            echo "::error::shard $SHARD left ${#found[@]} coverage data files, not one; the D9 floor reads exactly one per shard"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/coverage-upload"
+          mv "${found[0]}" "$RUNNER_TEMP/coverage-upload/coverage-shard-$SHARD.data"
       - name: Upload the shard coverage data
-        # One .coverage.<host>.<pid>.<random> per shard (--parallel-mode);
-        # gates downloads all six and combines before the D9 report. No
-        # if:always: a red shard uploads nothing; gates still runs and its
-        # first step fails on the red need, so the combine never runs short.
-        # include-hidden-files: dotfiles are EXCLUDED by default, and every
-        # parallel-mode data file is one — without it the upload finds
-        # nothing and fails the shard (PR #480, first CI run).
+        # gates downloads all six and combines before the D9 report. No if:always: a red shard
+        # uploads nothing; gates still runs and its first step fails on the red need, so the
+        # combine never runs short. One exact file, no glob and no hidden files (W6-02).
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0 (Node 24, #367; v4/v5 are Node 20, gone from runners 2026-09-23)
         with:
           name: coverage-shard-${{ matrix.shard }}
-          path: .coverage.*
+          path: ${{ runner.temp }}/coverage-upload/coverage-shard-${{ matrix.shard }}.data
           if-no-files-found: error
-          include-hidden-files: true
           retention-days: 1
   floor:
     # #514: the Python floor is a measured claim, not an installer setting. The sharded `tests`
@@ -321,12 +336,13 @@ jobs:
             -r .github/ci-tools.lock
           coverage --version
       - name: Download the shard coverage data
-        # merge-multiple: all six coverage-shard-* artifacts land in the
-        # checkout root, where `coverage combine` below expects them.
+        # merge-multiple: all six coverage-shard-* artifacts land in a directory of their own,
+        # outside the checkout (W6-02): the PR's tree holds no data file the floor reads.
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0 (Node 24, #367; v4-v6 are Node 20, gone from runners 2026-09-23)
         with:
           pattern: coverage-shard-*
           merge-multiple: true
+          path: ${{ runner.temp }}/coverage-shards
       - name: "Coverage floor (D9: line >= 80% on scripts + runtime/scripts)"
         # CONSTRAINTS.md D9, wired by the floor-it WIRE phase: the six matrix
         # jobs each traced their own shard (one parallel-mode data file per
@@ -337,10 +353,25 @@ jobs:
         # hashed lock (#301), not re-resolved here. gates NEEDS the
         # matrix and its first step fails on a red shard, so this step never
         # runs on partial data: the failed need — not a missing data file —
-        # is what fails gates and blocks the merge.
+        # is what fails gates and blocks the merge. It combines exactly the six named shard
+        # files, refusing a missing or an extra one, into a data file outside the checkout
+        # (W6-02). Residual: the PR's tests run inside the measured process, so the numbers are
+        # still the PR's own report of itself.
         run: |
           set -euo pipefail
-          coverage combine
+          dir="$RUNNER_TEMP/coverage-shards"
+          want="$(printf 'coverage-shard-%s.data\n' 1 2 3 4 5 6)"
+          have="$(ls -A "$dir" | LC_ALL=C sort)"
+          if [ "$have" != "$want" ]; then
+            echo "::error::the D9 floor reads exactly the six shard data files; $dir holds: $(printf '%s ' $have)"
+            exit 1
+          fi
+          files=()
+          for n in 1 2 3 4 5 6; do
+            files+=("$dir/coverage-shard-$n.data")
+          done
+          export COVERAGE_FILE="$RUNNER_TEMP/coverage-combined"
+          coverage combine "${files[@]}"
           coverage report
   vfbench:
     runs-on: ubuntu-latest

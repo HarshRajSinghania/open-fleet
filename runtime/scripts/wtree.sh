@@ -58,14 +58,14 @@ if [ "${1:-}" = "predict-merge" ]; then
   _BASE="$2"
   _BRANCH="$3"
   _REPO="${4:-.}"
-  exec python3 "$(dirname -- "$0")/diff_scope.py" --repo "$_REPO" --predict-merge "$_BASE" "$_BRANCH"
+  exec python3 -I "$(dirname -- "$0")/diff_scope.py" --repo "$_REPO" --predict-merge "$_BASE" "$_BRANCH"
 fi
 if [ "${2:-}" = "predict-merge" ]; then
   if [ $# -lt 4 ]; then
     echo "usage: wtree.sh <repo-dir> predict-merge <base> <branch>" >&2
     exit 2
   fi
-  exec python3 "$(dirname -- "$0")/diff_scope.py" --repo "$1" --predict-merge "$3" "$4"
+  exec python3 -I "$(dirname -- "$0")/diff_scope.py" --repo "$1" --predict-merge "$3" "$4"
 fi
 
 # #629: this script runs git over a repo it does not own (evidence-run.py, verify.py predict-merge

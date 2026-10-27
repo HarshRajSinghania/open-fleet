@@ -573,6 +573,24 @@ class PredictMergeContract(ScopeBase):
         self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout, head)
         self.assertEqual(git(self.repo, "status", "--porcelain").stdout, status)
 
+    def test_the_wtree_entry_runs_diff_scope_isolated(self):
+        # W4-13 class: `wtree.sh predict-merge` exec'd a plain `python3`, which honours PYTHONPATH,
+        # so a planted sitecustomize.py (run at startup) or json.py (shadowing the stdlib diff_scope
+        # imports) ran in the coordinator. `-I` ignores PYTHONPATH and the user site.
+        plant = Path(self.tmp) / "plant"
+        plant.mkdir()
+        marker = Path(self.tmp) / "pwned"
+        for mod in ("sitecustomize", "usercustomize", "json"):
+            (plant / f"{mod}.py").write_text(f"open({str(marker)!r}, 'a').write('{mod} ')\n", encoding="utf-8")
+        wtree = ROOT / "runtime" / "scripts" / "wtree.sh"
+        for argv in (["sh", str(wtree), "predict-merge", "main", "clean", str(self.repo)],
+                     ["sh", str(wtree), str(self.repo), "predict-merge", "main", "clean"]):
+            with self.subTest(argv=argv[2:4]):
+                r = subprocess.run(argv, cwd=plant, capture_output=True, text=True, timeout=120,
+                                   env={**os.environ, "PYTHONPATH": f"{plant}{os.pathsep}."})
+                self.assertFalse(marker.exists(), f"planted modules ran: {marker.read_text() if marker.exists() else ''}")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_unknown_ref_is_no_base_not_a_conflict(self):
         for refs in (("no-such-base", "work"), ("main", "no-such-branch")):
             with self.subTest(refs=refs):

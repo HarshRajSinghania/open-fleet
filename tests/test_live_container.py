@@ -1596,6 +1596,34 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         self.assertLessEqual(len(lines), min(bound, n / 4), f"{n} resets wrote {len(lines)} ledger lines")
         self.assertGreaterEqual(counted(events[-1]), n, f"the resets are not all counted on the ledger's last line: {events[-1]}")
 
+    def test_refusals_cannot_flood_the_ledger_and_are_all_counted(self):
+        # Pre-existing on main, the same class as the fault flood: every refusal was one fsynced
+        # line quoting what the client sent, twice (a model name in `why` and in `model`), so 20
+        # requests naming an 8 MiB model wrote 335 MB to the operator's disk in seconds. A refusal's
+        # text is bounded, refusals are counted per kind and written like drops, and the receipt's
+        # `refused` is the count, not the number of lines.
+        self.broker()
+        n_body, n_path, started = 10, 100, time.monotonic()
+        big = {**self.body(), "model": "m" * (1 << 20)}
+        for _ in range(n_body):
+            self.assertEqual(self.post(doc=big)[0], 400)
+        for i in range(n_path):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request("GET", f"/{i}" + "x" * 4000)
+            self.assertEqual(conn.getresponse().status, 403)
+            conn.close()
+        refused = lambda e: sum((e.get("refused") or {}).values())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and refused(self.events()[-1]) < n_body + n_path:
+            time.sleep(0.05)
+        self.assertLess(self.ledger_path.stat().st_size, 64 << 10, "refusals copied what the client sent into the ledger")
+        events = self.events()
+        lines = [e for e in events if e["event"] in ("refuse", "tally")]
+        bound = 2 * ((time.monotonic() - started) / lb.DROP_RECORD_S + 1)  # two kinds: terms, path
+        self.assertLessEqual(len(lines), min(bound, 20), f"{n_body + n_path} refusals wrote {len(lines)} lines")
+        self.assertEqual(refused(events[-1]), n_body + n_path)
+        self.assertEqual(lc.spend(self.ledger_path)["refused"], n_body + n_path, "the receipt miscounts refusals")
+
     def test_a_body_whose_fields_have_the_wrong_type_is_refused_not_crashed_on(self):
         self.broker()
         for extra in ({"context_management": "x"}, {"inference_geo": ["us"]}):

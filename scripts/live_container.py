@@ -478,8 +478,14 @@ def spend(ledger):
     settles = {e.get("call"): e for e in events if e.get("event") == "settle"}
     opened = next((e for e in events if e.get("event") == "open"), {})
     unsettled = [c for c in starts if c not in settles]
+    # The broker counts refusals per kind and writes one line per kind at most once a second, the
+    # counts riding every line: the last count is the number refused (a ledger from before counts
+    # one line per refusal).
+    tallies = [e["refused"] for e in events if isinstance(e.get("refused"), dict)]
+    refused = (sum(n for n in tallies[-1].values() if isinstance(n, int)) if tallies
+               else sum(1 for e in events if e.get("event") == "refuse"))
     return {"ledger": str(ledger), "read": True, "cap_usd": opened.get("cap_usd"), "calls": len(starts),
-            "refused": sum(1 for e in events if e.get("event") == "refuse"),
+            "refused": refused,
             "settled_usd": round(sum(e.get("cost_usd") or 0 for e in settles.values()), 6),
             "unsettled_calls": len(unsettled),
             "unsettled_reserved_usd": round(sum(starts[c].get("reserved_usd") or 0 for c in unsettled), 6)}

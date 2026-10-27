@@ -56,8 +56,10 @@ server-side compaction, a service tier, and an inference geography other than gl
 refused: each is billed beyond what the body's bytes bound. A call that names no geography
 reserves at the US premium, and every call settles at the geography the API reports.
 
-The ledger (--ledger, appended, mode 0600) is one JSON line per event: open, start, settle and
-refuse. It never holds the token, a request or a response. The launcher reads it after both
+The ledger (--ledger, appended, mode 0600) is one JSON line per event: open, start, settle,
+refuse, free, drop, fault and tally (refusals, drops and faults counted per kind and written at
+most once a DROP_RECORD_S per kind, their text bounded). It never holds the token, a request or a
+response. The launcher reads it after both
 containers are destroyed, into the receipt.
 """
 from __future__ import annotations
@@ -131,6 +133,13 @@ DROP_BACK = {"content-length", "transfer-encoding", "connection", "keep-alive", 
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def short(value, limit=100):
+    """`value` for a ledger line: a string cut to `limit` characters, anything else by its type."""
+    if value is None or (isinstance(value, str) and len(value) <= limit):
+        return value
+    return f"{value[:limit]}… ({len(value)} chars)" if isinstance(value, str) else f"<{type(value).__name__}>"
 
 
 def model_key(model):
@@ -273,7 +282,7 @@ class Ledger:
     def __init__(self, path, cap_usd):
         self.cap, self.settled, self.inflight, self.n = cap_usd, 0.0, {}, 0
         self.free_calls = self.free_bytes = 0
-        self.dropped, self.faults, self.written, self.catch_up = {}, {}, {}, None
+        self.dropped, self.faults, self.refused, self.written, self.catch_up = {}, {}, {}, {}, None
         self.lock = threading.Lock()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         self.fh = os.fdopen(fd, "a", encoding="utf-8")
@@ -287,6 +296,8 @@ class Ledger:
             tally["dropped"] = dict(self.dropped)
         if self.faults:
             tally["faults"] = dict(self.faults)
+        if self.refused:
+            tally["refused"] = dict(self.refused)
         self.fh.write(json.dumps({"at": now(), **entry, **tally}, sort_keys=True) + "\n")
         self.fh.flush()
         os.fsync(self.fh.fileno())
@@ -296,8 +307,7 @@ class Ledger:
         is not unbounded, and what was used is on the record."""
         with self.lock:
             if self.free_calls + 1 > FREE_CALLS_MAX or self.free_bytes + nbytes > FREE_BYTES_MAX:
-                self.write({"event": "refuse", "model": None,
-                            "why": f"the count_tokens bound ({FREE_CALLS_MAX} calls, {FREE_BYTES_MAX} bytes)"})
+                self._refuse("count_tokens", f"the count_tokens bound ({FREE_CALLS_MAX} calls, {FREE_BYTES_MAX} bytes)")
                 return False
             self.free_calls += 1
             self.free_bytes += nbytes
@@ -353,17 +363,27 @@ class Ledger:
         with self.lock:
             committed = self.settled + sum(self.inflight.values())
             if committed + usd > self.cap:
-                self.write({"event": "refuse", "model": model, "reserved_usd": round(usd, 6),
-                            "committed_usd": round(committed, 6), "why": "the cap"})
+                self._refuse("cap", "the cap", model, reserved_usd=round(usd, 6), committed_usd=round(committed, 6))
                 return None
             self.n += 1
             self.inflight[self.n] = usd
             self.write({"event": "start", "call": self.n, "model": model, "reserved_usd": round(usd, 6)})
             return self.n
 
-    def refuse(self, why, model=None):
+    def refuse(self, kind, why, model=None):
         with self.lock:
-            self.write({"event": "refuse", "model": model, "why": why})
+            self._refuse(kind, why, model)
+
+    def _refuse(self, kind, why, model=None, **detail):
+        """A refusal of `kind` (path, terms, cap, count_tokens), counted, and written like a drop:
+        the first, then at most one a DROP_RECORD_S per kind, the counts riding every line. Its text
+        is bounded, since `why` and `model` quote what the client sent: a refusal was one fsynced
+        line holding a model name twice, so 20 requests naming an 8 MiB model wrote 335 MB to the
+        operator's disk (2026-10-27 re-attack of 4b24dfde, beside W5-16/W5-17). Lock held."""
+        self.refused[kind] = self.refused.get(kind, 0) + 1
+        if self._due(("refuse", kind)):
+            self.write({"event": "refuse", "kind": kind, "model": short(model), "why": short(why, 300), **detail,
+                        "count": self.refused[kind]})
 
     def settle(self, call, usd, status, usage, complete):
         """Release the call's reservation and settle `usd`, or the whole reservation when None."""
@@ -450,7 +470,7 @@ class Broker(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
-        self.ledger.refuse(f"GET {urllib.parse.urlsplit(self.path).path}")
+        self.ledger.refuse("path", f"GET {urllib.parse.urlsplit(self.path).path}")
         self.fail(403, "permission_error", "only POST /v1/messages and /v1/messages/count_tokens are forwarded")
 
     def do_POST(self):
@@ -458,7 +478,7 @@ class Broker(BaseHTTPRequestHandler):
         path = target.path
         self.target = path + (f"?{target.query}" if target.query else "")  # what is forwarded: never a host
         if path not in (PRICED_PATH, FREE_PATH):
-            self.ledger.refuse(f"POST {path}")
+            self.ledger.refuse("path", f"POST {path}")
             return self.fail(403, "permission_error", "only POST /v1/messages and /v1/messages/count_tokens are forwarded")
         try:
             length = int(self.headers.get("Content-Length", ""))
@@ -488,7 +508,7 @@ class Broker(BaseHTTPRequestHandler):
         why, mult, images = terms(doc)
         model = doc.get("model") if isinstance(doc, dict) else None
         if why:
-            self.ledger.refuse(why, model)
+            self.ledger.refuse("terms", why, model)
             return self.fail(400, "invalid_request_error", why)
         call = self.ledger.reserve(model, reservation(len(body), doc["max_tokens"], model, mult, images))
         if call is None:

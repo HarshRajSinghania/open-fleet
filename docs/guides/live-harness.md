@@ -89,8 +89,10 @@ The launcher starts both containers with these properties:
   `trajectories` must also name an `--out`, and `first_run` a `--workdir`, because each one's
   default is a temp dir that dies with the container;
 - the broker writes its ledger beside the receipt, out of the arm's reach: one JSON line when it
-  opens, and one for each call it starts, settles or refuses. It never holds the token, a request
-  or a response. Its container keeps no log, so a fault in the broker is a `fault` line here (the
+  opens, one for each call it starts and settles, and a counted `refuse` line per kind of refusal
+  (path, terms, cap, count_tokens) at most once a second, its text cut short, since it quotes what
+  the arm sent; the receipt's `refused` is the count. It never holds the token, a request or a
+  response. Its container keeps no log, so a fault in the broker is a `fault` line here (the
   exception's type and frames only), and a call whose usage it cannot price settles its whole
   reservation. `count_tokens` is free but bounded (5,000 calls, 2 GiB of bodies per launch), with
   a running tally every 100 calls and on every later line. A connection that sends nothing is cut

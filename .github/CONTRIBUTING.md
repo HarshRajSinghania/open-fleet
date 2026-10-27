@@ -4,7 +4,7 @@ Contributions are welcome — and this repo is unusually opinionated about what 
 this page before opening a PR; it will save us both a review round.
 
 For clone/setup commands, a file map and the local test workflow, start with the
-[development guide](docs/development.md). You can edit docs and run catalog checks without a
+[development guide](../docs/development.md). You can edit docs and run catalog checks without a
 live Orca runtime. Use this page for the contracts your contribution must preserve.
 
 ## The one rule that decides everything else
@@ -26,7 +26,7 @@ fails the build if you try.
 ## Adding a mission
 
 New missions must clear the **mission-identity test** (see
-[ARCHITECTURE.md](ARCHITECTURE.md)): your workflow is a new mission only if it differs from every
+[ARCHITECTURE.md](../ARCHITECTURE.md)): your workflow is a new mission only if it differs from every
 existing mission in at least one of — unit of work, per-unit state machine, convergence proof,
 ordering/isolation constraints, parking/failure semantics, the oracle its proof binds to. If it shares all six with an existing
 mission, it is a *source* or an *adaptation* of that mission, not a new one. Argue the test
@@ -77,9 +77,9 @@ A mission PR must include:
    `"narration_only": true`, is graded on its trace alone, and the set of those is frozen in the
    same test. Nothing in `evals/` is proof evidence; it asks whether the mission's *text* steers an
    agent, and only a run report moves `metadata.proof`.
-3. An entry in the README mission table and in [AGENTS.md](AGENTS.md)'s intent → mission mapping.
+3. An entry in the README mission table and in [AGENTS.md](../AGENTS.md)'s intent → mission mapping.
 4. A guide at `docs/missions/<name>.md` following the structure of
-   [docs/missions/ship-it.md](docs/missions/ship-it.md). The guide embeds the mission's contract
+   [docs/missions/ship-it.md](../docs/missions/ship-it.md). The guide embeds the mission's contract
    card from `assets/diagrams/missions/<name>.jpg` (dark) and `<name>-light.jpg`, rendered from a
    spec in `assets/diagrams/generator/specs_missions.py` — a test holds guides and assets to parity
    in both directions.
@@ -88,7 +88,7 @@ A mission PR must include:
 6. An activation-load budget in `scripts/mission-load-budgets.json` (`scripts/validate.py` fails a
    mission without one and suggests the number), the mission name among
    `.claude-plugin/plugin.json`'s `keywords`, and a row in
-   [docs/getting-started.md](docs/getting-started.md)'s tooling table
+   [docs/getting-started.md](../docs/getting-started.md)'s tooling table
    (`tests/test_doctrine_consistency.py`).
 
 Naming: outcome verbs (`ship-it`, `clean-sweep`), never vendors or techniques. The contract
@@ -136,22 +136,22 @@ fail-closed exits documented in the header comment.
 - Write for a developer completing a task: name the inputs, show the command or prompt,
   explain the expected result, and link the next step. Identify whether the example runs
   in the catalog clone, the target project or the coding-agent session.
-- Link new human guides from the [documentation index](docs/README.md) and the relevant
+- Link new human guides from the [documentation index](../docs/README.md) and the relevant
   entry point. Check file destinations and section anchors; preview tables and diagrams.
 - Keep generated callouts and historical run artifacts faithful to their source. Use
-  [the generator commands](docs/development.md#generated-content) for computed values.
+  [the generator commands](../docs/development.md#generated-content) for computed values.
 
 ## Bookkeeping files: add yours, never edit a shared one
 
 Four records used to take a line from every PR, so with strict up-to-date branches every merge
 put every other open PR into conflict. Each is now one file per change, which only your PR
-touches; the release cut ([ops guide](docs/ops.md#release-cut)) folds them in.
+touches; the release cut ([ops guide](../docs/ops.md#release-cut)) folds them in.
 
 | You are… | Add | Never edit |
 |---|---|---|
-| making a change worth a release note | `changelog.d/<slug>.md`, the entry text ([format](changelog.d/README.md)) | `CHANGELOG.md` — CI fails a new `[Unreleased]` entry |
+| making a change worth a release note | `changelog.d/<slug>.md`, the entry text ([format](../changelog.d/README.md)) | `CHANGELOG.md` — CI fails a new `[Unreleased]` entry |
 | adding a test module `tests/test_<name>.py` | `tests/shard-weights/test_<name>.json` (`python3 scripts/shard-tests.py --measure test_<name> --scale 2`) | another module's weight file, unless your PR is a rebalance |
-| filing a run report under `docs/runs/` | `docs/runs/index/<run>.json`, its index row ([format](scripts/run_index.py)) | the table or the yes-count in `docs/runs/README.md` — the cut renders them |
+| filing a run report under `docs/runs/` | `docs/runs/index/<run>.json`, its index row ([format](../scripts/run_index.py)) | the table or the yes-count in `docs/runs/README.md` — the cut renders them |
 | changing the test count | nothing | `assets/badges/tests.json` — it is the count at the last release, and the README badge says so |
 
 ## Before you open the PR
@@ -181,8 +181,8 @@ capable of failing.
 ## Maintainer ops
 
 Account inventory and the 2 a.m. incident process live in
-[docs/ops.md](docs/ops.md). Contributors do not need that page to open a PR.
+[docs/ops.md](../docs/ops.md). Contributors do not need that page to open a PR.
 
 ## License
 
-By contributing you agree your contributions are licensed under the [MIT License](LICENSE).
+By contributing you agree your contributions are licensed under the [MIT License](../LICENSE).

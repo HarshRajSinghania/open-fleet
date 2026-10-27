@@ -12,7 +12,7 @@ A developer arriving at `orca-fleet` traverses five primary journeys:
 2. **Run a first mission (`review-it` → `ship-it`)** ([`docs/getting-started.md`](../getting-started.md))
 3. **Select a mission & copy a prompt recipe** ([`docs/missions/README.md`](../missions/README.md), [`docs/recipes.md`](../recipes.md))
 4. **Look up a runtime helper's flags, subcommands, keys, or exit codes** ([`docs/runtime-scripts.md`](../runtime-scripts.md))
-5. **Contribute to the catalog & run local/CI verification gates** ([`docs/development.md`](../development.md), [`CONTRIBUTING.md`](../../CONTRIBUTING.md), [`docs/troubleshooting.md`](../troubleshooting.md))
+5. **Contribute to the catalog & run local/CI verification gates** ([`docs/development.md`](../development.md), [`CONTRIBUTING.md`](../../.github/CONTRIBUTING.md), [`docs/troubleshooting.md`](../troubleshooting.md))
 
 Running the authoritative surface extractor (`extract.py`), the Diátaxis quadrant mapper (`map.py`), and the claim binder (`claimcheck.py`) against the live 81-entity repository surface (`22` skills, `51` CLIs/libraries, `8` config registries) surfaced **12 unbound claims**, **5 missing reference sections**, **1 alphabetical ordering inversion**, and **3 developer-guide drift items** relative to the `v1.4.229` runtime pin and `#560` (`VAL-01`) prompt-injection drill suite. All findings have been remediated and machine-verified (`34 section(s), 0 unbound claim(s)`).
 

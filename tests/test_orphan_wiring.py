@@ -634,7 +634,8 @@ class ReviewCitationsResolve(unittest.TestCase):
         r"(?<!/)\bREVIEW\.md\b[^\n]{0,12}?"
         r"(§\s*\d|\bA\d|\bU\d|\bP[012]-\d|\bP2\s+item)")
     SEARCH_DIRS = ("runtime", "scripts", "tests", "evals", "bench", ".github")
-    SEARCH_FILES = ("ARCHITECTURE.md", "AGENTS.md", "CONTRIBUTING.md", "TODOS.md", "CHANGELOG.md")
+    SEARCH_FILES = ("ARCHITECTURE.md", "AGENTS.md", ".github/CONTRIBUTING.md", "TODOS.md",
+                    "CHANGELOG.md")
 
     def _offenders(self):
         paths = [ROOT / f for f in self.SEARCH_FILES]

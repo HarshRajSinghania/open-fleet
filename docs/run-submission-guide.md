@@ -9,7 +9,7 @@ mission that still needs one.
 
 This procedure is for retaining a real mission run and proposing a proof-tier advance.
 For an ordinary docs or code contribution, use [Development](development.md) and
-[Contributing](../CONTRIBUTING.md). A binding report proves retained bytes and recorded
+[Contributing](../.github/CONTRIBUTING.md). A binding report proves retained bytes and recorded
 execution; it does not replace the coordinator's independent checks.
 
 On this page: [prerequisites](#prerequisites), [bundle format](#the-bundle-format),

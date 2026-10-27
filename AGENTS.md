@@ -106,7 +106,7 @@ states which pack a worker uses in the dispatched TASK.
 
 - Bookkeeping: add a `changelog.d/<slug>.md` fragment, a `docs/runs/index/<run>.json` row or a
   `tests/shard-weights/<module>.json` file; never edit `CHANGELOG.md`'s `[Unreleased]`, the tests
-  badge or the generated run table (CONTRIBUTING.md, "Bookkeeping files").
+  badge or the generated run table ([`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md), "Bookkeeping files").
 - A mission lives in `skills/<name>/` with a `SKILL.md`; `name` frontmatter must equal the folder.
 - `description` is 1–1024 chars and includes a "Use when…" trigger; `compatibility` ≤ 500 chars.
 - The repo's own claims live under `metadata:` — top level is the agentskills.io allowlist only.

@@ -16,7 +16,7 @@
 | **Understand what a run produces and what its verdict proves** | [Concepts & glossary](concepts.md#read-a-run-result) | [Anatomy of a real run](guides/anatomy-of-a-run.md) |
 | **Wire or debug the native completion gate (`verify-gate.sh`)** | [Verify gate & trust boundary](verify-gate.md) | [Negative-control demo](../demo/negative-control/README.md) |
 | **Diagnose a stalled worker, gate block, or setup error** | [Troubleshooting](troubleshooting.md) | [Runtime scripts CLI reference](runtime-scripts.md) |
-| **Edit missions, playbooks, or docs and run local tests** | [Local development](development.md) | [Contributing guide](../CONTRIBUTING.md) · [Architecture](../ARCHITECTURE.md) |
+| **Edit missions, playbooks, or docs and run local tests** | [Local development](development.md) | [Contributing guide](../.github/CONTRIBUTING.md) · [Architecture](../ARCHITECTURE.md) |
 | **Submit evidence from a real mission run** | [Call for runs](call-for-runs.md) | [Run submission guide](run-submission-guide.md) |
 
 ---
@@ -65,9 +65,9 @@ Guides for developing `open-fleet`, cutting releases, and inspecting retained ru
 ### Contributing & Maintenance
 
 - **[Local development](development.md)** — Running `validate.py`, contract tests, eval suites, diagram wiring, and badge generators locally with zero external dependencies.
-- **[Contributing](../CONTRIBUTING.md)** — Rules for modifying missions, playbooks, runtime scripts, and bookkeeping fragments (`changelog.d/`, `docs/runs/index/`, `tests/shard-weights/`).
+- **[Contributing](../.github/CONTRIBUTING.md)** — Rules for modifying missions, playbooks, runtime scripts, and bookkeeping fragments (`changelog.d/`, `docs/runs/index/`, `tests/shard-weights/`).
 - **[Frozen quality bar](../CONSTRAINTS.md)** — Enforced CI thresholds, the floor-guard surface, and ratchet baselines ([CI workflow](../.github/workflows/validate.yml)).
-- **[Security policy](../SECURITY.md)** — Vulnerability disclosure process and secret-handling rules.
+- **[Security policy](../.github/SECURITY.md)** — Vulnerability disclosure process and secret-handling rules.
 - **[Maintainer ops](ops.md)** — Account inventory, maintainer roles, the merge gate, release cut and publishing, and incident response. (Weekly pin probes: [`runtime/orca-pin.md`](../runtime/orca-pin.md); component quarantine: [`quarantine_check.py`](runtime-scripts.md#quarantine_checkpy).)
 - **[1.0 release checklist](release-1.0-checklist.md)** & **[Product roadmap](roadmap.md)** — Exit criteria for 1.0 and prioritized engineering roadmap.
 - **[Live experiment harness](guides/live-harness.md)** — Running controlled live experiment arms in disposable containers ([WIP-curve experiment](experiments/wip-curve-prereg.md): mutation-wave caps measured and kept · [Instruction-load ablation pre-registration](experiments/ablation-prereg.md): current activation load kept).

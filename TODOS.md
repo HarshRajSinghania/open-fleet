@@ -30,7 +30,7 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
   A tier moves only through a recorded mission run, never a relabel.
 - **The 2026-09-11 deep review** —
   [`docs/reviews/2026-09-11-review.md`](docs/reviews/2026-09-11-review.md) (moved from the root
-  `REVIEW.md` on 2026-10-14; a stub there points to it) and issues
+  `REVIEW.md` on 2026-10-14) and issues
   [#279–#307](https://github.com/ravidsrk/open-fleet/issues?q=label%3Adeep-review-2026-09-11) (plus
   #309–#318 from a second review of the same base). **Closed** — every finding landed in #308; #307
   closed when its release tags were published. Section or attack-id anchors are numbered per review,

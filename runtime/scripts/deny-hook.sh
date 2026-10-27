@@ -31,8 +31,10 @@
 # or `eval` body, a trap action, an alias value, a gh shell alias, the string or
 # command of flock, su, runuser, script, watch, parallel (its template completed
 # with each ::: argument), ssh, find -exec, fd -x/-X, entr and zsh repeat,
-# interpreter code handing a literal to os.system/subprocess (from -c, stdin or a
-# heredoc), a program a shell reads on stdin or from a file written in the same
+# interpreter code handing a literal to os.system/subprocess (from python/perl/
+# ruby/node/bun/php -c/-e, lua/luajit/julia/Rscript -e, the awk family program,
+# deno eval, from stdin or a heredoc), a sqlite3 `.shell`/`.system` line, a sed
+# `e` command, a busybox applet (W1-03), a program a shell reads on stdin or from a file written in the same
 # command, and a head built from a variable or a substitution (its literal value
 # on the line, what echo prints, else each refused head). Who reads a body is
 # structural (PR #648 review): each simple command is its words plus its
@@ -2295,9 +2297,23 @@ def _tokenize(seg):
 
 
 _SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh")
-# Interpreters that run code straight from argv, and the option letters that carry it.
+# Interpreters that run code straight from argv, and the option letters that carry it. awk has
+# no code flag -- its program is the first non-option word (-f takes a file) -- and deno takes a
+# code operand after its `eval` subcommand, so both are read in _inline_code own branches,
+# not here (W1-03, 2026-10-27 audit).
 _INLINE_FLAGS = {"python": "c", "perl": "eE", "ruby": "e", "node": "ep", "nodejs": "ep",
-                 "bun": "e", "php": "r"}
+                 "bun": "e", "php": "r", "lua": "e", "luajit": "e", "julia": "e", "Rscript": "e"}
+_AWKS = ("awk", "gawk", "mawk", "nawk")
+# busybox <applet> ARGS runs the applet: peel it so `busybox awk …` is judged as awk (W1-03/W1-05).
+_BUSYBOX_APPLETS = set(_AWKS) | {"sh", "ash", "sed", "tar", "unzip", "cpio", "rm", "rmdir", "cp",
+                                 "mv", "dd", "tee", "wget", "vi", "ln", "install", "chmod"}
+
+
+def _peel_busybox(head, rest):
+    """(head, rest) with a leading busybox applet peeled: busybox awk PROG -> awk PROG."""
+    if head in ("busybox", "busybox.static") and rest and rest[0] in _BUSYBOX_APPLETS:
+        return rest[0], rest[1:]
+    return head, rest
 _CODE_LITERAL = re.compile(r"\x22((?:[^\x22\\]|\\.)*)\x22|\x27([^\x27]*)\x27", re.DOTALL)
 _CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmod|chown|truncate"
                           r"|symlink|link|copy|move|system|popen|spawn|exec|subprocess|FileUtils"
@@ -2328,7 +2344,37 @@ _PARALLEL_SEPS = (":::", "::::", ":::+", "::::+")
 
 
 def _inline_code(head, rest):
-    """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, ..."""
+    """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, awk
+    program, deno eval operand, ... (W1-03). The code is scanned by _code_commands for the
+    shell lines it hands the system, so an interpreter laundering a refused command is seen."""
+    head, rest = _peel_busybox(head, rest)
+    if head in _AWKS:
+        # awk PROGRAM FILE...: the program is the first word that is not an option and not the
+        # operand of -f/-v/-F. -f names a program FILE (not inline code), so an -f form has none.
+        i, prog = 0, None
+        while i < len(rest):
+            w = rest[i]
+            if w == "--":
+                prog = rest[i + 1] if i + 1 < len(rest) else None
+                break
+            if w in ("-f", "--file", "-v", "--assign", "-F", "--field-separator"):
+                if w in ("-f", "--file"):
+                    return []   # program is in a file, not on the line
+                i += 2
+                continue
+            if w.startswith("-") and len(w) > 1:
+                if w[1] == "f":
+                    return []
+                i += 1
+                continue
+            prog = w
+            break
+        return [prog] if prog else []
+    if head == "deno":
+        ops = [w for w in rest if not w.startswith("-")]
+        if ops[:1] == ["eval"] and len(ops) > 1:
+            return [ops[1]]
+        return []
     key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
     letters = _INLINE_FLAGS.get(key)
     codes, i = [], 0
@@ -2615,6 +2661,61 @@ def _gh_alias(ws):
     return ops[0], None, None, False
 
 
+def _shell_launcher_lines(head, rest):
+    """Shell command lines a non-interpreter tool hands to a shell by its own syntax (W1-03):
+    sqlite3 `.shell`/`.system` dot-commands and sed `e <command>`. Not exec-call code, so
+    _code_commands does not see them; read here so a refused command launched this way is judged.
+    """
+    lines = []
+    if head == "sqlite3":
+        texts = []
+        i = 0
+        while i < len(rest):
+            w = rest[i]
+            if w in ("-cmd", "-init") and i + 1 < len(rest):
+                texts.append(rest[i + 1])
+                i += 2
+                continue
+            if not w.startswith("-"):
+                texts.append(w)   # the DB name too; a bare word there is harmless to scan
+            i += 1
+        for text in texts:
+            for ln in text.split(chr(10)):
+                m = re.match(r"\s*\.(shell|system)\s+(.+)", ln)
+                if m:
+                    lines.append(m[2].strip())
+    elif head == "sed":
+        scripts, i = [], 0
+        while i < len(rest):
+            w = rest[i]
+            if w in ("-e", "--expression") and i + 1 < len(rest):
+                scripts.append(rest[i + 1])
+                i += 2
+                continue
+            if w in ("-f", "--file", "-l", "--line-length"):
+                i += 2
+                continue
+            if w.startswith("--expression="):
+                scripts.append(w.split("=", 1)[1])
+            elif re.fullmatch(r"-[A-Za-z]*e", w):
+                if i + 1 < len(rest):
+                    scripts.append(rest[i + 1])
+                    i += 2
+                    continue
+            elif not w.startswith("-"):
+                scripts.append(w)   # the first bare word is the script when no -e/-f gave one
+                break
+            i += 1
+        for script in scripts:
+            # An `e COMMAND` sed command (optionally after an address) executes COMMAND in a
+            # shell. Split on newline and `;`; a leading address/label is stripped to the verb.
+            for piece in re.split(r"[;\n]", script):
+                m = re.match(r"\s*(?:[0-9]+|\$|/(?:[^/\\]|\\.)*/|,)*\s*e\s+(\S.*)", piece)
+                if m:
+                    lines.append(m[1].strip())
+    return lines
+
+
 def _inner_body(ws):
     """The command text ws runs as a command line of its own, or None.
 
@@ -2664,6 +2765,8 @@ def _inner_body(ws):
         alias = _gh_alias(ws)
         if alias and alias[0] == "set" and alias[3]:
             bodies.append(alias[2])
+    elif head in ("sqlite3", "sed") or _peel_busybox(head, ws[1:])[0] == "sed":
+        bodies += _shell_launcher_lines(*_peel_busybox(head, ws[1:]))
     else:
         for code in _inline_code(head, ws[1:]):
             bodies += _code_commands(code)

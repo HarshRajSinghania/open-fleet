@@ -2822,3 +2822,51 @@ class TestIfsSeparatedWordsKeepTheirArguments(ReviewHookBase):
     def test_a_quoted_ifs_is_one_word_as_in_the_shell(self):
         self.expect("allow", ('echo "rm${IFS}-rf${IFS}/"', "printf '%s' \"a${IFS}b\"",
                               "echo $IFSX", "echo ${IFSX}"), bounded_modes=self.BOTH)
+
+
+class TestInterpreterTableCoversTheClass(ReviewHookBase):
+    """W1-03 (P1, 2026-10-27 audit): the inline-interpreter table stopped at php and missed awk,
+    so `awk 'BEGIN{system("rm -rf /")}'` ran arbitrary shell as a silent ALLOW; the whole class
+    of one-liner interpreters that launch a shell was open."""
+
+    BOTH = (False, True)
+
+    def test_an_interpreter_launching_a_root_wipe_is_denied(self):
+        self.expect("deny", (
+            "awk 'BEGIN{system(\"rm -rf /\")}'", "gawk 'BEGIN{system(\"rm -rf /\")}'",
+            "mawk 'BEGIN{system(\"rm -rf /\")}'", "nawk 'BEGIN{system(\"rm -rf /\")}'",
+            "busybox awk 'BEGIN{system(\"rm -rf /\")}'",
+            "lua -e 'os.execute(\"rm -rf /\")'", "luajit -e 'os.execute(\"rm -rf /\")'",
+            "julia -e 'run(`rm -rf /`)'", "Rscript -e 'system(\"rm -rf /\")'",
+            "deno eval 'Deno.run({cmd:[\"rm\",\"-rf\",\"/\"]})'",
+        ), bounded_modes=self.BOTH)
+
+    def test_an_interpreter_launching_a_refused_git_or_reset_is_denied(self):
+        self.expect("deny", (
+            "gawk 'BEGIN{system(\"git push --force origin main\")}'",
+            "awk 'BEGIN{system(\"orca orchestration reset\")}'",
+            "Rscript -e 'system(\"git push --force origin main\")'",
+        ), bounded_modes=self.BOTH)
+
+    def test_sqlite3_shell_and_sed_e_are_judged_not_downgraded(self):
+        # sqlite3 .shell/.system and sed's `e` command/flag both hand a line to a shell.
+        self.expect("deny", (
+            "sqlite3 d '.shell rm -rf /'", "sqlite3 d '.system rm -rf /'",
+            "sed 'e rm -rf /' f", "sed -i 'e rm -rf /' f",
+            "sed 'e git push --force origin main' f",
+        ), bounded_modes=self.BOTH)
+
+    def test_an_interpreter_writing_a_guard_path_is_denied(self):
+        self.expect("deny", (
+            "awk 'BEGIN{print \"x\" > \".claude/settings.json\"}'",
+            "lua -e 'io.open(\".codex/hooks.json\", \"w\")'",
+            "Rscript -e 'writeLines(\"x\", \".claude/settings.json\")'",
+        ), bounded_modes=(True,), reason="own guard")
+
+    def test_benign_interpreter_use_stays_allowed(self):
+        self.expect("allow", (
+            "awk '{print $1}' f.txt", "awk -F, '{print $2}' data.csv",
+            "gawk 'END{print NR}' f", "lua -e 'print(1+1)'",
+            "Rscript -e 'cat(1:10)'", "sed -n '1,5p' f.txt", "sed 's/a/b/g' f.txt",
+            "sqlite3 d 'select count(*) from t'",
+        ), bounded_modes=self.BOTH)

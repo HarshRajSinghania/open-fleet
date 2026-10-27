@@ -2616,6 +2616,90 @@
       "hook": "25329070 (2026-10-27 security audit W1-02)",
       "status": "fixed",
       "note": "Inside double quotes the shell drops the backslash of \\$, so the body bash -c runs holds a live ${IFS:0:1}; the reader kept the backslash and read the body as one word."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "awk 'BEGIN{system(\"{HEAD} {ARGS}\")}'",
+      "original": "awk 'BEGIN{system(\"{HEAD} {ARGS}\")}'",
+      "family": "review:W1-03",
+      "bash": "n/a (hook-only; awk not on the corpus PATH)",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-03)",
+      "status": "fixed",
+      "note": "awk has no code flag; its program is the first non-option word. The inline-interpreter table missed the awk family, so a system() shell-out in the program was a silent ALLOW."
+    },
+    {
+      "kind": "miss",
+      "payload": "send",
+      "template": "gawk 'BEGIN{system(\"{HEAD} {ARGS}\")}'",
+      "original": "gawk 'BEGIN{system(\"{HEAD} {ARGS}\")}'",
+      "family": "review:W1-03",
+      "bash": "n/a (hook-only; gawk not on the corpus PATH)",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-03)",
+      "status": "fixed",
+      "note": "awk family programs are read now; a system() shell-out launching an off-repo gh write is judged like any other."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "busybox awk 'BEGIN{system(\"{HEAD} {ARGS}\")}'",
+      "original": "busybox awk 'BEGIN{system(\"{HEAD} {ARGS}\")}'",
+      "family": "review:W1-03",
+      "bash": "n/a (hook-only; busybox awk)",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-03)",
+      "status": "fixed",
+      "note": "busybox <applet> is peeled, so busybox awk is judged as awk."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "Rscript -e 'system(\"{HEAD} {ARGS}\")'",
+      "original": "Rscript -e 'system(\"{HEAD} {ARGS}\")'",
+      "family": "review:W1-03",
+      "bash": "n/a (hook-only; Rscript absent)",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-03)",
+      "status": "fixed",
+      "note": "Rscript -e carries code like python -c; now in the inline-interpreter table, so system() in it is judged."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "lua -e 'os.execute(\"{HEAD} {ARGS}\")'",
+      "original": "lua -e 'os.execute(\"{HEAD} {ARGS}\")'",
+      "family": "review:W1-03",
+      "bash": "n/a (hook-only; lua absent)",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-03)",
+      "status": "fixed",
+      "note": "lua -e carries code; os.execute is an exec-shaped call read as a shell line."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "sqlite3 d '.shell {HEAD} {ARGS}'",
+      "original": "sqlite3 d '.shell {HEAD} {ARGS}'",
+      "family": "review:W1-03",
+      "bash": "n/a (hook-only; sqlite3 absent)",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-03)",
+      "status": "fixed",
+      "note": "sqlite3 .shell/.system hands its argument to a shell; it used to reach only the generic recursive-delete ask. The dot-command is read as a shell line now."
+    },
+    {
+      "kind": "miss",
+      "payload": "push",
+      "template": "sed 'e {HEAD} {ARGS}' f",
+      "original": "sed 'e {HEAD} {ARGS}' f",
+      "family": "review:W1-03",
+      "bash": "n/a (hook-only; sed e runs a command)",
+      "seed": 598,
+      "hook": "25329070 (2026-10-27 security audit W1-03)",
+      "status": "fixed",
+      "note": "sed's `e COMMAND` script command executes COMMAND in a shell; read as a shell line now."
     }
   ]
 }

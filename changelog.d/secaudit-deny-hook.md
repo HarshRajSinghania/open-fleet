@@ -13,9 +13,11 @@
   both boundary names so a space in the install path or a stale inherited variable cannot disarm
   it (W1-07, W1-08); `lexical_abs` no longer pathname-expands a path segment and a glob in a shell
   write target is judged by every path it expands to (W4-09). The spawn arming gate now receives
-  the worktree for every selector that names an existing tree, not just `path:` (W4-03), runs for
-  every profile including `ro`, and refuses an `rw`/`danger` spawn whose guard settings var is
-  unset unless `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1` opts out (W4-06). A new
+  the worktree for every selector that names an existing tree, not just `path:` (W4-03), and runs
+  for every profile including `ro`, which used to skip it entirely; a hardened coordinator sets
+  `OPEN_FLEET_REQUIRE_DENY_HOOK=1` to make an `rw`/`danger` spawn refuse when its guard settings
+  var is unset rather than proceed on a warning (W4-06, partial — the default stays a warning
+  pending a coordinated `first_run.py` change). A new
   `OPEN_FLEET_HOOK_READONLY` write floor (wired with `deny-hook.sh --settings <wt> --readonly`)
   lets the hook deny every write it can see on the `ro` tier, defense-in-depth over the channels
   plan-mode `Bash` left open — not a filesystem sandbox, which stays the disposable environment's

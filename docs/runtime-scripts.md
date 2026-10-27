@@ -1881,11 +1881,13 @@ It must also bound the tree the spawn launches into: every selector that names a
 tree reaches the gate as `--boundary` (`path:`, `id:<repoId>::<path>`, and `current`/`active`/
 `name:`/`branch:` resolved through the runtime's `worktree show`; a tree it cannot resolve
 refuses), and only `new-child`/`new-top-level` are checked without one (W4-03).
-When the settings var is unset an `rw`/`danger` spawn `SPAWN=REFUSED`s rather than running a
-bypass worker on an unverified guard (W4-06) — unless `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1`
-(legacy `ORCA_ALLOW_UNVERIFIED_DENY_HOOK`) is the operator's explicit opt-out, which restores the
-loud `UNVERIFIED` warning; an unset-guard `ro` spawn proceeds with a NOTE (its boundary is the
-tool filter plus the optional `--readonly` write floor). On Orca the custom-argv lane's
+When the settings var is unset a hardened coordinator sets `OPEN_FLEET_REQUIRE_DENY_HOOK=1`
+(legacy `ORCA_REQUIRE_DENY_HOOK`) to make an `rw`/`danger` spawn `SPAWN=REFUSED` rather than run a
+bypass worker on an unverified guard (W4-06); the default stays a loud `UNVERIFIED` warning for
+compatibility, since the coordinator flow installs the guard through the provider but does not yet
+name it to this gate — flipping the default to refuse is a coordinated change across `first_run.py`
+and certification that this does not make. An unset-guard `ro` spawn proceeds with a NOTE (its
+boundary is the tool filter plus the optional `--readonly` write floor). On Orca the custom-argv lane's
 `terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
 `new-top-level` there are refused before any task is created, since only `worker-start` creates a
 worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,

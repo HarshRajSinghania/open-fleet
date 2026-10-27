@@ -47,7 +47,11 @@ unlisted file, a changed listed file, a symlink or a non-file sits where it writ
 overwrite a file it cannot prove its own, or when the marker lists a name no build writes, a file
 without a digest, or is itself a symlink or FIFO. A `--out` built before records (or from another
 checkout) therefore refuses once if anything the build changes is there: move it away and
-rebuild. A mission shipping `.gitignore`, `.gitattributes`, `.gitmodules` or `.git` fails the
+rebuild. Each overwrite and delete then acts only on the exact file checked: an atomic exchange
+(Linux renameat2, macOS renameatx_np) or a rename to a quarantine name, after which the displaced
+file must be that inode with that sha256 before it is destroyed; a file put there since is put
+back and the build refuses (exit 2). Without those primitives an existing --out is never
+overwritten or deleted from. A mission shipping `.gitignore`, `.gitattributes`, `.gitmodules` or `.git` fails the
 build (exit 1): it would change what the publish job's `git add -A` records.
 
 Exit: 0 built and verified · 1 a reference could not be resolved · 2 could not run (or refused
@@ -67,6 +71,7 @@ if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sy
 
 import argparse
 import contextlib
+import ctypes
 import hashlib
 import importlib.util
 import json
@@ -353,7 +358,8 @@ def plugin_files():
 #     written. Any other listed file refuses an overwrite, and is otherwise left in place,
 #     reported, and never re-recorded; with neither a record nor git history nothing stale is
 #     deleted and no file this build changes is overwritten.
-# The marker is read and replaced without ever following a link.
+# The marker is read and replaced without ever following a link, and every overwrite or delete
+# acts atomically on only the file the claim checked (_Tree; Codex round 2 on e281e130).
 MARKER = ".open-fleet-bundle.json"
 MARKER_VERSION = 2
 # The marker's pre-rename name: read when MARKER is absent and replaced by MARKER on the next
@@ -409,6 +415,60 @@ def _valid_name(rel):
     return all(part not in ("", ".", "..") for part in rel.split("/"))
 
 
+def _load_rename():
+    """(rename(src_fd, src, dst_fd, dst, flags), NOREPLACE, EXCHANGE) from the platform's C library,
+    or None: Linux renameat2 (the libc symbol, else the raw syscall), macOS renameatx_np. Overwriting
+    and deleting in an existing --out need it; without it they fail closed (_Tree)."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+    except OSError:
+        return None
+    if sys.platform.startswith("linux"):
+        flags = (1, 2)  # RENAME_NOREPLACE, RENAME_EXCHANGE
+        fn = getattr(libc, "renameat2", None)
+        if fn is not None:
+            fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+
+            def call(src_fd, src, dst_fd, dst, flag):
+                return fn(src_fd, src, dst_fd, dst, flag)
+        else:  # glibc before 2.28 has no wrapper; the syscall is there since Linux 3.15
+            number = {"x86_64": 316, "aarch64": 276}.get(os.uname().machine)
+            if number is None:
+                return None
+            raw = libc.syscall
+
+            def call(src_fd, src, dst_fd, dst, flag):
+                return raw(ctypes.c_long(number), ctypes.c_int(src_fd), ctypes.c_char_p(src),
+                           ctypes.c_int(dst_fd), ctypes.c_char_p(dst), ctypes.c_uint(flag))
+    elif sys.platform == "darwin":
+        flags = (0x4, 0x2)  # RENAME_EXCL, RENAME_SWAP
+        fn = getattr(libc, "renameatx_np", None)
+        if fn is None:
+            return None
+        fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+
+        def call(src_fd, src, dst_fd, dst, flag):
+            return fn(src_fd, src, dst_fd, dst, flag)
+    else:
+        return None
+
+    def rename(src_fd, src, dst_fd, dst, flag):
+        if call(src_fd, os.fsencode(src), dst_fd, os.fsencode(dst), flag) != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), src)
+
+    return rename, *flags
+
+
+_RENAME = _load_rename()
+
+
+def _ident(fd):
+    """(st_dev, st_ino) of an open descriptor: which file, not which name."""
+    st = os.fstat(fd)
+    return st.st_dev, st.st_ino
+
+
 class _Tree:
     """--out, opened once. Every delete and write after the checks walks from this descriptor, one
     component at a time with O_DIRECTORY|O_NOFOLLOW, and acts on a name relative to its own
@@ -451,30 +511,80 @@ class _Tree:
 
     def read(self, rel):
         """A regular file's bytes, or None (missing, a link, a FIFO, a directory, or behind one)."""
+        return self.read_ident(rel)[0]
+
+    def read_ident(self, rel):
+        """(bytes, (st_dev, st_ino)) of the regular file at `rel`, read through one descriptor, or
+        (None, None) for anything else (missing, a link, a FIFO, a directory, or behind one)."""
         *parts, name = rel.split("/")
         try:
             fds = self.dirs(parts)
         except BundleRefused:
-            return None
+            return None, None
         if fds is None:
-            return None
+            return None, None
         try:
-            return _read_fd(lambda: os.open(name, READ_FLAGS, dir_fd=fds[-1]))
+            return _read_ident(fds[-1], name)
         finally:
             self._close(fds)
 
-    def unlink(self, rel, digest):
-        """Delete `rel` only while it is still the regular file whose sha256 was checked, then the
-        directories that leaves empty. True when it was deleted."""
+    # Overwrite and delete act on what was CHECKED, never on whatever holds the name later (Codex
+    # round 2 on e281e130, P1): a file swapped in after _claim was overwritten by the rename and
+    # deleted by the unlink, though its bytes were never checked. Each act is now one atomic step on
+    # the name, and what it displaced is verified through its own descriptor afterwards — the same
+    # file (st_dev, st_ino) with the same sha256 — before it is destroyed; anything else is put back
+    # and the build refuses. A FIFO or symlink it displaced holds no bytes and is dropped.
+    def _temp(self, name, suffix):
+        return f".{name}.open-fleet-{os.getpid()}-{os.urandom(4).hex()}.{suffix}"
+
+    def _displaced_ok(self, fd, tmp, claimed):
+        """Whether the object now at `tmp` (moved there atomically from the target name) may be
+        destroyed: nothing, a link or a FIFO, or exactly `claimed` = (st_dev, st_ino, sha256)."""
+        try:
+            st = os.stat(tmp, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return True
+        if stat.S_ISDIR(st.st_mode):
+            return False
+        if not stat.S_ISREG(st.st_mode):
+            return True
+        if claimed is None:
+            return False
+        data, ident = _read_ident(fd, tmp)
+        return data is not None and ident == (st.st_dev, st.st_ino) == tuple(claimed[:2]) \
+            and hashlib.sha256(data).hexdigest() == claimed[2]
+
+    def _put_back(self, fd, held, name, rel, why):
+        """Move `held` back to `name` without replacing anything that appeared there, then refuse."""
+        try:
+            _RENAME[0](fd, held, fd, name, _RENAME[1])
+            kept = f"{rel} was put back"
+        except OSError:
+            kept = f"it is kept as {held} beside {rel}"
+        raise BundleRefused(f"--out {self.out}: {rel} changed after it was checked ({why}); {kept}, nothing of it "
+                            "was destroyed, and the build stopped there")
+
+    def unlink(self, rel, claimed):
+        """Delete `rel` only if it is still the file checked, `claimed` = (st_dev, st_ino, sha256):
+        it is renamed to a quarantine name in its directory (atomic), verified there through its own
+        descriptor, and only then unlinked; anything else is put back and the build refuses. Then
+        the directories that leaves empty go. True when it was deleted."""
         *parts, name = rel.split("/")
         fds = self.dirs(parts)
         if fds is None:
             return False
         try:
-            data = _read_fd(lambda: os.open(name, READ_FLAGS, dir_fd=fds[-1]))
-            if data is None or hashlib.sha256(data).hexdigest() != digest:
+            if _RENAME is None:
+                raise BundleRefused(f"--out {self.out}: this platform has no atomic no-replace rename, so "
+                                    f"bundle.py will not delete {rel} on a check it cannot hold; delete it by hand")
+            quarantine = self._temp(name, "del")
+            try:
+                _RENAME[0](fds[-1], name, fds[-1], quarantine, _RENAME[1])
+            except FileNotFoundError:
                 return False
-            os.unlink(name, dir_fd=fds[-1])
+            if not self._displaced_ok(fds[-1], quarantine, claimed):
+                self._put_back(fds[-1], quarantine, name, rel, "not the file whose bytes were checked")
+            os.unlink(quarantine, dir_fd=fds[-1])
             for i in range(len(parts), 0, -1):  # only once empty: never a directory with content
                 try:
                     os.rmdir(parts[i - 1], dir_fd=fds[i - 1])
@@ -484,12 +594,14 @@ class _Tree:
         finally:
             self._close(fds)
 
-    def write(self, rel, data, mode, times=None):
-        """Write `rel` beside itself and rename it into place: a link or a FIFO at the name is
-        replaced, never followed, and a directory there refuses."""
+    def write(self, rel, data, mode, times=None, claimed=None):
+        """Write `rel` beside itself, then put it in place in one atomic step: a no-replace rename
+        where nothing is there, or an exchange with what is there, which must be nothing, a link, a
+        FIFO, or exactly `claimed` = (st_dev, st_ino, sha256) — checked through its descriptor after
+        the exchange; anything else is swapped back and the build refuses. Never follows a link."""
         *parts, name = rel.split("/")
         fds = self.dirs(parts, create=True)
-        tmp = f".{name}.open-fleet-{os.getpid()}-{os.urandom(4).hex()}.tmp"
+        tmp = self._temp(name, "tmp")
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600, dir_fd=fds[-1])
             try:
@@ -502,13 +614,76 @@ class _Tree:
             finally:
                 os.close(fd)
             try:
-                os.replace(tmp, name, src_dir_fd=fds[-1], dst_dir_fd=fds[-1])
-            except OSError as err:
+                self._place(fds[-1], tmp, name, rel, claimed)
+            except BaseException:
                 with contextlib.suppress(OSError):
-                    os.unlink(tmp, dir_fd=fds[-1])
-                raise BundleRefused(f"--out {self.out}: cannot write {rel} ({err.strerror})") from None
+                    if _read_ident(fds[-1], tmp)[0] == data:  # only ever our own staged bytes
+                        os.unlink(tmp, dir_fd=fds[-1])
+                raise
         finally:
             self._close(fds)
+
+    def _place(self, fd, tmp, name, rel, claimed):
+        if _RENAME is None:
+            try:  # a hard link is a portable no-replace create; overwriting needs the exchange
+                os.link(tmp, name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+            except FileExistsError:
+                raise BundleRefused(f"--out {self.out}: this platform has no atomic rename exchange, so bundle.py "
+                                    f"will not overwrite {rel} on a check it cannot hold; move it away") from None
+            except OSError as err:
+                raise BundleRefused(f"--out {self.out}: cannot write {rel} ({err.strerror})") from None
+            os.unlink(tmp, dir_fd=fd)
+            return
+        rename, noreplace, exchange = _RENAME
+        try:
+            rename(fd, tmp, fd, name, noreplace)
+            return
+        except FileExistsError:
+            pass
+        except OSError as err:
+            raise BundleRefused(f"--out {self.out}: cannot write {rel} ({err.strerror})") from None
+        try:
+            rename(fd, tmp, fd, name, exchange)
+        except FileNotFoundError:  # gone since the no-replace attempt: place it as new once more
+            try:
+                rename(fd, tmp, fd, name, noreplace)
+                return
+            except OSError as err:
+                raise BundleRefused(f"--out {self.out}: {rel} keeps changing under the build ({err.strerror}); "
+                                    "the build stopped there") from None
+        except OSError as err:
+            raise BundleRefused(f"--out {self.out}: cannot replace {rel} atomically ({err.strerror}); "
+                                "bundle.py does not fall back to check-then-overwrite") from None
+        # `tmp` now holds what was at the name.
+        if not self._displaced_ok(fd, tmp, claimed):
+            try:
+                rename(fd, tmp, fd, name, exchange)  # swap back: the checked-unseen file returns
+            except OSError:
+                raise BundleRefused(f"--out {self.out}: {rel} changed after it was checked; what was there is "
+                                    f"kept as {tmp} beside it, and the build stopped there") from None
+            raise BundleRefused(f"--out {self.out}: {rel} changed after it was checked (not the file whose "
+                                "bytes were checked); it was put back, nothing of it was destroyed, and the "
+                                "build stopped there")
+        os.unlink(tmp, dir_fd=fd)  # exactly the checked file, or a link or FIFO: no unverified bytes
+
+
+def _read_ident(dir_fd, name):
+    """(bytes, (st_dev, st_ino)) of the regular file `name` in `dir_fd`, through one descriptor
+    opened without following a link; (None, None) for anything else."""
+    try:
+        fd = os.open(name, READ_FLAGS, dir_fd=dir_fd)
+    except OSError:
+        return None, None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, None
+        chunks = []
+        while chunk := os.read(fd, 1 << 20):
+            chunks.append(chunk)
+        return b"".join(chunks), (st.st_dev, st.st_ino)
+    finally:
+        os.close(fd)
 
 
 def _read_fd(opener, limit=None):
@@ -545,8 +720,10 @@ def _entries_under(path):
     return found
 
 
-def _owned(out):
-    """{out-relative file: sha256} a previous build recorded (empty when there is no marker)."""
+def _owned(out, seen=None):
+    """{out-relative file: sha256} a previous build recorded (empty when there is no marker).
+    `seen`, a dict, receives the marker read: its name and (st_dev, st_ino, sha256), from the
+    descriptor it was parsed through, so the build replaces exactly that file."""
     for marker in (out / MARKER, out / LEGACY_MARKER):
         if os.path.lexists(marker):
             break
@@ -558,8 +735,11 @@ def _owned(out):
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             os.close(fd)
             raise BundleRefused(f"{marker}: the ownership marker is not a regular file")
+        ident = _ident(fd)
         with os.fdopen(fd, "rb") as fh:
             raw = fh.read(INDEX_LIMIT + 1)
+        if seen is not None:
+            seen.update(name=marker.name, claimed=(*ident, hashlib.sha256(raw).hexdigest()))
         if len(raw) > INDEX_LIMIT:
             raise BundleRefused(f"{marker}: the ownership marker is over {INDEX_LIMIT} bytes, larger than "
                                 "any build writes — refusing to guess what a previous build wrote")
@@ -753,16 +933,18 @@ def _claim(out, planned, produced, stage, tree, record):
     nothing. `planned` are the out-relative paths it writes (plugin files, and mission
     directories written whole); `produced` every file it writes, already staged under `stage`;
     `tree` is --out opened; `record` the build record read from outside --out.
-    Returns (stale files to delete, stale files left in place, why provenance was short)."""
-    owned = _owned(out)
+    Returns (stale files to delete, stale files left in place, why provenance was short, the
+    claim on each file it overwrites, the marker read); a claim is (st_dev, st_ino, sha256) of the
+    exact file checked, so the act can tell it from anything put there since (_Tree)."""
+    marker = {}
+    owned = _owned(out, marker)
     foreign = []
     # A listed file is the bundle's only while its bytes are the ones the marker recorded: a file
     # changed since, or a name the marker never had a right to, is someone else's (W5-10).
-    for rel, digest in owned.items():
-        if os.path.lexists(out / rel):
-            data = tree.read(rel)
-            if data is None or hashlib.sha256(data).hexdigest() != digest:
-                foreign.append(out / rel)
+    read = {rel: tree.read_ident(rel) for rel in owned if os.path.lexists(out / rel)}
+    for rel, (data, _ident_) in read.items():
+        if data is None or hashlib.sha256(data).hexdigest() != owned[rel]:
+            foreign.append(out / rel)
     # Parents are checked for every path this build DELETES as well as every path it writes: a
     # retired mission stays in the marker after leaving `planned`, and a symlink swapped in for
     # its directory would aim the unlink below at another checkout's files (PR #631 review, P1).
@@ -780,7 +962,9 @@ def _claim(out, planned, produced, stage, tree, record):
     # --out) holds its exact bytes, when this build writes those bytes there anyway, or when the
     # source repository committed them at the path the build copies from (W5-10, re-attack of
     # 4b24dfde: inside a mission directory too).
-    present = {rel: tree.read(rel) for rel in owned if os.path.lexists(out / rel) and out / rel not in foreign}
+    present = {rel: data for rel, (data, _ident_) in read.items() if out / rel not in foreign}
+    claims = {rel: (*read[rel][1], hashlib.sha256(data).hexdigest()) for rel, data in present.items()
+              if data is not None}
     unproven = {rel: data for rel, data in present.items() if data is not None
                 and record.get(rel) != hashlib.sha256(data).hexdigest()
                 and not (rel in produced and data == (stage / rel).read_bytes())}
@@ -802,7 +986,7 @@ def _claim(out, planned, produced, stage, tree, record):
             else:
                 left.append(rel)
         elif rel not in produced:
-            delete.append((rel, hashlib.sha256(data).hexdigest()))
+            delete.append((rel, claims[rel]))
     if foreign:
         shown = ", ".join(sorted({p.relative_to(out).as_posix() for p in foreign})[:5])
         hint = f" ({'; '.join(short)})" if short else ""
@@ -812,29 +996,35 @@ def _claim(out, planned, produced, stage, tree, record):
             f"record outside --out says a build wrote there nor a committed copy of their source, or "
             f"behind a symlink){hint}: {shown} — move them away or choose an empty --out; bundle.py "
             "deletes or overwrites a file only when its exact bytes are vouched for from outside --out")
-    return delete, left, short
+    return delete, left, short, {rel: claims[rel] for rel in produced if rel in claims}, marker
 
 
-def _install(tree, stage, produced, delete):
-    """Delete the provable stale files (each only while it is still the file that was checked),
-    then write the staged build into --out, all through `tree`'s directory descriptors."""
-    for rel, digest in delete:
-        tree.unlink(rel, digest)
+def _install(tree, stage, produced, delete, claims=None):
+    """Delete the provable stale files, then write the staged build into --out, all through
+    `tree`'s directory descriptors; each delete and each overwrite acts only on the exact file
+    checked (`delete`'s and `claims`' (st_dev, st_ino, sha256)), atomically (_Tree)."""
+    claims = claims or {}
+    for rel, claimed in delete:
+        tree.unlink(rel, claimed)
     for rel in sorted(produced):
         st = os.stat(stage / rel)
-        tree.write(rel, (stage / rel).read_bytes(), stat.S_IMODE(st.st_mode), (st.st_atime_ns, st.st_mtime_ns))
+        tree.write(rel, (stage / rel).read_bytes(), stat.S_IMODE(st.st_mode), (st.st_atime_ns, st.st_mtime_ns),
+                   claimed=claims.get(rel))
 
 
-def _record(tree, produced):
+def _record(tree, produced, marker=None):
     """Write MARKER: every file this build wrote, with the sha256 of its bytes, read back through
-    `tree` (never through a link). Written beside and renamed over the old one, so a link or a
-    FIFO planted at MARKER is replaced, never followed (W5-11)."""
+    `tree` (never through a link). Put in place atomically over only the marker the claim read
+    (`marker`), a link or a FIFO (W5-11); the pre-rename marker is removed only when it is the one
+    the claim read, verified the same way."""
+    marker = marker or {}
     digests = {rel: hashlib.sha256(data).hexdigest() for rel in produced if (data := tree.read(rel)) is not None}
     doc = {"generator": "scripts/bundle.py", "version": MARKER_VERSION, "files": sorted(digests),
            "sha256": dict(sorted(digests.items()))}
-    tree.write(MARKER, (json.dumps(doc, indent=2) + "\n").encode("utf-8"), 0o644)
-    with contextlib.suppress(FileNotFoundError):
-        os.unlink(LEGACY_MARKER, dir_fd=tree.fd)  # migrated: MARKER now lists everything this build owns
+    tree.write(MARKER, (json.dumps(doc, indent=2) + "\n").encode("utf-8"), 0o644,
+               claimed=marker.get("claimed") if marker.get("name") == MARKER else None)
+    if marker.get("name") == LEGACY_MARKER:  # migrated: MARKER now lists everything this build owns
+        tree.unlink(LEGACY_MARKER, marker["claimed"])
 
 
 def build(out_dir, keep_record=True):
@@ -865,11 +1055,11 @@ def build(out_dir, keep_record=True):
         tree = _Tree(out)   # opened before the checks: they and the writes see the same directory
         try:
             record = read_record(out)
-            delete, left, short = _claim(out, planned, produced, stage, tree, record)
+            delete, left, short, claims, marker = _claim(out, planned, produced, stage, tree, record)
             try:
-                _install(tree, stage, produced, delete)
+                _install(tree, stage, produced, delete, claims)
             finally:
-                _record(tree, produced)
+                _record(tree, produced, marker)
                 if keep_record:
                     unkept = _keep_record(out, tree, produced, stage, record)
         finally:

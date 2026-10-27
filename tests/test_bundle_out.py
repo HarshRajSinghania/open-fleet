@@ -634,6 +634,127 @@ class NothingIsReResolvedAfterItsCheck(unittest.TestCase):
                 self.assertEqual(snapshot(out), before, "a refused build changed --out")
 
 
+class TheActIsTheCheck(unittest.TestCase):
+    """Codex round 2 on e281e130 (P1, W5-10's class): after _claim checked a file, the overwrite
+    renamed the staged copy over whatever held the name by then, and the delete re-read the bytes
+    and then unlinked the name, so a file swapped in after the check was destroyed unchecked. Each
+    act is now one atomic step (an exchange, or a rename to quarantine) and what it displaced is
+    verified through its own descriptor, inode and sha256, before it is destroyed; anything else is
+    put back and the build refuses. The hook replaces the FINAL file between check and act."""
+
+    built = AForgedMarkerDeletesNothing.built
+    forge = AForgedMarkerDeletesNothing.forge
+    USER = b"---\nname: review-it\n---\nTHE USER'S OWN BYTES, written after the check\n"
+
+    def replace_after_claim(self, target, how):
+        real = bundle._claim
+
+        def claim_then_replace(*args, **kwargs):
+            decided = real(*args, **kwargs)
+            if how == "new file":
+                fresh = target.with_name(target.name + ".user")
+                fresh.write_bytes(self.USER)
+                os.replace(fresh, target)
+            elif how == "in place":
+                with open(target, "r+b") as fh:
+                    fh.write(self.USER)
+                    fh.truncate()
+            else:  # the very bytes that were checked, in another file: still not the file checked
+                fresh = target.with_name(target.name + ".user")
+                fresh.write_bytes(target.read_bytes())
+                os.replace(fresh, target)
+            return decided
+
+        return mock.patch.object(bundle, "_claim", claim_then_replace)
+
+    def test_a_file_replaced_after_the_check_is_never_overwritten(self):
+        for how in ("new file", "in place", "same bytes, another file"):
+            with self.subTest(how=how), tempfile.TemporaryDirectory() as tmp:
+                out = self.built(tmp)
+                target = out / "skills" / "review-it" / "SKILL.md"
+                with self.replace_after_claim(target, how):
+                    code, err = run_main("--out", tmp)
+                self.assertEqual(code, 2, err)
+                self.assertIn("changed after it was checked", err)
+                expected = self.USER if how != "same bytes, another file" else None
+                if expected is not None:
+                    self.assertEqual(target.read_bytes(), expected, "the replacement was overwritten unchecked")
+                self.assertFalse(target.is_symlink())
+                strays = [p for p in target.parent.iterdir() if ".open-fleet-" in p.name]
+                self.assertEqual(strays, [], "the act left a temp or quarantine file behind")
+
+    def test_a_file_replaced_after_the_check_is_never_deleted(self):
+        for how in ("new file", "in place"):
+            with self.subTest(how=how), tempfile.TemporaryDirectory() as tmp:
+                out = self.built(tmp)
+                stale = out / "skills" / "speed-it" / "old-reference.md"
+                stale.write_bytes(b"a stale copy\n")
+                self.forge(out, ["skills/speed-it/old-reference.md"],
+                           {"skills/speed-it/old-reference.md": hashlib.sha256(b"a stale copy\n").hexdigest()})
+                remember(out, {"skills/speed-it/old-reference.md": b"a stale copy\n"})  # a delete IS planned
+                with self.replace_after_claim(stale, how):
+                    code, err = run_main("--out", tmp)
+                self.assertEqual(code, 2, err)
+                self.assertIn("changed after it was checked", err)
+                self.assertEqual(stale.read_bytes(), self.USER, "the replacement was deleted unchecked")
+                strays = [p for p in stale.parent.iterdir() if ".open-fleet-" in p.name]
+                self.assertEqual(strays, [], "the act left a temp or quarantine file behind")
+
+    def test_a_file_put_at_the_name_inside_the_delete_is_never_deleted(self):
+        # The window Codex named inside the delete itself: the act checked the bytes, then unlinked
+        # the NAME. The hook puts the user's file there right before the delete's own unlink runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            stale = out / "skills" / "speed-it" / "old-reference.md"
+            stale.write_bytes(b"a stale copy\n")
+            self.forge(out, ["skills/speed-it/old-reference.md"],
+                       {"skills/speed-it/old-reference.md": hashlib.sha256(b"a stale copy\n").hexdigest()})
+            remember(out, {"skills/speed-it/old-reference.md": b"a stale copy\n"})
+            real_unlink, fired = os.unlink, []
+
+            def unlink(path, *args, **kwargs):
+                if not fired and os.fsdecode(path).startswith(("old-reference.md", ".old-reference.md.")):
+                    fired.append(path)
+                    fresh = stale.with_name("user-copy")
+                    fresh.write_bytes(self.USER)
+                    os.replace(fresh, stale)
+                return real_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(bundle.os, "unlink", unlink):
+                code, err = run_main("--out", tmp)
+            self.assertTrue(fired, "the delete never ran")
+            self.assertTrue(stale.is_file(), "the user's file put at the name was deleted unchecked")
+            self.assertEqual(stale.read_bytes(), self.USER)
+            self.assertIn(code, (0, 2), err)
+
+    def test_an_unchanged_file_is_still_replaced_and_a_stale_one_still_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            stale = out / "skills" / "speed-it" / "old-reference.md"
+            stale.write_bytes(b"a stale copy\n")
+            self.forge(out, ["skills/speed-it/old-reference.md"],
+                       {"skills/speed-it/old-reference.md": hashlib.sha256(b"a stale copy\n").hexdigest()})
+            remember(out, {"skills/speed-it/old-reference.md": b"a stale copy\n"})
+            target = out / "skills" / "review-it" / "SKILL.md"
+            before = os.stat(target).st_ino
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            self.assertFalse(stale.exists())
+            self.assertNotEqual(os.stat(target).st_ino, before, "the overwrite did not put a new file in place")
+            self.assertEqual([p for p in out.rglob("*") if ".open-fleet-" in p.name and p.name != bundle.MARKER], [])
+
+    def test_without_an_atomic_exchange_an_overwrite_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            before = snapshot(out)
+            with mock.patch.object(bundle, "_RENAME", None):
+                code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn("no atomic rename exchange", err)
+            self.assertEqual({k: v for k, v in snapshot(out).items() if k != bundle.MARKER},
+                             {k: v for k, v in before.items() if k != bundle.MARKER})
+
+
 class GitControlFilesNeverShip(unittest.TestCase):
     """2026-10-27 audit, W6-04 (the bundle half): the publish job commits the bundle with
     `git add -A`, which obeys a `.gitignore` inside it. A mission carrying one shipped a `dist`

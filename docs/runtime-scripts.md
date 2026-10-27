@@ -1865,7 +1865,11 @@ Fail-closed Orca worker dispatch for fleet coordinators: supervised lane
 behavior pinned by `tests/test_spawn_worker.py`. For non-`ro` profiles it also checks
 deny-hook arming (#562): with `OPEN_FLEET_DENY_HOOK_SETTINGS` (legacy alias
 `ORCA_DENY_HOOK_SETTINGS`) naming the operator-wired settings file, the file must register
-`runtime/scripts/deny-hook.sh` and the hook must answer a deny probe, else `SPAWN=REFUSED`;
+`runtime/scripts/deny-hook.sh` and the hook must answer a deny probe, else `SPAWN=REFUSED`.
+It must also bound the tree the spawn launches into: every selector that names an existing
+tree reaches the gate as `--boundary` (`path:`, `id:<repoId>::<path>`, and `current`/`active`/
+`name:`/`branch:` resolved through the runtime's `worktree show`; a tree it cannot resolve
+refuses), and only `new-child`/`new-top-level` are checked without one (W4-03);
 unset, the spawn proceeds with a loud `UNVERIFIED` warning — the guard is never claimed unchecked. On Orca the custom-argv lane's
 `terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
 `new-top-level` there are refused before any task is created, since only `worker-start` creates a

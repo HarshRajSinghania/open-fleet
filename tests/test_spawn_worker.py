@@ -307,6 +307,53 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
                 **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
             self.assert_refused(rc, err, "not the worktree this spawn is about")
 
+    def _spawn_resolving(self, tmp, selector, settings, show=None):
+        """Spawn through a stub runtime CLI that answers only `worktree show` (with `show`, or
+        an error envelope when show is None)."""
+        bindir = Path(tmp) / "bin"
+        bindir.mkdir(exist_ok=True)
+        receipt = Path(tmp) / "show.json"
+        receipt.write_text(json.dumps(show if show is not None else {"error": "no such worktree"}))
+        stub = bindir / "orca"
+        stub.write_text('#!/bin/sh\ncase "$*" in\n  *"worktree show"*) cat "%s" ;;\n'
+                        '  *) echo \'{"error": "stub"}\'; exit 1 ;;\nesac\n' % receipt)
+        stub.chmod(0o755)
+        return run_spawn(["task_test", selector, "t"], env_extra={
+            **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings), "PATH": f"{bindir}:/usr/bin:/bin"})
+
+    def test_every_selector_that_names_a_tree_gives_the_gate_its_boundary(self):
+        # W4-03 (2026-10-27 audit): only a `path:` selector reached the gate as --boundary, so an
+        # `id:<repoId>::<path>` spawn (the form the script's own refusal recommends), and every
+        # current/name:/branch: spawn, was certified with a registration bounding another tree.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            wt, other = Path(tmp) / "wt", Path(tmp) / "other"
+            other.mkdir()
+            rc, _, err = run_spawn(["task_test", f"id:repo1::{other}", "t"], env_extra={
+                **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assert_refused(rc, err, "not the worktree this spawn is about")
+            for selector in ("current", "name:feature", "branch:feature", "active"):
+                with self.subTest(selector=selector):
+                    rc, _, err = self._spawn_resolving(tmp, selector, settings, {"result": {
+                        "worktree": {"id": f"repo1::{other}", "displayName": "other"}}})
+                    self.assert_refused(rc, err, "not the worktree this spawn is about")
+                    _rc, _, err = self._spawn_resolving(tmp, selector, settings, {"result": {
+                        "worktree": {"id": f"repo1::{wt}", "path": str(wt)}}})
+                    self.assertNotIn("not armed", err)
+            _rc, _, err = run_spawn(["task_test", f"id:repo1::{wt}", "t"], env_extra={
+                **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assertNotIn("not armed", err)
+
+    def test_a_tree_the_runtime_cannot_resolve_refuses_the_arming_gate(self):
+        # Fail closed: a selector that names an existing tree but whose path the runtime does not
+        # give back cannot be checked against the registration, so the spawn does not proceed.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            for show in (None, {"result": {"worktree": {"displayName": "no path"}}}):
+                with self.subTest(show=show):
+                    rc, _, err = self._spawn_resolving(tmp, "current", settings, show)
+                    self.assert_refused(rc, err, "deny-hook not armed")
+
     def test_the_arming_gate_is_told_which_harness_launches(self):
         # A claude registration proves nothing for a codex worker: the gate now learns the agent
         # and refuses when the registration does not cover that harness's tools.

@@ -943,7 +943,52 @@ if [ "$PROFILE" != "ro" ]; then
     case "$agent" in
       claude|codex|openhands|goose|crush|hermes|opencode|omp|pi|jcode) _vs_args+=(--harness "$agent") ;;
     esac
-    case "$sel" in path:*) _vs_args+=(--boundary "${sel#path:}") ;; esac
+    # The tree this spawn launches into, for EVERY selector that names an existing one (W4-03,
+    # 2026-10-27 audit): only path: used to reach the gate, so an id:<repoId>::<path> spawn (the
+    # form the custom-lane refusal recommends) and every current/active/name:/branch: spawn was
+    # certified against a registration bounding any tree at all. path: and <repoId>::<path>
+    # carry the path; a lookup form is resolved by the runtime's own `worktree show` (off Orca,
+    # current/active as base_launch resolved them above). Only new-child/new-top-level name no
+    # tree yet. A tree the runtime does not resolve refuses: nothing shows the registration
+    # bounds it.
+    _vs_wt=""
+    case "$sel" in
+      new-child|new-top-level) : ;;
+      path:*) _vs_wt="${sel#path:}" ;;
+      *::*) _vs_wt="${sel##*::}" ;;
+      *)
+        if [ "$ACTIVE_RUNTIME" != "orca" ] && [ -n "${_launch_wt:-}" ] && [ "$_launch_wt" != "$sel" ]; then
+          _vs_wt=$_launch_wt
+        else
+          _vs_show=$(mktemp)
+          if orca_json "$_vs_show" worktree show --worktree "$sel" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} 2>/dev/null; then
+            _vs_wt=$(python3 -I - "$_vs_show" <<'PY' || true
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(1)
+r = d.get("result", d) if isinstance(d, dict) else {}
+wt = r.get("worktree") if isinstance(r, dict) else None
+wt = wt if isinstance(wt, dict) else {}
+p = wt.get("path")
+if not isinstance(p, str) or not p.startswith("/"):
+    wid = wt.get("id")
+    p = wid.split("::", 1)[1] if isinstance(wid, str) and "::" in wid else ""
+if not p.startswith("/"):
+    raise SystemExit(1)
+print(p)
+PY
+)
+          fi
+          rm -f "$_vs_show"
+          if [ -z "$_vs_wt" ]; then
+            echo "SPAWN=REFUSED task=${task} deny-hook not armed: the runtime did not resolve worktree '${sel}' to a path, so the registration cannot be checked against the tree this spawn launches into (W4-03) — pass path:<abs-path> or id:<repoId>::<path>" >&2
+            exit 2
+          fi
+        fi ;;
+    esac
+    [ -z "$_vs_wt" ] || _vs_args+=(--boundary "$_vs_wt")
     if ! _arming=$(sh "$HERE/deny-hook.sh" --verify-settings "$DENY_HOOK_SETTINGS" ${_vs_args[@]+"${_vs_args[@]}"} 2>&1); then
       echo "SPAWN=REFUSED task=${task} deny-hook not armed: ${_arming} — wire it (deny-hook.sh --settings <worktree>) or unset ORCA_DENY_HOOK_SETTINGS to proceed UNVERIFIED" >&2
       exit 2

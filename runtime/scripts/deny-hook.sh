@@ -255,11 +255,19 @@ if [ "${1:-}" = "--settings" ]; then
   # string yields either invalid JSON or a DIFFERENT path — a boundary silently
   # set somewhere else is worse than no boundary (PR #277 review, P2). Same
   # json.dumps the decision path below already uses.
-  python3 -I -c 'import json,sys; print(json.dumps({
-      "env": {"ORCA_UNIT_WORKTREE": sys.argv[1]},
+  # The COMMAND is also shell-quoted (shlex.quote), because the host runs a hook
+  # command through its shell: a space or `$` in the install path would tear the
+  # command and the hook would never start, silently disabling every control
+  # (W1-07; print-settings-snippet.sh / #382). A space-free path is unchanged.
+  # Both boundary names are pinned to the same worktree (W1-08): the reader prefers
+  # OPEN_FLEET_UNIT_WORKTREE, so pinning only the legacy ORCA_UNIT_WORKTREE let a stale inherited
+  # OPEN_FLEET_UNIT_WORKTREE silently replace the per-worktree pin. install_worktree_hooks pins
+  # both for the same reason; an explicit pin must win over anything inherited.
+  python3 -I -c 'import json,shlex,sys; print(json.dumps({
+      "env": {"OPEN_FLEET_UNIT_WORKTREE": sys.argv[1], "ORCA_UNIT_WORKTREE": sys.argv[1]},
       "hooks": {"PreToolUse": [{
           "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit",
-          "hooks": [{"type": "command", "command": sys.argv[2]}],
+          "hooks": [{"type": "command", "command": shlex.quote(sys.argv[2])}],
       }]},
   }, indent=2))' "$_wt" "$_self" || {
     echo "deny-hook.sh --settings: python3 is required to emit valid JSON" >&2

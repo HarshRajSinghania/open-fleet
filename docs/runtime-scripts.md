@@ -324,7 +324,10 @@ behavior pinned by `tests/test_deny_hook.py`, `tests/test_deny_hook_multi_harnes
 differential corpus `tests/test_deny_hook_conformance.py` (#598, below).
 
 Usage: hook mode reads stdin (no arguments); `deny-hook.sh --settings <worktree>` prints
-the settings.json registration block with the worktree boundary resolved;
+the settings.json registration block with the worktree boundary resolved — the hook path is
+shell-quoted so a space or `$` in the install path cannot tear the command the host runs (W1-07),
+and both `OPEN_FLEET_UNIT_WORKTREE` and `ORCA_UNIT_WORKTREE` are pinned to the worktree so a stale
+inherited value cannot override the per-worktree pin (W1-08);
 `deny-hook.sh --verify-settings <file> [--harness <name>] [--boundary <dir>]` proves a
 registration is armed by running deny and allow probes in that harness's own tool names;
 `--boundary` requires the registration to bound exactly that worktree. A registration may

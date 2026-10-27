@@ -1755,6 +1755,43 @@ class TestScriptShape(unittest.TestCase):
         self.assertEqual(block["env"]["ORCA_UNIT_WORKTREE"], str(wt.resolve()),
                          "the boundary must round-trip byte for byte")
 
+    def test_settings_mode_pins_both_boundary_names_so_a_stale_one_cannot_win(self):
+        # W1-08 (2026-10-27 audit): --settings pinned only the legacy ORCA_UNIT_WORKTREE, while
+        # the reader prefers OPEN_FLEET_UNIT_WORKTREE. A stale inherited OPEN_FLEET_UNIT_WORKTREE
+        # then silently replaced the per-worktree pin. The block pins BOTH names to the same
+        # worktree (as install_worktree_hooks does), so the explicit pin wins over any inherited
+        # value and the reader's preferred name carries it.
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        r = subprocess.run(["sh", str(HOOK), "--settings", str(wt)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        env = json.loads(r.stdout)["env"]
+        self.assertEqual(env.get("OPEN_FLEET_UNIT_WORKTREE"), str(wt.resolve()))
+        self.assertEqual(env.get("ORCA_UNIT_WORKTREE"), str(wt.resolve()))
+
+    def test_settings_mode_shell_quotes_a_hook_path_with_a_space(self):
+        # W1-07 (2026-10-27 audit): the emitted `command` was the bare hook path, and the host
+        # runs a hook command through its shell -- so a space (or `$`) in the install path tore
+        # the command and the hook never started, silently disabling every control. The path is
+        # shell-quoted now (print-settings-snippet.sh / #382), and a quoted command round-trips
+        # through `sh -c`. A space-free path stays byte-identical (shlex.quote adds nothing).
+        spaced = self.tmp / "a b$dir"
+        spaced.mkdir()
+        hook_copy = spaced / "deny-hook.sh"
+        hook_copy.write_bytes(HOOK.read_bytes())
+        hook_copy.chmod(0o755)
+        wt = self.tmp / "unit"
+        wt.mkdir()
+        r = subprocess.run(["sh", str(hook_copy), "--settings", str(wt)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        command = json.loads(r.stdout)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertEqual(shlex.split(command), [str(hook_copy)],
+                         "the command must parse back to exactly the hook path")
+        self.assertNotEqual(command, str(hook_copy),
+                            "a path with a space or $ has to be quoted in the command string")
+
     def test_settings_mode_refuses_a_worktree_that_is_not_there(self):
         r = subprocess.run(["sh", str(HOOK), "--settings", str(self.tmp / "nope")],
                            capture_output=True, text=True)

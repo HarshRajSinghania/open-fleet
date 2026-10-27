@@ -936,5 +936,98 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
         self.assertIn("permission-pull-requests: read", gate)
 
 
+
+class EveryReadAfterTheHeadPostsAStatus(unittest.TestCase):
+    """PR #718 review round 4 (P2): with the PR read done, a hung `pulls/7/reviews` read raised
+    out of check_pr and main exited 2 with no status, though the head was known, an owner's
+    own-branch PR included. Once the head is known, every later read that hangs or fails ends in
+    a posted status: failure, saying which read, and the owner's PR keeps its exemption for the
+    grader (compare) read alone. Driven through subprocess, so each read really hangs
+    (TimeoutExpired) or really fails (a non-zero `gh api` exit)."""
+
+    OWNER_GO = review(go_body(HEAD), state="COMMENTED", login="o", association="OWNER")
+
+    @staticmethod
+    def _pr(owner):
+        login, association = ("o", "OWNER") if owner else ("writer", "COLLABORATOR")
+        return {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "o/r"}},
+                "base": {"ref": "main", "sha": "c" * 40, "repo": {"full_name": "o/r"}},
+                "user": {"login": login}, "author_association": association,
+                "changed_files": 1}
+
+    def _run(self, site, how, owner, post=True):
+        """`site` is "reviews", "pulls/7#2" (the second PR read) or "compare"; `how` is "hang"
+        or "error"."""
+        pr, posted, reads = self._pr(owner), [], {"pulls/7": 0}
+
+        def fake_run(cmd, **kw):
+            if any("/statuses/" in arg for arg in cmd):
+                posted.append(dict(arg.split("=", 1) for i, arg in enumerate(cmd)
+                                   if i and cmd[i - 1] == "-f"))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            path = cmd[-1].removeprefix("repos/o/r/")
+            if path == "pulls/7":
+                reads["pulls/7"] += 1
+            name = "pulls/7#2" if path == "pulls/7" and reads["pulls/7"] == 2 else \
+                "compare" if path.startswith("compare/") else \
+                "reviews" if path == "pulls/7/reviews" else path
+            if name == site:
+                if how == "hang":
+                    raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+                return subprocess.CompletedProcess(cmd, 1, "", "HTTP 502: Bad Gateway")
+            body = ([[self.OWNER_GO]] if name == "reviews" else
+                    {"files": [{"filename": "docs/x.md"}]} if name == "compare" else pr)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+
+        argv = ["--pr", "7", "--repo", "o/r"] + (["--post-status"] if post else [])
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check.subprocess, "run", side_effect=fake_run):
+            code = verdict_check.main(argv)
+        return code, posted, out.getvalue() + err.getvalue()
+
+    def test_a_reviews_read_that_hangs_or_fails_posts_failure(self):
+        for how in ("hang", "error"):
+            for owner in (False, True):
+                with self.subTest(how=how, owner=owner):
+                    code, posted, out = self._run("reviews", how, owner)
+                    self.assertEqual(code, 0, out)
+                    self.assertEqual(len(posted), 1, out)
+                    self.assertEqual(posted[0]["state"], "failure", out)
+                    self.assertIn("reviews", posted[0]["description"])
+                    self.assertLessEqual(len(posted[0]["description"]), 140)
+            code, posted, out = self._run("reviews", how, owner=False, post=False)
+            self.assertEqual((code, posted), (2, []), out)
+
+    def test_a_second_pr_read_that_hangs_or_fails_posts_failure(self):
+        for how in ("hang", "error"):
+            with self.subTest(how=how):
+                code, posted, out = self._run("pulls/7#2", how, owner=False)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("cannot read", posted[0]["description"])
+
+    def test_any_read_failure_after_the_head_posts_failure(self):
+        # The net under grader_refusal's own fail-closed handling: a read added there that
+        # raises still ends in a posted failure, never in exit 2 with no status.
+        with mock.patch.object(verdict_check, "grader_refusal",
+                               side_effect=RuntimeError("gh api compare/x failed: HTTP 500")):
+            code, posted, out = self._run("none", "error", owner=False)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(posted[0]["state"], "failure", out)
+        self.assertIn("cannot read what this head changes", posted[0]["description"])
+
+    def test_a_compare_read_that_hangs_or_fails_posts_a_status(self):
+        for how in ("hang", "error"):
+            with self.subTest(how=how, owner=False):
+                code, posted, out = self._run("compare", how, owner=False)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("cannot read", posted[0]["description"])
+            with self.subTest(how=how, owner=True):
+                # The owner's own-branch PR: the grader read is best-effort (docs/ops.md).
+                code, posted, out = self._run("compare", how, owner=True)
+                self.assertEqual((code, posted[0]["state"]), (0, "success"), out)
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,7 +71,9 @@ latest-wins per context, so a later GO clears an earlier failure without a
 re-run; a push leaves the new head with no status, which blocks once required until a fresh
 GO. With ``--post-status`` the exit code reports whether the status was posted
 (0), not the verdict: the status is the verdict, and a red run on the default
-branch for every unverdicted review would only be noise. Fork PRs carry no PR
+branch for every unverdicted review would only be noise. Only a failure before
+the PR's head SHA is known (naming the PR, or reading it) posts nothing (exit 2);
+every read that fails or hangs after that posts a failure saying which. Fork PRs carry no PR
 number on the ``workflow_run`` event; ``--head-sha`` finds the one open PR at
 that head.
 """
@@ -290,13 +292,28 @@ def _as_pr(value):
     return value if isinstance(value, dict) else {}
 
 
+class ReadFailedAtHead(RuntimeError):
+    """A read that failed (or gave no answer) after the PR's full head SHA was known: the gate
+    can still post a failure status on that head, so it must (PR #718 review round 4)."""
+
+    def __init__(self, head_sha, what, cause):
+        super().__init__(f"{what}: {cause}")
+        self.head_sha, self.what = head_sha, what
+
+
 def check_pr(pr_number, repo):
-    """Fetch the PR head SHA + reviews and evaluate the verdict rule."""
+    """Fetch the PR head SHA + reviews and evaluate the verdict rule. A failed reviews read
+    raises ReadFailedAtHead once the PR read named a full head SHA (a RuntimeError either way)."""
     pr = _as_pr(_gh_api(f"pulls/{pr_number}", repo))
     _PRS_READ[(repo, str(pr_number))] = pr
     head_sha = (pr.get("head") or {}).get("sha", "")
     pr_author = (pr.get("user") or {}).get("login", "")
-    reviews = _gh_api(f"pulls/{pr_number}/reviews", repo, paginate=True)
+    try:
+        reviews = _gh_api(f"pulls/{pr_number}/reviews", repo, paginate=True)
+    except RuntimeError as exc:
+        if FULL_SHA_RE.match(head_sha or ""):
+            raise ReadFailedAtHead(head_sha, "cannot read the PR's reviews", exc) from exc
+        raise
     if not isinstance(reviews, list):
         reviews = []
     hits = go_reviews_at_tip(reviews, head_sha, pr_author)
@@ -479,13 +496,33 @@ def main(argv=None):
     if args.resolve_pr and not args.head_sha:
         print("verdict_check: --resolve-pr needs --head-sha", file=sys.stderr)
         return 2
+    # Only a failure before the PR's head SHA is known (naming the PR, or reading it) leaves no
+    # status: there is no commit to post one on. After that every read failure is a posted
+    # failure saying which read (PR #718 review round 4: a hung reviews read posted nothing).
     try:
         pr_number = args.pr or pr_for_head(args.head_sha, args.repo)
         if args.resolve_pr:
             print(pr_number)
             return 0
         head_sha, reviews, hits, pr_author = check_pr(pr_number, args.repo)
-        graded, refusal = grader_refusal(pr_number, args.repo, head_sha)
+        try:
+            graded, refusal = grader_refusal(pr_number, args.repo, head_sha)
+        except RuntimeError as exc:  # it fails closed itself; this holds if a new read does not
+            if not FULL_SHA_RE.match(head_sha or ""):
+                raise
+            raise ReadFailedAtHead(head_sha, "cannot read what this head changes", exc) from exc
+    except ReadFailedAtHead as exc:
+        print(f"verdict_check: {exc}", file=sys.stderr)
+        if not args.post_status:
+            return 2
+        reason = f"{exc.what}, so the gate fails closed; re-run the gate"
+        try:
+            post_status(args.repo, exc.head_sha, "failure", reason, args.post_status)
+        except RuntimeError as post_exc:
+            print(f"verdict_check: {post_exc}", file=sys.stderr)
+            return 2
+        print(f"verdict_check: posted {args.post_status}=failure on {exc.head_sha}")
+        return 0
     except RuntimeError as exc:
         print(f"verdict_check: {exc}", file=sys.stderr)
         return 2

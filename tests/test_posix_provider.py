@@ -428,6 +428,28 @@ class TestSetsidWorkerLifecycle(PosixRealProcessBase):
             self.prov.terminal_send(res["agentTerminalHandle"], "hello")
         self.assertEqual(ctx.exception.code, "unsupported_operation")
 
+    def test_cmux_send_ends_its_options_before_a_dash_leading_payload(self):
+        # W2-01, cmux leg: `cmux send --workspace <id> <text>` puts the text in the last
+        # positional, so a `-`-leading one is read as a flag. Recorded by a stand-in `cmux` (no
+        # cmux here): a dash-leading payload rides after `--`; any other payload is unchanged.
+        argv_log = Path(self.tmp.name) / "cmux-argv.jsonl"
+        fake = self.bin / "cmux"
+        fake.write_text(f"#!{sys.executable}\nimport json, sys\n"
+                        f"open({str(argv_log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n",
+                        encoding="utf-8")
+        fake.chmod(0o755)
+        with self.prov.state._connect() as conn:
+            conn.execute(
+                "INSERT INTO terminals(handle, worktree, title, command, shell, pid, backend, backend_ref, log_path, state, created_at) "
+                "VALUES ('term_cmux', '', 't', 'x', '/bin/sh', 0, 'cmux', 'ws1', '', 'running', 0)")
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            for text in ("-R", "--help", "hello"):
+                self.assertTrue(self.prov.terminal_send("term_cmux", text)["send"]["accepted"])
+        sent = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sent, [["send", "--workspace", "ws1", "--", "-R\n"],
+                                ["send", "--workspace", "ws1", "--", "--help\n"],
+                                ["send", "--workspace", "ws1", "hello\n"]])
+
     def _hermes_user_home(self, config_text):
         user_home = Path(self.tmp.name) / "hermes-user"
         user_home.mkdir(exist_ok=True)
@@ -578,6 +600,23 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
             self.assertNotEqual(subprocess.run(["tmux", "has-session", "-t", sess], capture_output=True).returncode, 0)
         self.assertEqual(self.prov.worker_show(res["dispatchId"])["worker"]["state"], "stopped")
         self.assertEqual(out.stat().st_mtime, stamp)
+
+    def test_a_dash_leading_payload_arrives_and_is_never_read_as_a_flag(self):
+        # W2-01: `tmux send-keys -l -R` parsed the text as -R (reset terminal), exited 0, and the
+        # send was recorded as accepted with nothing delivered. With no tmux on the host the
+        # backend is setsid, which has no input channel and must refuse rather than fake it.
+        got = Path(self.tmp.name) / "got.txt"
+        reader = f"IFS= read -r line; printf '%s' \"$line\" > {shlex.quote(str(got))}"
+        handle = self.prov.terminal_create(worktree="current", title="reader", command=reader)["terminal"]["handle"]
+        if not self.has_tmux:
+            with self.assertRaises(self.providers.ProviderError) as ctx:
+                self.prov.terminal_send(handle, "-R")
+            self.assertEqual(ctx.exception.code, "unsupported_operation")
+            return
+        sent = self.prov.dispatch(["terminal", "send", "--terminal", handle, "--text=-R"])
+        self.assertTrue(sent["send"]["accepted"])
+        self.assertTrue(_wait_for(got.is_file), "the reader never got a line")
+        self.assertEqual(got.read_text(encoding="utf-8"), "-R", "the payload was eaten as a tmux flag")
 
     def test_a_server_the_spawn_starts_never_hands_one_workers_launch_env_to_the_next(self):
         """The first spawn into NO server starts one, and that client's env becomes the server's

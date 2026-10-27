@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -143,8 +144,25 @@ def build_harness_command(
     return launch
 
 
+_ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def check_env_keys(env: dict[str, Any]) -> None:
+    """Refuse a launch env KEY that is not a shell identifier (W2-02). A key lands in a shell word
+    position (`env K=v …`, `docker run -e K=v … sh -c`), where quoting the value alone makes
+    nothing safe: `A B=v` runs `A`, a `;` in a key ends the command, and a quoted key is a word,
+    not an assignment. Every key the fleet sets is a literal identifier, so this is a floor."""
+    for key in env:
+        if not isinstance(key, str) or not _ENV_KEY.fullmatch(key):
+            raise ProviderError(
+                "invalid_env_key",
+                f"launch env key {key!r} is not a shell identifier ([A-Za-z_][A-Za-z0-9_]*)",
+            )
+
+
 def shell_launch_line(launch: dict[str, Any]) -> str:
     """Render `env` + `argv` of a launch as one safely quoted POSIX shell line."""
+    check_env_keys(launch.get("env") or {})
     env_prefix = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in sorted((launch.get("env") or {}).items()))
     argv = " ".join(shlex.quote(str(a)) for a in launch.get("argv") or [])
     line = f"env {env_prefix} {argv}".strip() if env_prefix else argv
@@ -490,8 +508,22 @@ def most_restrictive_profile(*profiles: str | None) -> str:
     return min(present, key=lambda p: PROFILE_RANK[p]) if present else ""
 
 
+def _text_flag(flags: dict[str, Any], key: str, default: Any = "") -> Any:
+    """The value of a flag whose value is TEXT. `--key` with no value (last, or followed by another
+    `--flag`) parses as True and a repeated one as a list: neither is text, and passing it on
+    raised a TypeError deep in a provider (W2-01). A clean error names the spelling that works."""
+    val = flags.get(key, default)
+    if val is not default and not isinstance(val, str):
+        raise ProviderError(
+            "invalid_argument",
+            f"--{key} needs one text value; use --{key}=<text> for text that starts with '-'",
+        )
+    return val
+
+
 def _parse_flag_map(tokens: list[str]) -> tuple[list[str], dict[str, Any]]:
-    """Parse CLI flag tokens (`--key val` or boolean `--flag`) into `(positionals, flags)`."""
+    """Parse CLI flag tokens (`--key val`, `--key=val`, or boolean `--flag`) into
+    `(positionals, flags)`; a bare `--` ends the flags."""
     pos: list[str] = []
     flags: dict[str, Any] = {}
     BOOL_FLAGS = {
@@ -499,9 +531,23 @@ def _parse_flag_map(tokens: list[str]) -> tuple[list[str], dict[str, Any]]:
         "--screen", "--focus", "--include-visual-layouts", "--fresh",
         "--debug", "--inject", "--json", "--force", "--takeover-legacy", "--takeover",
     }
+    def add(key: str, val: str) -> None:
+        if key in flags:
+            if isinstance(flags[key], list):
+                flags[key].append(val)
+            else:
+                flags[key] = [flags[key], val]
+        else:
+            flags[key] = val
+
     i = 0
     while i < len(tokens):
         tok = tokens[i]
+        if tok == "--":
+            # A bare `--` ends the flags: every token after it is positional, however it is
+            # spelled, so text that starts with `-` is never read as an option (W2-01).
+            pos.extend(tokens[i + 1:])
+            break
         if tok == "--json":
             i += 1
             continue
@@ -509,17 +555,16 @@ def _parse_flag_map(tokens: list[str]) -> tuple[list[str], dict[str, Any]]:
             flags[tok.lstrip("-")] = True
             i += 1
             continue
+        if tok.startswith("--") and "=" in tok:
+            # `--key=value`: the spelling that carries a value starting with `-` (W2-01).
+            key, _, val = tok.lstrip("-").partition("=")
+            add(key, val)
+            i += 1
+            continue
         if tok.startswith("--"):
             key = tok.lstrip("-")
             if i + 1 < len(tokens) and not tokens[i + 1].startswith("--"):
-                val = tokens[i + 1]
-                if key in flags:
-                    if isinstance(flags[key], list):
-                        flags[key].append(val)
-                    else:
-                        flags[key] = [flags[key], val]
-                else:
-                    flags[key] = val
+                add(key, tokens[i + 1])
                 i += 2
             else:
                 flags[key] = True
@@ -630,7 +675,7 @@ class RuntimeProvider:
             if sub == "send":
                 return self.terminal_send(
                     terminal=flags.get("terminal") or (pos[0] if pos else ""),
-                    text=flags.get("text", ""),
+                    text=_text_flag(flags, "text"),
                     enter=not bool(flags.get("no-enter")),
                 )
         if head == "orchestration" and len(clean) >= 2:
@@ -640,7 +685,7 @@ class RuntimeProvider:
                 deps_raw = flags.get("deps")
                 deps = json.loads(deps_raw) if isinstance(deps_raw, str) else (deps_raw or [])
                 return self.task_create(
-                    spec=flags.get("spec", ""),
+                    spec=_text_flag(flags, "spec"),
                     title=flags.get("task-title"),
                     display_name=flags.get("display-name"),
                     deps=deps,
@@ -789,7 +834,7 @@ class RuntimeProvider:
                 reserved = {"subject", "type", "to", "outcome", "from", "payload", "run", "environment", "pairing-code"}
                 attrs = {k: v for k, v in flags.items() if k not in reserved}
                 return self.send_message(
-                    subject=flags.get("subject", ""),
+                    subject=_text_flag(flags, "subject"),
                     msg_type=flags.get("type", "info"),
                     to=flags.get("to"),
                     outcome=flags.get("outcome"),
@@ -814,7 +859,7 @@ class RuntimeProvider:
             if sub == "reply":
                 return self.reply_message(
                     msg_id=flags.get("id", ""),
-                    body=flags.get("body", ""),
+                    body=_text_flag(flags, "body"),
                     run=flags.get("run"),
                     sender=flags.get("from"),
                     retry_request=flags.get("retry-request"),
@@ -822,7 +867,7 @@ class RuntimeProvider:
             if sub == "gate-create":
                 return self.gate_create(
                     task_id=flags.get("task", ""),
-                    question=flags.get("question", ""),
+                    question=_text_flag(flags, "question"),
                     options=flags.get("options"),
                     run=flags.get("run"),
                     sender=flags.get("from"),

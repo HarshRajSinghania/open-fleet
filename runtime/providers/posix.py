@@ -40,6 +40,7 @@ from .base import (
     ProviderError,
     RuntimeProvider,
     build_harness_command,
+    check_env_keys,
     check_monotonic_profile,
     env_get,
     fence_state,
@@ -1431,6 +1432,8 @@ if {repr(self.backend)} == "cmux":
         dispatch_id: str,
         sandbox_meta: dict[str, str],
     ) -> tuple[str, str]:
+        # `-e K=v` is a word in a `sh -c` line: a key that is not a shell identifier is refused (W2-02).
+        check_env_keys(env)
         container = f"openfleet-{dispatch_id}"
         user = self.env.get("OPEN_FLEET_SANDBOX_USER")
         if user is None:
@@ -3161,7 +3164,9 @@ if {repr(self.backend)} == "cmux":
             )
         elif backend == "tmux":
             ref = term_row["backend_ref"] or f"openfleet-{handle}"
-            proc = subprocess.run(["tmux", "send-keys", "-t", ref, "-l", text], capture_output=True, text=True)
+            # `--` ends tmux's options: `-l -R` parsed the text as -R (reset terminal), exited 0, and
+            # the send was recorded as accepted with nothing delivered (W2-01).
+            proc = subprocess.run(["tmux", "send-keys", "-t", ref, "-l", "--", text], capture_output=True, text=True)
             if proc.returncode == 0 and enter:
                 proc = subprocess.run(["tmux", "send-keys", "-t", ref, "Enter"], capture_output=True, text=True)
             if proc.returncode != 0:
@@ -3169,8 +3174,12 @@ if {repr(self.backend)} == "cmux":
         elif backend == "cmux":
             if not term_row["backend_ref"]:
                 raise ProviderError("terminal_send_failed", f"terminal {handle!r} has no cmux workspace id")
+            # The text is cmux's last positional, so a `-`-leading one rides after `--` (W2-01).
+            # Only then: cmux's `--` handling is UNVERIFIED here (no cmux on the audit host), and
+            # every other payload keeps the argv it has always had.
+            end_opts = ["--"] if payload.startswith("-") else []
             proc = subprocess.run(
-                ["cmux", "send", "--workspace", term_row["backend_ref"], payload],
+                ["cmux", "send", "--workspace", term_row["backend_ref"], *end_opts, payload],
                 capture_output=True,
                 text=True,
             )

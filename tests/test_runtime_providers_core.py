@@ -103,6 +103,68 @@ class TestBaseHarnessAndMonotonicProfile(unittest.TestCase):
         self.assertIn("--exclude-tools", pi_ro["command"])
 
 
+class TestFlagValuesAndEnvKeysStayData(unittest.TestCase):
+    """W2-01: a flag VALUE that starts with `-` must stay the value, and a bare `--` ends the
+    flags, so text is never read as an option and never silently becomes a bool. W2-02: a launch
+    env KEY lands in a shell word position (`env K=v …`, `docker run -e K=v … sh -c`), where
+    quoting the value alone makes nothing safe — a key that is not a shell identifier is refused."""
+
+    def setUp(self):
+        self.base = _load_base()
+
+    def test_key_equals_value_carries_a_dash_leading_value(self):
+        pos, flags = self.base._parse_flag_map(["--text=--hello", "--terminal=t1", "--text-x", "y"])
+        self.assertEqual(pos, [])
+        self.assertEqual(flags, {"text": "--hello", "terminal": "t1", "text-x": "y"})
+        self.assertEqual(self.base._parse_flag_map(["--text=-R"])[1], {"text": "-R"})
+        self.assertEqual(self.base._parse_flag_map(["--text="])[1], {"text": ""})
+
+    def test_a_bare_double_dash_ends_the_flags(self):
+        pos, flags = self.base._parse_flag_map(["--terminal", "t1", "--", "--text", "-R"])
+        self.assertEqual(flags, {"terminal": "t1"})
+        self.assertEqual(pos, ["--text", "-R"])
+
+    def test_text_that_parsed_as_a_bool_is_a_clean_error(self):
+        posix = _load_posix()
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s" / "runtime.db"),
+                   "OPEN_FLEET_CLI_CWD": tmp, "OPEN_FLEET_POSIX_BACKEND": "dry-run"}
+            prov = posix.PosixWorktreeProvider(env=env)
+            for argv in (["terminal", "send", "--terminal", "t1", "--text", "--hello"],
+                         ["terminal", "send", "--terminal", "t1", "--text"],
+                         ["terminal", "send", "--terminal", "t1", "--text", "a", "--text", "b"]):
+                with self.subTest(argv=argv):
+                    with self.assertRaises(self.base.ProviderError) as ctx:
+                        prov.dispatch(argv)
+                    self.assertEqual(ctx.exception.code, "invalid_argument")
+                    self.assertIn("--text=", ctx.exception.message)
+
+    def test_a_launch_env_key_must_be_a_shell_identifier(self):
+        ok = self.base.shell_launch_line({"env": {"A_1": "v w", "_B": "x"}, "argv": ["run"]})
+        self.assertEqual(ok, "env A_1='v w' _B=x run")
+        for key in ("A B", "A;touch x", "1A", "", "A-B", "A=B", "A\nB", "$(id)"):
+            with self.subTest(key=key):
+                with self.assertRaises(self.base.ProviderError) as ctx:
+                    self.base.shell_launch_line({"env": {key: "v"}, "argv": ["run"]})
+                self.assertEqual(ctx.exception.code, "invalid_env_key")
+
+    def test_a_docker_env_key_must_be_a_shell_identifier(self):
+        posix = _load_posix()
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s" / "runtime.db"),
+                   "OPEN_FLEET_CLI_CWD": tmp, "OPEN_FLEET_POSIX_BACKEND": "dry-run"}
+            prov = posix.PosixWorktreeProvider(env=env)
+            kw = dict(image="img", wt_path=tmp, inner="true", dispatch_id="d",
+                      sandbox_meta={"sandbox_git": str(Path(tmp) / "sb")})
+            cmd, _ = prov._docker_command(env={"GOOD_KEY": "v"}, **kw)
+            self.assertIn("-e GOOD_KEY=v ", cmd)
+            for key in ("A B", "A;touch x", "-v/:/host"):
+                with self.subTest(key=key):
+                    with self.assertRaises(self.base.ProviderError) as ctx:
+                        prov._docker_command(env={key: "v"}, **kw)
+                    self.assertEqual(ctx.exception.code, "invalid_env_key")
+
+
 class TestPreRenameEnvNames(unittest.TestCase):
     """orca-fleet became open-fleet: every reader takes the OPEN_FLEET_* name and still reads
     the pre-rename ORCA_FLEET_* spelling installed users export when the new one is unset;

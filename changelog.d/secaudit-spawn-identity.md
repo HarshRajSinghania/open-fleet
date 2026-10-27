@@ -5,9 +5,14 @@
   under `python3 -I` changes a pinned assertion that needs a one-way human waiver first).
   `spawn_worker.sh` records every launch's profile under the pane handle the runtime returns
   (`~/.open-fleet/spawn-profiles/`), so a spawn from that pane is capped at it on Orca as well as
-  posix; a session carrying fleet worker identity with no profile is capped at `ro` and a
-  `--parent-profile` flag cannot raise that; a capped session cannot use a command override.
-  These are the worker's own environment and files: a guard on the spawn path, not a sandbox.
+  posix. Each launch reserves its profile there before any launch call (an unwritable registry or
+  an unset `HOME` refuses the spawn), and a session in a runtime pane with no record waits on
+  other panes' reservations and is then capped at any still open, so a worker that spawns
+  before its record is written is capped too; a launch that may have left a worker live
+  unrecorded keeps its reservation. A session carrying fleet worker identity with no profile is
+  capped at `ro` and a `--parent-profile` flag cannot raise that; a capped session cannot use a
+  command override. These are the worker's own environment and files: a guard on the spawn path,
+  not a sandbox.
   The title label is bounded and never option-shaped. `OPEN_FLEET_CLI_COMMAND` /
   `ORCA_CLI_COMMAND` must name one executable with no invisible character, and one resolution in
   `orca_cli.py` now serves the Orca provider, `auto`, `preflight.py`, `install.sh` and

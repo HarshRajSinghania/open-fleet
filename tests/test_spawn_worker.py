@@ -11,12 +11,14 @@ import importlib
 import copy
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,7 +44,7 @@ def run_spawn(args, env_extra=None, task_list=None):
     (written to a file the stub cats, so no shell quoting of the JSON).
     """
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca"}
+        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca"}
         if task_list is not None:
             payload = Path(tmp) / "task-list.json"
             payload.write_text(json.dumps(task_list))
@@ -522,7 +524,7 @@ esac
         return log
 
     def _run(self, tmp, args, env_extra=None):
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(SPAWN), *args], env=env,
@@ -911,7 +913,7 @@ esac
             shutil.copytree(ROOT / "runtime", root / "runtime",
                             ignore=shutil.ignore_patterns("__pycache__"))
         (root / "runtime" / "pins.json").write_text(json.dumps(pins))
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(root / "runtime" / "scripts" / "spawn_worker.sh"), *args],
@@ -1401,7 +1403,7 @@ class TestNonOrcaLaunchTableIsBasePy(unittest.TestCase):
 
     def test_orca_runtime_launch_rows_are_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
                    "SW_PRINT_LAUNCH": "1", "PROFILE": "ro"}
             p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                env=env, capture_output=True, text=True)
@@ -1448,7 +1450,7 @@ class TestParentProfileNarrowing(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --dangerously-skip-permissions"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_SANDBOX_PROFILE": "rw",
                    "OPEN_FLEET_PARENT_PROFILE": "danger"}
@@ -1680,12 +1682,244 @@ class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --permission-mode plan"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro", "OPEN_FLEET_WORKER_ID": "w1"}
             p = subprocess.run(["bash", str(SPAWN), "task_x", "path:/tmp/of-wt", "t", "claude"],
                                env=env, capture_output=True, text=True)
             ws = next((ln for ln in log.read_text().splitlines() if "worker-start" in ln), "")
         self.assertIn("--parent-profile ro", ws, p.stdout + p.stderr)
+
+
+class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
+    """W4-04, Codex round 2 (two P1s against the spawn registry). (1) A record that could not be
+    written (HOME unset or unwritable) only warned, so a ro worker launched without one later
+    spawned PROFILE=rw uncapped. (2) The worker's command runs before its record exists: terminal
+    create returns the handle after starting the command, and worker-start after starting the
+    agent, so a spawn the worker ran at once read no record. A launch now RESERVES its profile in
+    the registry before any launch call (a reservation that cannot be written refuses the spawn),
+    and a session with no record of its own waits on every reservation another pane holds, then is
+    capped at the most restrictive one still open. The race tests run the nested spawn from inside
+    the stubbed launch call, before it returns: deterministic, no sleeps."""
+
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    _stub = TestSpawnWorkerV5Lanes._stub
+    as_worker = TestTheCapReachesTheWorkerOnOrca.as_worker
+
+    def _run(self, tmp, args, env_extra=None):
+        """The lane harness, with HOME=tmp unless env_extra says otherwise (None unsets it)."""
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+               "SETTLE_SECS": "0", "SUBMIT_SECS": "1", **(env_extra or {})}
+        return subprocess.run(["bash", str(SPAWN), *args], env={k: v for k, v in env.items() if v is not None},
+                              capture_output=True, text=True)
+    RW = {"PROFILE": "rw", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"}
+    DANGER = {"PROFILE": "danger", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1"}
+    OVERRIDE = {"WORKER_CMD": "my-agent --go", "ORCA_COORD_ALLOW_CMD_OVERRIDE": "1"}
+    BYPASS = {"PROFILE": "ro", "WORKER_CMD": "claude --dangerously-skip-permissions",
+              "ORCA_COORD_ALLOW_CMD_OVERRIDE": "1"}
+    ARGS = ["task_test", "path:/tmp/wt", "t"]
+
+    @staticmethod
+    def registry(tmp):
+        return Path(tmp) / ".open-fleet" / "spawn-profiles"
+
+    def calls(self, tmp):
+        log = Path(tmp) / "orca-calls.log"
+        return log.read_text() if log.exists() else ""
+
+    def pending(self, tmp):
+        d = self.registry(tmp) / ".pending"
+        return sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) if d.is_dir() else []
+
+    def reserve(self, tmp, profile, launcher, pid):
+        d = self.registry(tmp) / ".pending"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "r-test").write_text(f"{profile} {launcher} {pid}\n")
+        return d / "r-test"
+
+    def hook(self, tmp, verb, handle, children, before=""):
+        """Make the stubbed `verb` run each child spawn FROM the launched pane `handle` before the
+        call returns: the worker's command racing its own registration. Returns the
+        (rc, stdout, stderr) reader for child i."""
+        lines = ["#!/bin/sh", before]
+        for i, env in enumerate(children):
+            child = {"PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+                     "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": handle, **env}
+            out = shlex.quote(f"{tmp}/nested{i}")
+            lines.append("env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in child.items())
+                         + f" bash {shlex.quote(str(SPAWN))} task_child current child claude high"
+                         + f" > {out}.out 2> {out}.err; echo $? > {out}.rc")
+        hook = Path(tmp) / "hook.sh"
+        hook.write_text("\n".join(lines) + "\n")
+        hook.chmod(0o755)
+        stub = Path(tmp) / "orca"
+        marker = {"terminal create": '*terminal\\ create*)   cat',
+                  "worker-start": '*worker-start*)       cat'}[verb]
+        text = stub.read_text()
+        self.assertIn(marker, text)
+        stub.write_text(text.replace(marker, marker[:-3] + f'sh "{hook}"; cat', 1))
+        return lambda i: tuple(Path(f"{tmp}/nested{i}.{s}").read_text() for s in ("rc", "out", "err"))
+
+    def test_a_registry_that_cannot_be_written_refuses_before_any_launch(self):
+        # P1 (1): the launcher warned and launched; the worker then had no record at all.
+        for lane, env in (("override ro", {"PROFILE": "ro", **self.OVERRIDE}), ("ro", {"PROFILE": "ro"}),
+                          ("supervised rw", self.RW)):
+            for home in ("unset", "a file", "read-only"):
+                with self.subTest(lane=lane, home=home), tempfile.TemporaryDirectory() as tmp:
+                    self._stub(tmp)
+                    extra = dict(env, HOME=None)
+                    locked = None
+                    if home == "a file":
+                        (Path(tmp) / "home-file").write_text("")
+                        extra["HOME"] = f"{tmp}/home-file"
+                    elif home == "read-only":
+                        locked = Path(tmp) / "ro-home"
+                        locked.mkdir()
+                        locked.chmod(0o500)
+                        extra["HOME"] = str(locked)
+                    try:
+                        r = self._run(tmp, self.ARGS, extra)
+                    finally:
+                        if locked:
+                            locked.chmod(0o700)
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("SPAWN=REFUSED", r.stderr)
+                    self.assertIn("spawn registry", r.stderr)
+                    for verb in ("terminal create", "worker-start", "task-create", "dispatch"):
+                        self.assertNotIn(verb, self.calls(tmp))
+
+    def test_a_spawn_run_inside_terminal_create_is_capped(self):
+        # P1 (2): an override-launched ro pane runs `PROFILE=rw spawn_worker.sh` (and a bypass
+        # override) before terminal create has returned the handle its record is keyed by.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp)
+            child = self.hook(tmp, "terminal create", "term_shell1",
+                              [{**self.RW, "RESERVATION_WAIT_SECS": "0"},
+                               {**self.BYPASS, "RESERVATION_WAIT_SECS": "0"}])
+            r = self._run(tmp, self.ARGS, {"PROFILE": "ro", **self.OVERRIDE, "HOME": tmp})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            rc, out, err = child(0)
+            self.assertEqual(rc.strip(), "2", out + err)
+            self.assertIn("monotonic privilege narrowing violation", err)
+            self.assertIn("parent profile 'ro'", err)
+            self.assertNotIn("LAUNCH=", out)
+            rc, out, err = child(1)
+            self.assertEqual(rc.strip(), "2", out + err)
+            self.assertIn("coordinator-only", err)
+            self.assertNotIn("LAUNCH=", out)
+            # Once the launch returned, its record replaced the reservation.
+            self.assertEqual((self.registry(tmp) / "term_shell1").read_text().strip(), "ro")
+            self.assertEqual(self.pending(tmp), [])
+
+    def test_a_spawn_run_inside_worker_start_is_capped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp)
+            child = self.hook(tmp, "worker-start", "term_agent1",
+                              [{**self.DANGER, "RESERVATION_WAIT_SECS": "0"},
+                               {**self.BYPASS, "RESERVATION_WAIT_SECS": "0"}])
+            r = self._run(tmp, self.ARGS, {**self.RW, "HOME": tmp})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            rc, out, err = child(0)
+            self.assertEqual(rc.strip(), "2", out + err)
+            self.assertIn("child PROFILE=danger exceeds parent profile 'rw'", err)
+            rc, out, err = child(1)
+            self.assertEqual(rc.strip(), "2", out + err)
+            self.assertIn("coordinator-only", err)
+            self.assertEqual((self.registry(tmp) / "term_agent1").read_text().strip(), "rw")
+            self.assertEqual(self.pending(tmp), [])
+
+    def test_a_reservation_caps_every_unrecorded_pane_but_its_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.reserve(tmp, "ro", "term_coord", os.getpid())  # in flight: its owner is alive
+            fast = {**self.RW, "RESERVATION_WAIT_SECS": "0"}
+            r = self.as_worker(tmp, "term_coord", fast)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("LAUNCH=", r.stdout)
+            for env in ({"ORCA_TERMINAL_HANDLE": "term_other"}, {"OPEN_FLEET_TERMINAL_HANDLE": "term_other"}):
+                with self.subTest(env=env):
+                    r = self.as_worker(tmp, "", {**fast, **env})
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("parent profile 'ro'", r.stderr)
+                    self.assertNotIn("LAUNCH=", r.stdout)
+            # A session outside any runtime pane has no record to wait for, so a reservation does
+            # not cap it (a worker whose harness drops ORCA_TERMINAL_HANDLE is bounded by its
+            # environment alone — the documented residual).
+            r = self.as_worker(tmp, "", fast)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_waiting_spawn_reads_the_record_that_replaces_the_reservation(self):
+        # The wait resolves to the pane's own record, not to a blanket cap: the reservation says
+        # ro, the record that replaces it says rw, and the child is judged against rw.
+        with tempfile.TemporaryDirectory() as tmp:
+            reservation = self.reserve(tmp, "ro", "term_coord", os.getpid())
+            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+                   "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": "term_new",
+                   "RESERVATION_WAIT_SECS": "60", **self.DANGER}
+            p = subprocess.Popen(["bash", str(SPAWN), "task_child", "current", "child", "claude", "high"],
+                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            (self.registry(tmp) / "term_new").write_text("rw\n")
+            reservation.unlink()
+            out, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 2, out + err)
+        self.assertIn("exceeds parent profile 'rw'", err)
+
+    def test_an_orphaned_reservation_caps_at_once(self):
+        # Its launcher died before recording a handle, so a worker may be live with no record:
+        # nothing will resolve it, so no wait, and the cap holds until someone removes it.
+        with tempfile.TemporaryDirectory() as tmp:
+            dead = subprocess.Popen(["true"])
+            dead.wait()
+            reservation = self.reserve(tmp, "ro", "term_coord", dead.pid)
+            r = self.as_worker(tmp, "term_other", {**self.RW, "RESERVATION_WAIT_SECS": "600"})
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("parent profile 'ro'", r.stderr)
+            self.assertIn(str(reservation), r.stderr)
+
+    def test_a_launch_whose_handle_is_unknown_keeps_its_reservation(self):
+        receipt = copy.deepcopy(TestSpawnWorkerV5Lanes.READY_RECEIPT)
+        receipt["result"]["effects"] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp, receipt=receipt)
+            r = self._run(tmp, self.ARGS, {**self.RW, "HOME": tmp})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(len(self.pending(tmp)), 1, r.stderr)
+            self.assertIn("reservation", r.stderr)
+            r = self.as_worker(tmp, "term_other", {**self.DANGER, "RESERVATION_WAIT_SECS": "600"})
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("exceeds parent profile 'rw'", r.stderr)
+
+    def test_a_record_that_cannot_be_written_after_launch_stops_the_lane(self):
+        # The reservation was written, then the registry turned read-only mid-launch: the pane is
+        # live with no record, so the lane stops before anything is injected and the reservation
+        # stays, still capping every unrecorded pane.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub(tmp)
+            reg = self.registry(tmp)
+            self.hook(tmp, "terminal create", "term_shell1", [], before=f"chmod 500 {shlex.quote(str(reg))}")
+            try:
+                r = self._run(tmp, self.ARGS, {"PROFILE": "ro", "HOME": tmp})
+            finally:
+                reg.chmod(0o700)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("step=register-spawn", r.stderr)
+            self.assertNotIn("dispatch", self.calls(tmp))
+            self.assertFalse((reg / "term_shell1").exists())
+            self.assertEqual(len(self.pending(tmp)), 1)
+
+    def test_a_launch_that_never_ran_leaves_no_reservation(self):
+        refusal = {"error": {"code": "task_not_startable", "message": "no", "data": {}}}
+        for name, stub_kw, env, files in (
+                ("worker-start refused", {"receipt": refusal}, self.RW, {}),
+                ("terminal create refused", {}, {"PROFILE": "ro"},
+                 {"terminal-create.json": {"error": {"code": "worktree_not_found", "message": "no"}}}),
+                ("task not ready", {}, self.RW,
+                 {"task-list.json": task_list_payload({"id": "task_test", "status": "pending"})})):
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                self._stub(tmp, **stub_kw)
+                for fname, payload in files.items():
+                    (Path(tmp) / fname).write_text(json.dumps(payload))
+                r = self._run(tmp, self.ARGS, {**env, "HOME": tmp})
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.pending(tmp), [], r.stderr)
 
 
 class TestNonOrcaDanger(unittest.TestCase):
@@ -1699,6 +1933,15 @@ class TestNonOrcaDanger(unittest.TestCase):
                               "privileged": False, "network": "bridge"},
                 "mounts": [{"source": "/tmp/of-wt", "target": "/tmp/of-wt", "mode": "rw"}],
                 "failures": [], "warnings": []}
+
+    def setUp(self):
+        # The launch writes the spawn registry under HOME, so HOME is a scratch directory, and the
+        # SAME one this process expands `~` against: the "home mount" case names the judge's $HOME.
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        patcher = mock.patch.dict(os.environ, {"HOME": home.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def spawn(self, doctor, doctor_rc=0, args=(), selector="new-child", **extra):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1721,7 +1964,7 @@ case "$*" in
 esac
 """)
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": os.environ["HOME"], "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "danger",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1",
                    "ORCA_SANDBOX_RECIPE": "lane-7"}
@@ -1800,7 +2043,7 @@ class TestRuntimeNameIsCaseInsensitive(unittest.TestCase):
         for spelled in ("ORCA", "Orca", " orca "):
             for var in ("OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME"):
                 with self.subTest(runtime=spelled, var=var), tempfile.TemporaryDirectory() as tmp:
-                    env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+                    env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
                            "SW_PRINT_LAUNCH": "1", "PROFILE": "ro", var: spelled}
                     p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                        env=env, capture_output=True, text=True)
@@ -1944,7 +2187,7 @@ esac
 def run_orca_launch(agent, profile="ro", env_extra=None):
     """spawn_worker.sh up to its resolved launch (SW_PRINT_LAUNCH) ON ORCA: the custom-argv rows."""
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
                "SW_PRINT_LAUNCH": "1", "PROFILE": profile, **(env_extra or {})}
         p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", agent, "high"],
                            env=env, capture_output=True, text=True)

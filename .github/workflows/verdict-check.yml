@@ -26,9 +26,9 @@
 #     fresh GO arrives. Fail-closed with zero poison.
 #   - Review events only, and the job runs only for GO-marker reviews from a
 #     trusted author (PR author or OWNER/MEMBER/COLLABORATOR — mirroring the
-#     script's trust tiers). Greptile re-reviews every push and any stranger
-#     can COMMENT; evaluating those would fail-poison each head, letting an
-#     untrusted reviewer grief the PR (PR #465 review, P1).
+#     script's trust tiers). A review bot can re-review every push and any
+#     stranger can COMMENT; evaluating those would fail-poison each head,
+#     letting an untrusted reviewer grief the PR (PR #465 review, P1).
 #   - Dismissals of GO-marker reviews evaluate (same gate): dismissing the GO
 #     must actively re-block. Dismissals of anything else skip.
 # Residual poison cases (both need the standard re-run escape hatch after the

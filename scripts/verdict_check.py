@@ -6,22 +6,37 @@ GO verdict review whose ``reviewed_sha`` equals the PR's current head SHA. Any
 push moves the head and fails the check until a fresh GO is posted.
 
 Verdict convention (posted as the body of an APPROVING review, or a COMMENTED
-review by the PR author or a collaborator)::
+review by a trusted account)::
 
     VERDICT: GO
     reviewed_sha: <full 40-hex head sha>
 
 A GO counts from an APPROVED review (GitHub restricts Approve to collaborators
-with write access), or from a COMMENTED review whose author is the PR author
-(the coordinator binding its own verdict — the normal fleet flow, since GitHub
-forbids approving your own PR) or whose author_association is OWNER / MEMBER /
-COLLABORATOR. A drive-by COMMENTED GO from anyone else never counts (PR #460
-review, P1).
+with write access), or from a COMMENTED review whose author_association is
+OWNER / MEMBER / COLLABORATOR — which covers the owner binding a verdict on
+their own PR, the normal fleet flow, since GitHub forbids approving your own
+PR. A drive-by COMMENTED GO from anyone else never counts (PR #460 review, P1),
+and neither does a fork author's GO on their own PR: being the PR's author is
+no trust tier (2026-10-27 security audit, W6-06).
 
-A self-GO is a SHA binding, NOT independent review: it proves which head its
-author claims to have checked, nothing more. Requiring a second person is
-branch protection's job (required approvals), and this check never substitutes
-for it. The trusted status workflow runs the checker from the default branch
+A GO is a SHA binding, NOT evidence that anyone read the diff: it proves that a
+trusted account claimed to have checked this exact head, nothing more. With one
+human maintainer the owner's self-GO is the normal case, so the gate cannot
+prove independent review; requiring a second person is branch protection's job
+(required approvals), and this check never substitutes for it.
+
+The grader (W6-01): a ``pull_request`` run loads its workflow from the PR's
+merge ref, so the PR supplies the YAML that decides what the required `gates`,
+`guard` and `pinned-demo` contexts run — a fork PR could empty those jobs and
+get three green contexts that checked nothing. This check, run from the default
+branch, therefore also refuses any PR that changes a GRADER path (added,
+modified, removed or renamed from or to one) unless the repository owner wrote
+it: the files GitHub or the runner read to choose which commands a required job
+executes, before any repository code runs — ``.github/workflows/`` and
+``.github/actions/`` (job and step definitions), and ``.github/ci-tools.lock``
+(which build of each CI tool those jobs install and execute). A files list
+GitHub may have cut short (3000 files at most) or a head that moves while it is
+read fails closed. The trusted status workflow runs the checker from the default branch
 (verdict-gate.yml); its activation remains pending in #594 (docs/ops.md). Approval policy beyond that (how many, from whom, conversations
 resolved) stays enforced by branch protection itself; this check adds SHA
 binding, not a second approval rule. Dismissed and change-requested reviews
@@ -73,11 +88,21 @@ TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 STATUS_CONTEXT = "verdict-gate"
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
+# The CI grader (W6-01, module docstring): what GitHub or the runner reads to choose which
+# commands a required job executes, before any repository code runs. Only the owner's PR may
+# change it; docs/ops.md#merge-gate says why the line is drawn here.
+GRADER_DIRS = (".github/workflows/", ".github/actions/")
+GRADER_FILES = (".github/ci-tools.lock",)
+# GitHub's PR files list stops at 3000 entries; a list that long may be missing the one that
+# matters.
+FILES_LIST_CAP = 3000
+
 
 def _author_trusted(review, pr_author):
-    login = (review.get("user") or {}).get("login", "")
-    if pr_author and login == pr_author:
-        return True  # a SHA binding by the coordinator, not review (module docstring).
+    """Whether a COMMENTED review's author is a trusted tier. ``pr_author`` grants nothing: a
+    fork author's GO on their own PR is self-assertion, not a binding (W6-06). The owner's
+    own-PR GO still counts, through the OWNER tier."""
+    del pr_author
     return review.get("author_association") in TRUSTED_ASSOCIATIONS
 
 
@@ -188,6 +213,63 @@ def check_pr(pr_number, repo):
     return head_sha, reviews, hits, pr_author
 
 
+def grader_paths(files):
+    """Every changed path in a GitHub PR files list that belongs to the CI grader, sorted.
+
+    A rename counts on either side (``previous_filename`` too): moving a workflow out of
+    ``.github/workflows/`` deletes a gate as surely as emptying it.
+    """
+    hits = set()
+    for entry in files if isinstance(files, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("filename", "previous_filename"):
+            path = entry.get(key)
+            if isinstance(path, str) and (path in GRADER_FILES or path.startswith(GRADER_DIRS)):
+                hits.add(path)
+    return sorted(hits)
+
+
+def _is_owner(pr, repo):
+    """The PR's author is the repository owner: GitHub says OWNER, or the login is the owner's
+    (logins compare case-insensitively, as GitHub resolves them)."""
+    login = (pr.get("user") or {}).get("login", "")
+    owner = repo.split("/", 1)[0]
+    return pr.get("author_association") == "OWNER" or bool(login) and login.lower() == owner.lower()
+
+
+def grader_refusal(pr_number, repo, head_sha):
+    """(grader paths, refusal reason or None) for the PR at ``head_sha`` (W6-01).
+
+    Reads the PR's files list, then the PR again: the second read names the head the list
+    described, so a push between the two reads fails closed rather than pairing one head's
+    verdict with another head's files. A list GitHub may have cut short fails closed too.
+    """
+    files = _gh_api(f"pulls/{pr_number}/files?per_page=100", repo, paginate=True)
+    if not isinstance(files, list):
+        files = []
+    pr = _gh_api(f"pulls/{pr_number}", repo)
+    if isinstance(pr, list):
+        pr = pr[0] if pr else {}
+    if not isinstance(pr, dict):
+        pr = {}
+    paths = grader_paths(files)
+    now = (pr.get("head") or {}).get("sha", "")
+    if not head_sha or now.lower() != head_sha.lower():
+        return paths, (f"head moved to {now[:12] or 'nothing'} while it was read; "
+                       "re-run the gate on the new head")
+    changed = pr.get("changed_files")
+    if len(files) >= FILES_LIST_CAP or (isinstance(changed, int) and len(files) < changed):
+        return paths, (f"the files list may be cut short ({len(files)} listed of "
+                       f"{changed if isinstance(changed, int) else '?'} changed), so a grader "
+                       "change could hide")
+    if paths and not _is_owner(pr, repo):
+        more = f" +{len(paths) - 1} more" if len(paths) > 1 else ""
+        return paths, (f"changes the CI grader ({paths[0]}{more}); only the owner's PR may — "
+                       "this PR's checks ran its own copy")
+    return paths, None
+
+
 def pr_for_head(head_sha, repo):
     """The number of the one OPEN pull request whose head is ``head_sha``.
 
@@ -250,6 +332,7 @@ def main(argv=None):
             print(pr_number)
             return 0
         head_sha, reviews, hits, pr_author = check_pr(pr_number, args.repo)
+        graded, refusal = grader_refusal(pr_number, args.repo, head_sha)
     except RuntimeError as exc:
         print(f"verdict_check: {exc}", file=sys.stderr)
         return 2
@@ -275,6 +358,11 @@ def main(argv=None):
                       "(drive-by COMMENTED reviews never count)")
         else:
             reason = "no GO verdict review on this PR"
+    for path in graded:
+        print(f"  grader path changed: {path}")
+    if refusal:
+        # Before any GO: a verdict on a PR that rewrote its own checks is a verdict on nothing.
+        passed, reason = False, refusal
     if passed:
         print(f"verdict_check: PASS — {reason}")
     else:

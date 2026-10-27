@@ -11,6 +11,12 @@
 # a dispatch loads the workflow from whichever branch is picked (PR #572
 # review, P1). To re-evaluate, post a review or re-run the latest gate run.
 #
+# It is also the one required context a PR cannot rewrite, so it refuses a PR
+# that changes the CI grader — .github/workflows/, .github/actions/,
+# .github/ci-tools.lock — unless the repository owner opened it: a pull_request
+# run loads the PR's own YAML, which could empty gates/guard/pinned-demo
+# (2026-10-27 security audit, W6-01; docs/ops.md#merge-gate).
+#
 # verdict-check.yml is the trigger: every review it sees completes a run, and
 # that completion wakes this gate. The gate re-derives the verdict from the
 # GitHub API and posts it on the PR's CURRENT head (statuses are latest-wins per

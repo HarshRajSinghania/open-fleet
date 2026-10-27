@@ -50,6 +50,18 @@ names actually blocks. `verdict` is no longer required (#594); it still runs as 
 No approving review is required: the owner is the only collaborator, and GitHub does not let an
 author approve their own PR, so requiring one would block every merge.
 
+Fork pull requests get no write token and no secret (API read-back, 2026-10-27). The repository
+is public, and on a public repository GitHub never sends a write token or a secret to a workflow
+run that a fork's pull request triggers, whatever the workflow's `permissions:` asks for.
+`GET /repos/ravidsrk/open-fleet/actions/permissions/workflow` returned
+`{"default_workflow_permissions":"read","can_approve_pull_request_reviews":false}`: a run's
+`GITHUB_TOKEN` is read-only unless its workflow asks for more, and it can never approve a pull
+request. Re-read both with `gh api repos/ravidsrk/open-fleet --jq .visibility` and
+`gh api repos/ravidsrk/open-fleet/actions/permissions/workflow`. If the repository ever goes
+private, also read Settings → Actions → General → "Fork pull request workflows in private
+repositories" (send write tokens, send secrets), which applies only then. So a fork PR's own
+workflow can turn a required check green (below), but it cannot write `main`, a tag or a release.
+
 The trusted check for a GO verdict is the `verdict-gate` commit status, posted by
 [`verdict-gate.yml`](../.github/workflows/verdict-gate.yml). GitHub loads that workflow from
 `main` on `workflow_run`, after every review that
@@ -57,6 +69,40 @@ The trusted check for a GO verdict is the `verdict-gate` commit status, posted b
 `scripts/verdict_check.py`, so nothing a PR edits takes part in gating it. The `verdict` job in
 `verdict-check.yml` still runs as fast feedback, but a review run loads that file from the PR,
 where the PR can rewrite it.
+
+**What a green `verdict-gate` proves.** A trusted account bound `VERDICT: GO` to this exact head
+SHA (an APPROVED review, or a COMMENTED one whose author is OWNER, MEMBER or COLLABORATOR), and
+the PR changes no grader path unless the owner opened it (below). It does not prove that anyone
+read the diff: with one human maintainer, the owner's GO on their own PR is the normal case.
+Being the PR's author is no trust tier, so a fork author's GO on their own PR never counts
+(2026-10-27 security audit, W6-06).
+
+**A PR cannot change its own grader (W6-01).** `gates`, `guard` and `pinned-demo` come from
+`pull_request` runs, which GitHub loads from the PR's merge ref, so the PR's own YAML decides
+what those contexts run. A fork PR that empties the jobs (`steps: [{run: echo ok}]`) gets all
+three green with every real gate skipped, and branch protection matches them by name only.
+`verdict-gate` is the one required context whose code comes from `main`, so `main`'s
+`scripts/verdict_check.py` also posts `verdict-gate` failure, whatever GO the PR has, when the PR
+adds, edits, removes or renames a grader path, unless the repository owner opened it (the PR's
+`author_association` is `OWNER`, or its author is the owner's login). The grader is what GitHub
+or the runner reads to choose which commands a required job executes, before any repository code
+runs:
+- `.github/workflows/`: every job, step, `needs:` and `if:` of the three build contexts, and
+  `verdict-check.yml`, which wakes this gate.
+- `.github/actions/`: a local action a workflow can `uses: ./.github/actions/…` (none today).
+- `.github/ci-tools.lock`: which build of coverage, ruff and agentskills those jobs install and
+  run. A PR could lock a package it published itself.
+
+Repository code the jobs run (`scripts/`, `tests/`, `bench/`) is not on the list. It is the code
+under review, and it reaches a check only through an unchanged workflow step, beside the suite,
+ruff, the secret scan and the base-sourced floor guard. The bar's own settings (`.coveragerc`,
+`ruff.toml`, `.gitleaksignore`, the routing floor, the vf-bench pins) are the
+floor guard's frozen surface, which `guard` checks with the base branch's `floor_guard.py`. The
+gate reads the PR's files list with its own token (Pull requests: read). A list GitHub may have
+cut short (it stops at 3000 files), or a head that moves while it is read, fails closed. An
+outside contributor's workflow change lands when the owner re-opens it from their own branch.
+The rule binds only once it is on `main`: the gate runs `main`'s copy of the script, so the PR
+that adds it is still graded by the copy it replaces.
 
 Activated on 2026-10-24 (#594):
 - **The app:** `open-fleet-verdict-gate` (app 5451539) was created from a manifest with Commit

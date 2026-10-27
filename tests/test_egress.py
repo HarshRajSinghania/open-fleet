@@ -264,7 +264,9 @@ class TestVerify(EgressBase):
         self.assertIn("2 receipt(s)", r.stdout)
 
     def test_a_missing_ledger_is_an_empty_intact_chain(self):
-        r = self.run_egress("verify")
+        # Only when the caller says no receipts were expected (--allow-empty). By default no
+        # receipts is EXIT_NO_RECEIPTS, never a pass (W5-03; TestTheLedgerIsWhereItSays).
+        r = self.run_egress("verify", "--allow-empty")
         self.assertEqual(r.returncode, 0)
         self.assertIn("0 receipt(s)", r.stdout)
 
@@ -774,7 +776,10 @@ class TestTheLedgerIsWhereItSays(EgressBase):
                     self.ledger.write_bytes(b"")
                 plain = self.run_egress("verify")
                 self.assertNotIn("chain intact", plain.stdout + plain.stderr)
-                self.assertIn("NO RECEIPTS", plain.stdout)
+                self.assertEqual(plain.returncode, egress.EXIT_NO_RECEIPTS, "the plain form fails too")
+                allowed = self.run_egress("verify", "--allow-empty")
+                self.assertEqual(allowed.returncode, 0, allowed.stderr)
+                self.assertIn("0 receipt(s)", allowed.stdout)
                 r = self.run_egress("verify", "--require-receipts")
                 self.assertEqual(r.returncode, egress.EXIT_NO_RECEIPTS, r.stdout + r.stderr)
                 self.assertNotEqual(egress.EXIT_NO_RECEIPTS, 0)
@@ -800,7 +805,7 @@ class TestTheLedgerIsWhereItSays(EgressBase):
         r = self.bare("verify", "--require-receipts", cwd=self.repo)
         self.assertEqual(r.returncode, egress.EXIT_NO_RECEIPTS, r.stdout + r.stderr)
         self.assertNotIn("chain intact", r.stdout + r.stderr)
-        self.assertNotIn("chain intact", self.bare("verify", cwd=self.repo).stdout)
+        self.assertEqual(self.bare("verify", cwd=self.repo).returncode, egress.EXIT_NO_RECEIPTS)
 
 
 class TestANonFileLedgerIsRefusedNeverWaitedOn(EgressBase):

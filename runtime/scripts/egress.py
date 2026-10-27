@@ -32,9 +32,8 @@ Record (format v2: one canonical JSON object per line, mode 0600)::
   silently. ``--ledger``, ``$OPEN_FLEET_EGRESS_LEDGER`` or ``$ORCA_EGRESS_LEDGER`` name another
   file, and ``write`` then says so on stderr (as it does when the path resolves through a symlink,
   or names a nested root's ledger): a receipt never lands elsewhere silently. Only the
-  ledger's own directory is created, never a tree above it. And ``verify`` never calls no
-  receipts (no ledger file, or an empty one) an intact chain; ``--require-receipts``, the form a
-  close that expects receipts runs, exits 4 on them.
+  ledger's own directory is created, never a tree above it. And ``verify`` never passes on no
+  receipts (no ledger file, or an empty one: exit 4) unless the caller says none were expected.
 * **Content-free.** Never the payload text: a sha256 of the exact bytes sent
   and a byte count, and a ``payload_class`` that describes the KIND of thing
   sent ("pr-body", "issue-comment"). ``payload_sha256`` is null when a
@@ -78,14 +77,13 @@ Subcommands
     grants   verify (and any anchors), then list the distinct consents, with sink/host and use counts
 
 Exit codes
-    0  ok (``verify``: the chain is intact, or holds no receipts and none were required)
+    0  ok (``verify``: the chain is intact, or holds no receipts and the caller said none were expected)
     2  usage -- a missing or malformed argument
     3  fail-closed: the receipt could not be written, the ledger fails verification, or a
        ``verify`` anchor (``--expect-head`` / ``--expect-ancestor``) did not match. Never treat a 3
        as permission to send.
-    4  ``verify --require-receipts`` found no receipts (no ledger file, or an empty one), and no
-       sealed empty head (``--expect-head "(empty)"``) said none were expected. Without the flag
-       no receipts exits 0 and says ``NO RECEIPTS``, never "chain intact".
+    4  ``verify`` found no receipts (no ledger file, or an empty one): never a pass unless the
+       caller said none were expected (``--allow-empty``, or ``--expect-head "(empty)"``).
 
 How to wire
     Every off-repo write the coordinator itself performs is preceded by
@@ -703,17 +701,16 @@ def cmd_verify(args):
         return failed
     ancestors = getattr(args, "expect_ancestor", None)
     expected = getattr(args, "expect_head", None)
-    # No receipts is not an intact chain (W5-03): a close whose receipts were routed elsewhere, or
-    # never written, finds none here. A close that expects receipts says so (--require-receipts)
-    # and fails; a sealed empty head (--expect-head "(empty)") is an explicit none-expected.
+    # No receipts is not a clean bill (W5-03): a close whose receipts were routed elsewhere, or
+    # never written, finds none here. It passes only when the caller says none were expected:
+    # --allow-empty, or a sealed empty head (--expect-head "(empty)").
     sealed_empty = expected is not None and _anchored_value(expected) == ""
     if count == 0 and not sealed_empty:
-        if getattr(args, "require_receipts", False):
-            _print(f"egress: NO RECEIPTS in {where} — a close that expects receipts must find them here",
-                   file=sys.stderr)
+        if not getattr(args, "allow_empty", False):
+            _print(f"egress: NO RECEIPTS in {where} — a close that expects receipts must find them here; if "
+                   "this run sent nothing, say so with --allow-empty", file=sys.stderr)
             return EXIT_NO_RECEIPTS
-        _print(f"egress: NO RECEIPTS, 0 receipt(s) in {where} — nothing was verified; a close that expects "
-               "receipts runs `verify --require-receipts`, which exits 4 here")
+        _print(f"egress: NO RECEIPTS, 0 receipt(s) in {where} — none expected (--allow-empty)")
         return EXIT_OK
     if expected is not None:
         _print(f"egress: chain intact and anchored, {count} receipt(s) in {where} — head {shown}")
@@ -792,8 +789,8 @@ def build_parser():
     p = argparse.ArgumentParser(
         prog="egress.py",
         description="Content-free hash-chained receipts for off-repo sends.",
-        epilog="exit 0 ok / 2 usage / 3 fail-closed (receipt unwritable, or chain tampered) / 4 verify "
-               "--require-receipts found no receipts",
+        epilog="exit 0 ok / 2 usage / 3 fail-closed (receipt unwritable, or chain tampered) / 4 verify found "
+               "no receipts (pass --allow-empty when none were sent)",
     )
     p.add_argument("--ledger", default=None,
                    help=f"ledger path (default ${PRIMARY_LEDGER_ENV}, ${LEDGER_ENV}, or "
@@ -816,10 +813,12 @@ def build_parser():
     v = sub.add_parser("verify", help="recompute the hash chain")
     v.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     _anchor_arguments(v)
+    v.add_argument("--allow-empty", action="store_true", dest="allow_empty",
+                   help="this run sent nothing: no ledger, or an empty one, passes. Without it, "
+                        "no receipts exits 4, never 0 (W5-03); an anchor naming a receipt still fails")
     v.add_argument("--require-receipts", action="store_true", dest="require_receipts",
-                   help="a close that expects receipts: no ledger, or an empty one, exits 4, never 0 "
-                        "(W5-03). Without it no receipts exits 0 and says NO RECEIPTS. An anchor "
-                        "naming a receipt fails either way")
+                   help="the default since no receipts exits 4; kept so a close written for the "
+                        "opt-in form still runs")
 
     sub.add_parser("head", help="verify, then print the chain head to anchor off the writer")
 

@@ -36,9 +36,9 @@ python3 scripts/gen-badges.py --check --release   # on a cut: the tests badge at
 python3 -m unittest discover -s tests         # full suite green (about an hour serially; `--fast` reports it as SKIP(--fast))
 python3 runtime/scripts/proof_status.py --check   # every proof_evidence resolves
 python3 runtime/scripts/run_report.py         # every claimed tier binds to artifacts
-BRANCH=$(git symbolic-ref --quiet --short HEAD || echo main)   # the branch being cut (main when detached)
-RELEASE_SHA=$(git rev-parse HEAD) gh run list --workflow validate --branch "$BRANCH" --limit 1 --json conclusion,headSha \
-  -q '.[0] | select(.conclusion=="success" and .headSha==env.RELEASE_SHA) | "bound GREEN at \(.headSha)"'
+export RELEASE_SHA=$(git rev-parse HEAD)   # the runs at exactly this commit, on any branch
+gh run list --workflow validate --commit "$RELEASE_SHA" --limit 20 --json conclusion,headSha \
+  -q '[.[] | select(.headSha==env.RELEASE_SHA)][0] | select(.conclusion=="success") | "bound GREEN at \(.headSha)"'
 # bound GREEN at <the recorded SHA> — empty output fails the gate: a stale green from another SHA does not count
 ```
 
@@ -112,18 +112,19 @@ the workflow may set `defaults:`. So `exit 0` or `if false; then …` before the
 grep -c 'sh scripts/install.sh' README.md docs/distribution.md
 # README.md: >=1, docs/distribution.md: >=1 (same command in both)
 test -f docs/release-1.0-checklist.md && echo "this file exists"
-BRANCH=$(git symbolic-ref --quiet --short HEAD || echo main)   # the branch being cut (main when detached)
-RELEASE_SHA=$(git rev-parse HEAD) gh run list --workflow install --branch "$BRANCH" --limit 1 --json conclusion,headSha \
-  -q '.[0] | select(.conclusion=="success" and .headSha==env.RELEASE_SHA) | "bound GREEN at \(.headSha)"'
+export RELEASE_SHA=$(git rev-parse HEAD)   # the runs at exactly this commit, on any branch
+gh run list --workflow install --commit "$RELEASE_SHA" --limit 20 --json conclusion,headSha \
+  -q '[.[] | select(.headSha==env.RELEASE_SHA)][0] | select(.conclusion=="success") | "bound GREEN at \(.headSha)"'
 # bound GREEN at <the recorded SHA> — empty output fails the gate: a stale green from another SHA does not count
 ```
 
-Both CI checks (gate 0's `validate`, gate 4's `install`) read the latest run on the branch being
-cut, which [ops.md](ops.md#release-cut) starts on a release branch, and require it green at
-HEAD; on `main` that is the push run, as before (2026-10-27 security audit, W6-12). A release
-branch gets its `validate` run from its pull request. `install` runs there only when the PR
-touches an install path, so when the newest commit did not trigger it, run it at the branch head
-with `gh workflow run install.yml --ref "$BRANCH"` and wait for it to finish.
+Both CI checks (gate 0's `validate`, gate 4's `install`) read the runs at exactly HEAD, whatever
+branch they ran on, and require the newest of them green (2026-10-27 security audit, W6-12).
+[ops.md](ops.md#release-cut) starts a cut on a release branch, whose HEAD has no run on `main`;
+reading by branch also let a fork's pull request from a same-named branch take the one run read
+(PR #718 re-attack). A release branch gets its `validate` run from its pull request. `install`
+runs there only when the PR touches an install path, so when HEAD did not trigger it, run it
+there with `gh workflow run install.yml --ref <the release branch>` and wait for it to finish.
 
 ## Gate 5 — runtime re-pinned, chaining exercised (epic DoD 5)
 

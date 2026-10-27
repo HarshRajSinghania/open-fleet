@@ -94,7 +94,9 @@ The launcher starts both containers with these properties:
   exception's type and frames only), and a call whose usage it cannot price settles its whole
   reservation. `count_tokens` is free but bounded (5,000 calls, 2 GiB of bodies per launch), with
   a running tally every 100 calls and on every later line. A connection that sends nothing is cut
-  off after 60 s, and at most 32 are served at once;
+  off after 60 s, its request line and headers must arrive within 30 s in all (a byte at a time
+  does not extend it), at most 32 are served at once, and every connection closed unanswered is
+  counted as a `drop` line;
 - the arm sees the launcher's attestation, read-only. The attestation holds a fresh nonce, the
   commit, the arm, the image and the host's name, hashed (`host_sha256`), which names the machine
   across launches. The broker's container has the hostname `of-live-<nonce>`, and the arm's
@@ -145,11 +147,15 @@ when its sha256 is the pinned one, and the build fails unless the installed bina
 the 2.1.304 release manifest gives for the platform (x86_64 or aarch64) and reports that version.
 A version bump re-pins both digests. The apt packages (git, curl, certificates) are the base's
 distribution's current ones, not pinned. This is
-the only step that downloads anything. The image carries the Dockerfile's sha256 as a label. A
-launch refuses an image whose label is not the committed Dockerfile's sha256, unless you pass
-`--allow-foreign-image`, and the receipt records both facts (`from_committed_dockerfile`,
-`foreign_image_allowed`). The label is the build's own claim, so it shows which Dockerfile was
-used. It is not a check of the image's contents. Both containers run this image.
+the only step that downloads anything. The image carries the Dockerfile's sha256 as a label, and
+the build records the image ID it produced, with that sha256, in `~/of-live/images.json`, outside
+the image. A launch refuses an image whose ID this launcher's build did not record from the
+committed Dockerfile, or whose label differs, unless you pass `--allow-foreign-image`; the receipt
+records all three (`built_by_this_launcher`, `from_committed_dockerfile`, `foreign_image_allowed`).
+The label alone is not enough: docker copies it into any image built `FROM` this one. Both checks
+guard against accidents, a stale or derived image run by mistake. Anyone who can run docker is
+root-equivalent and can forge either, so they are not a check against that person, and neither is
+a check of the image's contents. Both containers run this image.
 
 ## 2. Store the token
 
@@ -260,7 +266,7 @@ output as `.log` and the broker's ledger in `.broker/spend.jsonl`. The receipt h
 |---|---|
 | `arm`, `arm_args`, `argv` | The arm, your arguments, and the exact command the container ran |
 | `commit` | The checkout's `HEAD`, which `/repo` held |
-| `image` | The image's id and digests, its labels, `from_committed_dockerfile`, and `foreign_image_allowed` |
+| `image` | The image's id and digests, its labels, `built_by_this_launcher`, `from_committed_dockerfile`, and `foreign_image_allowed` |
 | `nonce`, `hostname` | The attestation's nonce, and the hostname derived from it |
 | `container` | The arm's container: its id, user, limits and mounts |
 | `broker` | The broker's container, its cap, and `spend`: calls started, refused and settled, the settled USD, and any call still open when it was destroyed with its reservation |
@@ -286,7 +292,7 @@ label=org.open-fleet.live-harness`), and 124 when the limit ended the run.
 |---|---|
 | `the checkout … is dirty` | Commit or remove the listed paths |
 | `no image …: build it first` | Run step 1 |
-| `the image … was not built from the committed Dockerfile` | Run step 1 at this commit, or pass `--allow-foreign-image` to run it anyway |
+| `the image … was not built by this launcher from the committed Dockerfile` | Run step 1 at this commit, or pass `--allow-foreign-image` to run it anyway |
 | `… holds a comma, a quote or a line break, which a docker --mount cannot carry` | Rename the path; for a staging path, point `TMPDIR` at a directory without one |
 | `another launch holds …live-harness.lock` | One arm runs at a time. Wait for the other launch to end |
 | `a harness container already exists` | A launch left one behind. Inspect the leftover, then `docker rm -f` it |

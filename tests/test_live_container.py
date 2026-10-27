@@ -175,7 +175,13 @@ class Harness(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != lc.TOKEN_ENV}
         env.update(PATH=os.pathsep.join([str(bin_dir), env.get("PATH", "")]), FAKE_DOCKER_LOG=str(self.log),
                    FAKE_DOCKER_SCENARIO=str(self.scenario_path))
-        for patch in (mock.patch.dict(os.environ, env, clear=True), mock.patch.object(lc, "REPO", self.repo)):
+        # The launcher's own record of the images its `build` produced, kept here, never in the
+        # operator's ~/of-live: the fixture image is one it built from the committed Dockerfile.
+        self.images = self.tmp / "images.json"
+        self.images.write_text(json.dumps({IMAGE_ID: {"ref": lc.IMAGE, "dockerfile_sha256": lc.sha256_file(lc.DOCKERFILE)}}),
+                               encoding="utf-8")
+        for patch in (mock.patch.dict(os.environ, env, clear=True), mock.patch.object(lc, "REPO", self.repo),
+                      mock.patch.object(lc, "IMAGES", str(self.images), create=True)):
             patch.start()
             self.addCleanup(patch.stop)
         self.assertEqual(shutil.which("docker"), str(stand_in), "a test would reach the real docker")
@@ -605,6 +611,24 @@ class RefusalsCreateNothing(Harness):
         image = self.receipt()["image"]
         self.assertIs(image["from_committed_dockerfile"], False)
         self.assertIs(image["foreign_image_allowed"], True, "the opt-in is not on the record")
+
+    def test_an_image_derived_from_the_launchers_own_is_refused_despite_its_inherited_label(self):
+        # Re-attack of 82a2d00c (W5-13): docker copies a parent's labels to a child, so
+        # `FROM open-fleet-live` + any RUN carried the committed Dockerfile's digest label and the
+        # label-only gate passed it. The gate is the launcher's own record of what its build made.
+        derived = "sha256:" + "ee" * 32
+        self.scenario({"image": {"Id": derived, "RepoDigests": [],
+                                 "Config": {"Labels": {lc.DOCKERFILE_LABEL: lc.sha256_file(lc.DOCKERFILE)}}}})
+        rc, err = self.launch()
+        self.assertEqual(rc, 2, err)
+        self.assertIn("not built by this launcher", err)
+        self.assertEqual(self.creates(), [])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(lc.main(["build"]), 0)
+        self.assertIn(derived, json.loads(self.images.read_text(encoding="utf-8")), "a build is not recorded")
+        rc, err = self.launch()
+        self.assertEqual(rc, 0, err)
+        self.assertIs(self.receipt()["image"]["built_by_this_launcher"], True)
 
     def test_a_staging_path_docker_would_split_is_refused_before_anything_is_created(self):
         # W5-14: --results/--receipts/--token-file were comma-checked, the derived staging paths
@@ -1201,6 +1225,48 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 4)
         status, _data = self.post(path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})
         self.assertEqual(status, 200, "the broker stopped answering once idle connections were cut")
+
+    def test_a_trickling_request_is_cut_off_by_a_total_deadline_and_every_drop_is_recorded(self):
+        # Re-attack of 82a2d00c (W5-16): the handler timeout restarts with every byte, so 32 clients
+        # each sending one byte of the request line every 20 s held every slot; and a dropped or
+        # expired connection left no trace in the ledger.
+        with mock.patch.object(lb, "HANDLER_TIMEOUT_S", 5, create=True), \
+                mock.patch.object(lb, "REQUEST_DEADLINE_S", 1.0, create=True), \
+                mock.patch.object(lb, "MAX_CONNECTIONS", 1, create=True):
+            self.broker()
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            self.addCleanup(sock.close)
+            stop = threading.Event()
+            self.addCleanup(stop.set)
+
+            def trickle():
+                for byte in b"POST /v1/messages HTTP/1.1\r\n":
+                    if stop.wait(0.3):
+                        return
+                    with contextlib.suppress(OSError):
+                        sock.sendall(bytes([byte]))
+
+            threading.Thread(target=trickle, daemon=True).start()
+            time.sleep(0.2)
+            extra = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            self.addCleanup(extra.close)
+            self.assertEqual(extra.recv(1), b"", "a connection past the slots was parked")
+            started = time.monotonic()
+            try:
+                closed = sock.recv(1) == b""
+            except ConnectionResetError:
+                closed = True
+            except TimeoutError:
+                closed = False
+            self.assertTrue(closed and time.monotonic() - started < 4,
+                            "a request trickling one byte at a time outlived its total deadline")
+            stop.set()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and len([e for e in self.events() if e["event"] == "drop"]) < 2:
+                time.sleep(0.05)
+        drops = {e["why"] for e in self.events() if e["event"] == "drop"}
+        self.assertIn("connection slots full", drops)
+        self.assertIn("request timed out", drops)
 
     def test_count_tokens_is_bounded_and_recorded(self):
         with mock.patch.object(lb, "FREE_CALLS_MAX", 3, create=True), \

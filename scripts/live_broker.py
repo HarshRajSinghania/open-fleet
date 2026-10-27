@@ -15,7 +15,9 @@ interfaces, the route out included, so any process of the arm can open its own c
 host without passing through the broker, and nothing here sees, caps or records it. The broker
 refuses requests made TO it; it does not stand between the arm and the network.
 
-Every connection has a socket timeout (HANDLER_TIMEOUT_S) and a body deadline, and at most
+Every connection has a socket timeout (HANDLER_TIMEOUT_S), one deadline for its request line and
+headers (REQUEST_DEADLINE_S, which a byte at a time never extends) and one for its body, every
+connection closed unanswered is counted in the ledger as a "drop", and at most
 MAX_CONNECTIONS are served at once, so a client that connects and sends nothing cannot park the
 threads the arm's model calls need (W5-16). count_tokens is free but bounded: FREE_CALLS_MAX
 calls and FREE_BYTES_MAX body bytes per broker, a "free" tally every FREE_RECORD_EVERY calls and
@@ -55,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import io
 import json
 import os
 import re
@@ -102,7 +105,9 @@ FRAMING_TOKENS = 4096
 MAX_BODY = 64 << 20
 UPSTREAM_TIMEOUT_S = 900
 HANDLER_TIMEOUT_S = 60  # each read or write on a client connection (W5-16)
+REQUEST_DEADLINE_S = 30  # the request line and headers, in all: a byte at a time never extends it
 BODY_DEADLINE_S = 120  # the whole request body, however slowly it trickles
+DROP_RECORD_S = 1.0  # a "drop" line per reason at most this often; the running count rides every line
 MAX_CONNECTIONS = 32  # served at once: the broker's --pids-limit is 64
 FREE_CALLS_MAX, FREE_BYTES_MAX = 5000, 2 << 30  # count_tokens per broker (W5-17)
 FREE_RECORD_EVERY = 100  # a "free" tally event every this many count_tokens calls
@@ -258,6 +263,7 @@ class Ledger:
     def __init__(self, path, cap_usd):
         self.cap, self.settled, self.inflight, self.n = cap_usd, 0.0, {}, 0
         self.free_calls = self.free_bytes = 0
+        self.dropped, self.drop_written = {}, {}
         self.lock = threading.Lock()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         self.fh = os.fdopen(fd, "a", encoding="utf-8")
@@ -267,6 +273,8 @@ class Ledger:
 
     def write(self, entry):
         tally = {"free_calls": self.free_calls, "free_bytes": self.free_bytes} if self.free_calls else {}
+        if self.dropped:
+            tally["dropped"] = dict(self.dropped)
         self.fh.write(json.dumps({"at": now(), **entry, **tally}, sort_keys=True) + "\n")
         self.fh.flush()
         os.fsync(self.fh.fileno())
@@ -284,6 +292,16 @@ class Ledger:
             if self.free_calls % FREE_RECORD_EVERY == 0:
                 self.write({"event": "free", "calls": self.free_calls, "bytes": self.free_bytes})
             return True
+
+    def drop(self, why):
+        """A connection closed without an answer (slots full, a request past its deadline, a
+        malformed one): counted, and written as a "drop" line at most every DROP_RECORD_S per reason,
+        so a flood of them cannot flood the ledger (2026-10-27 re-attack, W5-16)."""
+        with self.lock:
+            self.dropped[why] = self.dropped.get(why, 0) + 1
+            if time.monotonic() - self.drop_written.get(why, float("-inf")) >= DROP_RECORD_S:
+                self.drop_written[why] = time.monotonic()
+                self.write({"event": "drop", "why": why, "count": self.dropped[why]})
 
     def fault(self, where, err):
         """A fault, recorded where it is kept: the exception's type and frames, never its message
@@ -320,14 +338,45 @@ class Ledger:
                         "complete": complete, "settled_usd": round(self.settled, 6)})
 
 
+class _DeadlineReader(io.RawIOBase):
+    """A socket's reads, each bounded by what is left of one shared deadline."""
+
+    def __init__(self, sock, deadline, per_read):
+        super().__init__()
+        self.sock, self.deadline, self.per_read = sock, deadline, per_read
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("the request's deadline passed")
+        self.sock.settimeout(min(left, self.per_read))
+        return self.sock.recv_into(buffer)
+
+
 class Broker(BaseHTTPRequestHandler):
     """One request: forwarded with the token in place of the client's credential, or refused."""
 
     server_version = "open-fleet-live-broker"
     token = ledger = upstream = None  # set by serve()
+    request_deadline = REQUEST_DEADLINE_S
 
     def log_message(self, *args):  # no request line anywhere: the ledger is the record
         pass
+
+    def setup(self):
+        """The usual buffered streams, except that every read of the request is held to ONE
+        deadline: the per-read socket timeout restarts with each byte, so a client trickling the
+        request line a byte at a time kept its thread for ever (re-attack, W5-16)."""
+        super().setup()
+        self.reader = _DeadlineReader(self.connection, time.monotonic() + self.request_deadline, self.timeout)
+        self.rfile = io.BufferedReader(self.reader)
+
+    def log_error(self, format, *args):
+        # http.server reports a timed-out or malformed request here; record its kind, never its text.
+        self.ledger.drop("request timed out" if format.startswith("Request timed out") else "malformed request")
 
     def fail(self, status, kind, why):
         data = json.dumps({"type": "error", "error": {"type": kind, "message": f"open-fleet live broker: {why}"}})
@@ -363,7 +412,9 @@ class Broker(BaseHTTPRequestHandler):
             return self.fail(411, "invalid_request_error", "a request needs a Content-Length")
         if not 0 <= length <= MAX_BODY:
             return self.fail(413, "invalid_request_error", f"a body over {MAX_BODY} bytes")
+        self.reader.deadline = time.monotonic() + BODY_DEADLINE_S
         body = self.read_body(length)
+        self.connection.settimeout(self.timeout)  # the answer's writes get the plain per-call timeout
         if body is None:
             return self.fail(408, "invalid_request_error", f"the body did not arrive within {BODY_DEADLINE_S:g} s")
         if path == FREE_PATH:
@@ -506,6 +557,7 @@ class BrokerServer(ThreadingHTTPServer):
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
+            self.ledger.drop("connection slots full")
             self.shutdown_request(request)
             return
         try:
@@ -527,7 +579,8 @@ class BrokerServer(ThreadingHTTPServer):
 def serve(token, ledger_path, cap_usd, port=PORT, upstream=UPSTREAM, host="127.0.0.1"):
     """A started server (its own thread) and its ledger; the caller owns shutdown."""
     handler = type("BoundBroker", (Broker,), {"token": token, "ledger": Ledger(ledger_path, cap_usd),
-                                              "upstream": upstream, "timeout": HANDLER_TIMEOUT_S})
+                                              "upstream": upstream, "timeout": HANDLER_TIMEOUT_S,
+                                              "request_deadline": REQUEST_DEADLINE_S})
     server = BrokerServer((host, port), handler, handler.ledger, MAX_CONNECTIONS)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, handler.ledger

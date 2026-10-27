@@ -31,6 +31,7 @@ import html
 import re
 import subprocess
 import sys
+import urllib.parse
 from datetime import date
 from pathlib import Path
 
@@ -201,14 +202,25 @@ def html_link(text):
 
 def dangerous_scheme(text):
     """The first javascript:, vbscript:, data: or file: scheme in `text`, wherever it stands and
-    whatever Markdown is around it, or None. Read as a browser reads a URL: HTML entities
-    decoded, case ignored, and ASCII control characters (a tab or a line break inside the scheme)
-    dropped, and read again with them as spaces, so neither joining nor splitting hides one.
-    Identical in scripts/changelog.py and scripts/run_index.py."""
-    decoded = html.unescape(text).lower()
-    for folded in (re.sub(r"[\x00-\x1f\x7f]", "", decoded), re.sub(r"[\x00-\x1f\x7f]", " ", decoded)):
-        if match := _DANGEROUS_SCHEME_RE.search(folded):
-            return match.group()
+    whatever Markdown is around it (a list item, a blockquote, a nested list, `<...>`), or None.
+
+    Read as a renderer and then a browser read a link destination, and more: the text as written,
+    then decoded up to three times over, each time with every backslash dropped (CommonMark turns
+    `javascript\\:` into `javascript:` in the href; found sweeping PR #718 review round 3),
+    percent escapes and then HTML entities decoded (a browser decodes no percent escape in a
+    scheme, so that only refuses more). Each view is read with case ignored and ASCII control
+    characters (a tab or a line break inside the scheme) dropped, and again with them as spaces,
+    so neither joining nor splitting hides one. Over-decoding costs a rewording; a missed scheme
+    is a script in a published page. Identical in scripts/changelog.py and scripts/run_index.py."""
+    views = [text]
+    for _ in range(3):
+        views.append(html.unescape(urllib.parse.unquote(views[-1].replace("\\", ""))))
+    for view in views:
+        lowered = view.lower()
+        for folded in (re.sub(r"[\x00-\x1f\x7f]", "", lowered),
+                       re.sub(r"[\x00-\x1f\x7f]", " ", lowered)):
+            if match := _DANGEROUS_SCHEME_RE.search(folded):
+                return match.group()
     return None
 
 

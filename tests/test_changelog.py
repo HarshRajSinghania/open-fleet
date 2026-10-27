@@ -604,10 +604,25 @@ class DangerousSchemesAreRefused(unittest.TestCase):
         "- **Change** the word javascript: in prose.\n",
         "- **Change** a `file:` key named as code.\n",
         "- **Change** split java\tscript: by a tab.\n",
+        # every container a reference definition can sit in, and an angle-bracket destination
+        "- **Change** x\n  - [click][p]\n    - [p]: javascript:alert(1)\n",
+        "- **Change** [click][p]\n\n  > [p]: javascript:alert(1)\n",
+        "- **Change** [click][p]\n  > - [p]: <javascript:alert(1)>\n",
+        # a CommonMark backslash escape: `javascript\:` is `javascript:` in the rendered href
+        "- **Change** [x](javascript\\:alert(1)).\n",
+        "- **Change** [click][p]\n- [p]: javascript\\:alert(1)\n",
+        "- **Change** [x](data\\:text/html,x).\n",
+        # the colon or a letter as an entity or a percent escape
+        "- **Change** [x](javascript&colon;alert(1)).\n",
+        "- **Change** [x](javascript&#x3A;alert(1)).\n",
+        "- **Change** [x](&#106avascript:alert(1)).\n",
+        "- **Change** [x](%6Aavascript:alert(1)).\n",
+        "- **Change** [x](javascript%3Aalert(1)).\n",
     )
     ACCEPTED = (
         "- **Change** see <https://example.org/x>.\n",
         "- **Change** the metadata: and profile: keys, a dataset, the word javascript.\n",
+        "- **Change** 100% of `a\\b` paths, and <https://example.org/?q=a%20b&amp;r=1>.\n",
     )
 
     def errors(self, text):

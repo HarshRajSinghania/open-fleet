@@ -412,7 +412,9 @@ class DangerousSchemesInACellAreRefused(unittest.TestCase):
     def test_a_dangerous_scheme_is_refused(self):
         for text in ("see <javascript:alert(1)>", "<vbscript:msgbox(1)>", "[x](data:text/html,x)",
                      "[x](file:///etc/passwd)", "[x](JAVA&#83;CRIPT:alert(1))",
-                     "[x](https://example.org/javascript:)", "- [p]: javascript:alert(1)"):
+                     "[x](https://example.org/javascript:)", "- [p]: javascript:alert(1)",
+                     "> - [p]: <javascript:alert(1)>", "[x](javascript\\:alert(1))",
+                     "[x](javascript&colon;x)", "[x](%6Aavascript:x)"):
             with self.subTest(text=text):
                 self.assertEqual(len(self.errors(text)), 1, text)
 

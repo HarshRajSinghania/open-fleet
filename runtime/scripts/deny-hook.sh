@@ -2421,47 +2421,84 @@ _PARALLEL_LONG = ("--jobs", "--max-procs", "--sshlogin", "--sshloginfile", "--sl
 _PARALLEL_SEPS = (":::", "::::", ":::+", "::::+")
 
 
+def _awk_sources(rest):
+    """(inline programs, saw_program_file) for an awk command (re-attacker g1 #2, W1-03).
+
+    awk takes its program from the first bare word, from every -e/--source[=] (which REPEAT),
+    and from every -f/--file/-E/--exec program FILE. gawk runs ALL of them together, so a -f
+    must never discard the -e programs already collected, in either order. -v/-F/-i/-l consume
+    an operand. saw_program_file is True when any -f/-E program file is named: its contents are
+    not visible here, so the program is partly unknown and the caller fails closed (HIGH)."""
+    progs, saw_file, i, seen_src = [], False, 0, False
+    _takes = ("-v", "--assign", "-F", "--field-separator", "-i", "--include", "-l", "--load")
+    while i < len(rest):
+        w = rest[i]
+        if w == "--":
+            if i + 1 < len(rest) and not seen_src:
+                progs.append(rest[i + 1])
+            break
+        if w in ("-f", "--file", "-E", "--exec"):
+            saw_file, seen_src = True, True
+            i += 2                                          # skip the program-file operand
+            continue
+        if w.startswith(("--file=", "--exec=")):
+            saw_file, seen_src = True, True
+            i += 1
+            continue
+        if w in ("-e", "--source") and i + 1 < len(rest):
+            progs.append(rest[i + 1])
+            seen_src = True
+            i += 2
+            continue
+        if w.startswith("--source="):
+            progs.append(w.split("=", 1)[1])
+            seen_src = True
+            i += 1
+            continue
+        if w.startswith("-e") and len(w) > 2 and not w.startswith("--"):
+            progs.append(w[2:])
+            seen_src = True
+            i += 1
+            continue
+        if w in _takes or w.startswith(("--assign=", "--field-separator=", "--include=",
+                                        "--load=")):
+            i += 2 if w in _takes else 1
+            continue
+        if w.startswith("-") and len(w) > 1:
+            # A short cluster: -f/-E inside it also names a program file (its operand follows).
+            if "f" in w[1:] or "E" in w[1:]:
+                saw_file, seen_src = True, True
+            i += 1
+            continue
+        if not seen_src:
+            progs.append(w)                                 # the first bare word is the program
+        break
+    return progs, saw_file
+
+
+def _awk_program_file(ws):
+    """A reason when an awk command names a -f/-E program file whose contents this hook cannot
+    read (W1-03, re-attacker g1 #2): the program is unknown, so a refused command could sit in
+    it beside a benign inline -e. Fail closed -- unknown awk code is HIGH, never read as no code."""
+    if not ws:
+        return None
+    head, rest = _peel_busybox(ws[0].rsplit("/", 1)[-1], ws[1:])
+    if not _is_awk(head):
+        return None
+    if _awk_sources(rest)[1]:
+        return ("awk is given a program FILE (-f/-E) this hook cannot read, so the program it "
+                "runs is unknown and may launch a refused command. Inline the program with -e, "
+                "or run it where the sandbox is the boundary.")
+    return None
+
+
 def _inline_code(head, rest):
     """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, awk
     program, the operand of deno `eval`, ... (W1-03). The code is scanned by _code_commands for the
     shell lines it hands the system, so an interpreter laundering a refused command is seen."""
     head, rest = _peel_busybox(head, rest)
     if _is_awk(head):
-        # awk PROGRAM FILE...: the program is the first non-option word. gawk also takes the
-        # program from -e/--source[=] (which may repeat); -f/-E name a program FILE (no inline
-        # code here); -v/-F/-i/-l take an operand (re-attacker g1 #1).
-        progs, i = [], 0
-        _takes = ("-v", "--assign", "-F", "--field-separator", "-i", "--include", "-l", "--load")
-        while i < len(rest):
-            w = rest[i]
-            if w == "--":
-                if i + 1 < len(rest):
-                    progs.append(rest[i + 1])
-                break
-            if w in ("-f", "--file", "-E", "--exec"):
-                return []                                   # program is in a file
-            if w in ("-e", "--source") and i + 1 < len(rest):
-                progs.append(rest[i + 1])
-                i += 2
-                continue
-            if w.startswith("--source="):
-                progs.append(w.split("=", 1)[1])
-                i += 1
-                continue
-            if w.startswith("-e") and len(w) > 2 and not w.startswith("--"):
-                progs.append(w[2:])
-                i += 1
-                continue
-            if w in _takes:
-                i += 2
-                continue
-            if w.startswith("-") and len(w) > 1:
-                if "f" in w[1:] or "E" in w[1:]:
-                    return []
-                i += 1
-                continue
-            progs.append(w)                                 # the first bare word is the program
-            break
+        progs, _file = _awk_sources(rest)
         return progs
     if head == "deno":
         ops = [w for w in rest if not w.startswith("-")]
@@ -2485,6 +2522,9 @@ def _inline_code(head, rest):
                 i += 1
             if key == "python":
                 break  # -c ends the python option list
+        elif key == "python" and w in ("-W", "-X", "--check-hash-based-pycs") and i + 1 < len(rest):
+            i += 1  # these take a SEPARATE operand -- python -W error -c CODE -- so it is not
+                    # read as the script path, which would hide the -c that follows (g1 #2)
         elif key == "python" and not w.startswith("-"):
             break  # a script path: what follows are its own arguments
         i += 1
@@ -3809,6 +3849,10 @@ GUARD_SAMPLES = (".claude/settings.json", ".claude/settings.local.json", ".codex
                  ".open-fleet/bridges/omp_pi_deny_bridge.ts", ".crush/crush.json",
                  ".crush-orca-ro/crush.json", ".hermes-open-fleet/config.yaml",
                  ".orca/human-grant-pubkey", ".orca/dispatch-pubkey")
+# The directory holding each guard file, relative to the worktree root. An extraction or patch
+# whose destination equals, contains or sits inside any of these can write a guard file with an
+# ordinary member name, so the destination check (W1-05, Codex g1 r2 P1) covers all three.
+_GUARD_DIRS_REL = sorted({os.path.dirname(_s) for _s in GUARD_SAMPLES if os.path.dirname(_s)})
 _GW = os.environ.get("OPEN_FLEET_UNIT_WORKTREE") or os.environ.get("ORCA_UNIT_WORKTREE") or ""
 _GROOT = os.path.realpath(_GW) if _GW else os.path.realpath(os.getcwd())
 _GSELF = {os.path.realpath(_p) for _p in (os.environ.get("DH_SELF"),
@@ -4216,6 +4260,8 @@ def guard_targets(words, depth=0):
         return []
     head, rest, out = ws[0].rsplit("/", 1)[-1], ws[1:], []
     head, rest = _peel_busybox(head, rest)   # busybox tar -> tar, so an applet is judged (W1-05)
+    if head in ("bsdtar", "gtar"):
+        head = "tar"                          # same create/extract flags (Codex g1 r2 P1)
     if head == "tar":
         # A create/append/update with -f FILE overwrites FILE: `tar -cf .claude/settings.json x`
         # (or `tar cf …`, the dashless bundle) replaces the guard with a tarball (W1-05).
@@ -4404,12 +4450,13 @@ _WHOLE_TREE = (".", "./", "./*", "*", ":/", ":/*", ":(top)", ":(top).")
 
 
 def _dest_covers_guard(dest):
-    """True when an extraction into dest could write a guard path (W1-05): the guard files sit at
-    the worktree root, so a destination at or above it reaches them with an ordinary member name.
-    An unknown destination (no -C/-d; the worker cwd this hook is not told) is assumed to be that
-    root. A RELATIVE destination is resolved against the worktree root and its symlinks followed
-    (Codex g1 P1): `-C build` where build -> the worktree root reaches the guard, so it must not
-    short-circuit to allow; an unresolvable destination asks rather than allows."""
+    """True when an extraction into dest could write a guard path (W1-05, Codex g1 r2 P1). The
+    guard files sit at known directories under the worktree root, so a destination that EQUALS,
+    CONTAINS or sits INSIDE any guard directory reaches a guard file with an ordinary member
+    name -- `tar -C .claude -xf e.tar` drops `settings.json` straight onto the guard, which the
+    old contain-the-root test missed. An unknown destination (no -C/-d; the worker cwd
+    this hook is not told) is assumed to be the root. A RELATIVE destination is resolved against
+    the root and its symlinks followed; an unresolvable one asks rather than allows."""
     if dest is None:
         return True
     d = _home_path(dest)
@@ -4421,41 +4468,56 @@ def _dest_covers_guard(dest):
     except (OSError, ValueError):
         return True   # cannot resolve -> ask, never a silent allow
     root = _GROOT.rstrip("/") or "/"
-    return real == root or root.startswith(real + "/") or real == os.path.dirname(root)
+    if real == root or root.startswith(real + "/"):
+        return True   # the root itself, or any directory above it
+    if not real.startswith(root + "/"):
+        return False  # entirely outside the worktree: not a guard-self concern here
+    rel = os.path.relpath(real, root)
+    for gd in _GUARD_DIRS_REL:
+        if rel == gd or rel.startswith(gd + "/") or gd.startswith(rel + "/"):
+            return True   # equals / inside / contains a guard directory
+    return False
 
 
 def _extracts_over_guard(ws):
-    """A reason when ws extracts an archive (tar -x, unzip, cpio -i, patch) into a directory that
-    covers the guard region, else None. The members are not visible, so this asks rather than
-    denies (W1-05)."""
+    """A reason when ws extracts an archive (tar/bsdtar/gtar -x, unzip, cpio -i, pax -r, patch)
+    into a directory that covers the guard region, else None. The members are not visible, so
+    this asks rather than denies (W1-05; Codex g1 r2 P1 widened the destinations and tools)."""
     if not ws:
         return None
     head, rest = _peel_busybox(ws[0].rsplit("/", 1)[-1], ws[1:])
     letters = "".join(w[1:] for w in rest if re.fullmatch(r"-[A-Za-z]+", w))
     longs = [w.split("=", 1)[0] for w in rest if w.startswith("--")]
 
-    def dest_of(short, longnames):
+    def dest_of(shorts, longnames):
+        # The operand of -C/-d/-D (per `shorts`) or --directory[=], separate or glued.
         for i, w in enumerate(rest):
             if w in longnames and i + 1 < len(rest):
                 return rest[i + 1]
             for ln in longnames:
                 if w.startswith(ln + "="):
                     return w.split("=", 1)[1]
-            if short and re.fullmatch(r"-%s" % short, w) and i + 1 < len(rest):
+            if shorts and re.fullmatch(r"-[%s]" % shorts, w) and i + 1 < len(rest):
                 return rest[i + 1]
+            if shorts and re.fullmatch(r"-[%s].+" % shorts, w):
+                return w[2:]
         return None
 
-    if head == "tar":
+    _DIR_LONGS = ("--directory", "--cd", "--chdir")
+    if head in ("tar", "bsdtar", "gtar"):
         tletters, tlongs, _f, tdest = _tar_info(rest)   # reads the dashless bundle too (g1 P1)
         if not ("x" in tletters or any(x in tlongs for x in ("extract", "get"))):
             return None
         dest = tdest
-    elif head in ("unzip", "zipinfo") and head == "unzip":
+    elif head == "unzip":
         dest = dest_of("d", ())
-    elif head == "cpio" and ("i" in letters or "--extract" in longs):
-        dest = dest_of("D", ("--directory",))
+    elif head in ("cpio", "pax") and ("i" in letters or "r" in letters
+                                      or "--extract" in longs or "--read" in longs):
+        if head == "pax" and ("w" in letters or "--write" in longs):
+            return None   # pax -r -w copies between trees, not an extract into a dir
+        dest = dest_of("Cd", _DIR_LONGS)
     elif head == "patch":
-        dest = dest_of("d", ("--directory",))
+        dest = dest_of("d", _DIR_LONGS)
         if any(w in ("-o", "--output") or w.startswith("--output=") for w in rest):
             return None   # -o FILE is a named write, judged by the self-guard instead
     else:
@@ -4532,12 +4594,12 @@ def _has_write(text, depth=0):
         except ValueError:
             return True
         for _fd, op, target in redirs:
-            if not target or target == "-":
+            if not target:
                 continue
             if op in _FILE_WRITE_OPS:
-                return True                       # `> 123` writes a file named 123
-            if op == ">&" and not target.isdigit():
-                return True                       # `>&out` writes a file; `>&1` is an fd dup
+                return True                       # `> 123` / `> -` writes a file named 123 / -
+            if op == ">&" and target != "-" and not target.isdigit():
+                return True                       # `>&out` writes a file; `>&1`/`>&-` is an fd op
         ws = _command_words(words)
         if not ws:
             continue
@@ -4666,6 +4728,7 @@ if _fetch_runs():
 if _never:
     record("N", _never[0])
 _hard = [why for why in (_alias_refusal(_vw) for _vw, _w, _sg in _all_views) if why]
+_hard += [why for why in (_awk_program_file(_vw) for _vw, _w, _sg in _all_views) if why]
 _hard += [why for why in (_git_alias_laundering(_all_assigns[_k], _vw)
                           for _k, (_vw, _w, _sg) in enumerate(_all_views)) if why]
 if _BRACE_REFUSAL:

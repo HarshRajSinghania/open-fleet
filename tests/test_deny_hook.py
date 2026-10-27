@@ -2988,6 +2988,29 @@ class TestInterpreterTableCoversTheClass(ReviewHookBase):
             "lua5.4 -e 'print(1+1)'", "goawk '{print $1}' f", "R -e 'cat(1:3)'",
         ), bounded_modes=self.BOTH)
 
+    def test_a_program_file_option_never_discards_the_inline_programs(self):
+        # Re-attacker g1 r2 (W1-03): gawk runs EVERY program source, so `-e '<inline>' -f file`
+        # (either order) must still judge the inline program, not drop it at the -f. And a -f/-E
+        # program file the hook cannot read is unknown, so it fails closed HIGH, not "no code".
+        self.expect("deny", (
+            "gawk -e 'BEGIN{system(\"git push --force origin main\")}' -f benign.awk",
+            "gawk -f benign.awk -e 'BEGIN{system(\"git push --force origin main\")}'",
+            "gawk -f benign.awk", "awk -f prog.awk data.txt", "gawk -E cgi.awk",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "gawk -e '{print $1}' f", "awk '{print $1}' f",
+        ), bounded_modes=self.BOTH)
+
+    def test_an_option_with_a_separate_argument_does_not_hide_python_c(self):
+        # Re-attacker g1 r2 (W1-03): `python -W error -c CODE` read `error` as the script path and
+        # stopped, so the -c code after an arg-taking option was never scanned.
+        self.expect("deny", (
+            "python3 -W error -c 'import os;os.system(\"git push --force origin main\")'",
+            "python3 -X faulthandler -c 'import os;os.system(\"rm -rf /\")'",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", ("python3 -W error script.py", "python3 -c 'print(1)'"),
+                    bounded_modes=self.BOTH)
+
     def test_an_interpreter_writing_a_guard_path_is_denied(self):
         self.expect("deny", (
             "awk 'BEGIN{print \"x\" > \".claude/settings.json\"}'",
@@ -3025,6 +3048,22 @@ class TestArchiveAndPatchWritersReachTheGuard(ReviewHookBase):
             "tar -cf .claude/settings.json x", "tar -czf .orca/dispatch-pubkey src",
             "tar --create --file=.codex/hooks.json x", "patch -o .claude/settings.json < d.patch",
         ), bounded_modes=(True,), reason="own guard")
+
+    def test_extraction_straight_into_a_guard_directory_is_asked(self):
+        # Codex g1 r2 P1 (W1-05): _dest_covers_guard only asked whether the destination contained
+        # the worktree ROOT, so an extract INTO a guard directory (`tar -C .claude …`) dropped a
+        # member onto the guard with no prompt. A destination equal to, inside, or containing any
+        # guard directory covers the guard -- across every archive/patch tool and its -C/-d/
+        # --directory spelling, plus cpio/pax/bsdtar/gtar.
+        self.expect("ask", (
+            "tar -C .claude -xf e.tar", "unzip e.zip -d .claude", "patch -d .claude -p1 < d.patch",
+            "tar --directory=.codex -xf e.tar", "bsdtar -C .agents -xf e.tar",
+            "gtar -C .open-fleet/hooks -xf e.tar", "cpio -i -D .claude < e.cpio",
+            "pax -r -C .claude < e.pax",
+        ), bounded_modes=self.BOTH)
+        # A neighbouring non-guard directory still extracts freely.
+        self.expect("allow", ("tar -C .claudex -xf e.tar", "pax -r -w src .claude"),
+                    bounded_modes=(True,))
 
     def test_an_extraction_that_cannot_reach_the_guard_stays_allowed(self):
         self.expect("allow", (
@@ -3120,6 +3159,20 @@ class TestReadOnlyTierWriteFloor(HookBase):
                 self.assertEqual(block["permissionDecision"], "deny", command)
         # an fd duplication is not a file write
         for command in ("make 2>&1 | tail", "echo hi >&2", "cat 0<&3"):
+            with self.subTest(command=command):
+                r = self._fire(event("Bash", command=command))
+                self.assertEqual(r.stdout.strip(), "", command)
+
+    def test_a_dash_redirect_target_is_a_file_not_a_descriptor_close(self):
+        # Codex g1 r2 P2 (W4-05 floor): `echo x > -` writes a file named `-`; a dash closes a
+        # descriptor only for the duplication ops (`>&-`/`<&-`), not for a plain redirect.
+        for command in ("echo x > -", "echo x >> -", "echo x >| -"):
+            with self.subTest(command=command):
+                block = self.decision(self._fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        # closing a descriptor writes nothing
+        for command in ("exec 3>&-", "exec 4<&-"):
             with self.subTest(command=command):
                 r = self._fire(event("Bash", command=command))
                 self.assertEqual(r.stdout.strip(), "", command)

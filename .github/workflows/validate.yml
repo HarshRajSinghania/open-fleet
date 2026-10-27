@@ -362,7 +362,7 @@ jobs:
           coverage --version
       - name: Download the shard coverage data
         # merge-multiple: all six coverage-shard-* artifacts land in a directory of their own,
-        # outside the checkout (W6-02): the PR's tree holds no data file the floor reads.
+        # outside the checkout (W6-02), so a data file committed to the PR's tree is not read.
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0 (Node 24, #367; v4-v6 are Node 20, gone from runners 2026-09-23)
         with:
           pattern: coverage-shard-*
@@ -380,8 +380,9 @@ jobs:
         # runs on partial data: the failed need — not a missing data file —
         # is what fails gates and blocks the merge. It combines exactly the six named shard
         # files, refusing a missing or an extra one, into a data file outside the checkout
-        # (W6-02). Residual: the PR's tests run inside the measured process, so the numbers are
-        # still the PR's own report of itself.
+        # (W6-02): the checkout-glob instance (a planted `.coverage.*` file) is closed. A test
+        # can still add lines to the live tracer, which land in its shard's one legitimate file,
+        # so coverage remains the PR's own measurement of itself, an accepted residual.
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/coverage-shards"

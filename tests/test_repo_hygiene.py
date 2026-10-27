@@ -1049,8 +1049,9 @@ class TheCoverageFloorReadsOnlyTheShardsOwnFiles(unittest.TestCase):
     checkout root, so a test that saved a padded data file as `./.coverage.pad` lifted the D9
     floor. The shard's data now goes to the runner's temp dir, is renamed to one exact name per
     shard and uploaded alone, and gates combines exactly those six files from a directory of
-    its own. Residual, by construction: the PR's tests run inside the measured process, so the
-    numbers are still the PR's own report of itself."""
+    its own: the checkout-glob instance (a planted `.coverage.*` file) is closed. The PR's tests
+    still run inside the measured process and can add lines to the live tracer, so coverage
+    remains the PR's own measurement of itself, an accepted residual (PR #718 review)."""
 
     TEXT = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
     SHARDS = ("1", "2", "3", "4", "5", "6")
@@ -1064,6 +1065,18 @@ class TheCoverageFloorReadsOnlyTheShardsOwnFiles(unittest.TestCase):
     def _with(step, key):
         values = [m.group(1) for ln in step if (m := re.match(rf"^\s+{key}:\s*(.*?)\s*$", ln))]
         return values[0] if values else None
+
+    def test_the_floor_claims_no_more_than_it_closes(self):
+        # PR #718 review (P2): a test can still add lines to the live tracer
+        # (coverage.Coverage.current().get_data().add_lines(...)), and they land in the one
+        # legitimate shard file. The floor step must say which instance is closed and that the
+        # rest is an accepted residual, not that the numbers are the suite's own.
+        floor = self._step("gates", "Coverage floor (D9: line >= 80% on scripts + runtime/scripts)")
+        said = " ".join(" ".join(ln.strip().lstrip("#").strip() for ln in floor
+                                 if ln.strip().startswith("#")).split())
+        self.assertIn("the checkout-glob instance (a planted `.coverage.*` file) is closed", said)
+        self.assertIn("coverage remains the PR's own measurement of itself, an accepted residual",
+                      said)
 
     def test_the_shard_writes_its_data_outside_the_checkout(self):
         script = _step_script(self._step("tests", "Run suite shard without Gitleaks"))

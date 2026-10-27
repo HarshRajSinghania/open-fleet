@@ -675,6 +675,20 @@ class RefusalsCreateNothing(Harness):
                 self.assertEqual(self.creates(), [])
                 self.assertEqual(list(staging.iterdir()), [], "the staging directory outlived the refusal")
 
+    def test_a_staging_path_with_a_line_break_is_refused_before_anything_is_created(self):
+        # W5-14's rule names a comma, a quote and a line break: docker reads a --mount as CSV, where
+        # a line break ends the record. TMPDIR is the operator's environment, so any byte can be in it.
+        for name in ("tmp\nline", "tmp\rreturn"):
+            with self.subTest(name=name):
+                staging = self.tmp / name
+                staging.mkdir()
+                with mock.patch.object(tempfile, "tempdir", str(staging)):
+                    rc, err = self.launch()
+                self.assertEqual(rc, 2, err)
+                self.assertIn("--mount", err)
+                self.assertEqual(self.creates(), [])
+                self.assertEqual(list(staging.iterdir()), [], "the staging directory outlived the refusal")
+
     def test_results_or_receipts_the_container_could_reach_are_refused(self):
         for results, receipts in ((self.repo / "out", self.receipts), (self.results, self.results / "receipts")):
             with self.subTest(results=results, receipts=receipts):

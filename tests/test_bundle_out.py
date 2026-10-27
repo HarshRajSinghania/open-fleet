@@ -522,6 +522,26 @@ class TheBuildRecordIsTheAuthority(unittest.TestCase):
                 self.assertEqual(mine.read_bytes(), b"mine\n")
                 self.assertIn("skills/ship-it/my-notes.md", err)
 
+    def test_a_records_directory_inside_out_is_never_trusted(self):
+        # Whatever can write --out could write a record kept there, so one there vouches for nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            mine = out / "skills" / "ship-it" / "my-notes.md"
+            mine.write_bytes(b"mine\n")
+            self.forge(out, ["skills/ship-it/my-notes.md"],
+                       {"skills/ship-it/my-notes.md": hashlib.sha256(b"mine\n").hexdigest()})
+            inside = out / "records"
+            inside.mkdir()
+            name = hashlib.sha256(os.fsencode(os.path.realpath(out))).hexdigest() + ".json"
+            (inside / name).write_text(json.dumps({"out": os.path.realpath(out), "files": {
+                "skills/ship-it/my-notes.md": hashlib.sha256(b"mine\n").hexdigest()}}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {bundle.RECORDS_ENV: str(inside)}):
+                self.assertIsNone(bundle._record_path(out))
+                code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(mine.read_bytes(), b"mine\n", "a record kept inside --out was trusted")
+            self.assertIn("kept no build record", err)
+
     def test_the_record_lives_outside_out_and_check_keeps_none(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = self.built(tmp)

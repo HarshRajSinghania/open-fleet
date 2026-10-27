@@ -681,11 +681,15 @@ def records_dir():
 
 
 def _record_path(out):
-    """Where the build record for --out `out` lives (None: nowhere)."""
+    """Where the build record for --out `out` lives (None: nowhere). A records directory inside
+    --out is nowhere: whatever can write --out could write the record there."""
     where = records_dir()
     if where is None:
         return None
-    return where / f"{hashlib.sha256(os.fsencode(os.path.realpath(out))).hexdigest()}.json"
+    real = os.path.realpath(out)
+    if os.path.realpath(where) == real or os.path.realpath(where).startswith(real.rstrip(os.sep) + os.sep):
+        return None
+    return where / f"{hashlib.sha256(os.fsencode(real)).hexdigest()}.json"
 
 
 def read_record(out):
@@ -714,7 +718,7 @@ def _keep_record(out, tree, produced, stage, previous):
     why no record could be kept, or None."""
     path = _record_path(out)
     if path is None:
-        return "there is no git checkout to keep it in"
+        return "no git checkout to keep it in, or its records directory is inside --out"
     files = {}
     for rel in sorted(produced | set(previous)):
         data = tree.read(rel)

@@ -1312,6 +1312,43 @@ class TestBashWritesAreBounded(HookBase):
         self.assertIn("ABSOLUTE targets only", text)
         self.assertIn("every relative path", text)
 
+    def _fire_home(self, payload, home, cwd):
+        return self.fire(payload, env_extra={"ORCA_UNIT_WORKTREE": str(self.wt), "HOME": str(home)},
+                         cwd=cwd)
+
+    def test_a_home_relative_target_is_judged_where_the_shell_puts_it(self):
+        # W1-01 (P0, 2026-10-27 audit): no write path expanded a leading ~. A redirect or tee
+        # to `~/...` was classed RELATIVE and never judged, and an Edit/Write file_path `~/...`
+        # resolved to $PWD/~/... -- inside the worktree -- so both were silently ALLOWED while
+        # the shell wrote into the home directory. $HOME and ${HOME} were read the same way.
+        home = self.tmp / "home"
+        home.mkdir()
+        for command in ("echo x > ~/.bashrc", "echo x >> ~/.bashrc", "echo x | tee ~/.bashrc",
+                        "echo x | tee -a ~/.config/x", "echo x > $HOME/.profile",
+                        "echo x > ${HOME}/.profile", "echo x 2>> ~/err.log", "echo x > ~root/x"):
+            with self.subTest(command=command):
+                block = self.decision(self._fire_home(event("Bash", command=command), home, self.wt))
+                self.assertIsNotNone(block, f"{command!r} wrote outside the boundary and was allowed")
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        # The file-tool half depended on the hook's cwd (verify-v1 A1): inside the worktree it
+        # allowed, outside it denied. It is the home directory from anywhere now.
+        for tool in ("Write", "Edit", "MultiEdit"):
+            for path in ("~/.bashrc", "$HOME/.bashrc", "~root/x"):
+                for cwd in (self.wt, self.tmp):
+                    with self.subTest(tool=tool, path=path, cwd=cwd):
+                        block = self.decision(self._fire_home(event(tool, file_path=path), home, cwd))
+                        self.assertIsNotNone(block, f"{tool} {path} from {cwd} was allowed")
+                        self.assertEqual(block["permissionDecision"], "deny")
+
+    def test_a_home_inside_the_boundary_stays_writable(self):
+        # The control: the expansion is the shell's, not a refusal of every `~`.
+        for command in ("echo x > ~/sub/new.txt", "echo x | tee ~/real.txt"):
+            with self.subTest(command=command):
+                r = self._fire_home(event("Bash", command=command), self.wt, self.wt)
+                self.assertEqual(r.stdout.strip(), "", command)
+        r = self._fire_home(event("Write", file_path="~/sub/new.txt"), self.wt, self.tmp)
+        self.assertEqual(r.stdout.strip(), "")
+
     def test_without_the_boundary_variable_a_redirect_is_unrestricted(self):
         r = self.fire(event("Bash", command=f"echo x > {self.outside / 'landed'}"))
         self.assertEqual(r.stdout.strip(), "")

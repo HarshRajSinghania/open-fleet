@@ -319,7 +319,7 @@ Exits: 0 ok · 1 validation failure · 2 could-not-run or usage.
 ## `deny-hook.sh`
 
 PreToolUse guard for read-write workers (Bash, Edit, Write). Reads the hook event JSON
-on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-186`;
+on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-188`;
 behavior pinned by `tests/test_deny_hook.py`, `tests/test_deny_hook_multi_harness.py` and the
 differential corpus `tests/test_deny_hook_conformance.py` (#598, below).
 

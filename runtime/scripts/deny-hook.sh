@@ -118,7 +118,9 @@
 # through one resolver, which follows the whole symlink chain, so an in-boundary
 # name pointing out is judged by where it ends up however many links that takes.
 # Path segments are names, never patterns; a glob in a shell target is also judged
-# by every existing path the shell would expand it to (W4-09).
+# by every existing path the shell would expand it to (W4-09). A leading ~, ~user,
+# $HOME or ${HOME} is expanded first, for both tools and shells, as the shell does:
+# `> ~/.bashrc` is a write to the home directory, not to ./~ (W1-01).
 #
 # What the Bash half does NOT cover, and says so at the block itself: a relative
 # target (the hook is not told the worker's cwd, and the segment before it may
@@ -3217,14 +3219,29 @@ def _views(args, depth=0):
     return out
 
 
+def _home_path(p):
+    """p with a leading ~, ~user, $HOME or ${HOME} expanded the way the shell expands it (W1-01,
+    2026-10-27 audit). The boundary held two meanings of ~: the self-guard expanded it, the
+    write boundary read it as a directory named ~ under the cwd, so `> ~/.bashrc` was never
+    judged and the `~/.bashrc` of a file tool resolved inside the worktree. A ~name no account owns
+    stays literal, as it does in the shell. Quoting is gone by here, so a quoted ~ is expanded
+    too: that can only move a write to where it is judged, never past it."""
+    if p.startswith("~"):
+        return os.path.expanduser(p)
+    m = re.match(r"[$](?:HOME|[{]HOME[}])(?=/|$)", p)
+    if m:
+        return (os.environ.get("HOME") or os.path.expanduser("~")) + p[m.end():]
+    return p
+
+
 _parts, heredoc_patches = _expand(raw_command)
 _judged, _subs = chr(10).join(_parts), _parts[1:]
 heredoc_targets = [p for _hb in heredoc_patches for p in patch_targets(_hb)]
 print(s(norm_tool))
 print(c(_judged))
-print(s(target_paths[0] if target_paths else ""))
+print(s(_home_path(target_paths[0]) if target_paths else ""))
 for _extra_p in target_paths[1:]:
-    record("F", s(_extra_p))
+    record("F", s(_home_path(_extra_p)))
 # Pass 1 learns every literal NAME=value on the line before any head is resolved (#598): an
 # assignment in a later segment, or inside a body, still names what `$c` may run.
 for _join, seg in _split(_judged):
@@ -3239,8 +3256,6 @@ for _join, seg in _split(_judged):
     # anchor at its head (2026-10-23 review, P1-3). Assignments ride in front for git_redirected.
     _seg_views = _views(args)
     record("C", " ".join(policy_word(word) for word in _seg_views[0][0] + _seg_views[0][1]))
-    for path in writes:
-        record("W", path)
     for word in args:
         record("A", word)
     for _va, _vw in _seg_views[1:]:
@@ -3934,6 +3949,15 @@ def _code_guard_targets(code, depth=0):
     return out
 
 
+# W: the write targets the boundary judges, in the path model of the shell: every redirect target
+# and every tee operand, a leading ~, ~user, $HOME or ${HOME} expanded (W1-01).
+for _args, _writes in _guard_segs:
+    _bws = _command_words(_args)
+    _tee_ops = _operands(_bws[1:]) if _bws and _bws[0].rsplit("/", 1)[-1] == "tee" else []
+    for _bw in _writes + _tee_ops:
+        record("W", _home_path(_bw))
+
+
 _guard_hits = []
 if norm_tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     _guard_hits += [p for p in target_paths if guarded(p, False)]
@@ -3961,7 +3985,7 @@ if _guard_hits:
 if strict_payload:
     record("S", "1")
 for _hp in heredoc_targets:
-    record("P", s(_hp))
+    record("P", s(_home_path(_hp)))
 
 
 # --- Never list, the shapes a regex over the line cannot read (2026-10-23 review) ----------

@@ -1921,7 +1921,16 @@ against `ORCA_TERMINAL_HANDLE`);
 `--task-brief` (brief spawn-time read); `--parent-profile ro|rw|danger` (monotonic narrowing:
 the most restrictive of this flag, `OPEN_FLEET_PARENT_PROFILE`/`ORCA_PARENT_PROFILE` and the
 caller's `OPEN_FLEET_SANDBOX_PROFILE`/`ORCA_SANDBOX_PROFILE` caps `PROFILE`; a wider child
-refuses, exit 2). Documented refusals, not silent drops:
+refuses, exit 2. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
+`OPEN_FLEET_WORKER_ID`, `OPEN_FLEET_UNIT_WORKTREE` or an `ORCA_` alias — with none of those set
+is capped at `ro`, never left uncapped). The custom-argv lane's `terminal create --command`
+for the script's own rows (every Orca `ro` launch; a `WORKER_CMD` override stays verbatim)
+carries the worker's own profile as those four
+variables in assignment-prefix form, as posix's supervised lane already did, so the cap is
+present in what the worker inherits; Orca's `worker-start` has no env flag at the pin, so an
+Orca `rw` worker is bounded only by that identity fail-safe (W4-04). All of it is the worker's
+own environment: it bounds the fleet's spawn path against an omitted or inherited profile, not
+a worker that scrubs its env or calls the runtime CLI or an agent directly. Documented refusals, not silent drops:
 `--task-status`/`--task-ready` (a filtered view cannot verify deps, so the DAG check
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).

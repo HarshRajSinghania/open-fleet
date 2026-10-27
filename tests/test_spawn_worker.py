@@ -1446,6 +1446,112 @@ class TestParentProfileNarrowing(unittest.TestCase):
             self.assertIn("--parent-profile rw", ws)
 
 
+class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
+    """W4-04 (2026-10-27 audit): the parent-profile cap was fed only by env the worker sets on
+    itself, and nothing exported that env on the Orca lane (base.py sets it only in its own
+    harness line, off Orca), so from a ro worker `PROFILE=rw spawn_worker.sh …` minted an rw
+    child. Now the custom-argv launch (every Orca ro worker, every override) carries the worker's
+    own profile in its launch env, and a session that carries fleet worker identity but no parent
+    profile is capped at ro instead of uncapped. Coordinator sessions are unchanged."""
+
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    _stub = TestSpawnWorkerV5Lanes._stub
+    _run = TestSpawnWorkerV5Lanes._run
+    RW = {"PROFILE": "rw", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"}
+    PREFIX = ("OPEN_FLEET_SANDBOX_PROFILE={p} ORCA_SANDBOX_PROFILE={p} "
+              "OPEN_FLEET_PARENT_PROFILE={p} ORCA_PARENT_PROFILE={p} ")
+
+    def launched_command(self, tmp, env_extra, args=("task_test", "path:/tmp/wt", "t")):
+        """The --command `terminal create` received, as one argv element."""
+        self._stub(tmp)
+        stub = Path(tmp) / "orca"
+        stub.write_text(stub.read_text().replace(
+            '*terminal\\ create*)   cat',
+            f'*terminal\\ create*)   for a in "$@"; do printf "%s\\0" "$a"; done > "{tmp}/tc-argv"; cat'))
+        r = self._run(tmp, list(args), env_extra)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        argv = (Path(tmp) / "tc-argv").read_text().split("\0")
+        return argv[argv.index("--command") + 1]
+
+    def test_the_ro_worker_launch_carries_its_own_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            command = self.launched_command(tmp, {"PROFILE": "ro"})
+        self.assertTrue(command.startswith(self.PREFIX.format(p="ro") + "claude --permission-mode plan"),
+                        command)
+
+    def test_a_ro_worker_cannot_mint_an_rw_child_through_its_inherited_env(self):
+        # The audit's PoC, end to end: run the launch line Orca was handed, with a `claude` that is
+        # the worker's own `PROFILE=rw spawn_worker.sh …`.
+        with tempfile.TemporaryDirectory() as tmp:
+            command = self.launched_command(tmp, {"PROFILE": "ro"})
+            bindir = Path(tmp) / "worker-bin"
+            bindir.mkdir()
+            fake = bindir / "claude"
+            fake.write_text("#!/bin/sh\nPROFILE=rw ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1 SW_PRINT_LAUNCH=1 "
+                            f'exec bash "{SPAWN}" task_child current child claude high\n')
+            fake.chmod(0o755)
+            p = subprocess.run(["sh", "-c", command], capture_output=True, text=True,
+                               env={"PATH": f"{bindir}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca"})
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("monotonic privilege narrowing violation", p.stderr)
+        self.assertIn("parent profile 'ro'", p.stderr)
+        self.assertNotIn("LAUNCH=", p.stdout)
+
+    def test_every_default_ro_row_carries_it_and_an_override_stays_verbatim(self):
+        # The rows this script owns carry the prefix; a WORKER_CMD keeps its documented contract
+        # (it reaches terminal create exactly as the caller wrote it, its semantics theirs).
+        for agent in ("codex", "gemini", "jcode", "goose", "hermes"):
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
+                command = self.launched_command(tmp, {"PROFILE": "ro"},
+                                                ("task_test", "path:/tmp/wt", "t", agent, "high"))
+                self.assertTrue(command.startswith(self.PREFIX.format(p="ro")), command)
+        with tempfile.TemporaryDirectory() as tmp:
+            command = self.launched_command(tmp, dict(self.RW, WORKER_CMD="my-agent --go",
+                                                      ORCA_COORD_ALLOW_CMD_OVERRIDE="1"))
+        self.assertEqual(command, "my-agent --go")
+
+    def test_a_worker_session_without_a_parent_profile_is_capped_at_ro(self):
+        for marker in ("OPEN_FLEET_DISPATCH_ID", "ORCA_DISPATCH_ID", "OPEN_FLEET_WORKER_ID",
+                       "ORCA_WORKER_ID", "OPEN_FLEET_UNIT_WORKTREE", "ORCA_UNIT_WORKTREE"):
+            with self.subTest(marker=marker):
+                rc, launch, err = run_orca_launch("claude", "rw", {**self.RW, marker: "x"})
+                self.assertEqual(rc, 2, err)
+                self.assertIn(f"carries fleet worker identity ({marker})", err)
+                self.assertIn("parent profile 'ro'", err)
+                self.assertIsNone(launch)
+                rc, launch, err = run_launch("claude", "rw", {"ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1",
+                                                              marker: "x"})
+                self.assertEqual(rc, 2, err)
+                rc, launch, err = run_orca_launch("claude", "ro", {marker: "x"})
+                self.assertEqual(rc, 0, err)
+                self.assertTrue(launch)
+
+    def test_a_named_parent_profile_still_decides_and_a_coordinator_is_uncapped(self):
+        rc, launch, err = run_orca_launch("claude", "rw", {**self.RW, "OPEN_FLEET_DISPATCH_ID": "d1",
+                                                           "OPEN_FLEET_PARENT_PROFILE": "rw"})
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("carries fleet worker identity", err)
+        rc, launch, err = run_orca_launch("claude", "rw", self.RW)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(launch)
+        self.assertNotIn("carries fleet worker identity", err)
+
+    def test_off_orca_the_capped_parent_reaches_the_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "calls.log"
+            stub = Path(tmp) / "orca"
+            stub.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{log}\"\n"
+                            'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
+                            ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --permission-mode plan"}}}\' ;; esac\n')
+            stub.chmod(0o755)
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
+                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro", "OPEN_FLEET_WORKER_ID": "w1"}
+            p = subprocess.run(["bash", str(SPAWN), "task_x", "path:/tmp/of-wt", "t", "claude"],
+                               env=env, capture_output=True, text=True)
+            ws = next((ln for ln in log.read_text().splitlines() if "worker-start" in ln), "")
+        self.assertIn("--parent-profile ro", ws, p.stdout + p.stderr)
+
+
 class TestNonOrcaDanger(unittest.TestCase):
     """#585: off Orca, danger is decided by the runtime's own doctor — proven isolation AND
     prelaunch placement — instead of an unconditional refusal; everything short of that refuses."""

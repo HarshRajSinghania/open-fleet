@@ -485,6 +485,22 @@ for _pp in "${PARENT_PROFILE:-}" "${OPEN_FLEET_PARENT_PROFILE:-}" "${ORCA_PARENT
     eff_parent_profile="$_pp"
   fi
 done
+# W4-04: no parent profile is NOT "uncapped" inside a worker. Each of these names is fleet worker
+# identity a runtime sets for the worker it launches (posix: dispatch/worker id; every base.py
+# launch and a deny-hook settings file: the unit worktree), never a coordinator session; carrying
+# one with no parent profile caps the child at ro, the most restrictive tier. Every name here and
+# above is still the worker's OWN environment, so this bounds the spawn path a worker inherits,
+# not a worker that scrubs its env or calls the runtime CLI or an agent directly (W4-05 is the ro
+# boundary); a coordinator session carries none of them and is unchanged.
+if [ -z "$eff_parent_profile" ]; then
+  for _wv in OPEN_FLEET_DISPATCH_ID ORCA_DISPATCH_ID OPEN_FLEET_WORKER_ID ORCA_WORKER_ID \
+             OPEN_FLEET_UNIT_WORKTREE ORCA_UNIT_WORKTREE; do
+    [ -n "${!_wv:-}" ] || continue
+    eff_parent_profile=ro
+    echo "SPAWN=NOTE task=${tname} this session carries fleet worker identity (${_wv}) but no parent profile (--parent-profile, OPEN_FLEET_PARENT_PROFILE, OPEN_FLEET_SANDBOX_PROFILE or an ORCA_ alias): the child is capped at ro, the most restrictive tier, rather than left uncapped (W4-04). A coordinator session must not carry ${_wv}." >&2
+    break
+  done
+fi
 if [ -n "$ACTIVE_RUNTIME" ] && [ "$ACTIVE_RUNTIME" != "orca" ]; then
   WS_ARGS+=(--profile "$PROFILE")
   if [ -n "$eff_parent_profile" ]; then
@@ -1390,7 +1406,18 @@ else
   # ledger (dispatch-lifecycle.md).
   step=create-terminal
   tj="$SP/sw-$safe_title.json"
-  orca_json "$tj" terminal create --worktree "$sel" --title "$title" --command "$cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
+  # W4-04: a row this script owns (every Orca ro launch) carries the worker's own profile in its
+  # launch env as the sandbox profile AND the parent profile, so the monotonic check above fires
+  # when it (or anything it runs) calls this script. posix's supervised lane exports the same pair;
+  # Orca's worker-start has no env flag at the pin, which leaves its rw workers to the identity
+  # fail-safe above. Assignment prefixes, the form the goose/hermes rows already use; PROFILE is
+  # keyset-validated (ro|rw|danger), so nothing caller-controlled is spliced in. A WORKER_CMD
+  # override reaches terminal create exactly as written: its semantics are the caller's assertion.
+  launch_cmd="$cmd"
+  if [ -z "$override" ]; then
+    launch_cmd="OPEN_FLEET_SANDBOX_PROFILE=${PROFILE} ORCA_SANDBOX_PROFILE=${PROFILE} OPEN_FLEET_PARENT_PROFILE=${PROFILE} ORCA_PARENT_PROFILE=${PROFILE} ${cmd}"
+  fi
+  orca_json "$tj" terminal create --worktree "$sel" --title "$title" --command "$launch_cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
   h=$(python3 -I - "$tj" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))

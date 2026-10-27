@@ -48,7 +48,7 @@ Runtime scripts accept `OPEN_FLEET_*` variables alongside legacy `ORCA_*` aliase
 | `OPEN_FLEET_ROOT` | `ORCA_FLEET_ROOT` | Catalog root directory |
 | `OPEN_FLEET_STATE_DB` / `OPEN_FLEET_STATE_DIR` | `ORCA_FLEET_STATE_DB` / `ORCA_FLEET_STATE_DIR` | `posix` SQLite state store path or directory |
 | `OPEN_FLEET_SANDBOX_PROFILE` | `ORCA_SANDBOX_PROFILE` | Worker sandbox profile (`ro`, `rw`, `danger`) |
-| `OPEN_FLEET_PARENT_PROFILE` | `ORCA_PARENT_PROFILE` | Parent worker profile enforcing monotonic narrowing (`ro < rw < danger`) |
+| `OPEN_FLEET_PARENT_PROFILE` | `ORCA_PARENT_PROFILE` | Parent worker profile enforcing monotonic narrowing (`ro < rw < danger`). Set, with the sandbox profile, to the worker's own profile in every `posix` launch and every Orca `ro` launch from `spawn_worker.sh`'s own rows (a `WORKER_CMD` override stays verbatim); a session carrying worker identity (`*_DISPATCH_ID`, `*_WORKER_ID`, `*_UNIT_WORKTREE`) but no parent profile is capped at `ro`. It is the worker's own environment: a guard on the spawn path, not a sandbox (W4-04) |
 | `OPEN_FLEET_COORD_ALLOW_AUTONOMOUS_WRITE` | `ORCA_COORD_ALLOW_AUTONOMOUS_WRITE` | Explicit coordinator opt-in (`=1`) required before `spawn_worker.sh` launches a `PROFILE=rw` worker |
 | `OPEN_FLEET_COORD_ALLOW_DANGER` | `ORCA_COORD_ALLOW_DANGER` | Explicit coordinator opt-in (`=1`) required alongside a placement-bound recipe before launching `PROFILE=danger` |
 | `OPEN_FLEET_SANDBOX_RECIPE` | `ORCA_SANDBOX_RECIPE` | Certified disposable sandbox recipe ID for `PROFILE=danger` (`sandbox_doctor.py --require-placement`) |

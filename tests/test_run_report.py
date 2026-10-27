@@ -1576,6 +1576,31 @@ class SignedTranscriptRequired(SignedKeyFixture):
         errors = self._check()
         self.assertTrue(any("mutation-class" in e and "report-only" in e for e in errors), errors)
 
+    def test_a_change_that_drops_its_own_mission_from_the_mutation_policy_is_judged_by_the_base(self):
+        # W3-05 (2026-10-27 security audit, P2): the mutation-unit list was read at the GRADED
+        # revision — the PR's own commit — so a PR that deleted its mission from
+        # `**Mutation units** (...)` in the commit it is graded on was judged as report-only, shed
+        # the negative control, and the refusal above evaporated. The policy is now read where the
+        # key is read (key_rev): the grading base for a pin off its ancestry.
+        policy = self.repo / "runtime" / "evidence-manifest.md"
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text("- **Mutation units** (demo-it, ship-it) — need a negative control.\n",
+                          encoding="utf-8")
+        self._on_main()
+        self._land(pubkey=True, msg="the policy and the key on main")
+        _git(self.repo, "checkout", "-q", "-b", "the-pr")
+        policy.write_text("- **Mutation units** (ship-it) — need a negative control.\n",
+                          encoding="utf-8")
+        self._commit(pubkey=True, transcript=self._envelope(
+            self._verdict(args={"unit_class": "report-only", "lighting": "lit"})))
+        body = (f"    python3 runtime/scripts/verify.py --manifest {self.manifest} "
+                "--unit-class report-only --lighting lit\n    exit 0\n")
+        self._write(header_extra=f" transcript={self.TRANSCRIPT}", body=body)
+        self.assertNotIn("demo-it", run_report._read_at_rev(self.rev, "runtime/evidence-manifest.md",
+                                                            self.repo))  # the PR really dropped it
+        errors = self._check()
+        self.assertTrue(any("mutation-class" in e and "report-only" in e for e in errors), errors)
+
     # --- WHERE the key is read: the pin on the base's ancestry, the base off it -----------------
 
     def test_a_report_pinned_before_the_key_landed_keeps_the_unsigned_path(self):

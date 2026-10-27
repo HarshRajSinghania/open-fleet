@@ -63,6 +63,10 @@ landed keeps the unsigned path unchanged — the grandfather lane, and the ONLY 
 it. A pin OFF that ancestry — a branch forked from any pre-key commit, a dangling commit
 — is judged against the key at the grading base: fresh artifacts on such a fork prove
 nothing about the key, so "its own artifacts must exist there" was never a defence.
+The mutation-class mission list (evidence-manifest.md §3, which decides whether a signed
+verdict on a lesser class proves anything and whether WIP-curve rows are owed) is read at that
+same commit, never at the graded change's own revision or the working tree: a change that drops
+its own mission from the list is still judged by the list it was dispatched under (W3-05).
 
 What this does NOT do, said plainly: it does not re-run `verify.py` and re-derive
 the verdict. Without a committed key the ledger above is still written ON the
@@ -782,7 +786,7 @@ def signed_transcript(fields, rev, run_dir, root, base=None, text=""):
                 problems.append(f"its signed argument tuple ({summary or 'every flag unset'}) matches no "
                                 f"verify.py invocation the body shows — the verdict was reached under "
                                 "a policy the report does not claim")
-        mutation = _mutation_missions(root, rev)
+        mutation = _mutation_missions(root, rev, base)
         if mutation and fields["mission"] in mutation and signed.get("unit_class") != "mutation":
             problems.append(f"it was judged as unit_class={signed.get('unit_class')!r}, but "
                             f"{fields['mission']} is a mutation-class mission (evidence-manifest.md "
@@ -815,20 +819,24 @@ def signed_transcript(fields, rev, run_dir, root, base=None, text=""):
     return []
 
 
-def _mutation_missions(root, rev=None):
+def _mutation_missions(root, rev=None, base=None):
     """The mutation-class mission set from evidence-manifest.md §3 — the one place the class list
-    lives, so this check and the done-floor never enumerate different sets. Read at the report's
-    pinned revision first (the policy in force for the run), then the working tree. None means the
-    policy exists at neither — the repo predates the protocol, and the obligation is unscoped
-    rather than violated."""
-    for text in (_read_at_rev(rev, "runtime/evidence-manifest.md", root) if rev else None,
-                 _read_worktree(root)):
-        if text is None:
-            continue
-        m = re.search(r"\*\*Mutation units\*\* \(([^)]*)\)", text)
-        if m:
-            return {name.strip() for name in m.group(1).split(",")}
-    return None
+    lives, so this check and the done-floor never enumerate different sets. None means the policy
+    is absent where it is read — the repo predates the protocol, and the obligation is unscoped
+    rather than violated.
+
+    WHERE it is read is the point (W3-05, 2026-10-27 audit). It used to be the report's pinned
+    revision — the graded change's own commit — and then the working tree, both written by the
+    graded party: a PR that dropped its mission from the list in the commit it is graded on was
+    judged as report-only and shed every mutation obligation. It is now read exactly where the
+    enforcement key is (key_rev): at the pin when the pin sits on the grading base's ancestry —
+    a reviewed, merged policy — and at the grading base itself when it does not. With no pin, the
+    grading base. The graded revision is the fallback only where key_rev refuses outright, and
+    that refusal already fails the report."""
+    at = (key_rev(rev, root, base)[0] or rev) if rev else grading_base(root, base)
+    text = _read_at_rev(at, "runtime/evidence-manifest.md", root) if at else None
+    m = re.search(r"\*\*Mutation units\*\* \(([^)]*)\)", text) if text is not None else None
+    return {name.strip() for name in m.group(1).split(",")} if m else None
 
 
 def _read_at_rev(rev, path_text, root):
@@ -843,13 +851,6 @@ def _read_at_rev(rev, path_text, root):
     try:
         return proc.stdout.decode("utf-8")
     except UnicodeDecodeError:
-        return None
-
-
-def _read_worktree(root):
-    try:
-        return (Path(root) / "runtime" / "evidence-manifest.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
         return None
 
 
@@ -993,8 +994,8 @@ def _wip_cell_ok(key, value):
     return bool(pattern.fullmatch(value))
 
 
-def _wip_curve_errors(text, mission, root, report_path, rev=None):
-    missions = _mutation_missions(root, rev)
+def _wip_curve_errors(text, mission, root, report_path, rev=None, base=None):
+    missions = _mutation_missions(root, rev, base)
     if missions is None:
         return []  # the protocol exists at neither the pinned rev nor the worktree — unscoped
     if mission not in missions:
@@ -1149,7 +1150,7 @@ def check_report(report_path, mission, tier, root=None, base=None):
     for problem in signed_transcript(fields, rev, run_dir, root, base, text):
         errors.append(f"{report_path}: {problem}")
 
-    errors.extend(_wip_curve_errors(text, mission, root, report_path, rev=rev))
+    errors.extend(_wip_curve_errors(text, mission, root, report_path, rev=rev, base=base))
 
     try:
         _report, lines, entries = inventory.load(report)

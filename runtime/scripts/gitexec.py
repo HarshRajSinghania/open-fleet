@@ -53,7 +53,11 @@ command can come from. A worktree-materialising read (floor_guard's, diff_scope'
 hint_provenance's ``diff`` of the working tree, _trajectories.py's replay, verify.py's
 negative-control ``checkout``) passes its pairs;
 a read of committed objects alone (inventory, decisions ``--pin-ref``) never selects a
-filter and does not need them.
+filter and does not need them. The listing and the call are two steps: a driver a concurrent
+writer of that config adds between them runs unblanked, so the pairs close the channel only for
+a config nobody writes while the call runs. The providers' git custody (runtime/providers/posix.py
+``run_git``) does not rely on them: a provider git that could apply a driver runs against a git
+dir the coordinator builds, whose config declares none (PR #720 Codex round 3).
 
 Unlike verify.py the rest of the environment passes: these tools are not a verifier
 stating facts against a worker, and a coordinator's locale, HOME and PATH stay theirs.

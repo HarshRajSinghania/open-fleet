@@ -242,10 +242,26 @@ class TheSecretWaiverCarriesIdentityNotContent(unittest.TestCase):
         self.assertRegex(run, r'for dir in \. \$\(git -C "\$canary" ls-tree -d --name-only HEAD\)',
                          "the canary no longer reaches every top-level directory")
         self.assertRegex(run, r'printf .*AKIA.*> "\$canary/\$file"')
-        self.assertRegex(run, r'(?s)if \(cd "\$canary" && "\$gl" detect [^\n]*'
+        self.assertRegex(run, r'(?s)if \(cd "\$canary" && GIT_ATTR_SOURCE="\$no_attributes" '
+                              r'"\$gl" detect [^\n]*'
                               r'--report-format json --report-path "\$RUNNER_TEMP/canary\.json"\)')
         self.assertRegex(run, r'python3 -I - "\$RUNNER_TEMP/canary\.json" "\$\{planted\[@\]\}"')
         self.assertIn("missed = [path for path in sys.argv[2:] if path not in reported]", run)
+
+    def test_the_scan_reads_no_attributes_from_the_tree(self):
+        """PR #718 re-attack (W6-03 class): `scripts/whatever.py -diff` in a .gitattributes, at the
+        root or nested, made git render the file's history as "Binary files differ", and
+        gitleaks 8.30.1 reported no leaks. Every scan reads attributes from the empty tree, and
+        the canary clone plants `* -diff`, so a scan that honours the tree's attributes fails."""
+        wf = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        run = "\n".join(ln for ln in wf.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertIn('no_attributes="4b825dc642cb6eb9a060e54bf8d69288fbee4904"', run)
+        scans = [ln.strip() for ln in run.splitlines() if '"$gl" detect' in ln]
+        self.assertEqual(len(scans), 2, scans)
+        for scan in scans:
+            with self.subTest(scan=scan):
+                self.assertIn('GIT_ATTR_SOURCE="$no_attributes" "$gl" detect', scan)
+        self.assertRegex(run, r"printf '\* -diff\\n' > \"\$canary/\.gitattributes\"")
 
     def test_the_scanner_config_is_on_the_frozen_guard_surface(self):
         # The allowlist file is a waiver mechanism: an edit to it must need a recorded human

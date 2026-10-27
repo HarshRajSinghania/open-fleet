@@ -6,8 +6,9 @@
   review nor a fork author's GO on their own PR does; [ops](../docs/ops.md#merge-gate) says what
   a green gate proves and records the fork-token read-back. The coverage floor no longer reads a
   `.coverage.*` file planted in the PR's tree (coverage remains the PR's own measurement of
-  itself, an accepted residual); `.gitleaks.toml` is on the floor guard's frozen surface and the
-  secret-scan canary reaches every top-level directory; no checkout keeps its token; every
+  itself, an accepted residual); `.gitleaks.toml` is on the floor guard's frozen surface, the
+  secret scan ignores the tree's `.gitattributes`, and its canary proves no waiver covers a
+  top-level directory wholesale (a narrower allowlist is the floor guard's to stop); no checkout keeps its token; every
   `uses:` and every demo-stack image is pinned by test. The publishers check the tag before
   fetching it, `release.yml` marks only the newest tag Latest, and `publish-dist` stages the
   bundle exactly. `gen-badges.py` checks a claimed cut's badge and the release commit's shape,

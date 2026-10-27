@@ -256,7 +256,13 @@ jobs:
           # Author, Date, Message, Entropy, Description and Commit when matching a
           # baseline entry, so deleting those fields stops it suppressing anything.
           # .gitleaksignore takes the fingerprint alone, which is the whole waiver.
-          "$gl" detect --redact --no-banner --source .
+          #
+          # `detect` reads history through `git log -p`, and git renders a file a
+          # .gitattributes marks `-diff` (at the root or nested) as "Binary files
+          # differ": a live key there went unreported (PR #718 re-attack, W6-03 class).
+          # Both scans read attributes from the empty tree, never from the PR's.
+          no_attributes="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+          GIT_ATTR_SOURCE="$no_attributes" "$gl" detect --redact --no-banner --source .
           # An ignore file IS a waiver, so prove it waives only what it lists.
           # Plant a real-shaped key in the waived file itself, in a throwaway
           # clone, and require the same command to go red. The key is assembled
@@ -267,8 +273,12 @@ jobs:
           # allowlist for `^scripts/` left the planted key above reported and a real
           # one under scripts/ silent. So the same key also goes into a new file at
           # the root and under every top-level directory, and the report must name
-          # every planted file. (.gitleaks.toml is on floor_guard's frozen surface
-          # too, so a PR that edits it needs a recorded waiver before it can merge.)
+          # every planted file. That proves no waiver covers a top-level directory
+          # wholesale, nothing narrower: an allowlist for `^runtime/scripts/` still
+          # passes it. What stops that is .gitleaks.toml on floor_guard's frozen
+          # surface: a PR that edits it needs a recorded waiver before it can merge.
+          # The clone also marks every path `-diff`, so a scan that honoured the
+          # tree's attributes would miss every planted key and fail here.
           canary="$RUNNER_TEMP/canary"
           git clone --quiet . "$canary"
           printf 'CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' >> "$canary/tests/test_decisions.py"
@@ -279,10 +289,11 @@ jobs:
             printf 'CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' > "$canary/$file"
             planted+=("$file")
           done
+          printf '* -diff\n' > "$canary/.gitattributes"
           git -C "$canary" add -A
           git -C "$canary" -c user.email=ci@local -c user.name=ci commit -qm canary
-          if (cd "$canary" && "$gl" detect --redact --no-banner --source . --report-format json --report-path "$RUNNER_TEMP/canary.json"); then
-            echo "::error::the secret scan passed a planted credential — a waiver (.gitleaksignore or a .gitleaks.toml allowlist) covers more than it lists"
+          if (cd "$canary" && GIT_ATTR_SOURCE="$no_attributes" "$gl" detect --redact --no-banner --source . --report-format json --report-path "$RUNNER_TEMP/canary.json"); then
+            echo "::error::the secret scan passed a planted credential — a waiver (.gitleaksignore, a .gitleaks.toml allowlist or a .gitattributes) covers more than it lists"
             exit 1
           fi
           python3 -I - "$RUNNER_TEMP/canary.json" "${planted[@]}" <<'PY'
@@ -293,7 +304,7 @@ jobs:
               print(f"::error::the credential planted in {path} was not reported: a waiver covers that path")
           sys.exit(1 if missed else 0)
           PY
-          echo "negative control: a planted credential is caught in the waived file and under every top-level directory"
+          echo "negative control: a planted credential is caught in the waived file and under every top-level directory, whatever the attributes say"
       - name: Ruff (syntax / undefined names)
         # Installed from the hashed lock above (#301), not re-resolved here.
         run: ruff check scripts runtime/scripts tests bench evals/demo

@@ -1,12 +1,11 @@
 - **The deny hook's write boundary, interpreter table and self-guard close a batch of 2026-10-27
-  security-audit findings, and the `ro` tier gains a real write floor** (W1-01..08, W4-03, W4-05,
-  W4-06). A leading `~`/`$HOME` is expanded on every write-boundary path, so `echo > ~/.bashrc`
+  security-audit findings, and the `ro` tier gains a real write floor** (W1-01..03, W1-05..08,
+  W4-03, W4-05, W4-06, W4-09). A leading `~`/`$HOME` is expanded on every write-boundary path, so `echo > ~/.bashrc`
   and a `Write` of `~/.bashrc` are judged where the shell writes, not silently allowed (W1-01); an
   unquoted `$IFS`/`${IFS}` separator is field-split so each candidate head is judged with its
   arguments (W1-02); the inline-interpreter class is closed beyond python/node — the awk family,
   lua/luajit/julia/Rscript `-e`, deno `eval`, a busybox applet, and sqlite3 `.shell`/`.system` and
-  sed `e` are read for the shell they launch (W1-03); a relative redirect after a `cd` the line
-  names is composed with it (W1-04); `tar`/`unzip`/`patch`/busybox reach the self-guard — a guard
+  sed `e` are read for the shell they launch (W1-03); `tar`/`unzip`/`patch`/busybox reach the self-guard — a guard
   file named as `tar -cf`/`patch -o` output is denied and an extraction over the guard region is
   asked (W1-05); the root/home delete class is normalised rather than spelled out, so `/*/`,
   `~/.`, `${HOME}/*` and `/dev/../` deny (W1-06); `--settings` shell-quotes the hook path and pins

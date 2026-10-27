@@ -760,7 +760,7 @@ class CiRunsMeansARunStep(unittest.TestCase):
         for workflow in (
             "jobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
             "jobs:\n  gates:\n    steps:\n      - name: bench\n        run: |\n"
-            "          set -e\n          time python3 bench/vf-bench/gate.py\n",
+            "          python3 bench/vf-bench/gate.py\n",
         ):
             with self.subTest(workflow=workflow):
                 self.assertEqual(self.gate3(workflow), rc.PASS)

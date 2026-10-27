@@ -1205,7 +1205,8 @@ class TheNegativeControlDiagnosticIsReachable(unittest.TestCase):
         text = (ROOT / ".github" / "workflows" / "negative-control.yml").read_text(
             encoding="utf-8")
         steps = [s for s in _steps(_jobs(text)["pinned-demo"])
-                 if "evals/demo/negative-control/run.sh" in "\n".join(s)]
+                 if "evals/demo/negative-control/run.sh" in "\n".join(s)
+                 and "DRIFTED" in "\n".join(s)]
         self.assertEqual(len(steps), 1, "the demo step is gone")
         return _step_script(steps[0])
 

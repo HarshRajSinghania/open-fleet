@@ -11,6 +11,15 @@
 # a dispatch loads the workflow from whichever branch is picked (PR #572
 # review, P1). To re-evaluate, post a review or re-run the latest gate run.
 #
+# It is also the one required context a PR cannot rewrite, so it refuses a PR
+# that changes the CI grader — .github/workflows/, .github/actions/,
+# .github/ci-tools.lock, the scripts the required jobs run, a root module or a
+# new top-level directory — read at the exact head SHA, unless the repository
+# owner opened it from a branch of this repository: a pull_request run loads
+# the PR's own YAML and runs its own scripts, which could green
+# gates/guard/pinned-demo (2026-10-27 security audit, W6-01; PR #718
+# re-attack; docs/ops.md#merge-gate).
+#
 # verdict-check.yml is the trigger: every review it sees completes a run, and
 # that completion wakes this gate. The gate re-derives the verdict from the
 # GitHub API and posts it on the PR's CURRENT head (statuses are latest-wins per
@@ -107,7 +116,11 @@ jobs:
           permission-statuses: write
       - name: Post the verdict-gate status on the PR head
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+          # Reads (the PR, its reviews, and what its exact head changes: the compare API needs
+          # Contents: read, which the app does not hold) use this job's own token. Only the
+          # status is posted with the app's identity (PR #718 re-attack).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_STATUS_TOKEN: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
           GATE_IDENTITY: ${{ steps.app.outcome == 'success' && 'app' || 'github-actions' }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ needs.resolve.outputs.pr }}

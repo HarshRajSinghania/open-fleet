@@ -498,6 +498,16 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(len(self.errors(text)), 1, text)
 
+    def test_the_run_index_check_reads_raw_html_the_same_way(self):
+        spec = importlib.util.spec_from_file_location("_run_index_raw_html",
+                                                      ROOT / "scripts" / "run_index.py")
+        ri = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ri)
+        for text in (self.ACCEPTED + self.REFUSED + RawHtmlIsRefused.REFUSED
+                     + RawHtmlIsRefused.ACCEPTED):
+            with self.subTest(text=text):
+                self.assertEqual(ri.raw_html(text), cl.raw_html(text))
+
     def test_the_run_index_check_reads_html_the_same_way(self):
         # scripts/run_index.py carries its own copy (it runs alone: tests copy it into a bare root).
         spec = importlib.util.spec_from_file_location("_run_index_for_changelog",
@@ -507,6 +517,139 @@ class OnlyACompleteLinkTagIsRefused(unittest.TestCase):
         for text in self.ACCEPTED + self.REFUSED:
             with self.subTest(text=text):
                 self.assertEqual(ri.html_link(text), cl.html_link(text))
+
+
+class RawHtmlIsRefused(unittest.TestCase):
+    """2026-10-27 security audit, W6-14: the cut copies a fragment verbatim into CHANGELOG.md, and
+    only a tag carrying href or src was refused, so `<script>alert(1)</script>` passed. Any raw
+    HTML outside a code span or an escape is refused now; a link tag keeps its own message."""
+
+    REFUSED = (
+        "- **Change** <script>alert(1)</script>.\n",
+        "- **Change** <b>bold</b> words.\n",
+        "- **Change** a <!-- hidden --> comment.\n",
+        "- **Change** </div> closes something.\n",
+        '- **Change** a tag\n  <span\n  class="x">split across lines</span>.\n',
+        "- **Change** <?php echo 1; ?> an instruction.\n",
+        # a delimiter row makes it a table: GFM splits the cells before it reads the span
+        "- **Change** `a | <b>x</b>`\n  --- | ---\n",
+    )
+    ACCEPTED = (
+        "- **Change** `<script>` is named as code.\n",
+        "- **Change** a double span ``<b>`` is code too.\n",
+        "- **Change** an escaped \\<script> is text.\n",
+        "- **Change** see <https://example.org/x> for more.\n",
+        "- **Change** mail <a@b.example> for more.\n",
+        "- **Change** 3 < 5, x<5 and a -> b.\n",
+        # no table without a delimiter row, so a "|" inside a span leaves it a span (the fragment
+        # changelog.d/deep-adversarial-hardening.md reads this way)
+        "- **Change** flags (`1|true|yes|on`), then\n  `--source human:<name>` as code.\n",
+    )
+
+    def errors(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "entry.md").write_text(text, encoding="utf-8")
+            return [e for e in cl.check_fragments(d) if "raw HTML" in e]
+
+    def test_raw_html_with_no_link_in_it_is_refused(self):
+        for text in self.REFUSED:
+            with self.subTest(text=text):
+                self.assertEqual(len(self.errors(text)), 1, text)
+
+    def test_code_escapes_autolinks_and_comparisons_are_text(self):
+        for text in self.ACCEPTED:
+            with self.subTest(text=text):
+                self.assertEqual(self.errors(text), [])
+
+    def test_a_link_tag_is_reported_once_as_a_link(self):
+        text = '- **Change** <a href="../docs/ops.md">ops</a>.\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "entry.md").write_text(text, encoding="utf-8")
+            errors = cl.check_fragments(d)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("Markdown link", errors[0])
+
+
+
+class DangerousSchemesAreRefused(unittest.TestCase):
+    """PR #718 re-attack (W6-14): `<javascript:alert(1)>` and `<vbscript:…>` autolinks, which no
+    raw-HTML check sees, passed both writers into published Markdown, and then (review round 3) a
+    reference definition inside a list item evaded the link reader. So a javascript:, vbscript:,
+    data: or file: scheme is refused wherever it stands, whatever Markdown is around it (entities
+    decoded, control characters dropped, case ignored), and only a word that runs into it (as in
+    `metadata:`) is not one."""
+
+    REFUSED = (
+        "- **Change** see <javascript:alert(1)>.\n",
+        "- **Change** see <VBScript:msgbox(1)>.\n",
+        "- **Change** [x](javascript:alert(1)).\n",
+        "- **Change** [x]( JavaScript:alert(1) ).\n",
+        "- **Change** [x](<javascript:alert(1)>).\n",
+        "- **Change** [x](java&#115;cript:alert(1)).\n",
+        "- **Change** [x](java\tscript:alert(1)).\n",
+        "- **Change** [x](data:text/html,hi).\n",
+        "- **Change** [x](file:///etc/passwd).\n",
+        "- **Change** ![img](data:image/svg+xml,x).\n",
+        "- **Change** [x][y]\n  [y]: javascript:alert(1)\n",
+        # a reference definition inside a list item (PR #718 review round 3)
+        "- **Change** [click][payload]\n- [payload]: javascript:alert(1)\n",
+        "- **Change** [click][p]\n  - [p]: &#106;avascript:alert(1)\n",
+        # anywhere at all: refused by token, not by the construct around it
+        "- **Change** [x](https://example.org/javascript:alert).\n",
+        "- **Change** [ops](../docs/ops.md#data:x).\n",
+        "- **Change** the word javascript: in prose.\n",
+        "- **Change** a `file:` key named as code.\n",
+        "- **Change** split java\tscript: by a tab.\n",
+        # every container a reference definition can sit in, and an angle-bracket destination
+        "- **Change** x\n  - [click][p]\n    - [p]: javascript:alert(1)\n",
+        "- **Change** [click][p]\n\n  > [p]: javascript:alert(1)\n",
+        "- **Change** [click][p]\n  > - [p]: <javascript:alert(1)>\n",
+        # a CommonMark backslash escape: `javascript\:` is `javascript:` in the rendered href
+        "- **Change** [x](javascript\\:alert(1)).\n",
+        "- **Change** [click][p]\n- [p]: javascript\\:alert(1)\n",
+        "- **Change** [x](data\\:text/html,x).\n",
+        # the colon or a letter as an entity or a percent escape
+        "- **Change** [x](javascript&colon;alert(1)).\n",
+        "- **Change** [x](javascript&#x3A;alert(1)).\n",
+        "- **Change** [x](&#106avascript:alert(1)).\n",
+        "- **Change** [x](%6Aavascript:alert(1)).\n",
+        "- **Change** [x](javascript%3Aalert(1)).\n",
+    )
+    ACCEPTED = (
+        "- **Change** see <https://example.org/x>.\n",
+        "- **Change** the metadata: and profile: keys, a dataset, the word javascript.\n",
+        "- **Change** 100% of `a\\b` paths, and <https://example.org/?q=a%20b&amp;r=1>.\n",
+    )
+
+    def errors(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "README.md").write_text("x\n", encoding="utf-8")
+            (d / "entry.md").write_text(text, encoding="utf-8")
+            return [e for e in cl.check_fragments(d) if "scheme" in e]
+
+    def test_a_dangerous_scheme_is_refused(self):
+        for text in self.REFUSED:
+            with self.subTest(text=text):
+                self.assertEqual(len(self.errors(text)), 1, text)
+
+    def test_other_links_and_mentions_pass(self):
+        for text in self.ACCEPTED:
+            with self.subTest(text=text):
+                self.assertEqual(self.errors(text), [])
+
+    def test_the_run_index_check_reads_schemes_the_same_way(self):
+        spec = importlib.util.spec_from_file_location("_run_index_schemes",
+                                                      ROOT / "scripts" / "run_index.py")
+        ri = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ri)
+        for text in self.REFUSED + self.ACCEPTED:
+            with self.subTest(text=text):
+                self.assertEqual(ri.dangerous_scheme(text), cl.dangerous_scheme(text))
 
 
 if __name__ == "__main__":

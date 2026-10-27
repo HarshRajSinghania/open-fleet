@@ -194,6 +194,9 @@ SUBSTANTIVE_LEN = 6
 # guard it) and any doc that cites one are never their own finding.
 GUARD_SURFACE_FILES = (
     ".gitleaksignore",
+    # A path allowlist here waives every finding in the paths it names (2026-10-27 security
+    # audit, W6-03): a waiver mechanism, so it moves only with a recorded human grant.
+    ".gitleaks.toml",
     "evals/routing.json",
     "bench/vf-bench/VERSION",
     "bench/vf-bench/CANARY",

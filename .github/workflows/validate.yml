@@ -32,6 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
+          persist-credentials: false
           fetch-depth: 0  # same full-history checkout the suite ran under in gates
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
@@ -43,7 +44,7 @@ jobs:
         # resolution path for a tool to slip through.
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --require-hashes --only-binary :all: \
+          python3 -I -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           coverage --version
       - name: Suite runs as a non-root user
@@ -64,21 +65,36 @@ jobs:
             echo "::error::the scanner-absent test environment unexpectedly contains Gitleaks"
             exit 1
           fi
+          # The data file goes to the runner's temp dir, not the PR's tree (2026-10-27 security
+          # audit, W6-02): a `.coverage.*` glob over the checkout uploaded any data file a test
+          # saved there, and the combine in gates read it.
+          mkdir -p "$RUNNER_TEMP/coverage-data"
+          export COVERAGE_FILE="$RUNNER_TEMP/coverage-data/shard"
           python3 scripts/shard-tests.py --shard "$SHARD" --of 6 --with-coverage
+      - name: Name the shard's one coverage data file
+        # --parallel-mode writes shard.<host>.<pid>.<random>; exactly one process ran under the
+        # tracer, so exactly one file is expected, and it is uploaded under one exact name.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=("$RUNNER_TEMP"/coverage-data/shard.*)
+          if [ "${#found[@]}" -ne 1 ]; then
+            echo "::error::shard $SHARD left ${#found[@]} coverage data files, not one; the D9 floor reads exactly one per shard"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/coverage-upload"
+          mv "${found[0]}" "$RUNNER_TEMP/coverage-upload/coverage-shard-$SHARD.data"
       - name: Upload the shard coverage data
-        # One .coverage.<host>.<pid>.<random> per shard (--parallel-mode);
-        # gates downloads all six and combines before the D9 report. No
-        # if:always: a red shard uploads nothing; gates still runs and its
-        # first step fails on the red need, so the combine never runs short.
-        # include-hidden-files: dotfiles are EXCLUDED by default, and every
-        # parallel-mode data file is one — without it the upload finds
-        # nothing and fails the shard (PR #480, first CI run).
+        # gates downloads all six and combines before the D9 report. No if:always: a red shard
+        # uploads nothing; gates still runs and its first step fails on the red need, so the
+        # combine never runs short. One exact file, no glob and no hidden files (W6-02).
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0 (Node 24, #367; v4/v5 are Node 20, gone from runners 2026-09-23)
         with:
           name: coverage-shard-${{ matrix.shard }}
-          path: .coverage.*
+          path: ${{ runner.temp }}/coverage-upload/coverage-shard-${{ matrix.shard }}.data
           if-no-files-found: error
-          include-hidden-files: true
           retention-days: 1
   floor:
     # #514: the Python floor is a measured claim, not an installer setting. The sharded `tests`
@@ -95,6 +111,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; same pin as the tests job)
         with:
+          persist-credentials: false
           fetch-depth: 0  # same full-history checkout the suite ran under in gates
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
@@ -102,7 +119,7 @@ jobs:
       - name: Install coverage from the hashed lock
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --require-hashes --only-binary :all: \
+          python3 -I -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           coverage --version
       - name: Run suite shard on the floor interpreter
@@ -129,6 +146,7 @@ jobs:
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
+          persist-credentials: false
           fetch-depth: 0  # vf-bench review-leg pins and the trailer check's PR range need full history
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
@@ -161,7 +179,8 @@ jobs:
         run: python3 scripts/changelog.py check --base "$PR_BASE_SHA"
       - name: The tests badge is the last release's own
         # The README labels it "at last release": between cuts it must be the badge at the cut
-        # commit docs/releases.json names (PR #670 review); the cut writes a new one.
+        # commit docs/releases.json names (PR #670 review); the cut writes a new one, and while
+        # `preparing` is set it must be exactly that one, this tree's own count (W6-08).
         run: python3 scripts/gen-badges.py --check-last-release
       - name: Routing eval gate (description-based router)
         # #260: this is the gate, not the summary step below. It scores every
@@ -191,7 +210,7 @@ jobs:
         # --require-hashes makes a swapped artifact fail before it executes.
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --require-hashes --only-binary :all: \
+          python3 -I -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           ruff --version
           agentskills --version
@@ -223,7 +242,7 @@ jobs:
           "$RUNNER_TEMP/gitleaks/gitleaks" version
           gl="$RUNNER_TEMP/gitleaks/gitleaks"
           # Exercise the verifier's optional-scanner path as well as the built-in floor above.
-          PATH="$RUNNER_TEMP/gitleaks:$PATH" python3 -m unittest discover -s tests -p test_verify.py
+          PATH="$RUNNER_TEMP/gitleaks:$PATH" python3 -I -m unittest discover -s tests -p test_verify.py
           # .gitleaksignore, not an allowlist: tests/test_decisions.py carries
           # credential-SHAPED fixtures (it exists to prove decisions.py refuses
           # credentials) and `detect` reads git history, so editing the file
@@ -237,20 +256,67 @@ jobs:
           # Author, Date, Message, Entropy, Description and Commit when matching a
           # baseline entry, so deleting those fields stops it suppressing anything.
           # .gitleaksignore takes the fingerprint alone, which is the whole waiver.
-          "$gl" detect --redact --no-banner --source .
+          #
+          # `detect` reads history through `git log -p`, and git renders a file a
+          # .gitattributes marks `-diff` (at the root or nested) as "Binary files
+          # differ": a live key there went unreported (PR #718 re-attack, W6-03 class).
+          # Both scans read attributes from the empty tree, never from the PR's.
+          no_attributes="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+          # That is not enough: git still renders a file it classifies as binary (a NUL byte in
+          # it, or past core.bigFileThreshold) as "Binary files differ", and gitleaks cannot be
+          # handed --text (PR #718 review round 5). `diff` SET in $GIT_DIR/info/attributes, which
+          # outranks every attribute a tree can carry and which no PR can write, makes git diff
+          # every path as text, a big file included; a `binary` or `-diff` line cannot undo it.
+          every_path_text() (cd "$1" && f="$(git rev-parse --git-path info/attributes)" && mkdir -p "$(dirname "$f")" && printf '* diff\n' >> "$f")
+          every_path_text .
+          GIT_ATTR_SOURCE="$no_attributes" "$gl" detect --redact --no-banner --source .
           # An ignore file IS a waiver, so prove it waives only what it lists.
           # Plant a real-shaped key in the waived file itself, in a throwaway
           # clone, and require the same command to go red. The key is assembled
           # at runtime so this workflow file never contains a detectable literal.
+          #
+          # A .gitleaks.toml allowlist is a waiver too, and it waives by PATH, which
+          # the fingerprint canary cannot see (2026-10-27 security audit, W6-03): an
+          # allowlist for `^scripts/` left the planted key above reported and a real
+          # one under scripts/ silent. So the same key also goes into a new file at
+          # the root and under every top-level directory, and the report must name
+          # every planted file. That proves no waiver covers a top-level directory
+          # wholesale, nothing narrower: an allowlist for `^runtime/scripts/` still
+          # passes it. What stops that is .gitleaks.toml on floor_guard's frozen
+          # surface: a PR that edits it needs a recorded waiver before it can merge.
+          # The clone also marks every path `-diff`, so a scan that honoured the
+          # tree's attributes would miss every planted key and fail here.
           canary="$RUNNER_TEMP/canary"
           git clone --quiet . "$canary"
+          every_path_text "$canary"
           printf 'CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' >> "$canary/tests/test_decisions.py"
-          git -C "$canary" -c user.email=ci@local -c user.name=ci commit -aqm canary
-          if (cd "$canary" && "$gl" detect --redact --no-banner --source .); then
-            echo "::error::the secret scan passed a planted credential — .gitleaksignore is waiving more than it lists"
+          planted=(tests/test_decisions.py)
+          for dir in . $(git -C "$canary" ls-tree -d --name-only HEAD); do
+            file="$dir/gitleaks-canary.txt"
+            file="${file#./}"
+            printf 'CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' > "$canary/$file"
+            planted+=("$file")
+          done
+          printf '* -diff\n' > "$canary/.gitattributes"
+          # And a file git classifies as binary by its content (a NUL byte) and by attribute.
+          printf 'x\000CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' > "$canary/gitleaks-canary.dat"
+          printf 'gitleaks-canary.dat binary\n' >> "$canary/.gitattributes"
+          planted+=(gitleaks-canary.dat)
+          git -C "$canary" add -A
+          git -C "$canary" -c user.email=ci@local -c user.name=ci commit -qm canary
+          if (cd "$canary" && GIT_ATTR_SOURCE="$no_attributes" "$gl" detect --redact --no-banner --source . --report-format json --report-path "$RUNNER_TEMP/canary.json"); then
+            echo "::error::the secret scan passed a planted credential — a waiver (.gitleaksignore, a .gitleaks.toml allowlist or a .gitattributes) covers more than it lists"
             exit 1
           fi
-          echo "negative control: a planted credential in the waived file is still caught"
+          python3 -I - "$RUNNER_TEMP/canary.json" "${planted[@]}" <<'PY'
+          import json, sys
+          reported = {finding.get("File") for finding in json.load(open(sys.argv[1], encoding="utf-8"))}
+          missed = [path for path in sys.argv[2:] if path not in reported]
+          for path in missed:
+              print(f"::error::the credential planted in {path} was not reported: a waiver covers that path")
+          sys.exit(1 if missed else 0)
+          PY
+          echo "negative control: a planted credential is caught in the waived file, under every top-level directory and in a binary file, whatever the attributes say"
       - name: Ruff (syntax / undefined names)
         # Installed from the hashed lock above (#301), not re-resolved here.
         run: ruff check scripts runtime/scripts tests bench evals/demo
@@ -288,7 +354,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import json, os, sys
           needs = json.loads(os.environ["NEEDS_JSON"])
           bad = {job: (v or {}).get("result") for job, v in needs.items()
@@ -304,6 +370,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         # Default depth: `coverage report` reads the sources at this commit, and no step left in
         # gates reads history (the trailer range and the review-leg pins moved to checks).
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
           python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
@@ -312,16 +380,17 @@ jobs:
         # the pinned tracer's own reader, never a re-resolved one.
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --require-hashes --only-binary :all: \
+          python3 -I -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           coverage --version
       - name: Download the shard coverage data
-        # merge-multiple: all six coverage-shard-* artifacts land in the
-        # checkout root, where `coverage combine` below expects them.
+        # merge-multiple: all six coverage-shard-* artifacts land in a directory of their own,
+        # outside the checkout (W6-02), so a data file committed to the PR's tree is not read.
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0 (Node 24, #367; v4-v6 are Node 20, gone from runners 2026-09-23)
         with:
           pattern: coverage-shard-*
           merge-multiple: true
+          path: ${{ runner.temp }}/coverage-shards
       - name: "Coverage floor (D9: line >= 80% on scripts + runtime/scripts)"
         # CONSTRAINTS.md D9, wired by the floor-it WIRE phase: the six matrix
         # jobs each traced their own shard (one parallel-mode data file per
@@ -332,10 +401,26 @@ jobs:
         # hashed lock (#301), not re-resolved here. gates NEEDS the
         # matrix and its first step fails on a red shard, so this step never
         # runs on partial data: the failed need — not a missing data file —
-        # is what fails gates and blocks the merge.
+        # is what fails gates and blocks the merge. It combines exactly the six named shard
+        # files, refusing a missing or an extra one, into a data file outside the checkout
+        # (W6-02): the checkout-glob instance (a planted `.coverage.*` file) is closed. A test
+        # can still add lines to the live tracer, which land in its shard's one legitimate file,
+        # so coverage remains the PR's own measurement of itself, an accepted residual.
         run: |
           set -euo pipefail
-          coverage combine
+          dir="$RUNNER_TEMP/coverage-shards"
+          want="$(printf 'coverage-shard-%s.data\n' 1 2 3 4 5 6)"
+          have="$(ls -A "$dir" | LC_ALL=C sort)"
+          if [ "$have" != "$want" ]; then
+            echo "::error::the D9 floor reads exactly the six shard data files; $dir holds: $(printf '%s ' $have)"
+            exit 1
+          fi
+          files=()
+          for n in 1 2 3 4 5 6; do
+            files+=("$dir/coverage-shard-$n.data")
+          done
+          export COVERAGE_FILE="$RUNNER_TEMP/coverage-combined"
+          coverage combine "${files[@]}"
           coverage report
   vfbench:
     runs-on: ubuntu-latest
@@ -343,6 +428,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
+          persist-credentials: false
           fetch-depth: 0  # a skipped trap is a hole in the score, not a pass (#412)
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
@@ -352,10 +438,10 @@ jobs:
         # corpus drift off VERSION+CANARY, any skipped trap, verify.py false_done
         # > 0, or any valid-control failure. RED means fix the verifier, never
         # the corpus. ~11s locally; stays in the PR gate by design, no nightly
-        # waiver without an issue.
-        run: |
-          set -euo pipefail
-          time python3 bench/vf-bench/gate.py
+        # waiver without an issue. One invocation and nothing else: release_check.py gate 3
+        # counts only a step whose whole run: is that (PR #718 review). The runner's own
+        # `bash -e -o pipefail` wraps it, and the step's duration is in the run log.
+        run: python3 bench/vf-bench/gate.py
   vfbench_replay:
     # #601: the second environment. bench/vf-bench/replay-reference.json is a replay published from
     # a developer machine at a pinned revision; this job replays that revision under the same
@@ -369,6 +455,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (Node 24; Node 20 left runners 2026-09-23, #367)
         with:
+          persist-credentials: false
           fetch-depth: 0  # the pinned revision, and the real commits its traps pin, are history
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:

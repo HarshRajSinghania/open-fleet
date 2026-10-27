@@ -28,6 +28,8 @@ jobs:
         working-directory: evals/demo/target-app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (same pin as validate.yml)
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: uv sync --locked
       - run: uv run pytest
@@ -37,6 +39,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (same pin as validate.yml)
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
           python-version: "3.13"  # the lock is compiled for 3.13 (same pin as validate.yml)
@@ -46,7 +50,7 @@ jobs:
         # shape as validate.yml (#301), so this lint runs the ruff the catalog gate runs.
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --require-hashes --only-binary :all: \
+          python3 -I -m pip install --quiet --require-hashes --only-binary :all: \
             -r .github/ci-tools.lock
           ruff --version
       - run: ruff check evals/demo/target-app
@@ -60,6 +64,8 @@ jobs:
         working-directory: evals/demo/target-app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (same pin as validate.yml)
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: uv sync --locked
       - name: Pinned upgrade from empty
@@ -102,6 +108,8 @@ jobs:
         working-directory: evals/demo/target-app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (same pin as validate.yml)
+        with:
+          persist-credentials: false
       - name: Build and start the stack
         run: docker compose up --build -d
       - name: App + staging /healthz

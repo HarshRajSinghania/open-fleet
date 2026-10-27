@@ -93,7 +93,7 @@ No threshold below moves without a one-way human decision recorded in docs/DECIS
 
 Any diff touching these fails CI without a recorded DECISIONS waiver
 (`floor-waiver:<rule>:<path>` grant): the numbers in this file,
-`.gitleaksignore`, the `ruff.toml` select, `ROUTING_MIN_SCORE`, the eval suite
+`.gitleaksignore`, `.gitleaks.toml` (its allowlists waive by path), the `ruff.toml` select, `ROUTING_MIN_SCORE`, the eval suite
 (evals/routing.json), the vf-bench corpus (traps + pins), and — flagged for the
 GUARD phase, mirroring this file's D9 number — the `.coveragerc` fail_under.
 Waivers live in docs/DECISIONS.md and are read at the base ref, never from the

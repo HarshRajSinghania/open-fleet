@@ -359,5 +359,70 @@ class OnlyACompleteLinkTagIsRefusedInACell(unittest.TestCase):
                 self.assertEqual(len(self.errors(text)), 1, text)
 
 
+class RawHtmlInACellIsRefused(unittest.TestCase):
+    """2026-10-27 security audit, W6-14: a cell is rendered verbatim into docs/runs/README.md,
+    and only a tag carrying href or src was refused, so `<script>alert(1)</script>` passed every
+    check. Any raw HTML outside a code span or an escape is refused now; a link tag keeps its own
+    message."""
+
+    def errors(self, cell, text):
+        report = "2026-01-02-demo-it-self-run.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            write_row(root, row(report, **{cell: text}))
+            return [e for e in ri.check_rows(root) if "raw HTML" in e]
+
+    def test_raw_html_with_no_link_in_it_is_refused(self):
+        for text in ("<script>alert(1)</script>", "<b>bold</b>", "a <!-- hidden --> note",
+                     "</div> then text", '<span class="x">styled</span>'):
+            for cell in ("outcome", "target"):
+                with self.subTest(cell=cell, text=text):
+                    self.assertEqual(len(self.errors(cell, text)), 1, text)
+
+    def test_code_escapes_autolinks_and_comparisons_are_text(self):
+        for text in ("`<script>` named as code", "an escaped \\<script> is text",
+                     "see <https://example.org/x> for more", "mail <a@b.example>",
+                     "3 < 5 and x<5", "flags `--source human:<name>`"):
+            with self.subTest(text=text):
+                self.assertEqual(self.errors("outcome", text), [])
+
+    def test_a_link_tag_keeps_its_own_message(self):
+        report = "2026-01-02-demo-it-self-run.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            write_row(root, row(report, outcome='<a href="x.md">x</a>'))
+            errors = ri.check_rows(root)
+        self.assertEqual([e for e in errors if "HTML link" in e or "raw HTML" in e],
+                         [e for e in errors if "HTML link" in e])
+
+
+
+class DangerousSchemesInACellAreRefused(unittest.TestCase):
+    """PR #718 re-attack (W6-14): a cell's `<javascript:alert(1)>` autolink reached
+    docs/runs/README.md. A javascript:, vbscript:, data: or file: scheme is refused wherever it
+    stands in a cell (review round 3: by token, not by the Markdown construct around it)."""
+
+    def errors(self, text):
+        report = "2026-01-02-demo-it-self-run.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            write_row(root, row(report, outcome=text))
+            return [e for e in ri.check_rows(root) if "scheme" in e]
+
+    def test_a_dangerous_scheme_is_refused(self):
+        for text in ("see <javascript:alert(1)>", "<vbscript:msgbox(1)>", "[x](data:text/html,x)",
+                     "[x](file:///etc/passwd)", "[x](JAVA&#83;CRIPT:alert(1))",
+                     "[x](https://example.org/javascript:)", "- [p]: javascript:alert(1)",
+                     "> - [p]: <javascript:alert(1)>", "[x](javascript\\:alert(1))",
+                     "[x](javascript&colon;x)", "[x](%6Aavascript:x)"):
+            with self.subTest(text=text):
+                self.assertEqual(len(self.errors(text)), 1, text)
+
+    def test_ordinary_links_pass(self):
+        for text in ("see <https://example.org>", "the metadata: key"):
+            with self.subTest(text=text):
+                self.assertEqual(self.errors(text), [])
+
+
 if __name__ == "__main__":
     unittest.main()

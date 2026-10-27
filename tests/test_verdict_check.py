@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
 import runpy
@@ -73,9 +74,10 @@ class VerdictAtTip(unittest.TestCase):
     def test_commented_go_counts_from_pr_author(self):
         # The coordinator binding its own verdict — the normal fleet flow, since
         # GitHub forbids approving your own PR. A SHA binding, not review: required
-        # approvals stay branch protection's (module docstring).
+        # approvals stay branch protection's (module docstring). It counts because the
+        # author is the OWNER: a fork author's own GO does not (W6-06, below).
         mine = review(go_body(HEAD), state="COMMENTED", login="coord",
-                      association="CONTRIBUTOR")
+                      association="OWNER")
         self.assertTrue(verdict_at_tip([mine], HEAD, pr_author="coord"))
 
     def test_commented_go_counts_from_trusted_tiers(self):
@@ -204,7 +206,10 @@ class MainInProc(unittest.TestCase):
                 raise error
             return payload
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        # These cases are about the verdict: the PR changes no grader path (W6-01 has its own).
+        no_grader_change = mock.patch.object(verdict_check, "grader_refusal",
+                                             return_value=([], None))
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), no_grader_change:
             with mock.patch.object(verdict_check, "check_pr", side_effect=fake):
                 code = verdict_check.main(argv)
         return code, out.getvalue(), err.getvalue()
@@ -292,7 +297,9 @@ class PostStatusGate(unittest.TestCase):
             if path.startswith("pulls?"):
                 return pulls or []
             if path == "pulls/7":
-                return {"number": 7, "head": {"sha": HEAD}, "user": {"login": "coord"}}
+                return {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "o/r"}},
+                        "base": {"sha": OTHER, "repo": {"full_name": "o/r"}},
+                        "user": {"login": "coord"}}
             return reviews
 
         def fake_run(cmd, **_kw):
@@ -473,7 +480,8 @@ class WorkflowRunsTheBaseChecker(unittest.TestCase):
                          r"(?m)^permissions:\n  contents: read\n  pull-requests: read\n")
 
     def test_the_trigger_gate_mirrors_the_scripts_trust_tiers(self):
-        # A self-GO counts (SHA binding), so it must trigger evaluation too.
+        # The PR author's GO-marker review still triggers evaluation: the owner's self-GO
+        # counts, and a fork author sees theirs refused (W6-06).
         self.assertIn(
             "github.event.review.user.login == github.event.pull_request.user.login",
             self.TEXT)
@@ -501,6 +509,525 @@ class AContradictedGoIsNotAGo(unittest.TestCase):
 
     def test_a_repeated_go_is_still_a_go(self):
         self.assertTrue(verdict_at_tip([review(go_body(HEAD) + "VERDICT: GO\n")], HEAD))
+
+
+class AForkAuthorCannotGoTheirOwnPr(unittest.TestCase):
+    """2026-10-27 security audit, W6-06: a COMMENTED GO from the PR author counted whoever the
+    author was, so a fork author could post `VERDICT: GO` on their own head and turn the last
+    required context green. The author's own GO is a SHA binding only from a trusted account."""
+
+    def test_a_fork_authors_self_go_never_counts(self):
+        for association in ("CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", None):
+            with self.subTest(association=association):
+                mine = review(go_body(HEAD), state="COMMENTED", login="forker",
+                              association=association)
+                self.assertFalse(verdict_at_tip([mine], HEAD, pr_author="forker"))
+
+    def test_an_approved_go_from_an_untrusted_account_never_counts(self):
+        # PR #718 review (Codex, P1): any GitHub account can submit an APPROVED review on a public
+        # repository; it only fails to count toward native required reviews. The state proves
+        # nothing about the author, so APPROVED passes the same trust tiers as COMMENTED.
+        for association in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", None):
+            for login, pr_author in (("outsider", "coord"), ("forker", "forker")):
+                with self.subTest(association=association, login=login):
+                    approved = review(go_body(HEAD), state="APPROVED", login=login,
+                                      association=association)
+                    self.assertFalse(verdict_at_tip([approved], HEAD, pr_author=pr_author))
+
+    def test_the_gate_reports_an_untrusted_approval_as_untrusted(self):
+        pr = {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "o/r"}},
+              "base": {"ref": "main", "repo": {"full_name": "o/r"}}, "user": {"login": "coord"},
+              "author_association": "OWNER", "changed_files": 0}
+        approved = review(go_body(HEAD), state="APPROVED", login="outsider", association="NONE")
+
+        def fake_api(path, repo, paginate=False):
+            return {"pulls/7": pr, "pulls/7/reviews": [approved]}.get(path, [])
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check, "_gh_api", side_effect=fake_api):
+            code = verdict_check.main(["--pr", "7", "--repo", "o/r"])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("untrusted", err.getvalue())
+
+    def test_the_owners_self_go_still_binds(self):
+        mine = review(go_body(HEAD), state="COMMENTED", login="ravidsrk", association="OWNER")
+        self.assertTrue(verdict_at_tip([mine], HEAD, pr_author="ravidsrk"))
+
+    def test_the_gate_reports_a_self_go_from_a_fork_as_untrusted(self):
+        pr = {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "forker/r"}},
+              "base": {"ref": "main", "repo": {"full_name": "o/r"}}, "user": {"login": "forker"},
+              "author_association": "CONTRIBUTOR", "changed_files": 0}
+        mine = review(go_body(HEAD), state="COMMENTED", login="forker", association="CONTRIBUTOR")
+
+        def fake_api(path, repo, paginate=False):
+            return {"pulls/7": pr, "pulls/7/reviews": [mine]}.get(path, [])
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check, "_gh_api", side_effect=fake_api):
+            code = verdict_check.main(["--pr", "7", "--repo", "o/r"])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("untrusted", err.getvalue())
+
+
+class TheLatestTrustedVerdictAtTheHeadDecides(unittest.TestCase):
+    """PR #718 re-attack (W6-06): a trusted NO-GO did not veto. An owner's CHANGES_REQUESTED, or a
+    `VERDICT: NO-GO` bound to the same head, posted after a GO left the gate green. The latest
+    trusted verdict bound to the head decides: a later NO-GO blocks, a later GO clears it."""
+
+    @staticmethod
+    def at(body, when, state="COMMENTED", association="OWNER", login="o", commit=HEAD):
+        r = review(body, state=state, login=login, association=association)
+        r["submitted_at"], r["commit_id"] = when, commit
+        return r
+
+    GO = staticmethod(lambda when, **kw: TheLatestTrustedVerdictAtTheHeadDecides.at(
+        go_body(HEAD), when, **kw))
+    NO_GO = f"Not yet.\n\nVERDICT: NO-GO\nreviewed_sha: {HEAD}\n"
+
+    def test_a_later_trusted_no_go_blocks(self):
+        for later in (self.at(self.NO_GO, "2026-10-27T02:00:00Z"),
+                      self.at("Needs work.", "2026-10-27T02:00:00Z", state="CHANGES_REQUESTED"),
+                      self.at("VERDICT: NO-GO\n", "2026-10-27T02:00:00Z"),  # bound by commit_id
+                      self.at(self.NO_GO, "2026-10-27T02:00:00Z", state="APPROVED",
+                              association="MEMBER", login="peer")):
+            with self.subTest(later=later["body"], state=later["state"]):
+                reviews = [self.GO("2026-10-27T01:00:00Z"), later]
+                self.assertFalse(verdict_at_tip(reviews, HEAD, pr_author="o"))
+
+    def test_a_later_go_clears_a_no_go(self):
+        reviews = [self.at(self.NO_GO, "2026-10-27T01:00:00Z"),
+                   self.at("Needs work.", "2026-10-27T01:30:00Z", state="CHANGES_REQUESTED"),
+                   self.GO("2026-10-27T02:00:00Z")]
+        self.assertTrue(verdict_at_tip(reviews, HEAD, pr_author="o"))
+
+    def test_only_a_trusted_verdict_at_this_head_can_veto(self):
+        go = self.GO("2026-10-27T01:00:00Z")
+        for later in (
+                self.at(self.NO_GO, "2026-10-27T02:00:00Z", association="NONE", login="x"),
+                self.at("Needs work.", "2026-10-27T02:00:00Z", state="CHANGES_REQUESTED",
+                        association="CONTRIBUTOR", login="x"),
+                self.at(self.NO_GO.replace(HEAD, OTHER), "2026-10-27T02:00:00Z"),
+                self.at("Needs work.", "2026-10-27T02:00:00Z", state="CHANGES_REQUESTED",
+                        commit=OTHER),
+                self.at("Needs work.", "2026-10-27T02:00:00Z", state="DISMISSED"),
+                self.at("A comment, no verdict.", "2026-10-27T02:00:00Z")):
+            with self.subTest(later=later["body"], state=later["state"]):
+                self.assertTrue(verdict_at_tip([go, later], HEAD, pr_author="o"))
+
+    def test_the_gate_names_the_veto(self):
+        pr = {"number": 7, "head": {"sha": HEAD}, "user": {"login": "o"},
+              "author_association": "OWNER", "changed_files": 0}
+        reviews = [self.GO("2026-10-27T01:00:00Z"), self.at(self.NO_GO, "2026-10-27T02:00:00Z")]
+
+        def fake_api(path, repo, paginate=False):
+            return {"pulls/7": pr, "pulls/7/reviews": reviews}.get(path, [])
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check, "_gh_api", side_effect=fake_api), \
+                mock.patch.object(verdict_check, "grader_refusal", return_value=([], None)):
+            code = verdict_check.main(["--pr", "7", "--repo", "o/r"])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("NO-GO", err.getvalue())
+
+
+class APrCannotChangeItsOwnGrader(unittest.TestCase):
+    """2026-10-27 security audit, W6-01 (P1): a `pull_request` run loads its workflow from the
+    PR's merge ref, so a fork PR that empties the `gates`, `guard` and `pinned-demo` jobs gets
+    three green required contexts with nothing checked. `verdict-gate` is the one required
+    context whose code comes from the default branch; it now refuses a PR that changes the
+    grader unless the repository owner wrote it."""
+
+    OWNER_GO = review(go_body(HEAD), state="COMMENTED", login="o", association="OWNER")
+    BASE = "c" * 40
+
+    def _pr(self, login="forker", association="CONTRIBUTOR", changed=None, head=HEAD,
+            head_repo="o/r"):
+        # A fork's PR still has its head in this repository's network; the head repo names it.
+        pr = {"number": 7, "head": {"sha": head, "repo": {"full_name": head_repo}},
+              "base": {"ref": "main", "sha": self.BASE, "repo": {"full_name": "o/r"}},
+              "user": {"login": login}, "author_association": association}
+        if changed is not None:
+            pr["changed_files"] = changed
+        return pr
+
+    def _run(self, files, pr=None, pr_after=None, post=True, reviews=None, listed=None,
+             fail=()):
+        """`files` is what the compare API says the exact head changed; `listed` is what the
+        PR's (SHA-less) files list says, which the gate must not read. `fail` names reads that
+        error the way a failed `gh api` does: "compare/", or "pulls/7#2" for the second PR read."""
+        pr = pr or self._pr(changed=len(files))
+        seen = {"pulls/7": 0}
+        self.compared = []
+        posted = []
+
+        def fake_api(path, repo, paginate=False):
+            self.assertEqual(repo, "o/r")
+            if path == "pulls/7":
+                seen["pulls/7"] += 1
+                if seen["pulls/7"] >= 2 and "pulls/7#2" in fail:
+                    raise RuntimeError("gh api pulls/7 failed: HTTP 502")
+                return pr if seen["pulls/7"] == 1 or pr_after is None else pr_after
+            if any(path.startswith(prefix) for prefix in fail):
+                raise RuntimeError(f"gh api {path} failed: HTTP 404: No common ancestor")
+            if path == "pulls/7/reviews":
+                self.assertTrue(paginate)
+                return [self.OWNER_GO] if reviews is None else reviews
+            if path.startswith("compare/"):
+                self.compared.append(path)
+                return {"files": files}
+            if path.startswith("pulls/7/files"):
+                return files if listed is None else listed
+            self.fail(f"unexpected API path {path}")
+
+        def fake_run(cmd, **_kw):
+            posted.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        argv = ["--pr", "7", "--repo", "o/r"] + (["--post-status"] if post else [])
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check, "_gh_api", side_effect=fake_api), \
+                mock.patch.object(verdict_check.subprocess, "run", side_effect=fake_run):
+            code = verdict_check.main(argv)
+        fields = (dict(c[i + 1].split("=", 1) for i, a in enumerate(c) if a == "-f")
+                  for c in posted)
+        return code, list(fields), out.getvalue() + err.getvalue()
+
+    @staticmethod
+    def _files(*names, status="modified"):
+        return [{"filename": n, "status": status} for n in names]
+
+    def test_a_fork_pr_that_edits_a_workflow_is_refused_even_with_a_go(self):
+        for path in (".github/workflows/validate.yml", ".github/workflows/guard.yml",
+                     ".github/workflows/new-gate.yml", ".github/actions/setup/action.yml",
+                     ".github/ci-tools.lock"):
+            with self.subTest(path=path):
+                code, posted, out = self._run(self._files("scripts/x.py", path))
+                self.assertEqual(code, 0, out)  # --post-status: the status IS the verdict
+                self.assertEqual(len(posted), 1)
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("grader", posted[0]["description"])
+                self.assertLessEqual(len(posted[0]["description"]), 140)
+                self.assertIn(path, out)
+
+    def test_without_post_status_the_refusal_is_exit_1(self):
+        code, posted, out = self._run(self._files(".github/workflows/validate.yml"), post=False)
+        self.assertEqual((code, posted), (1, []))
+        self.assertIn("grader", out)
+
+    def test_a_removed_or_renamed_workflow_is_a_grader_change(self):
+        for files in (self._files(".github/workflows/negative-control.yml", status="removed"),
+                      [{"filename": "docs/old-gate.yml", "status": "renamed",
+                        "previous_filename": ".github/workflows/guard.yml"}],
+                      [{"filename": ".github/workflows/guard.yml", "status": "renamed",
+                        "previous_filename": "docs/guard.yml"}]):
+            with self.subTest(files=files):
+                _code, posted, out = self._run(files)
+                self.assertEqual(posted[0]["state"], "failure", out)
+
+    def test_the_owners_pr_may_change_the_grader(self):
+        files = self._files(".github/workflows/validate.yml", ".github/ci-tools.lock")
+        for login, association in (("o", "OWNER"), ("O", "CONTRIBUTOR"), ("someone", "OWNER")):
+            with self.subTest(login=login, association=association):
+                pr = self._pr(login=login, association=association, changed=len(files))
+                _code, posted, out = self._run(files, pr=pr)
+                self.assertEqual(posted[0]["state"], "success", out)
+
+    def test_a_collaborator_is_not_the_owner(self):
+        files = self._files(".github/workflows/validate.yml")
+        for association in ("MEMBER", "COLLABORATOR"):
+            with self.subTest(association=association):
+                pr = self._pr(login="peer", association=association, changed=1)
+                _code, posted, out = self._run(files, pr=pr)
+                self.assertEqual(posted[0]["state"], "failure", out)
+
+    def test_a_pr_that_leaves_the_grader_alone_passes_on_its_go(self):
+        files = self._files("scripts/x.py", "tests/test_x.py", ".github/CONTRIBUTING.md",
+                            ".github/CODEOWNERS", "docs/.github/workflows/x.yml",
+                            ".github/workflows-notes.md")
+        _code, posted, out = self._run(files)
+        self.assertEqual(posted[0]["state"], "success", out)
+
+    def test_a_files_list_that_may_be_truncated_is_refused(self):
+        # The compare API lists at most 300 files; a grader change past the cut must not hide.
+        few = self._files("scripts/x.py")
+        _code, posted, out = self._run(few, pr=self._pr(changed=2))
+        self.assertEqual(posted[0]["state"], "failure", out)
+        self.assertIn("files", posted[0]["description"])
+        many = self._files(*(f"docs/f{i}.md" for i in range(300)))
+        _code, posted, out = self._run(many, pr=self._pr())
+        self.assertEqual(posted[0]["state"], "failure", out)
+
+    def test_the_grader_read_is_bound_to_the_exact_head(self):
+        # PR #718 re-attack: the PR files list carries no SHA, so a head flipped
+        # M -> benign -> M across the gate's reads passed. The changed paths are read for the
+        # exact head the status is posted on (compare base...head.sha), never the list.
+        _code, posted, out = self._run(self._files(".github/workflows/validate.yml"),
+                                       listed=self._files("docs/benign.md"))
+        self.assertEqual(posted[0]["state"], "failure", out)
+        self.assertEqual(self.compared, [f"compare/main...{HEAD}"])
+
+    def test_an_owner_pr_from_a_fork_branch_gets_no_exemption(self):
+        # The fork keeps push access to its branch, so the owner's name on the PR does not make
+        # its head the owner's. The exemption needs the head in this repository.
+        files = self._files(".github/workflows/validate.yml")
+        for head_repo in ("forker/r", None):
+            with self.subTest(head_repo=head_repo):
+                pr = self._pr(login="o", association="OWNER", changed=1, head_repo=head_repo)
+                _code, posted, out = self._run(files, pr=pr)
+                self.assertEqual(posted[0]["state"], "failure", out)
+
+    def test_the_gate_scripts_are_the_grader_too(self):
+        # PR #718 re-attack: every required job runs PR code, so a one-file rewrite of the script
+        # a gate runs (shard-tests.py running nothing, gate.py exiting 0, run.sh printing the
+        # pinned transcript) made the gate green. A non-owner PR may not change those scripts.
+        for path in verdict_check.GATE_SCRIPTS:
+            with self.subTest(path=path):
+                _code, posted, out = self._run(self._files(path))
+                self.assertEqual(posted[0]["state"], "failure", out)
+        for path in ("scripts/shard-tests.py", "bench/vf-bench/gate.py",
+                     "evals/demo/negative-control/run.sh"):
+            self.assertIn(path, verdict_check.GATE_SCRIPTS)
+
+    def test_a_new_top_level_module_is_the_grader_too(self):
+        # Jobs run `python3 -m coverage` / `-m unittest` from the checkout root (shard-tests.py),
+        # so a root `coverage/` or `unittest.py` would run instead of the locked tool.
+        for path in ("pip/__init__.py", "coverage/__init__.py", "unittest.py", "json.py",
+                     "sitecustomize.py", "evil.pth", "x.so", "newdir/readme.md"):
+            with self.subTest(path=path):
+                _code, posted, out = self._run(self._files(path))
+                self.assertEqual(posted[0]["state"], "failure", out)
+        for path in ("README.md", "docs/x.md", "tests/test_new.py", ".gitignore"):
+            with self.subTest(path=path):
+                _code, posted, out = self._run(self._files(path))
+                self.assertEqual(posted[0]["state"], "success", out)
+
+    def test_a_grader_directory_itself_and_the_test_package_init_are_the_grader(self):
+        # PR #718 re-attack PoC: `.github/workflows` changed as a path of its own (a file or a
+        # symlink where the directory was) passed. And `tests/__init__.py` runs in every shard
+        # before any test (`-m unittest tests.<module>`), so it could rewrite the runner.
+        for path in (".github", ".github/workflows", ".github/actions/", "tests/__init__.py"):
+            with self.subTest(path=path):
+                _code, posted, out = self._run(self._files(path))
+                self.assertEqual(posted[0]["state"], "failure", out)
+        _code, posted, out = self._run(self._files(".github/Workflows/x.yml"))
+        self.assertEqual(posted[0]["state"], "success", "GitHub reads .github/workflows only")
+
+    def test_an_owner_own_branch_pr_never_waits_on_the_grader_read(self):
+        # PR #718 review (availability): the compare read ran before the owner exemption, and a
+        # failed `gh api` raised, so verdict-gate errored with no status on every owner PR,
+        # the PR that would fix it included, with admins enforced on main. The owner's
+        # own-branch PR is decided from the PR object already read, on its verdict alone.
+        owner = self._pr(login="o", association="OWNER", changed=1)
+        files = self._files(".github/workflows/validate.yml")
+        for fail in (("compare/",), ("compare/", "pulls/7#2")):
+            with self.subTest(fail=fail):
+                code, posted, out = self._run(files, pr=owner, fail=fail)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(posted[0]["state"], "success", out)
+                code, posted, out = self._run(files, pr=owner, fail=fail, reviews=[])
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("no GO verdict review", posted[0]["description"])
+        unnamed = self._pr(login="o", association="OWNER", changed=1)
+        unnamed["base"] = {"repo": {"full_name": "o/r"}}  # no ref, no sha: nothing to compare
+        code, posted, out = self._run(files, pr=unnamed)
+        self.assertEqual((code, posted[0]["state"]), (0, "success"), out)
+
+    def test_an_owner_pr_whose_grader_read_hangs_still_gets_its_status(self):
+        # A failed read was covered, a hung one was not: `gh api` ran with no timeout, so a
+        # compare read that never answered held the gate job to its 10-minute limit and the
+        # owner's PR got no status at all. Each read is bounded and a timeout is a failed read.
+        owner = self._pr(login="o", association="OWNER", changed=1)
+        posted, timeouts = [], []
+
+        def fake_run(cmd, **kw):
+            path = cmd[-1]
+            if any("/statuses/" in arg for arg in cmd):
+                posted.append(dict(c.split("=", 1) for i, c in enumerate(cmd)
+                                   if i and cmd[i - 1] == "-f"))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            timeouts.append(kw.get("timeout"))
+            if "/compare/" in path:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+            body = [[self.OWNER_GO]] if path.endswith("/reviews") else owner
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check.subprocess, "run", side_effect=fake_run):
+            code = verdict_check.main(["--pr", "7", "--repo", "o/r", "--post-status"])
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        self.assertEqual(posted[0]["state"], "success", err.getvalue())
+        self.assertTrue(timeouts and all(isinstance(t, (int, float)) and 0 < t <= 120
+                                         for t in timeouts), timeouts)
+
+    def test_a_failed_read_fails_any_other_pr_closed_with_a_posted_status(self):
+        # Not a missing status: a clear failure the PR's checks list shows.
+        for fail in (("compare/",), ("pulls/7#2",)):
+            with self.subTest(fail=fail):
+                code, posted, out = self._run(self._files("docs/x.md"), fail=fail)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(len(posted), 1, out)
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("cannot read", posted[0]["description"])
+                self.assertLessEqual(len(posted[0]["description"]), 140)
+        code, posted, out = self._run(self._files("docs/x.md"), fail=("compare/",), post=False)
+        self.assertEqual((code, posted), (1, []))
+
+    def test_the_top_level_list_is_this_repositorys(self):
+        listed = subprocess.run(["git", "-C", str(_ROOT), "ls-tree", "-d", "--name-only", "HEAD"],
+                                capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(sorted(verdict_check.TOP_LEVEL_DIRS), sorted(listed))
+
+    def test_the_gate_scripts_list_holds_what_the_required_jobs_run(self):
+        # Every script a required job (gates and its needs, pinned-demo) names on a run: line.
+        # guard runs the base branch's floor_guard.py, which no PR can edit.
+        named = set()
+        for workflow, jobs in (("validate.yml", ("tests", "floor", "checks", "gates", "vfbench",
+                                                 "vfbench_replay")),
+                               ("negative-control.yml", ("pinned-demo",))):
+            data = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+            section = "\n" + data.split("\njobs:\n", 1)[1]
+            for job in jobs:
+                body = section.split(f"\n  {job}:\n", 1)[1]
+                body = re.split(r"\n  [A-Za-z0-9_-]+:\n", body, maxsplit=1)[0]
+                named |= set(re.findall(r"(?:python3|sh|bash)\s+(?:-\S+\s+)*"
+                                        r"((?:scripts|runtime|bench|evals)/[\w./-]+\.(?:py|sh))",
+                                        body))
+        self.assertTrue(named)
+        self.assertEqual(sorted(named - set(verdict_check.GATE_SCRIPTS)), [])
+        self.assertEqual(sorted(set(verdict_check.GATE_SCRIPTS) - named), [],
+                         "a listed gate script no required job runs any more")
+
+    def test_reads_use_the_jobs_token_and_the_status_the_apps(self):
+        # The compare API needs Contents: read, which the gate's app does not hold; the job's
+        # own GITHUB_TOKEN (contents: read) reads, and only the status uses the app identity.
+        gate = (_ROOT / ".github" / "workflows" / "verdict-gate.yml").read_text(encoding="utf-8")
+        job = gate.split("\n  gate:\n", 1)[1]
+        self.assertIn("          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n", job)
+        self.assertIn("          GH_STATUS_TOKEN: ${{ steps.app.outputs.token || "
+                      "secrets.GITHUB_TOKEN }}\n", job)
+        sent = []
+        with mock.patch.dict(os.environ, {"GH_STATUS_TOKEN": "app-token", "GH_TOKEN": "job"}), \
+                mock.patch.object(verdict_check.subprocess, "run",
+                                  side_effect=lambda cmd, **kw: sent.append(kw.get("env")) or
+                                  subprocess.CompletedProcess(cmd, 0, "", "")):
+            verdict_check.post_status("o/r", HEAD, "success", "ok")
+        self.assertEqual(sent[0]["GH_TOKEN"], "app-token")
+
+    def test_a_head_that_moves_during_the_evaluation_is_refused(self):
+        moved = self._pr(changed=1, head=OTHER)
+        _code, posted, out = self._run(self._files("scripts/x.py"), pr_after=moved)
+        self.assertEqual(posted[0]["state"], "failure", out)
+        self.assertIn("moved", posted[0]["description"])
+
+    def test_the_grader_refusal_outranks_a_missing_go(self):
+        _code, posted, out = self._run(self._files(".github/workflows/validate.yml"),
+                                       reviews=[])
+        self.assertEqual(posted[0]["state"], "failure")
+        self.assertIn("grader", posted[0]["description"])
+
+    def test_the_gate_job_can_read_the_files_list(self):
+        # The files endpoint needs Pull requests: read, which the gate's app token carries.
+        gate = (_ROOT / ".github" / "workflows" / "verdict-gate.yml").read_text(encoding="utf-8")
+        self.assertIn("permission-pull-requests: read", gate)
+
+
+
+class EveryReadAfterTheHeadPostsAStatus(unittest.TestCase):
+    """PR #718 review round 4 (P2): with the PR read done, a hung `pulls/7/reviews` read raised
+    out of check_pr and main exited 2 with no status, though the head was known, an owner's
+    own-branch PR included. Once the head is known, every later read that hangs or fails ends in
+    a posted status: failure, saying which read, and the owner's PR keeps its exemption for the
+    grader (compare) read alone. Driven through subprocess, so each read really hangs
+    (TimeoutExpired) or really fails (a non-zero `gh api` exit)."""
+
+    OWNER_GO = review(go_body(HEAD), state="COMMENTED", login="o", association="OWNER")
+
+    @staticmethod
+    def _pr(owner):
+        login, association = ("o", "OWNER") if owner else ("writer", "COLLABORATOR")
+        return {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "o/r"}},
+                "base": {"ref": "main", "sha": "c" * 40, "repo": {"full_name": "o/r"}},
+                "user": {"login": login}, "author_association": association,
+                "changed_files": 1}
+
+    def _run(self, site, how, owner, post=True):
+        """`site` is "reviews", "pulls/7#2" (the second PR read) or "compare"; `how` is "hang"
+        or "error"."""
+        pr, posted, reads = self._pr(owner), [], {"pulls/7": 0}
+
+        def fake_run(cmd, **kw):
+            if any("/statuses/" in arg for arg in cmd):
+                posted.append(dict(arg.split("=", 1) for i, arg in enumerate(cmd)
+                                   if i and cmd[i - 1] == "-f"))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            path = cmd[-1].removeprefix("repos/o/r/")
+            if path == "pulls/7":
+                reads["pulls/7"] += 1
+            name = "pulls/7#2" if path == "pulls/7" and reads["pulls/7"] == 2 else \
+                "compare" if path.startswith("compare/") else \
+                "reviews" if path == "pulls/7/reviews" else path
+            if name == site:
+                if how == "hang":
+                    raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+                return subprocess.CompletedProcess(cmd, 1, "", "HTTP 502: Bad Gateway")
+            body = ([[self.OWNER_GO]] if name == "reviews" else
+                    {"files": [{"filename": "docs/x.md"}]} if name == "compare" else pr)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+
+        argv = ["--pr", "7", "--repo", "o/r"] + (["--post-status"] if post else [])
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(verdict_check.subprocess, "run", side_effect=fake_run):
+            code = verdict_check.main(argv)
+        return code, posted, out.getvalue() + err.getvalue()
+
+    def test_a_reviews_read_that_hangs_or_fails_posts_failure(self):
+        for how in ("hang", "error"):
+            for owner in (False, True):
+                with self.subTest(how=how, owner=owner):
+                    code, posted, out = self._run("reviews", how, owner)
+                    self.assertEqual(code, 0, out)
+                    self.assertEqual(len(posted), 1, out)
+                    self.assertEqual(posted[0]["state"], "failure", out)
+                    self.assertIn("reviews", posted[0]["description"])
+                    self.assertLessEqual(len(posted[0]["description"]), 140)
+            code, posted, out = self._run("reviews", how, owner=False, post=False)
+            self.assertEqual((code, posted), (2, []), out)
+
+    def test_a_second_pr_read_that_hangs_or_fails_posts_failure(self):
+        for how in ("hang", "error"):
+            with self.subTest(how=how):
+                code, posted, out = self._run("pulls/7#2", how, owner=False)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("cannot read", posted[0]["description"])
+
+    def test_any_read_failure_after_the_head_posts_failure(self):
+        # The net under grader_refusal's own fail-closed handling: a read added there that
+        # raises still ends in a posted failure, never in exit 2 with no status.
+        with mock.patch.object(verdict_check, "grader_refusal",
+                               side_effect=RuntimeError("gh api compare/x failed: HTTP 500")):
+            code, posted, out = self._run("none", "error", owner=False)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(posted[0]["state"], "failure", out)
+        self.assertIn("cannot read what this head changes", posted[0]["description"])
+
+    def test_a_compare_read_that_hangs_or_fails_posts_a_status(self):
+        for how in ("hang", "error"):
+            with self.subTest(how=how, owner=False):
+                code, posted, out = self._run("compare", how, owner=False)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(posted[0]["state"], "failure", out)
+                self.assertIn("cannot read", posted[0]["description"])
+            with self.subTest(how=how, owner=True):
+                # The owner's own-branch PR: the grader read is best-effort (docs/ops.md).
+                code, posted, out = self._run("compare", how, owner=True)
+                self.assertEqual((code, posted[0]["state"]), (0, "success"), out)
 
 if __name__ == "__main__":
     unittest.main()

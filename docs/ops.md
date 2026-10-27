@@ -50,6 +50,18 @@ names actually blocks. `verdict` is no longer required (#594); it still runs as 
 No approving review is required: the owner is the only collaborator, and GitHub does not let an
 author approve their own PR, so requiring one would block every merge.
 
+Fork pull requests get no write token and no secret (API read-back, 2026-10-27). The repository
+is public, and on a public repository GitHub never sends a write token or a secret to a workflow
+run that a fork's pull request triggers, whatever the workflow's `permissions:` asks for.
+`GET /repos/ravidsrk/open-fleet/actions/permissions/workflow` returned
+`{"default_workflow_permissions":"read","can_approve_pull_request_reviews":false}`: a run's
+`GITHUB_TOKEN` is read-only unless its workflow asks for more, and it can never approve a pull
+request. Re-read both with `gh api repos/ravidsrk/open-fleet --jq .visibility` and
+`gh api repos/ravidsrk/open-fleet/actions/permissions/workflow`. If the repository ever goes
+private, also read Settings → Actions → General → "Fork pull request workflows in private
+repositories" (send write tokens, send secrets), which applies only then. So a fork PR's own
+workflow can turn a required check green (below), but it cannot write `main`, a tag or a release.
+
 The trusted check for a GO verdict is the `verdict-gate` commit status, posted by
 [`verdict-gate.yml`](../.github/workflows/verdict-gate.yml). GitHub loads that workflow from
 `main` on `workflow_run`, after every review that
@@ -57,6 +69,78 @@ The trusted check for a GO verdict is the `verdict-gate` commit status, posted b
 `scripts/verdict_check.py`, so nothing a PR edits takes part in gating it. The `verdict` job in
 `verdict-check.yml` still runs as fast feedback, but a review run loads that file from the PR,
 where the PR can rewrite it.
+
+**What a green `verdict-gate` proves.** A trusted account bound `VERDICT: GO` to this exact head
+SHA: an APPROVED or COMMENTED review whose author's association is OWNER, MEMBER or
+COLLABORATOR. The review state alone proves nothing, because on a public repository any account
+can submit an APPROVED review (PR #718 review). The latest trusted verdict at the head decides:
+a later CHANGES_REQUESTED or `VERDICT: NO-GO` from such an account at that head vetoes an
+earlier GO, and a later GO clears it. And the PR changes no grader path unless the owner opened
+it from a branch of this repository (below). Being the PR's author is no trust tier, so a fork
+author's GO on their own PR never counts (2026-10-27 security audit, W6-06).
+
+**CI runs the PR's code; the GO is the control.** Every required job runs code from the PR's own
+tree: its tests, and whatever the gate scripts import. Code that runs inside a check can make
+that check pass, so a green `gates`, `guard` or `pinned-demo` is not evidence about a PR the
+owner did not write. For such a PR the merge control is the trusted GO bound to the exact head,
+and that GO is the reviewer's attestation that they read the diff at that head. No check here can
+verify the attestation, and with one human maintainer the owner's GO on their own PR is the
+normal case. The rule below narrows the cheap ways to green a check; it does not make CI a
+reviewer.
+
+**A PR cannot change its own grader (W6-01).** `gates`, `guard` and `pinned-demo` come from
+`pull_request` runs, which GitHub loads from the PR's merge ref, so the PR's own YAML decides
+what those contexts run. A fork PR that empties the jobs (`steps: [{run: echo ok}]`) gets all
+three green with every real gate skipped, and branch protection matches them by name only.
+`verdict-gate` is the one required context whose code comes from `main`, so `main`'s
+`scripts/verdict_check.py` also posts `verdict-gate` failure, whatever GO the PR has, when the PR
+adds, edits, removes or renames a grader path. The one exception is the repository owner's PR
+from a branch of this repository: the PR's `author_association` is `OWNER` (or its author is the
+owner's login) and its head repository is this repository. An owner-opened PR whose head is a
+fork's branch gets no exemption, because the fork keeps push access to that branch. The grader:
+- `.github/workflows/`: every job, step, `needs:` and `if:` of the three build contexts, and
+  `verdict-check.yml`, which wakes this gate. The directory itself, or `.github`, changed as a
+  path of its own (a file or a symlink where the directory was) counts too.
+- `.github/actions/`: a local action a workflow can `uses: ./.github/actions/…` (none today).
+- `.github/ci-tools.lock`: which build of coverage, ruff and agentskills those jobs install and
+  run. A PR could lock a package it published itself.
+- The scripts a required job names on a `run:` line, each of which is a gate (PR #718 re-attack:
+  a `shard-tests.py` that ran nothing, a `gate.py` that exited 0 and a `run.sh` that printed the
+  pinned transcript each kept their check green): `scripts/shard-tests.py`, `validate.py`,
+  `check_trailers.py`, `changelog.py`, `gen-badges.py`, `eval.py`, `bundle.py`,
+  `runtime/scripts/decisions.py`, `proof_status.py`, `run_report.py`, `bench/vf-bench/gate.py`,
+  `replay.py`, `heldout.py` and `evals/demo/negative-control/run.sh` (`GATE_SCRIPTS` in the
+  script; `tests/test_verdict_check.py` holds the list to the workflows). `guard` runs the base
+  branch's `floor_guard.py`, which no PR can edit.
+- `tests/__init__.py`: every shard runs `-m unittest tests.<module>`, which would import it
+  before any test, so it could rewrite the runner.
+- A module file at the root (`*.py`, `*.pyc`, `*.pyd`, `*.so`, `*.pth`) or a top-level directory
+  this repository does not have: `shard-tests.py` runs `python -m coverage` and `-m unittest`
+  from the root, so a root `coverage/` or `unittest.py` would run instead of the locked tool.
+  That invocation cannot be isolated (its `tests.<module>` ids need the root on `sys.path`);
+  every tool module and inline script a workflow runs itself (`-m pip`, `-m unittest`, `-c`,
+  `python3 -`) carries `-I`, so the checkout is not on its path at all.
+
+What the gate scripts import, and the tests, are not on the list: a PR could not change any code
+otherwise. They are what the GO above has to cover. The bar's own settings (`.coveragerc`,
+`ruff.toml`, `.gitleaksignore`, `.gitleaks.toml`, the routing floor, the
+vf-bench pins) are the floor guard's frozen surface, which `guard` checks with the base branch's
+`floor_guard.py`. The gate reads what the PR's exact head changes with the compare API (base
+branch `...` head SHA), so a head flipped between its reads cannot pass. Those reads use the
+gate job's own `GITHUB_TOKEN` (Contents and Pull requests read); the app's token posts the
+status. Every read is bounded: one that fails or gives no answer in 90 seconds is a failed read.
+Only a failure before the gate knows the PR's head SHA (naming the PR, or the first read of it)
+leaves no status, because there is no commit to post one on. After that, a list the API may have
+cut short (300 files), a head that moves while it is read, or any failed read (the reviews, the
+second read of the PR, the compare) fails closed: the gate posts `verdict-gate` failure saying
+which. The owner's own-branch PR is the one exception, for the grader read alone: it is
+recognised from the PR object the gate has already read and decided on its verdict, so a failing
+or hung compare read can never block the owner's PR (the one that would fix the gate included;
+admins are enforced on `main`). Its reviews must still be read: without them there is no
+verdict, and the gate posts failure. An outside contributor's grader change lands when the
+owner re-opens it from a branch of this repository. The rule binds only once it is on `main`:
+the gate runs `main`'s copy of the script, so the PR that adds it is still graded by the copy it
+replaces.
 
 Activated on 2026-10-24 (#594):
 - **The app:** `open-fleet-verdict-gate` (app 5451539) was created from a manifest with Commit
@@ -177,6 +261,9 @@ Run the repository gates, including `python3 scripts/validate.py`,
 before the cut.
 Every published heading still needs its commit and annotated tag; only the sole
 newest preparing heading has no cut SHA. Green checks do not authorize publication.
+`release_check.py`'s CI checks read the `validate` and `install` runs at exactly this branch's
+HEAD and need the newest of each green, so push the branch and open its pull request first
+([checklist](release-1.0-checklist.md), gates 0 and 4).
 
 <!-- release:cut -->
 ```bash
@@ -272,20 +359,36 @@ cut, recreate its tag, or reset published mappings to make a retry pass.
 
 `.github/workflows/release.yml` publishes a GitHub Release with the version's CHANGELOG
 section as notes on every `v*` tag push (idempotent; it never creates a tag — the tag is
-the authorization step above). The historical tags that predate it get their Releases once,
-by hand, from the maintainer's account (both publishers refuse any other actor, below):
+the authorization step above). The historical tags that predate it got their Releases once,
+by hand, from the maintainer's account (both publishers refuse any other actor, below); a
+read-back on 2026-10-27 lists all thirteen, `v1.0.0` Latest. Runs are serialized (one running,
+one pending; a third queued run cancels the pending one), so a backfill dispatches one tag and
+waits for its run before the next:
 
 ```bash
 for t in v0.1.0 v0.1.1 v0.2.0 v0.2.1 v0.3.0 v0.4.0 v0.5.0 v0.6.0 v0.6.1; do
   gh workflow run release.yml -f tag="$t"
+  sleep 15   # let the run register before asking for it
+  gh run watch --exit-status "$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 done
-gh release list --limit 20     # nine rows once the runs finish
+gh release list --limit 20
 ```
+
+A backfilled Release is published with `--latest=false`: only the newest `vX.Y.Z` tag the remote
+holds, in version order and read just before publishing, takes GitHub's "Latest" (2026-10-27
+security audit, W6-11; PR #718 review).
 
 `.github/workflows/publish-dist.yml` builds `scripts/bundle.py`'s self-contained tree on the
 same tag pushes (a manual run must name an existing `v*` tag; it refuses a branch) and
 force-pushes it to the `dist` branch, the target copy installers point at
-([docs/install.md](install.md)).
+([docs/install.md](install.md)). Its staging step adds the tree with `git add -A --force`, so
+a `.gitignore` a mission carries cannot drop a file, and it fails unless the index holds every
+built file byte for byte, nothing else, and every entry of each mission's `bundle-files.json`
+(W6-04).
+
+Both publishers check the tag is `vMAJOR.MINOR.PATCH` before the checkout, and publish-dist
+checks out that checked value, so a dispatch input is never fetched before it is validated
+(W6-16).
 
 Both publishers refuse to run unless the tag's commit is on `main` and the account that pushed
 or dispatched, and the one that started the attempt, is the repository owner (2026-10-23

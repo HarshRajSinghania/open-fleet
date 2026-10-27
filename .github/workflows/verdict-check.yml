@@ -9,9 +9,15 @@
 #
 # GitHub cannot express reviewed_sha == head_sha natively, so this workflow
 # runs scripts/verdict_check.py against the PR: it passes iff a trusted review
-# (APPROVED, or COMMENTED by the PR author / OWNER / MEMBER / COLLABORATOR)
-# carries "VERDICT: GO" with reviewed_sha == head. An author self-GO is a SHA
-# binding, not independent review: required approvals stay branch protection's.
+# (APPROVED or COMMENTED, by OWNER / MEMBER / COLLABORATOR: the state proves
+# nothing, since any account can approve on a public repository) carries
+# "VERDICT: GO" with reviewed_sha == head, no later trusted NO-GO binds the head,
+# and the PR changes no CI grader path (the workflows, actions, tool lock, gate
+# scripts, root modules; scripts/verdict_check.py lists them) unless the owner
+# opened it from a branch of this repository (2026-10-27 security audit, W6-01;
+# PR #718 re-attack). The PR author's own GO counts
+# only through one of those tiers (W6-06). A GO is a SHA binding, not
+# independent review: required approvals stay branch protection's.
 #
 # The checker runs from the BASE commit, never from the PR: checking out the
 # merge ref and running its scripts/verdict_check.py let a PR rewrite the very
@@ -25,8 +31,9 @@
 #     verdict runs, so the required check reads "expected" and blocks until a
 #     fresh GO arrives. Fail-closed with zero poison.
 #   - Review events only, and the job runs only for GO-marker reviews from a
-#     trusted author (PR author or OWNER/MEMBER/COLLABORATOR — mirroring the
-#     script's trust tiers). A review bot can re-review every push and any
+#     trusted author (OWNER/MEMBER/COLLABORATOR, the script's trust tiers) or
+#     from the PR author, whose self-GO the script refuses outside those tiers:
+#     a fork author sees that refusal here. A review bot can re-review every push and any
 #     stranger can COMMENT; evaluating those would fail-poison each head,
 #     letting an untrusted reviewer grief the PR (PR #465 review, P1).
 #   - Dismissals of GO-marker reviews evaluate (same gate): dismissing the GO

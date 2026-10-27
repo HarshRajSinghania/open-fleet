@@ -48,6 +48,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -271,27 +272,42 @@ def check_pr_merged(ctx, gate, number, why):
 
 
 def check_workflow_green_at_head(ctx, gate, workflow):
-    """The latest `<workflow>` run on main must be a success AT this HEAD —
-    a stale green from another SHA does not count."""
+    """The newest `<workflow>` run at exactly this HEAD must be a success — a stale green from
+    another SHA does not count.
+
+    docs/ops.md cuts on a release branch, whose HEAD never has a run on main, so asking main
+    could only FAIL at a cut (2026-10-27 security audit, W6-12); asking by branch NAME let a
+    fork's pull request from a same-named branch take the one run read (PR #718 re-attack). gh's
+    run list names no head repository, so the read is bound to the commit instead: the runs at
+    HEAD, on any branch. A fork can only show a run of this very commit."""
     name = f"{gate}/gh-{workflow}-run-green-at-head"
-    data, err = gh_json(ctx, ["run", "list", "--workflow", workflow, "--branch", "main",
-                              "--limit", "1", "--json", "conclusion,headSha"])
-    if err:
-        return (name, err[0], err[1])
+    reason = gh_unavailable(ctx)
+    if reason:
+        return (name, SKIP, reason)
     head_probe = ctx.run(["git", "rev-parse", "HEAD"])
     if head_probe.missing:
         return (name, SKIP, "no git")
     if not head_probe.ok:
         return (name, FAIL, f"git rev-parse HEAD: {tail(head_probe.stderr, 1)}")
     head = head_probe.stdout.strip()
+    data, err = gh_json(ctx, ["run", "list", "--workflow", workflow, "--commit", head,
+                              "--limit", "20", "--json", "conclusion,headSha,headBranch,event"])
+    if err:
+        return (name, err[0], err[1])
     if not isinstance(data, list) or not data:
-        return (name, FAIL, f"no `{workflow}` workflow run recorded on main")
-    run = data[0] if isinstance(data[0], dict) else {}
-    conclusion, sha = run.get("conclusion"), run.get("headSha")
-    if conclusion == "success" and sha == head:
-        return (name, PASS, f"`{workflow}` bound GREEN at {sha}")
-    return (name, FAIL, f"latest `{workflow}` run on main is {conclusion or 'unfinished'} at "
-                        f"{sha}; HEAD is {head} — a stale green from another SHA does not count")
+        return (name, FAIL, f"no `{workflow}` workflow run recorded at HEAD {head}")
+    at_head = [run for run in data if isinstance(run, dict) and run.get("headSha") == head]
+    if not at_head:
+        other = data[0].get("headSha") if isinstance(data[0], dict) else None
+        return (name, FAIL, f"no `{workflow}` run at HEAD {head} (the newest listed is at {other}) "
+                            "— a stale green from another SHA does not count")
+    run = at_head[0]  # gh lists the newest first
+    conclusion = run.get("conclusion")
+    if conclusion == "success":
+        return (name, PASS, f"`{workflow}` bound GREEN at {head} "
+                            f"({run.get('event') or '?'} run on {run.get('headBranch') or '?'})")
+    return (name, FAIL, f"the newest `{workflow}` run at HEAD {head} is "
+                        f"{conclusion or 'unfinished'}")
 
 
 # ---------------------------------------------------------------------------
@@ -534,48 +550,253 @@ def check_negative_control_demo(ctx):
     return (name, FAIL, f"sh {script}: exit {r.returncode}: {tail(r.stdout + r.stderr, 2)}")
 
 
-_RUN_KEY_RE = re.compile(r"^(\s*)(?:-\s+)?run:\s*(.*?)\s*$")
 _BLOCK_SCALAR_RE = re.compile(r"^[|>](?:[1-9]?[+-]?|[+-]?[1-9]?)$")
+_JOB_KEY_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
+_STEP_KEY_RE = re.compile(r"^(\s*)(?:-\s+)?([A-Za-z_-]+):\s*(.*?)\s*$")
+# A step or job carrying one of these may not run its line, may not fail the build, or may run
+# it some other way than the line says (`shell: bash -n {0}`; `working-directory` or `defaults`
+# deciding which file the path names; `needs:` on a job whose prerequisite is skipped, which
+# GitHub then skips too; a `strategy:` matrix that can expand to no job at all; `uses:`, a
+# reusable workflow's jobs in place of the job's own steps; a `container:` image choosing what
+# `python3` or `sh` is). None of the real gate-3 steps or jobs carries one, so none is
+# allowlisted: a condition's truth is GitHub's to decide at run time, not this check's.
+_STEP_DISQUALIFIERS = frozenset({"if", "continue-on-error", "shell", "working-directory"})
+_JOB_DISQUALIFIERS = frozenset({"if", "continue-on-error", "defaults", "needs", "strategy", "uses",
+                                "container"})
+_GATE3_INTERPRETERS = frozenset({"python3", "bash", "sh"})
+# Anything that could make the line more than one command, redirect it or expand into one.
+_SHELL_METACHARACTERS = re.compile(r"[;&|<>`\n\r]|\$\(")
+
+# The block-style YAML that a line-by-line read of a workflow sees exactly as GitHub's parser
+# does: gate 3 here, and every workflow scan in tests/test_repo_hygiene.py. It is an allowlist.
+# Refusing the spellings that hide a key (a flow mapping, `uses :`, an anchor, then an explicit
+# `? uses` key, PR #718 reviews) missed one more each round, and a key hidden from a line scan is
+# a `needs:` or `if:` gate 3 never sees, or a `uses: …@v4` the pin test never sees.
+_YAML_KEY = r"[A-Za-z0-9_][A-Za-z0-9_.-]*"
+_YAML_QUOTED = r"\"(?:[^\"\\]|\\.)*\"|'(?:[^']|'')*'"
+# A plain scalar on one line: it opens with no YAML indicator (a tag `!`, an anchor `&`, an alias
+# `*`, an explicit key `?`, a flow collection, a quote...), holds no `: ` (a mapping) and stops
+# before a ` #` comment.
+_YAML_PLAIN = r"(?:[^-?:,\[\]{}#&*!|>'\"%@` ]|-(?=[^ ]))(?:[^ :]|:(?=[^ ])| +(?=[^ #]))*"
+_YAML_FLOW_ITEM = (_YAML_QUOTED + r"|(?:[^-?:,\[\]{}#&*!|>'\"%@` ]|-(?=[^ ,\[\]{}]))"
+                   r"(?:[^ :,\[\]{}]|:(?=[^ ,\[\]{}])| +(?=[^ #,\[\]{}]))*")
+# A value: a quoted or plain scalar, an empty `{}`, or a one-line `[...]` of scalars (never a
+# flow mapping, whose keys no line scan reads).
+_YAML_VALUE = (rf"(?:{_YAML_QUOTED}|\{{\}}"
+               rf"|\[ *(?:(?:{_YAML_FLOW_ITEM}) *(?:, *(?:{_YAML_FLOW_ITEM}) *)*)?\]|{_YAML_PLAIN})")
+# One line: spaces, at most one `- ` and then a plain `key:` (with a scalar, a block scalar
+# header or nothing after it), or `- ` and a scalar; a comment may follow.
+_YAML_LINE_RE = re.compile(
+    rf"(?P<indent> *)(?P<dash>- )?"
+    rf"(?:(?P<key>{_YAML_KEY}):(?:(?P<block> +[|>](?:[1-9][+-]?|[+-][1-9]?)?)"
+    rf"|(?P<value> +{_YAML_VALUE})?)|(?<=- ){_YAML_VALUE})(?: +#.*)? *")
+# A control character, or a character Python's str.splitlines() breaks a line at and YAML 1.2
+# does not (so a line scan and the parser would disagree on where a key starts).
+_YAML_FORBIDDEN_CHAR_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
 
 
-def workflow_run_text(text):
-    """The shell a workflow actually runs: every `run:` step's script, comment lines dropped.
+def block_yaml_offenders(text):
+    """[(line number, line)] for every line of `text` outside the block YAML subset a line scan
+    reads as GitHub does; [] when the whole file is inside it.
 
-    "CI runs X" was satisfied by X anywhere in a workflow file — a comment, a step name, an
-    `if:` — so a gate could read PASS for a check CI never executes (2026-10-23 review, §5).
+    Inside it: each line, outside a block scalar's body, is blank, a comment, or matches
+    _YAML_LINE_RE (a plain key, at most one `- `, scalars only), and nests by exactly two spaces:
+    a key with nothing after it opens a block two columns right of the key, every other line
+    sits at a column some open block of its own kind (mapping or sequence) holds, so neither a
+    sequence at its parent key's column, a four-space job nor `-   uses:` passes. A block scalar's
+    body is every line indented past its key. No control character, and no Unicode line or
+    paragraph separator, anywhere. Not a YAML parser (none is installed in CI, and the suite is
+    stdlib-only): a file this accepts is one each line scan reads key by key as written.
     """
-    lines = text.splitlines()
-    scripts = []
-    i = 0
-    while i < len(lines):
-        m = _RUN_KEY_RE.match(lines[i])
-        i += 1
-        if not m:
+    lines = text.split("\n")
+    bad = [(n, line) for n, line in enumerate(lines, start=1)
+           if _YAML_FORBIDDEN_CHAR_RE.search(line)]
+    levels, opened, body = [("map", 0)], None, None
+    for n, line in enumerate(lines, start=1):
+        if body is not None:
+            if not line.strip(" ") or _indent(line) > body:
+                continue
+            body = None
+        if not line.strip(" ") or line.lstrip(" ").startswith("#"):
             continue
-        indent, value = len(m.group(1)), m.group(2)
-        body = [] if _BLOCK_SCALAR_RE.match(value) else [value]
-        while i < len(lines) and (not lines[i].strip()
-                                  or len(lines[i]) - len(lines[i].lstrip()) > indent):
-            body.append(lines[i])
-            i += 1
-        scripts.extend(line for line in body if line.strip() and not line.lstrip().startswith("#"))
-    return "\n".join(scripts)
+        m = _YAML_LINE_RE.fullmatch(line)
+        col, kind = (len(m["indent"]), "seq" if m["dash"] else "map") if m else (None, None)
+        if m and opened is not None and col == opened:
+            levels.append((kind, col))
+        elif m and (kind, col) in levels:
+            del levels[levels.index((kind, col)) + 1:]
+        else:
+            bad.append((n, line))
+            opened = None
+            continue
+        key_col, opened = col + 2 if m["dash"] else col, None
+        if m["dash"] and m["key"] is not None:
+            levels.append(("map", key_col))
+        if m["block"]:
+            body = key_col
+        elif m["key"] is not None and m["value"] is None:
+            opened = key_col + 2
+    return sorted(set(bad))
+
+
+def _indent(line):
+    return len(line) - len(line.lstrip(" "))
+
+
+def workflow_steps(text):
+    """[(job, [step lines])] for every step of every job under the top-level `jobs:` key. A job
+    carrying a disqualifying key is left out, and so is every job of a workflow with top-level
+    `defaults:`. Stdlib only: no YAML parser in CI."""
+    if re.search(r"(?m)^defaults:", text):
+        return []
+    jobs, current, in_jobs = {}, None, False
+    for line in text.splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if in_jobs and line and not line[0].isspace() and not line.startswith("#"):
+            in_jobs = False
+        if not in_jobs:
+            continue
+        if m := _JOB_KEY_RE.match(line):
+            current = jobs.setdefault(m.group(1), [])
+        elif current is not None:
+            current.append(line)
+    out = []
+    for job, lines in jobs.items():
+        if any((m := _STEP_KEY_RE.match(ln)) and _indent(ln) == 4
+               and m.group(2) in _JOB_DISQUALIFIERS for ln in lines):
+            continue
+        step, in_steps = None, False
+        for line in lines:
+            if re.match(r"^    steps:\s*$", line):
+                in_steps = True
+                continue
+            if in_steps and re.match(r"^    \S", line):
+                in_steps = False
+            if not in_steps:
+                continue
+            if re.match(r"^      - ", line):
+                step = [line]
+                out.append((job, step))
+            elif step is not None:
+                step.append(line)
+    return out
+
+
+def _step_run(step):
+    """The step's whole `run:` value, as the shell receives it (a folded scalar joined with
+    spaces), or None when the step has no `run:` or carries a disqualifying key. Keys are read at
+    the step's own key indent, so a nested map cannot pose as one."""
+    key_indent = len(step[0]) - len(step[0].lstrip(" -"))
+    value = None
+    for i, line in enumerate(step):
+        m = _STEP_KEY_RE.match(line)
+        if not m or (i and _indent(line) != key_indent):
+            continue
+        key, inline = m.group(2), m.group(3)
+        if key in _STEP_DISQUALIFIERS:
+            return None
+        if key == "run":
+            if not _BLOCK_SCALAR_RE.match(inline):
+                value = inline
+                continue
+            body = []
+            for nxt in step[i + 1:]:
+                if nxt.strip() and _indent(nxt) <= key_indent:
+                    break
+                body.append(nxt.strip())
+            value = (" " if inline.startswith(">") else "\n").join(body)
+    return value
+
+
+def runs_on_every_pull_request(text):
+    """Whether the workflow's `on:` map holds a bare `pull_request:`: every pull request runs it,
+    with no `branches`, `paths` or `types` filter under the key. Both real gate-3 workflows
+    trigger that way (and on pushes to main); a dispatch- or schedule-only workflow proves
+    nothing about what gates a merge."""
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if re.match(r"^on:\s*(?:#.*)?$", ln)), None)
+    if start is None:
+        return False
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            return False
+        if re.match(r"^  pull_request:\s*(?:#.*)?$", line):
+            rest = (ln for ln in lines[i + 1:] if ln.strip() and not ln.lstrip().startswith("#"))
+            return _indent(next(rest, "")) <= 2
+    return False
+
+
+def invoked_script(run_value):
+    """The script path when `run_value`, stripped, is exactly one invocation, else None.
+
+    One invocation: one line that is exactly `<interpreter> <script>`, the interpreter python3,
+    bash or sh, or exactly `./<script>`, with no shell metacharacter anywhere (`;`, `&`, `|`, `<`,
+    `>`, a backtick, `$(`, a line break). Shell reachability is undecidable, so nothing more
+    permissive is read: no setup line, no prefix, no second command, no option that could stop
+    the interpreter before the script (`-h`, `-c`, `-n`), and no argument after it, which the
+    script reads (`--help` printed help and ran nothing, PR #718 re-attack). The real gate-3
+    steps take none.
+    """
+    text = (run_value or "").strip()
+    if not text or _SHELL_METACHARACTERS.search(text):
+        return None
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return None
+    if len(words) == 2 and words[0] in _GATE3_INTERPRETERS and not words[1].startswith("-"):
+        return words[1][2:] if words[1].startswith("./") else words[1]
+    if len(words) == 1 and words[0].startswith("./") and len(words[0]) > 2:
+        return words[0][2:]
+    return None
 
 
 def check_workflows_mention(ctx, name, patterns, landed):
+    """PASS iff some workflow job step's whole `run:` is one invocation of a script matching one
+    of `patterns`.
+
+    "CI runs X" was satisfied by X anywhere in a workflow file (2026-10-23 review, §5), then by X
+    anywhere in a `run:` line (`echo X`, 2026-10-27 security audit, W6-10), then by lines a shell
+    never reaches (`true || X`, `exit 0` or `if false; then` before X) and by options that stop
+    the interpreter (`bash -n X`), PR #718 reviews. Shell reachability is undecidable, so the rule
+    is a decidable one: a step under a top-level job counts only when its whole `run:` value,
+    stripped, is one invocation (invoked_script says exactly what that is), neither the step nor
+    its job carries `if:` or `continue-on-error:`, the job has no `needs:` (a skipped prerequisite
+    skips it, PR #718 review round 3), `strategy:`, `uses:` or `container:`, the step sets no
+    `shell:` or `working-directory:`, neither its job nor the workflow sets `defaults:`, the
+    workflow runs on every pull request (runs_on_every_pull_request; a dispatch-only workflow
+    counted, PR #718 re-attack), and every line of the workflow is in the block YAML subset
+    (block_yaml_offenders; a quoted `"needs":`, `needs :` or an explicit `? needs` key hid the
+    key from this read, PR #718 review round 3). Not read: the environment (`env:`, or
+    `$GITHUB_ENV` written by an earlier step), an earlier step, or the runner.
+    """
     wf_dir = ctx.repo / ".github" / "workflows"
     files = sorted(p for p in wf_dir.iterdir() if p.is_file()) if wf_dir.is_dir() else []
-    hits = []
+    hits, unread = [], []
     for path in files:
-        text = workflow_run_text(path.read_text(encoding="utf-8", errors="replace"))
-        if any(re.search(pat, text) for pat in patterns):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not runs_on_every_pull_request(text):
+            continue
+        if offenders := block_yaml_offenders(text):
+            unread.append(f"{path.name}:{offenders[0][0]}")
+            continue
+        invoked = [script for _job, step in workflow_steps(text)
+                   if (script := invoked_script(_step_run(step)))]
+        if any(re.search(pat, script) for script in invoked for pat in patterns):
             hits.append(path.name)
     what = " or ".join(patterns)
     if hits:
-        return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} run {what} in a `run:` "
-                            f"step ({landed} landed)")
-    return (name, FAIL, f"no `run:` step under .github/workflows/ runs {what} "
-                        f"({landed} has not landed)")
+        return (name, PASS, f".github/workflows/{{{', '.join(hits)}}} run {what} as the whole of "
+                            f"an unconditional job step ({landed} landed)")
+    skipped = (f"; not read, outside the block YAML subset: {', '.join(unread)}"
+               if unread else "")
+    return (name, FAIL, f"no unconditional job step under .github/workflows/ is exactly one "
+                        f"invocation of {what} ({landed} has not landed){skipped}")
 
 
 def gate3(ctx):
@@ -588,9 +809,9 @@ def gate3(ctx):
     add(check_tool_exit0(ctx, "gate3/vf-bench-gate", "bench/vf-bench/gate.py"))
     add(check_negative_control_demo(ctx))
     add(check_workflows_mention(ctx, "gate3/ci-runs-vf-bench",
-                                (r"vfbench\.py", r"vf-bench/gate\.py"), "#412"))
+                                (r"^bench/vf-bench/(gate|vfbench)\.py$",), "#412"))
     add(check_workflows_mention(ctx, "gate3/ci-runs-negative-control",
-                                (r"negative-control",), "#413"))
+                                (r"^evals/demo/negative-control/run\.sh$",), "#413"))
     return checks
 
 

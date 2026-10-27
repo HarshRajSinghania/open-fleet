@@ -367,10 +367,13 @@ class GatesFailOnAFixtureThatViolatesThem(unittest.TestCase):
                 self.assertEqual(find(checks, name)[1], rc.FAIL, name)
             wf = root / ".github" / "workflows"
             wf.mkdir(parents=True)
-            (wf / "validate.yml").write_text("run: python3 bench/vf-bench/gate.py\n",
-                                             encoding="utf-8")
-            (wf / "negative-control.yml").write_text("run: sh evals/demo/negative-control/run.sh\n",
-                                                     encoding="utf-8")
+            # Workflows as GitHub reads them: a job, a step, a run: line that invokes the script.
+            (wf / "validate.yml").write_text(
+                "on:\n  pull_request:\n\njobs:\n  vfbench:\n    steps:\n"
+                "      - run: python3 bench/vf-bench/gate.py\n", encoding="utf-8")
+            (wf / "negative-control.yml").write_text(
+                "on:\n  pull_request:\n\njobs:\n  pinned-demo:\n    steps:\n"
+                "      - run: sh evals/demo/negative-control/run.sh\n", encoding="utf-8")
             (root / "README.md").write_text("git clone … && sh scripts/install.sh\n",
                                             encoding="utf-8")
             (root / "docs" / "distribution.md").write_text("`sh scripts/install.sh`\n",
@@ -499,6 +502,92 @@ class GitHubAnswersAreVerdicts(unittest.TestCase):
             self.assertNotIn(rc.SKIP, {status for _, status, _ in gh_rows})
 
 
+class TheGreenRunIsOnTheBranchBeingCut(unittest.TestCase):
+    """2026-10-27 security audit, W6-12: gates 0 and 4 asked for the latest run on `main` and
+    bound it to HEAD, while docs/ops.md cuts on a release branch, whose HEAD never has a run on
+    main: the gate could only FAIL at a cut. Reading by branch name instead let a fork's PR from a
+    same-named branch take the one run read (PR #718 re-attack). The runs at exactly HEAD are
+    read, on any branch; the newest decides, and a green at another SHA still does not count."""
+
+    LOGGING_GH = ("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_ARGV_LOG\"\n"
+                  "case \"$1 $2\" in\n  \"auth status\") exit 0 ;;\n"
+                  "  \"run list\") printf '%s\\n' \"$GH_RUN_JSON\" ;;\n"
+                  "  *) exit 9 ;;\nesac\n")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = make_fixture(Path(self.tmp.name) / "repo")
+        git_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+        self.git = lambda *a: subprocess.run(["git", *a], cwd=str(self.root), env=git_env,
+                                             check=True, capture_output=True, text=True).stdout
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "fixture")
+        self.git("switch", "-q", "-c", "release/9.9.9")
+        self.git("commit", "-q", "--allow-empty", "-m", "Prepare release 9.9.9")
+        self.head = self.git("rev-parse", "HEAD").strip()
+        bin_dir = Path(self.tmp.name) / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gh").write_text(self.LOGGING_GH, encoding="utf-8")
+        (bin_dir / "gh").chmod(0o755)
+        self.log = Path(self.tmp.name) / "gh-argv.log"
+        self.path = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+    def check(self, runs):
+        self.log.unlink(missing_ok=True)
+        env = {"PATH": self.path, "GH_ARGV_LOG": str(self.log), "GH_RUN_JSON": json.dumps(runs)}
+        with mock.patch.dict(os.environ, env):
+            ctx = rc.Context(self.root, fast=True, skip_github=False)
+            result = rc.check_workflow_green_at_head(ctx, "gate4", "install")
+        asked = [ln for ln in self.log.read_text(encoding="utf-8").splitlines()
+                 if ln.startswith("run list")]
+        self.assertEqual(len(asked), 1, asked)
+        return result, asked[0].split()
+
+    def run_at(self, sha, conclusion="success", branch="release/9.9.9", event="pull_request"):
+        return {"conclusion": conclusion, "headSha": sha, "headBranch": branch, "event": event}
+
+    def test_a_green_run_at_the_release_branch_head_passes(self):
+        (name, status, detail), argv = self.check([self.run_at(self.head)])
+        self.assertEqual(argv[argv.index("--commit") + 1], self.head)
+        self.assertNotIn("--branch", argv)
+        self.assertEqual((name, status), ("gate4/gh-install-run-green-at-head", rc.PASS), detail)
+        self.assertIn(self.head, detail)
+
+    def test_a_stale_green_still_fails(self):
+        parent = self.git("rev-parse", "HEAD~1").strip()
+        (_, status, detail), _ = self.check([self.run_at(parent)])
+        self.assertEqual(status, rc.FAIL)
+        self.assertIn("stale green", detail)
+        (_, status, detail), _ = self.check([])
+        self.assertEqual(status, rc.FAIL)
+        self.assertIn("no `install` workflow run recorded at", detail)
+
+    def test_a_fork_run_on_a_same_named_branch_cannot_take_the_slot(self):
+        # PR #718 re-attack: `--branch <name> --limit 1` read whichever run was newest on that
+        # branch NAME, a fork's same-named PR branch included. The runs at exactly HEAD decide.
+        fork = self.run_at("f" * 40, conclusion="failure")
+        (_, status, detail), _ = self.check([fork, self.run_at(self.head)])
+        self.assertEqual(status, rc.PASS, detail)
+
+    def test_the_newest_run_at_head_decides(self):
+        (_, status, detail), _ = self.check([self.run_at(self.head, conclusion="failure"),
+                                             self.run_at(self.head)])
+        self.assertEqual(status, rc.FAIL, detail)
+        self.assertIn("failure", detail)
+
+    def test_main_and_a_detached_head_read_the_same_commit(self):
+        for target in (("switch", "-q", "main"), ("switch", "-q", "--detach", "release/9.9.9")):
+            self.git(*target)
+            head = self.git("rev-parse", "HEAD").strip()
+            with self.subTest(target=target):
+                _, argv = self.check([])
+                self.assertEqual(argv[argv.index("--commit") + 1], head)
+
+
 class SkipsNeverPass(unittest.TestCase):
     def test_skip_github_skips_every_gh_backed_check_with_the_flag_as_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -623,8 +712,9 @@ class TheChecklistPointsAtTheScript(unittest.TestCase):
                 "python3 runtime/scripts/run_report.py",
                 "python3 bench/vf-bench/gate.py",
                 "sh evals/demo/negative-control/run.sh",
-                "gh run list --workflow validate --branch main",
-                "gh run list --workflow install --branch main",
+                'gh run list --workflow validate --commit "$RELEASE_SHA"',
+                'gh run list --workflow install --commit "$RELEASE_SHA"',
+                "export RELEASE_SHA=$(git rev-parse HEAD)",
                 "gh pr view 406 --json state",
                 f"grep -c '{rc.INSTALL_CMD}' README.md docs/distribution.md",
                 "runtime/pins.json",
@@ -663,6 +753,10 @@ class CiRunsMeansARunStep(unittest.TestCase):
     comment, a step name, an `if:` — so gate3 could PASS on a check CI never executes."""
 
     def gate3(self, workflow):
+        # Every pull request runs the fixture, as it runs the real ones, unless the case under
+        # test names its own triggers.
+        if not re.search(r"(?m)^on:", workflow):
+            workflow = "on:\n  pull_request:\n\n" + workflow
         with tempfile.TemporaryDirectory() as tmp:
             root = make_fixture(tmp)
             wf = root / ".github" / "workflows"
@@ -687,10 +781,273 @@ class CiRunsMeansARunStep(unittest.TestCase):
         for workflow in (
             "jobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
             "jobs:\n  gates:\n    steps:\n      - name: bench\n        run: |\n"
-            "          set -e\n          time python3 bench/vf-bench/gate.py\n",
+            "          python3 bench/vf-bench/gate.py\n",
         ):
             with self.subTest(workflow=workflow):
                 self.assertEqual(self.gate3(workflow), rc.PASS)
+
+    def test_a_mention_that_runs_nothing_fails(self):
+        """2026-10-27 security audit, W6-10: `- run: echo negative-control` passed gate 3 with the
+        real jobs deleted. A run: line counts only when a job step hands the script to an
+        interpreter (or executes it), in a job and a step that are not switched off."""
+        step = "jobs:\n  gates:\n    steps:\n      - run: {}\n"
+        for workflow in (
+            step.format("echo python3 bench/vf-bench/gate.py"),
+            step.format('echo "bench/vf-bench/gate.py"'),
+            step.format("printf '%s' 'python3 bench/vf-bench/gate.py'"),
+            step.format("true  # python3 bench/vf-bench/gate.py"),
+            step.format("cat bench/vf-bench/gate.py"),
+            "run: python3 bench/vf-bench/gate.py\n",  # outside any job: GitHub never runs it
+            "jobs:\n  gates:\n    if: false\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    if: ${{ false }}\n    steps:\n"
+            "      - run: python3 bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    steps:\n      - if: false\n"
+            "        run: python3 bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    steps:\n      - name: x\n        if: ${{ false }}\n"
+            "        run: |\n          time python3 bench/vf-bench/gate.py\n",
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
+    STEP = "jobs:\n  gates:\n    steps:\n      - name: bench\n        run: |\n{}"
+
+    def test_exactly_one_invocation_passes(self):
+        for workflow in (
+            "jobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    steps:\n      - run: ./bench/vf-bench/gate.py\n",
+            "jobs:\n  gates:\n    steps:\n      - run: bash bench/vf-bench/gate.py\n",
+            self.STEP.format("\n          python3 bench/vf-bench/gate.py\n\n"),
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.PASS)
+
+    def test_anything_but_exactly_one_invocation_fails(self):
+        """PR #718 re-review (P2): shell reachability is undecidable, so `exit 0` or
+        `if false; then … fi` before the invocation, and an interpreter option that stops it
+        (`-h`, `-c`, `-n`), still counted. A step counts only when its whole `run:`, stripped,
+        is one line: python3, bash or sh and the script with no option between them (or
+        ./script), and no shell metacharacter anywhere on the line."""
+        for body in (
+            "          exit 0\n          python3 bench/vf-bench/gate.py\n",
+            "          if false; then\n            python3 bench/vf-bench/gate.py\n          fi\n",
+            "          if false; then python3 bench/vf-bench/gate.py; fi\n",
+            "          python3 -h bench/vf-bench/gate.py\n",
+            "          python3 -c pass bench/vf-bench/gate.py\n",
+            "          python3 -cpass bench/vf-bench/gate.py\n",
+            "          python3 -m bench/vf-bench/gate.py\n",
+            "          bash -n bench/vf-bench/gate.py\n",
+            "          python3 bench/vf-bench/gate.py; echo done\n",
+            "          python3 bench/vf-bench/gate.py && echo done\n",
+            "          python3 bench/vf-bench/gate.py | tee out.txt\n",
+            "          python3 bench/vf-bench/gate.py > out.txt\n",
+            "          python3 bench/vf-bench/gate.py < /dev/null\n",
+            "          python3 bench/vf-bench/gate.py $(true)\n",
+            "          python3 bench/vf-bench/gate.py `true`\n",
+            "          python3 bench/vf-bench/gate.py &\n",
+            "          time python3 bench/vf-bench/gate.py\n",
+            "          FOO=1 python3 bench/vf-bench/gate.py\n",
+            "          exec python3 bench/vf-bench/gate.py\n",
+            "          python bench/vf-bench/gate.py\n",
+            "          set -euo pipefail\n          python3 bench/vf-bench/gate.py\n",
+            "          python3 -mpy_compile bench/vf-bench/gate.py\n",
+            "          python3 bench/vf-bench/gate.py --help\n",
+            "          python3 bench/vf-bench/gate.py --strict x\n",
+            "          ./bench/vf-bench/gate.py -h\n",
+            "          cat <<EOF\n          python3 bench/vf-bench/gate.py\n          EOF\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.gate3(self.STEP.format(body)), rc.FAIL)
+
+    def test_a_workflow_every_pull_request_does_not_run_does_not_count(self):
+        # PR #718 re-attack: a workflow only `workflow_dispatch` starts still counted. The real
+        # gate-3 workflows run on every pull request (no filter) and on pushes to main.
+        jobs = "\njobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n"
+        for on in ("on:\n  workflow_dispatch:\n",
+                   "on:\n  push:\n    branches: [main]\n",
+                   "on:\n  schedule:\n    - cron: '0 0 * * *'\n",
+                   "on:\n  pull_request:\n    paths:\n      - docs/**\n",
+                   "on:\n  pull_request:\n    branches: [never]\n",
+                   "on:\n  pull_request_target:\n"):
+            with self.subTest(on=on):
+                self.assertEqual(self.gate3(on + jobs), rc.FAIL)
+        self.assertEqual(self.gate3("on:\n  pull_request:\n  push:\n    branches: [main]\n" + jobs),
+                         rc.PASS)
+
+    def test_a_key_that_changes_how_the_line_runs_disqualifies_it(self):
+        # `shell: bash -n {0}` is `bash -n` moved out of the run: line; `working-directory` and
+        # `defaults` decide which file the path names. None of the real gate-3 steps uses one.
+        run = "      - name: x\n        run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+            "jobs:\n  gates:\n    steps:\n" + run + "        shell: bash -n {0}\n",
+            "jobs:\n  gates:\n    steps:\n" + run + "        working-directory: elsewhere\n",
+            "jobs:\n  gates:\n    defaults:\n      run:\n        shell: bash -n {0}\n"
+            "    steps:\n" + run,
+            "defaults:\n  run:\n    shell: bash -n {0}\n\njobs:\n  gates:\n    steps:\n" + run,
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
+    def test_a_job_that_needs_another_does_not_count(self):
+        # PR #718 review round 3 (P2): GitHub skips a job whose `needs:` prerequisite was skipped
+        # (`if: false` on the prerequisite), and only the job's own keys were read. Neither real
+        # gate-3 job has `needs:`, so a counted job may not have one at all.
+        run = "    steps:\n      - name: x\n        run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+                "jobs:\n  prereq:\n    if: false\n    steps:\n      - run: true\n"
+                "  gates:\n    needs: prereq\n" + run,
+                "jobs:\n  prereq:\n    steps:\n      - run: true\n"
+                "  gates:\n    needs: [prereq]\n" + run,
+                "jobs:\n  gates:\n    needs:\n      - prereq\n" + run):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
+    def test_a_key_spelled_outside_the_block_subset_counts_nothing(self):
+        # PR #718 review round 3: the job and step keys are read line by line, so a quoted
+        # `"needs":`, `needs :` or an explicit `? needs` key on a job a skipped prerequisite skips
+        # (or `'if': false`, or a step's `"shell": bash -n {0}`) was no key at all, and the step
+        # counted. A workflow with any line outside the block subset counts for nothing.
+        pre = "jobs:\n  prereq:\n    if: false\n    steps:\n      - run: true\n"
+        run = "    steps:\n      - name: x\n        run: python3 bench/vf-bench/gate.py\n"
+        step = "jobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+                pre + "  gates:\n    \"needs\": prereq\n" + run,
+                pre + "  gates:\n    needs : prereq\n" + run,
+                pre + "  gates:\n    ? needs\n    : prereq\n" + run,
+                pre + "  gates:\n    needs: &n prereq\n" + run,
+                "jobs:\n  gates:\n    'if': false\n" + run,
+                "jobs:\n  gates:\n    if : false\n" + run,
+                "jobs:\n  gates:\n    !!str if: false\n" + run,
+                step + "        \"shell\": bash -n {0}\n",
+                step + "        if : false\n",
+                step + "        ? continue-on-error\n        : true\n"):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+        check = rc.check_workflows_mention(ctx_for(ROOT), "x", VF_BENCH, "x")
+        self.assertEqual(check[1], rc.PASS, "the real workflows are inside the subset")
+
+    def test_the_block_subset_is_an_allowlist(self):
+        for text in ("jobs:\n  x:\n    steps:\n      -   uses: a/b@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - uses:\n          a/b@v4\n",
+                     "jobs:\n  x:\n    steps:\n    - uses: a/b@v4\n",
+                     "jobs:\n    x:\n      steps:\n        - run: echo\n",
+                     "jobs:\n  x:\n    steps:\n      - - uses: a/b@v4\n",
+                     "jobs:\n  x:\n    steps:\n      -\n        uses: a/b@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - uses: \"a/b@\n          v4\"\n",
+                     "jobs:\n  x:\n    steps: [uses: a/b@v4]\n",
+                     "jobs:\n  x:\n    steps: [\"uses\":a/b@v4]\n",
+                     "jobs:\n  x:\n    steps:\n      - {uses: a/b@v4}\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\u2028        uses: a/b@v4\n",
+                     # a byte GitHub's parser refuses the whole file for, and a line break only
+                     # Python's splitlines() sees: the line grammar alone accepts both
+                     "jobs:\n  x:\n    steps:\n      - name: a\x00b\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\x85b\n",
+                     "jobs:\n  x:\n\tsteps:\n",
+                     "---\njobs:\n  x:\n",
+                     "jobs:\n  x:\n    steps:\n      - run: |\n          echo\n"
+                     "        'uses': a/b@v4\n"):
+            with self.subTest(text=text):
+                self.assertTrue(rc.block_yaml_offenders(text))
+        ok = ("on:\n  pull_request:\n  push:\n    branches: [main, 'release/**']\n"
+              "permissions: {}\njobs:\n  x:\n    runs-on: ubuntu-latest  # c\n    steps:\n"
+              "      - run: |\n          a && b {x}, y: \"$ref\" # sh\n\n          - z: 1\n"
+              "      - uses: a/b@" + "c" * 40 + " # v1\n        with:\n          k: '1'\n"
+              "          if: ${{ github.event_name == 'push' }}\n")
+        self.assertEqual(rc.block_yaml_offenders(ok), [])
+
+    def test_a_job_with_a_matrix_a_reusable_workflow_or_a_container_does_not_count(self):
+        # PR #718 review round 3: a `strategy:` matrix can expand to no job at all (an empty
+        # vector, or an exclude covering every combination), a job-level `uses:` runs another
+        # workflow's jobs, and a `container:` image decides what `python3` is. No real gate-3
+        # job has any of them.
+        run = "    steps:\n      - name: x\n        run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+                "jobs:\n  gates:\n    strategy:\n      matrix:\n        x: []\n" + run,
+                "jobs:\n  gates:\n    strategy:\n      matrix:\n        x: [1]\n"
+                "        exclude:\n          - x: 1\n" + run,
+                "jobs:\n  gates:\n    uses: ./.github/workflows/other.yml\n" + run,
+                "jobs:\n  gates:\n    container: example/python3-stub\n" + run):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
+    def test_a_condition_or_a_non_failing_step_does_not_count(self):
+        """PR #718 review (P2): `_NEVER_RE` knew only literal false spellings, so
+        `if: ${{ 1 == 2 }}` kept a dead job counting. A counted step and its job carry no `if:`
+        at all (none of the real ones does), and no `continue-on-error`."""
+        run = "        run: python3 bench/vf-bench/gate.py\n"
+        for workflow in (
+            "jobs:\n  gates:\n    if: ${{ 1 == 2 }}\n    steps:\n      - name: x\n" + run,
+            "jobs:\n  gates:\n    if: github.event_name == 'nothing'\n    steps:\n"
+            "      - name: x\n" + run,
+            "jobs:\n  gates:\n    steps:\n      - name: x\n        if: ${{ 1 == 2 }}\n" + run,
+            "jobs:\n  gates:\n    steps:\n      - name: x\n        if: always()\n" + run,
+            "jobs:\n  gates:\n    steps:\n      - name: x\n        continue-on-error: true\n" + run,
+            "jobs:\n  gates:\n    continue-on-error: true\n    steps:\n      - name: x\n" + run,
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual(self.gate3(workflow), rc.FAIL)
+
+    def test_the_earlier_line_shapes_still_fail(self):
+        """PR #718 review (P2): `true || python3 bench/vf-bench/gate.py` counted though the
+        script never runs; so did a line inside a quoted string, a heredoc or a continuation.
+        Each is more than one invocation, so each fails the one-line rule."""
+        for body in (
+            "          true || python3 bench/vf-bench/gate.py\n",
+            "          false && python3 bench/vf-bench/gate.py\n",
+            "          cd . && ./bench/vf-bench/gate.py\n",
+            "          if ! python3 bench/vf-bench/gate.py; then exit 1; fi\n",
+            "          echo x; python3 bench/vf-bench/gate.py\n",
+            "          python3 bench/vf-bench/gate.py || true\n",
+            "          echo '\n          python3 bench/vf-bench/gate.py\n          '\n",
+            "          cat <<'EOF'\n          python3 bench/vf-bench/gate.py\n          EOF\n",
+            "          echo \\\n          python3 bench/vf-bench/gate.py\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.gate3(self.STEP.format(body)), rc.FAIL)
+        folded = ("jobs:\n  gates:\n    steps:\n      - name: bench\n        run: >-\n"
+                  "          echo\n          python3 bench/vf-bench/gate.py\n")
+        self.assertEqual(self.gate3(folded), rc.FAIL, "a folded scalar is one shell line")
+
+    def test_the_demo_check_wants_the_demo_script_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_fixture(tmp)
+            wf = root / ".github" / "workflows"
+            wf.mkdir(parents=True)
+            for body, want in (("echo negative-control", rc.FAIL),
+                               ("sh evals/demo/negative-control/other.sh", rc.FAIL),
+                               ("bash -n evals/demo/negative-control/run.sh", rc.FAIL),
+                               ("sh evals/demo/negative-control/run.sh 2>&1 | tee x.txt", rc.FAIL),
+                               ("sh evals/demo/negative-control/run.sh", rc.PASS)):
+                with self.subTest(body=body):
+                    (wf / "negative-control.yml").write_text(
+                        "on:\n  pull_request:\n\njobs:\n  pinned-demo:\n    steps:\n"
+                        "      - run: " + body + "\n", encoding="utf-8")
+                    check = find(rc.gate3(ctx_for(root)), "gate3/ci-runs-negative-control")
+                    self.assertEqual(check[1], want, check)
+
+    def test_the_real_gate3_steps_pass_exactly_as_written(self):
+        # Each real step, copied line for line from its workflow into a bare job, counts alone.
+        for workflow, job, name, patterns in (
+                ("validate.yml", "vfbench",
+                 "VF-Bench soundness gate (verify.py false-done must be 0)", VF_BENCH),
+                ("negative-control.yml", "pinned-demo",
+                 "The demo runs as one command (release gate 3 reads this step)",
+                 (r"^evals/demo/negative-control/run\.sh$",))):
+            text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+            steps = [step for j, step in rc.workflow_steps(text)
+                     if j == job and any(ln.strip() in (f"- name: {name}", f"name: {name}")
+                                         for ln in step)]
+            with self.subTest(workflow=workflow):
+                self.assertEqual(len(steps), 1, f"{workflow}: no step named {name!r} in {job}")
+                self.assertTrue(rc.runs_on_every_pull_request(text), workflow)
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = make_fixture(tmp)
+                    wf = root / ".github" / "workflows"
+                    wf.mkdir(parents=True)
+                    (wf / workflow).write_text("on:\n  pull_request:\n\njobs:\n  " + job
+                                               + ":\n    steps:\n" + "\n".join(steps[0]) + "\n",
+                                               encoding="utf-8")
+                    check = rc.check_workflows_mention(ctx_for(root), "real", patterns, "x")
+                    self.assertEqual(check[1], rc.PASS, check)
 
     def test_the_live_workflows_run_both_checks(self):
         for patterns in (VF_BENCH, (r"negative-control",)):

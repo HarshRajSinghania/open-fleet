@@ -9,8 +9,10 @@ import ast
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -232,6 +234,106 @@ class TheSecretWaiverCarriesIdentityNotContent(unittest.TestCase):
         self.assertRegex(run, r'(?s)if \(cd "\$canary".{0,200}?detect.{0,400}?exit 1',
                          "a passing scan of the planted key no longer fails the build")
 
+    def test_a_path_allowlist_cannot_hide_behind_the_fingerprint_canary(self):
+        """2026-10-27 security audit, W6-03: a `.gitleaks.toml` allowlist waives by path, and the
+        only canary sat in tests/test_decisions.py, so `paths = ['^scripts/.*']` passed the
+        control while a real key under scripts/ went unreported. The control now plants the key
+        under every top-level directory and requires the report to name each planted file."""
+        wf = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        run = "\n".join(ln for ln in wf.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertRegex(run, r'for dir in \. \$\(git -C "\$canary" ls-tree -d --name-only HEAD\)',
+                         "the canary no longer reaches every top-level directory")
+        self.assertRegex(run, r'printf .*AKIA.*> "\$canary/\$file"')
+        self.assertRegex(run, r'(?s)if \(cd "\$canary" && GIT_ATTR_SOURCE="\$no_attributes" '
+                              r'"\$gl" detect [^\n]*'
+                              r'--report-format json --report-path "\$RUNNER_TEMP/canary\.json"\)')
+        self.assertRegex(run, r'python3 -I - "\$RUNNER_TEMP/canary\.json" "\$\{planted\[@\]\}"')
+        self.assertIn("missed = [path for path in sys.argv[2:] if path not in reported]", run)
+
+    def test_the_scan_reads_no_attributes_from_the_tree(self):
+        """PR #718 re-attack (W6-03 class): `scripts/whatever.py -diff` in a .gitattributes, at the
+        root or nested, made git render the file's history as "Binary files differ", and
+        gitleaks 8.30.1 reported no leaks. Every scan reads attributes from the empty tree, and
+        the canary clone plants `* -diff`, so a scan that honours the tree's attributes fails."""
+        wf = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        run = "\n".join(ln for ln in wf.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertIn('no_attributes="4b825dc642cb6eb9a060e54bf8d69288fbee4904"', run)
+        scans = [ln.strip() for ln in run.splitlines() if '"$gl" detect' in ln]
+        self.assertEqual(len(scans), 2, scans)
+        for scan in scans:
+            with self.subTest(scan=scan):
+                self.assertIn('GIT_ATTR_SOURCE="$no_attributes" "$gl" detect', scan)
+        self.assertRegex(run, r"printf '\* -diff\\n' > \"\$canary/\.gitattributes\"")
+
+    def test_a_binary_classified_credential_is_read_as_text(self):
+        """PR #718 review round 5 (W6-03 class): a file with a NUL byte in it (or marked `binary`
+        or `-diff`) is "Binary files differ" to `git log -p` even with attributes read from the
+        empty tree, so gitleaks 8.30.1 reported no leak in it. Both scans first run the step's own
+        every_path_text, which sets `diff` for every path in $GIT_DIR/info/attributes. Run here
+        exactly as written in a throwaway repository, against a fixture whose fake key is
+        assembled at test time, through gitleaks when it is installed and through the `git log`
+        it runs (GIT_TRACE, 8.30.1) either way."""
+        wf = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        run = "\n".join(ln for ln in wf.splitlines() if not ln.lstrip().startswith("#"))
+        defined = re.findall(r"(?m)^ *(every_path_text\(\) \(.*\))$", run)
+        self.assertEqual(len(defined), 1, "the step no longer defines every_path_text")
+        self.assertRegex(run, r'(?s)every_path_text \.\n *GIT_ATTR_SOURCE="\$no_attributes" "\$gl" '
+                              r'detect --redact --no-banner --source \.\n')
+        self.assertRegex(run, r'(?s)git clone --quiet \. "\$canary"\n *every_path_text "\$canary"\n')
+        self.assertRegex(run, r"printf 'x\\000CANARY = .*> \"\$canary/gitleaks-canary\.dat\"")
+        self.assertIn("planted+=(gitleaks-canary.dat)", run)
+        key = "AKIA" + "ZYXWVUTSRQPONMLK"  # gitleaks' aws-access-token shape, not a real key
+        empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "r"
+
+            def git(*args, **extra):
+                return subprocess.run(["git", "-C", str(repo), *args], env={**env, **extra},
+                                      capture_output=True, check=True, timeout=60).stdout
+
+            subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True, timeout=60)
+            (repo / "credential.dat").write_bytes(b"x\x00CANARY = \"" + key.encode() + b"\"\n")
+            (repo / ".gitattributes").write_text("credential.dat binary\n* -diff\n",
+                                                 encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", "a binary-classified credential")
+
+            def history():
+                return git("log", "-p", "-U0", "--full-history", "--all", "--diff-filter=tuxdb",
+                           GIT_ATTR_SOURCE=empty_tree)
+
+            self.assertNotIn(key.encode(), history(), "the fixture is not binary to git")
+            subprocess.run(["bash", "-c", defined[0] + "\nevery_path_text \"$1\"", "_",
+                            str(repo)], env=env, check=True, timeout=60)
+            self.assertIn(b"+x\x00CANARY = \"" + key.encode(), history(),
+                          "the scan's history still hides the binary-classified credential")
+            gitleaks = shutil.which("gitleaks")
+            if gitleaks:
+                report = Path(tmp) / "report.json"
+                proc = subprocess.run(
+                    [gitleaks, "detect", "--redact", "--no-banner", "--source", str(repo),
+                     "--report-format", "json", "--report-path", str(report)],
+                    env={**env, "GIT_ATTR_SOURCE": empty_tree}, capture_output=True,
+                    timeout=120)
+                self.assertNotEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual({f["File"] for f in json.loads(report.read_text())},
+                                 {"credential.dat"})
+
+    def test_the_scanner_config_is_on_the_frozen_guard_surface(self):
+        # The allowlist file is a waiver mechanism: an edit to it must need a recorded human
+        # waiver, the same as .gitleaksignore (floor_guard's guard-surface rule).
+        spec = importlib.util.spec_from_file_location(
+            "_floor_guard_for_hygiene", ROOT / "runtime" / "scripts" / "floor_guard.py")
+        fg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fg)
+        for line in ("[[allowlists]]", "paths = ['''^scripts/.*''']", "useDefault = false"):
+            with self.subTest(line=line):
+                self.assertEqual(fg.guard_surface_hit(".gitleaks.toml", line), ".gitleaks.toml")
+        self.assertIn("`.gitleaks.toml`", (ROOT / "CONSTRAINTS.md").read_text(encoding="utf-8"))
+
 
 class TheSuiteRunsOnTheStdlibAlone(unittest.TestCase):
     """CI installs no test dependencies, so a third-party import is a red build, not a skip.
@@ -371,7 +473,7 @@ class TheAlertWorkflowCannotBeTrippedByAFork(unittest.TestCase):
                       "the manual drill path is gone, so the alert can no longer be proven")
 
 
-WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))  # .yml and .yaml
 # ANY expression inside a `run:` script (2026-10-23 review, §5 CI). The runner pastes an
 # expression's value into the script text before the shell parses it, so whether one is safe
 # inline depends on where the value came from, which no regex can decide: the old list of
@@ -417,6 +519,105 @@ def _run_scripts(text):
             body.append(nxt)
         scripts.append((i + 1, "\n".join(body)))
     return scripts
+
+
+_SCANNED_KEYS = r"(?:uses|run|with|steps|jobs|persist-credentials|shell|working-directory)"
+_LOOSE_KEY = re.compile(
+    r"[{,]\s*[\"']?" + _SCANNED_KEYS + r"[\"']?\s*:"       # a key inside a flow mapping
+    r"|[\"']" + _SCANNED_KEYS + r"[\"']\s*:"               # a quoted key
+    r"|\b" + _SCANNED_KEYS + r"\s+:")                      # a space before the colon
+# A merge key, an anchor (`&name`, with or without a value after it) or an alias (`*name`), as a
+# YAML node starts: after a line start, whitespace or a flow indicator (a run: body is not read).
+_YAML_INDIRECTION = re.compile(r"<<\s*:|(?:^|[\s\[{,])[&*][A-Za-z_][\w-]*(?=\s|$|[\]},])")
+# The block YAML subset every line scan here reads as GitHub's parser does: an allowlist, held in
+# scripts/release_check.py because release gate 3 reads workflows the same way. Refusing hiding
+# spellings one at a time missed one a round: an explicit `? uses` / `: owner/action@v4` key, then
+# `-   uses:`, a `uses:` whose value sits on the next line, and a `!!str uses:` tag (PR #718
+# review round 3), each a mutable action ref the pin test never saw.
+_rc_spec = importlib.util.spec_from_file_location(
+    "_release_check_for_hygiene", ROOT / "scripts" / "release_check.py")
+_release_check = importlib.util.module_from_spec(_rc_spec)
+_rc_spec.loader.exec_module(_release_check)
+
+
+def _structure_offenders(name, text):
+    """Why the stdlib scans in this module could misread a workflow: they read block-style YAML
+    line by line (no parser on the runner, and the suite is stdlib-only), so a workflow must be
+    a `.yml` file, every line of it inside the block subset release_check.block_yaml_offenders
+    allows (plain keys, two-space nesting, one `- ` per item, scalars only), and its scanned keys
+    carry no anchor, alias or merge key outside a `run:` body."""
+    bad = [] if name.endswith(".yml") else [f"{name}: not a .yml file"]
+    bad += [f"{name}:{n}: outside the block subset: {line.strip()}"
+            for n, line in _release_check.block_yaml_offenders(text)]
+    lines = text.splitlines()
+    in_script, indent = False, 0
+    for n, line in enumerate(lines, start=1):
+        if in_script:
+            if not line.strip() or len(line) - len(line.lstrip()) > indent:
+                continue
+            in_script = False
+        m = re.match(r"^(\s*)(?:- )?run:\s*([|>][-+0-9]*)?\s*(?:#.*)?$", line)
+        if m and m.group(2):
+            in_script, indent = True, len(m.group(1))
+        code = re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
+        if _LOOSE_KEY.search(code) or _YAML_INDIRECTION.search(code):
+            bad.append(f"{name}:{n}: {line.strip()}")
+    return bad
+
+
+class TheScansReadEveryWorkflowAsWritten(unittest.TestCase):
+    """PR #718 re-attack: the hygiene scans read `*.yml` by regex, so a `sneaky.yaml` workflow
+    with `checkout@v4`, no persist-credentials and `${{ github.event.pull_request.title }}`
+    inside `run:` left them green, and so did a flow mapping (`- {uses: …@v4}`) or `uses :`.
+    WORKFLOWS globs both extensions, and every workflow must be in the plain block style the
+    scans read, so nothing a runner would execute is invisible to them."""
+
+    def test_every_workflow_is_one_the_scans_read(self):
+        directory = ROOT / ".github" / "workflows"
+        self.assertEqual(sorted(p.name for p in directory.iterdir()),
+                         sorted(p.name for p in directory.glob("*.yml")),
+                         "a workflow file the hygiene scans would not read")
+        self.assertEqual([p.name for p in WORKFLOWS],
+                         sorted(p.name for p in directory.glob("*.y*ml")))
+        for path in WORKFLOWS:
+            with self.subTest(workflow=path.name):
+                self.assertEqual(_structure_offenders(path.name,
+                                                      path.read_text(encoding="utf-8")), [])
+
+    def test_the_structure_scan_can_actually_see_one(self):
+        ok = "jobs:\n  x:\n    steps:\n      - uses: a/b@" + "c" * 40 + "\n"
+        self.assertEqual(_structure_offenders("w.yml", ok), [])
+        self.assertTrue(_structure_offenders("sneaky.yaml", ok))
+        for text in ("jobs:\n  x:\n    steps:\n      - {uses: actions/checkout@v4}\n",
+                     "jobs:\n  x:\n    steps:\n      - uses : actions/checkout@v4\n",
+                     'jobs:\n  x:\n    steps:\n      - "uses": actions/checkout@v4\n',
+                     "jobs:\n  x:\n    steps:\n      - name: a\n        with: {persist-credentials: true}\n",
+                     "x: &co\n  uses: actions/checkout@v4\njobs:\n  y:\n    steps:\n      - <<: *co\n",
+                     "jobs:\n  x:\n    steps:\n      - uses: &u actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\n        with: *w\n",
+                     "jobs:\n  x:\n    steps: [{run: echo}]\n",
+                     # YAML explicit keys (PR #718 review round 3): `? uses` / `: owner/action@v4`
+                     "jobs:\n  x:\n    steps:\n      - ? uses\n        : actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\n        ? run\n        : echo hi\n",
+                     "jobs:\n  x:\n    steps:\n      -\n        ? uses\n        : actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - {? uses: actions/checkout@v4}\n",
+                     # and the rest of the class: no line scan here reads these as written
+                     "jobs:\n  x:\n    steps:\n      -   uses: actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - uses:\n          actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - !!str uses: actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - - uses: actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n    - uses: actions/checkout@v4\n",
+                     "jobs:\n    x:\n      timeout-minutes: 0\n      steps:\n        - run: echo\n",
+                     "jobs:\n  x:\n    steps:\n      - uses: \"actions/checkout@\n          v4\"\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\u2028        uses: actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - run: |\n          echo\n"
+                     "        'uses': actions/checkout@v4\n",
+                     "jobs:\n  x:\n    steps:\n      - name: a\n        \"needs\": y\n"):
+            with self.subTest(text=text):
+                self.assertTrue(_structure_offenders("w.yml", text))
+        script = ("jobs:\n  x:\n    steps:\n      - run: |\n          a && b {x}, y\n"
+                  "          echo \"$ref\" 2>&1\n      - uses: a/b@" + "c" * 40 + "\n")
+        self.assertEqual(_structure_offenders("w.yml", script), [], "a run: body is shell, not YAML")
 
 
 class WorkflowsAreBoundedAndInjectionFree(unittest.TestCase):
@@ -575,6 +776,70 @@ class EveryWorkflowToolComesFromAHashedLock(unittest.TestCase):
         self.assertIn(".github/ci-tools.lock", scripts)
         self.assertRegex(scripts, r"(?m)^\s*ruff check evals/demo/target-app\s*$")
 
+    # 2026-10-27 security audit, W6-13: the fixture stack's seven `image:` refs were tags, which
+    # a registry can re-point; `smoke` runs them. A digest names exactly one image index.
+    IMAGE = re.compile(r"^\s*(?:-\s+)?image:\s*['\"]?([^\s'\"#]+)")
+    PINNED_IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$")
+
+    def _mutable_images(self, text):
+        return [m.group(1) for ln in text.splitlines() if (m := self.IMAGE.match(ln))
+                and not self.PINNED_IMAGE.match(m.group(1))]
+
+    def test_every_container_image_is_pinned_by_digest(self):
+        compose = (ROOT / "evals" / "demo" / "target-app" / "compose.yaml").read_text(
+            encoding="utf-8")
+        self.assertEqual(len([ln for ln in compose.splitlines() if self.IMAGE.match(ln)]), 7,
+                         "the demo stack's image count changed; pin the new one by digest")
+        self.assertEqual(self._mutable_images(compose), [],
+                         "compose.yaml runs an image by a tag a registry can re-point")
+        for path in WORKFLOWS:  # a job `container:` or `services:` image, should one appear
+            with self.subTest(workflow=path.name):
+                self.assertEqual(self._mutable_images(path.read_text(encoding="utf-8")), [])
+
+    APP = ROOT / "evals" / "demo" / "target-app"
+
+    def test_the_demo_containers_install_only_hashed_requirements(self):
+        # PR #718 re-attack (W6-13 residual): the app containers ran `pip install -e .` against
+        # the pyproject's `>=` ranges, resolved at run time, and pulled the build backend too.
+        # They install the uv.lock export with --require-hashes and run the app from /srv/app.
+        compose = (self.APP / "compose.yaml").read_text(encoding="utf-8")
+        installs = [ln.strip() for ln in compose.splitlines()
+                    if "pip install" in ln and not ln.lstrip().startswith("#")]
+        self.assertEqual(len(installs), 2, "the app and staging containers each install once")
+        for line in installs:
+            with self.subTest(line=line):
+                self.assertIn("pip install --quiet --require-hashes --only-binary :all: "
+                              "-r requirements.lock", line)
+                self.assertNotRegex(line, r"\s-e\s|--editable")
+
+    def test_the_containers_lock_is_the_uv_lock(self):
+        import tomllib
+        lock = tomllib.loads((self.APP / "uv.lock").read_text(encoding="utf-8"))
+        locked = {p["name"]: p["version"] for p in lock["package"] if "version" in p}
+        text = (self.APP / "requirements.lock").read_text(encoding="utf-8")
+        pinned = dict(re.findall(r"(?m)^([a-z0-9][a-z0-9._-]*)==([^\s;\\]+)", text))
+        self.assertGreaterEqual(len(pinned), 10)
+        for name, version in pinned.items():
+            with self.subTest(package=name):
+                self.assertEqual(locked.get(name), version, "re-export: uv export --frozen "
+                                 "--no-dev --no-emit-project --format requirements-txt")
+        blocks = re.split(r"(?m)^(?=[a-z0-9])", text)
+        for block in (b for b in blocks if re.match(r"[a-z0-9]", b)):
+            with self.subTest(block=block.split()[0]):
+                self.assertIn("--hash=sha256:", block)
+        project = tomllib.loads((self.APP / "pyproject.toml").read_text(encoding="utf-8"))
+        wanted = {re.split(r"[<>=!~\[ ;]", d, maxsplit=1)[0].lower().replace("_", "-")
+                  for d in project["project"]["dependencies"]}
+        self.assertEqual(sorted(wanted - set(pinned)), [], "a runtime dependency is not pinned")
+
+    def test_the_image_scan_can_actually_see_one(self):
+        digest = "@sha256:" + "c" * 64
+        for ref in ("python:3.13-slim", "prom/prometheus:v2.53.0", "grafana/loki",
+                    "python@sha256:" + "c" * 64, "python:3.13-slim@sha256:abc"):
+            with self.subTest(ref=ref):
+                self.assertEqual(self._mutable_images(f"    image: {ref}\n"), [ref])
+        self.assertEqual(self._mutable_images(f"    image: python:3.13-slim{digest}\n"), [])
+
     def test_the_scan_can_actually_see_one(self):
         for line in ("uvx ruff check .", "pip install ruff==0.16.7",
                      "python3 -m pip install -r requirements.txt", "uv tool run ruff"):
@@ -585,6 +850,215 @@ class EveryWorkflowToolComesFromAHashedLock(unittest.TestCase):
             "jobs:\n  x:\n    steps:\n      - run: |\n"
             "          python3 -m pip install --require-hashes --only-binary :all: \\\n"
             "            -r .github/ci-tools.lock\n"), [])
+
+
+def _checkout_steps(text):
+    """[(job, step lines)] for every actions/checkout step in a workflow's jobs."""
+    return [(job, step) for job, body in _jobs(text).items() for step in _steps(body)
+            if any(re.match(r"^\s*(?:- )?uses:\s*actions/checkout@", ln) for ln in step)]
+
+
+class NoCheckoutLeavesItsTokenInTheTree(unittest.TestCase):
+    """2026-10-27 security audit, W6-07: actions/checkout writes the run's token into the
+    working tree's .git/config unless `persist-credentials: false`, and the PR-tree checkouts
+    then ran the PR's own code (the suite, validate.py, floor_guard over the tree), which can
+    read it. No step here pushes through that config: publish-dist pushes to an explicit URL
+    from a fresh repository, and every other write goes through `gh` with GH_TOKEN."""
+
+    PERSIST_OFF = re.compile(r"^\s+persist-credentials:\s*false\s*(?:#.*)?$")
+
+    def _offenders(self, text):
+        return [f"{job}: {step[0].strip()}" for job, step in _checkout_steps(text)
+                if not any(self.PERSIST_OFF.match(ln) for ln in step)]
+
+    def test_every_checkout_sets_persist_credentials_false(self):
+        for path in WORKFLOWS:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=path.name):
+                self.assertEqual(len(_checkout_steps(text)), text.count("actions/checkout@"),
+                                 f"{path.name}: a checkout the step parser did not see")
+                self.assertEqual(self._offenders(text), [],
+                                 f"{path.name}: a checkout persists the run's token")
+
+    def test_the_scan_can_actually_see_one(self):
+        base = ("jobs:\n  x:\n    steps:\n      - uses: actions/checkout@" + "a" * 40 + "\n"
+                "        with:\n          fetch-depth: 0\n")
+        self.assertEqual(len(self._offenders(base)), 1)
+        self.assertEqual(self._offenders(base + "          persist-credentials: false\n"), [])
+        self.assertEqual(len(self._offenders(base + "          persist-credentials: true\n")), 1)
+
+    def test_no_step_pushes_through_the_checkouts_config(self):
+        for path in WORKFLOWS:
+            scripts = "\n".join(s for _, s in _run_scripts(path.read_text(encoding="utf-8")))
+            for line in scripts.splitlines():
+                if re.search(r"\bgit\b.*\bpush\b", line.split(" #", 1)[0]):
+                    with self.subTest(workflow=path.name, line=line.strip()):
+                        self.assertIn("x-access-token:${GITHUB_TOKEN}@github.com", line,
+                                      "a push that relies on the token checkout persisted")
+
+
+class EveryActionIsPinnedToACommit(unittest.TestCase):
+    """2026-10-27 security audit, W6-15: every `uses:` was a full 40-hex SHA, held by reviewer
+    attention alone. A tag (`@v4`) or branch can be moved under the workflow; a commit cannot."""
+
+    USES = re.compile(r"^\s*(?:- )?uses:\s*([^\s#]+)")
+    PINNED = re.compile(r"^(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}"
+                        r"|docker://[^@\s]+@sha256:[0-9a-f]{64}|\./[^@\s]+)$")
+
+    def _unpinned(self, text):
+        return [m.group(1) for ln in text.splitlines() if (m := self.USES.match(ln))
+                and not self.PINNED.match(m.group(1))]
+
+    def _hidden_or_unpinned(self, name, text):
+        """Every ref USES reads that is not pinned, and every line that puts the file outside the
+        block subset USES reads as written (PR #718 review round 3: an explicit `? uses` key, or
+        `-   uses:`, was a `uses:` this scan never saw, so the pin test stayed green)."""
+        return _structure_offenders(name, text) + self._unpinned(text)
+
+    def test_every_uses_is_a_full_commit_sha(self):
+        seen = 0
+        for path in WORKFLOWS:
+            text = path.read_text(encoding="utf-8")
+            seen += sum(1 for ln in text.splitlines() if self.USES.match(ln))
+            with self.subTest(workflow=path.name):
+                self.assertEqual(self._unpinned(text), [],
+                                 f"{path.name} uses an action by a movable ref")
+                self.assertEqual(self._hidden_or_unpinned(path.name, text), [],
+                                 f"{path.name} may hold a `uses:` this scan cannot see")
+        self.assertGreaterEqual(seen, 40, "the scan stopped seeing the workflows' actions")
+
+    def test_a_uses_key_this_scan_cannot_read_is_refused(self):
+        pinned = "      - uses: actions/checkout@" + "a" * 40 + "\n"
+        for hidden in ("      - ? uses\n        : owner/action@v4\n",
+                       "      -\n        ? uses\n        : owner/action@v4\n",
+                       "      - {? uses: owner/action@v4}\n",
+                       "      -   uses: owner/action@v4\n",
+                       "      - uses:\n          owner/action@v4\n",
+                       "      - !!str uses: owner/action@v4\n",
+                       "      - \"uses\": owner/action@v4\n",
+                       "      - uses: &a owner/action@v4\n"):
+            text = "jobs:\n  x:\n    steps:\n" + pinned + hidden
+            with self.subTest(hidden=hidden):
+                self.assertTrue(self._hidden_or_unpinned("w.yml", text))
+        self.assertEqual(self._hidden_or_unpinned("w.yml", "jobs:\n  x:\n    steps:\n" + pinned), [])
+
+    def test_the_scan_can_actually_see_one(self):
+        for ref in ("actions/checkout@v4", "actions/checkout@main", "actions/checkout",
+                    "actions/checkout@3d3c42e", "docker://alpine:3.20",
+                    "owner/repo/path@" + "A" * 40):
+            with self.subTest(ref=ref):
+                self.assertEqual(self._unpinned(f"      - uses: {ref}\n"), [ref])
+        for ref in ("actions/checkout@" + "a" * 40, "./.github/actions/setup",
+                    "docker://alpine@sha256:" + "b" * 64):
+            with self.subTest(ref=ref):
+                self.assertEqual(self._unpinned(f"        uses: {ref} # v1\n"), [])
+
+
+def _workflow_name(text):
+    m = re.search(r"(?m)^name:\s*(.+?)\s*$", text)
+    return m.group(1).strip("'\"") if m else None
+
+
+class TheAlertPathNamesWorkflowsThatExist(unittest.TestCase):
+    """2026-10-27 security audit, W6-17: `workflow_run` matches workflows by display `name:`,
+    and main-health and the release gate ask for runs by file or name. A rename left the alert
+    path silently blind (nothing fires, CI stays green), so each reference must name a real
+    workflow, and the two alert paths must watch the same thing."""
+
+    NAMES = {_workflow_name(p.read_text(encoding="utf-8")): p.name for p in WORKFLOWS}
+
+    @staticmethod
+    def _workflow_run_lists(text):
+        on = text.split("\non:\n", 1)[1].split("\n\n", 1)[0] if "\non:\n" in text else ""
+        block = on.split("  workflow_run:\n", 1)[1] if "  workflow_run:\n" in on else ""
+        m = re.search(r"(?m)^    workflows:\s*\[([^\]]*)\]", block)
+        return [w.strip().strip("'\"") for w in m.group(1).split(",")] if m else None
+
+    def test_every_workflow_has_a_unique_name(self):
+        self.assertNotIn(None, self.NAMES)
+        self.assertEqual(len(self.NAMES), len(WORKFLOWS), "two workflows share a name")
+
+    def test_every_workflow_run_trigger_names_a_real_workflow(self):
+        found = 0
+        for path in WORKFLOWS:
+            watched = self._workflow_run_lists(path.read_text(encoding="utf-8"))
+            if watched is None:
+                continue
+            found += 1
+            for name in watched:
+                with self.subTest(workflow=path.name, watches=name):
+                    self.assertIn(name, self.NAMES, f"{path.name} watches a workflow named "
+                                                    f"{name!r}, and none has that name")
+        self.assertGreaterEqual(found, 2, "alert-on-failure and verdict-gate both watch by name")
+
+    def test_the_alert_watches_validate_and_the_demo_by_their_real_names(self):
+        watched = self._workflow_run_lists(
+            (ROOT / ".github" / "workflows" / "alert-on-failure.yml").read_text(encoding="utf-8"))
+        self.assertEqual({self.NAMES.get(n) for n in watched},
+                         {"validate.yml", "negative-control.yml"})
+
+    def test_main_health_reads_a_watched_workflow_file(self):
+        text = (ROOT / ".github" / "workflows" / "main-health.yml").read_text(encoding="utf-8")
+        files = re.findall(r"gh run list --workflow (\S+)", text)
+        self.assertTrue(files, "main-health no longer asks for a workflow's runs")
+        watched = self._workflow_run_lists(
+            (ROOT / ".github" / "workflows" / "alert-on-failure.yml").read_text(encoding="utf-8"))
+        for ref in files:
+            with self.subTest(ref=ref):
+                self.assertTrue((ROOT / ".github" / "workflows" / ref).is_file(),
+                                f"main-health reads {ref}, which is not a workflow file")
+                self.assertIn(_workflow_name((ROOT / ".github" / "workflows" / ref)
+                                             .read_text(encoding="utf-8")), watched,
+                              "main-health watches a workflow the alert does not")
+
+    def test_the_release_gate_asks_for_workflows_that_exist(self):
+        source = (ROOT / "scripts" / "release_check.py").read_text(encoding="utf-8")
+        asked = re.findall(r'check_workflow_green_at_head\(ctx, "gate\d", "([^"]+)"\)', source)
+        self.assertGreaterEqual(len(asked), 2)
+        for name in asked:
+            with self.subTest(workflow=name):
+                self.assertIn(name, self.NAMES, f"release_check asks gh for {name!r} runs")
+
+
+class EveryToolModuleRunsIsolated(unittest.TestCase):
+    """PR #718 re-attack (W6-01 class, W3-01 in CI): `python3 -m pip` / `-m unittest`, `-c` and
+    `python3 -` put the working directory, the PR's checkout, first on sys.path, so a PR's root
+    `pip/` or `json.py` ran instead of the tool. Every such invocation in a workflow carries
+    `-I` (isolated: no working directory, no user site, no PYTHON* variables). The demo app's own
+    module under `uv run` is the code under test, not a tool."""
+
+    UNISOLATED = re.compile(r"\bpython3?((?:\s+-[A-Za-z]+)*?)\s+(-m\b|-c\b|-(?=\s|$))")
+
+    def _offenders(self, text):
+        bad = []
+        for lineno, script in _run_scripts(text):
+            for line in script.replace("\\\n", " ").splitlines():
+                code = line.split(" #", 1)[0]
+                if re.search(r"\buv\s+run\s+python\b", code):
+                    continue
+                for m in self.UNISOLATED.finditer(code):
+                    if "-I" not in m.group(1).split():
+                        bad.append(f"{lineno}: {line.strip()}")
+        return bad
+
+    def test_every_tool_module_and_inline_script_runs_with_dash_i(self):
+        for path in WORKFLOWS:
+            with self.subTest(workflow=path.name):
+                self.assertEqual(self._offenders(path.read_text(encoding="utf-8")), [])
+
+    def test_the_scan_can_actually_see_one(self):
+        for line in ("python3 -m pip install -r x", "python3 - <<'PY'", "python3 -c 'import glob'",
+                     "PATH=x python3 -m unittest discover -s tests", "python -m coverage report",
+                     "python3 -u -m pip install x"):
+            with self.subTest(line=line):
+                self.assertTrue(self._offenders(
+                    "jobs:\n  x:\n    steps:\n      - run: |\n          " + line + "\n"))
+        for line in ("python3 -I -m pip install -r x", "python3 -I - <<'PY'",
+                     "python3 -I -c 'import glob'", "python3 scripts/validate.py",
+                     "uv run python -m app.seed --count 0"):
+            with self.subTest(line=line):
+                self.assertEqual(self._offenders(
+                    "jobs:\n  x:\n    steps:\n      - run: |\n          " + line + "\n"), [])
 
 
 class TagPublishersRefuseAnyoneButTheMaintainer(unittest.TestCase):
@@ -641,6 +1115,361 @@ class TagPublishersRefuseAnyoneButTheMaintainer(unittest.TestCase):
                 self.assertRegex(scripts, r'git merge-base --is-ancestor "\$cut" origin/main\b')
 
 
+_GIT_FIXTURE_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+
+
+def _publisher_steps(name):
+    text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+    return _steps(next(iter(_jobs(text).values())))
+
+
+def _named_step(steps, title):
+    found = [s for s in steps if _step_name(s).strip("\"'") == title]
+    return found[0] if len(found) == 1 else None
+
+
+class TheReleaseTagIsCheckedBeforeAnythingFetchesIt(unittest.TestCase):
+    """2026-10-27 security audit, W6-16 and W6-11: publish-dist resolved the dispatch tag in the
+    checkout's `ref:` and only shape-checked it a step later, and release.yml never shape-checked
+    it at all, so `-f tag=anything` published a Release for any existing tag. Both publishers now
+    check the tag is a release version before the checkout, and the checkout takes the checked
+    value."""
+
+    PUBLISHERS = ("release.yml", "publish-dist.yml")
+    STEP = "The tag is a release version, checked before anything fetches it"
+    GOOD = ("v0.1.0", "v1.0.0", "v10.20.30")
+    BAD = ("main", "v1", "v1.0", "v1.0.0-rc1", "v1.0.0 ", " v1.0.0", "v1.0.0\nmain",
+           "refs/tags/v1.0.0", "v1.0.0:refs/heads/x", "-v1.0.0", "v01x.0.0", "")
+
+    def _check(self, name):
+        steps = _publisher_steps(name)
+        step = _named_step(steps, self.STEP)
+        self.assertIsNotNone(step, f"{name}: no tag check step")
+        return steps, step
+
+    def test_the_check_runs_after_the_maintainer_guard_and_before_the_checkout(self):
+        for name in self.PUBLISHERS:
+            with self.subTest(workflow=name):
+                steps, step = self._check(name)
+                checkout = next(i for i, s in enumerate(steps)
+                                if any("actions/checkout@" in ln for ln in s))
+                self.assertEqual(steps.index(step), 1, f"{name}: the tag check is not second")
+                self.assertLess(steps.index(step), checkout)
+
+    def test_only_a_release_version_passes(self):
+        for name in self.PUBLISHERS:
+            _, step = self._check(name)
+            script = _step_script(step)
+            for tag in self.GOOD + self.BAD:
+                with self.subTest(workflow=name, tag=tag), tempfile.TemporaryDirectory() as tmp:
+                    out = Path(tmp) / "out"
+                    out.write_text("", encoding="utf-8")
+                    r = _bash(script, {"TAG": tag, "GITHUB_OUTPUT": str(out)})
+                    if tag in self.GOOD:
+                        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                        self.assertEqual(out.read_text(encoding="utf-8"),
+                                         f"tag={tag}\nref=refs/tags/{tag}\n")
+                    else:
+                        self.assertNotEqual(r.returncode, 0, f"{tag!r} passed")
+                        self.assertIn("::error::", r.stdout)
+                        self.assertEqual(out.read_text(encoding="utf-8"), "")
+
+    def test_the_tag_reaches_the_check_through_env(self):
+        for name, want in (("release.yml", "${{ github.event.inputs.tag || github.ref_name }}"),
+                           ("publish-dist.yml", "${{ github.event_name == 'workflow_dispatch' "
+                                                "&& inputs.tag || github.ref_name }}")):
+            with self.subTest(workflow=name):
+                self.assertEqual(_step_env(self._check(name)[1]).get("TAG"), want)
+
+    def test_publish_dist_checks_out_the_checked_ref(self):
+        steps, _ = self._check("publish-dist.yml")
+        checkout = next(s for s in steps if any("actions/checkout@" in ln for ln in s))
+        refs = [ln.strip() for ln in checkout if ln.strip().startswith("ref:")]
+        self.assertEqual(refs, ["ref: ${{ steps.tag.outputs.ref }}"])
+        self.assertIn("id: tag", "\n".join(self._check("publish-dist.yml")[1]))
+
+
+class AReleaseForAnOlderTagIsNeverLatest(unittest.TestCase):
+    """W6-11: release.yml had no newest-tag guard and no `--latest=false`, so publishing a
+    missing historical Release (docs/ops.md backfills nine that way) moved GitHub's "Latest"
+    onto it. The step is run here against a real repository and a stub `gh`."""
+
+    STEP = "Publish the Release (idempotent)"
+
+    def _run(self, tag, remote_only=()):
+        """Run the publish step in a clone whose `origin` (a local bare repository) holds the
+        clone's tags plus `remote_only`, which the clone itself never fetched."""
+        script = _step_script(_named_step(_publisher_steps("release.yml"), self.STEP))
+        self.assertTrue(script.strip(), "the publish step has no run: body")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, bin_dir, origin = Path(tmp) / "repo", Path(tmp) / "bin", Path(tmp) / "origin.git"
+            repo.mkdir()
+            bin_dir.mkdir()
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, env={**os.environ, **_GIT_FIXTURE_ENV},
+                                            check=True, capture_output=True, text=True)
+            git("init", "-q", "-b", "main")
+            git("init", "-q", "--bare", str(origin))
+            git("remote", "add", "origin", str(origin))
+            for version in ("v0.9.0", "v0.10.0", *remote_only):
+                git("commit", "-q", "--allow-empty", "-m", version)
+                git("tag", "-a", version, "-m", version)
+            git("push", "-q", "origin", "main", "--tags")
+            for version in remote_only:  # published by another run after this one checked out
+                git("tag", "-d", version)
+                git("reset", "-q", "--hard", "HEAD~1")
+            git("fetch", "-q", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            log = Path(tmp) / "gh.log"
+            (bin_dir / "gh").write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_LOG\"\n"
+                "[ \"$1 $2\" = 'release view' ] && exit 1\nexit 0\n", encoding="utf-8")
+            (bin_dir / "gh").chmod(0o755)
+            # The stub must shadow any real gh: PATH starts with it, nothing is prepended, and
+            # GH_REPO, GH_TOKEN and GH_CONFIG_DIR give a real gh no repository and no login.
+            env = {**os.environ, **_GIT_FIXTURE_ENV, "TAG": tag, "GH_LOG": str(log),
+                   "cut": "0" * 40, "RUNNER_TEMP": tmp, "GH_REPO": "invalid/invalid",
+                   "GH_TOKEN": "", "GH_CONFIG_DIR": str(Path(tmp) / "no-gh-config"),
+                   "GITHUB_STEP_SUMMARY": str(Path(tmp) / "summary"),
+                   "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            r = subprocess.run(["bash", "-e", "-c", script], env=env, cwd=repo,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue(log.is_file(), "the step never reached the stub gh")
+            return [ln for ln in log.read_text(encoding="utf-8").splitlines()
+                    if ln.startswith("release create")]
+
+    def test_the_newest_release_is_latest_and_an_older_one_is_not(self):
+        newest = self._run("v0.10.0")  # version order, not string order: 0.10 > 0.9
+        self.assertEqual(len(newest), 1)
+        self.assertIn("--latest", newest[0].split())
+        older = self._run("v0.9.0")
+        self.assertEqual(len(older), 1)
+        self.assertIn("--latest=false", older[0].split())
+        self.assertNotIn("--latest", older[0].split())
+
+    def test_a_newer_tag_only_the_remote_has_already_outranks_this_one(self):
+        # PR #718 review (P2): a run that read its tag list before a newer release landed
+        # marked its own older tag Latest after the newer one did. The decision is read from
+        # the remote at the moment of publishing, so a tag this checkout never saw counts.
+        stale = self._run("v0.10.0", remote_only=("v0.11.0",))
+        self.assertEqual(len(stale), 1)
+        self.assertIn("--latest=false", stale[0].split())
+        self.assertNotIn("--latest", stale[0].split())
+
+    def test_the_newest_tag_is_read_from_the_remote_just_before_publishing(self):
+        script = _step_script(_named_step(_publisher_steps("release.yml"), self.STEP))
+        lines = [ln.strip() for ln in script.splitlines()]
+        read = [i for i, ln in enumerate(lines) if ln.startswith("newest=")]
+        self.assertEqual(len(read), 1, "the step no longer decides the newest tag once")
+        self.assertIn("git ls-remote --tags --refs origin", lines[read[0]])
+        self.assertNotIn("git tag", lines[read[0]], "the newest tag comes from the checkout")
+        view = next(i for i, ln in enumerate(lines) if ln.startswith("if gh release view"))
+        create = next(i for i, ln in enumerate(lines) if ln.startswith("gh release create"))
+        self.assertLess(view, read[0])
+        self.assertLess(read[0], create)
+        self.assertFalse([ln for ln in lines[read[0] + 1:create] if "git " in ln or "gh " in ln],
+                         "something runs between the fresh read and the publish")
+
+    def test_each_publisher_runs_one_at_a_time_in_a_group_of_its_own(self):
+        # One running and one pending per group, never cancelled mid-run. Not one shared
+        # group: GitHub cancels a group's pending run when another is queued, so a shared group
+        # would let one workflow's run cancel the other's pending run for a different tag.
+        groups = {}
+        for name in ("release.yml", "publish-dist.yml"):
+            text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            m = re.search(r"(?m)^concurrency:\n  group: (\S+)\n  cancel-in-progress: false\n", text)
+            with self.subTest(workflow=name):
+                self.assertIsNotNone(m, f"{name}: no top-level, never-cancelling concurrency")
+                self.assertNotIn("${{", m.group(1), "a per-run group serializes nothing")
+                groups[name] = m.group(1)
+        self.assertEqual(groups.get("release.yml"), "release")
+        self.assertEqual(groups.get("publish-dist.yml"), "publish-dist")
+
+
+class TheDistIndexIsExactlyTheBundle(unittest.TestCase):
+    """2026-10-27 security audit, W6-04 (publish half): `git add -A` in the fresh dist repository
+    honoured any .gitignore the bundle carried, so a committed `skills/<m>/.gitignore` of `*.md`
+    dropped that mission's prose from `dist` while its own bundle-files.json still listed it. The
+    staging step is run here on a built-looking tree."""
+
+    STEP = "Stage the bundle exactly as built"
+
+    def _stage(self, files, git_env=None):
+        steps = _publisher_steps("publish-dist.yml")
+        step = _named_step(steps, self.STEP)
+        self.assertIsNotNone(step, "publish-dist has no staging step of its own")
+        publish = _named_step(steps, "Publish to the dist branch")
+        self.assertLess(steps.index(step), steps.index(publish))
+        self.assertNotRegex(_step_script(publish), r"\bgit\s+(add|init)\b",
+                            "the publish step stages on its own again")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        dist = Path(tmp.name) / "dist"
+        for rel, body in files.items():
+            (dist / rel).parent.mkdir(parents=True, exist_ok=True)
+            (dist / rel).write_text(body, encoding="utf-8")
+        env = {**_GIT_FIXTURE_ENV, **(git_env or {}), "RUNNER_TEMP": tmp.name}
+        r = _bash(_step_script(step), env, cwd=tmp.name)
+        listed = subprocess.run(["git", "-C", str(dist), "ls-files"], capture_output=True,
+                                text=True, env={**os.environ, **_GIT_FIXTURE_ENV}).stdout.split()
+        return r, listed
+
+    MISSION = {
+        "skills/m/SKILL.md": "# m\n",
+        "skills/m/notes.md": "notes\n",
+        "skills/m/references/bundle-files.json": '[".gitignore", "SKILL.md", "notes.md"]\n',
+        "README.md": "dist\n",
+    }
+
+    def test_a_nested_ignore_file_drops_nothing(self):
+        files = {**self.MISSION, "skills/m/.gitignore": "*.md\n", ".gitignore": "*\n"}
+        r, listed = self._stage(files)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sorted(listed), sorted(files))
+
+    def test_a_filter_that_rewrites_a_file_fails_the_stage(self):
+        files = {**self.MISSION, "skills/m/.gitattributes": "*.md filter=swap\n"}
+        files["skills/m/references/bundle-files.json"] = \
+            '[".gitattributes", "SKILL.md", "notes.md"]\n'
+        with tempfile.TemporaryDirectory() as cfg:
+            config = Path(cfg) / "gitconfig"
+            config.write_text("[filter \"swap\"]\n\tclean = tr a-z A-Z\n", encoding="utf-8")
+            r, _ = self._stage(files, {"GIT_CONFIG_GLOBAL": str(config)})
+        self.assertNotEqual(r.returncode, 0, "a clean filter changed what dist would publish")
+        self.assertIn("::error::", r.stdout)
+
+    def test_an_inventory_entry_missing_from_the_tree_fails_the_stage(self):
+        files = dict(self.MISSION)
+        files["skills/m/references/bundle-files.json"] = '["SKILL.md", "gone.md"]\n'
+        r, _ = self._stage(files)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("skills/m/gone.md", r.stdout)
+
+
+def _run_with_stub(script, env, cwd, stub_name, stub_body):
+    """Run a step script under `bash -e` with a stub command FIRST on PATH (nothing prepended,
+    unlike _bash), returning (result, the stub's argv log)."""
+    with tempfile.TemporaryDirectory() as bin_dir:
+        log = Path(bin_dir) / "argv.log"
+        stub = Path(bin_dir) / stub_name
+        stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_LOG\"\n" + stub_body,
+                        encoding="utf-8")
+        stub.chmod(0o755)
+        full = {**os.environ, **env, "STUB_LOG": str(log),
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+        r = subprocess.run(["bash", "-e", "-c", script], env=full, cwd=cwd,
+                           capture_output=True, text=True, timeout=60)
+        return r, (log.read_text(encoding="utf-8").splitlines() if log.is_file() else [])
+
+
+class TheCoverageFloorReadsOnlyTheShardsOwnFiles(unittest.TestCase):
+    """2026-10-27 security audit, W6-02: each shard uploaded `.coverage.*` from the checkout root
+    (the PR's tree) with hidden files included, and gates combined whatever landed in its own
+    checkout root, so a test that saved a padded data file as `./.coverage.pad` lifted the D9
+    floor. The shard's data now goes to the runner's temp dir, is renamed to one exact name per
+    shard and uploaded alone, and gates combines exactly those six files from a directory of
+    its own: the checkout-glob instance (a planted `.coverage.*` file) is closed. The PR's tests
+    still run inside the measured process and can add lines to the live tracer, so coverage
+    remains the PR's own measurement of itself, an accepted residual (PR #718 review)."""
+
+    TEXT = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+    SHARDS = ("1", "2", "3", "4", "5", "6")
+
+    def _step(self, job, title):
+        step = _named_step(_steps(_jobs(self.TEXT)[job]), title)
+        self.assertIsNotNone(step, f"validate.yml {job}: no step {title!r}")
+        return step
+
+    @staticmethod
+    def _with(step, key):
+        values = [m.group(1) for ln in step if (m := re.match(rf"^\s+{key}:\s*(.*?)\s*$", ln))]
+        return values[0] if values else None
+
+    def test_the_floor_claims_no_more_than_it_closes(self):
+        # PR #718 review (P2): a test can still add lines to the live tracer
+        # (coverage.Coverage.current().get_data().add_lines(...)), and they land in the one
+        # legitimate shard file. The floor step must say which instance is closed and that the
+        # rest is an accepted residual, not that the numbers are the suite's own.
+        floor = self._step("gates", "Coverage floor (D9: line >= 80% on scripts + runtime/scripts)")
+        said = " ".join(" ".join(ln.strip().lstrip("#").strip() for ln in floor
+                                 if ln.strip().startswith("#")).split())
+        self.assertIn("the checkout-glob instance (a planted `.coverage.*` file) is closed", said)
+        self.assertIn("coverage remains the PR's own measurement of itself, an accepted residual",
+                      said)
+
+    def test_the_shard_writes_its_data_outside_the_checkout(self):
+        script = _step_script(self._step("tests", "Run suite shard without Gitleaks"))
+        export = script.find('export COVERAGE_FILE="$RUNNER_TEMP/coverage-data/shard"')
+        self.assertGreaterEqual(export, 0, "the shard's data file is not redirected")
+        self.assertLess(export, script.find("shard-tests.py"))
+
+    def test_one_exact_file_is_uploaded(self):
+        step = self._step("tests", "Upload the shard coverage data")
+        path = self._with(step, "path")
+        self.assertEqual(path, "${{ runner.temp }}/coverage-upload/"
+                               "coverage-shard-${{ matrix.shard }}.data")
+        self.assertNotRegex(path.replace("${{ runner.temp }}", "")
+                                .replace("${{ matrix.shard }}", ""), r"[*?\[]")
+        self.assertNotIn("include-hidden-files", self.TEXT)
+
+    def test_the_shard_names_exactly_one_data_file(self):
+        script = _step_script(self._step("tests", "Name the shard's one coverage data file"))
+        for written, ok in ((["shard.host.123.abc"], True), ([], False),
+                            (["shard.host.1.a", "shard.host.2.b"], False)):
+            with self.subTest(written=written), tempfile.TemporaryDirectory() as tmp:
+                data = Path(tmp) / "coverage-data"
+                data.mkdir()
+                for name in written:
+                    (data / name).write_text(name, encoding="utf-8")
+                r = _bash(script, {"RUNNER_TEMP": tmp, "SHARD": "3"}, cwd=tmp)
+                uploaded = Path(tmp) / "coverage-upload" / "coverage-shard-3.data"
+                self.assertEqual(r.returncode == 0, ok, r.stdout + r.stderr)
+                if ok:
+                    self.assertEqual(uploaded.read_text(encoding="utf-8"), written[0])
+                else:
+                    self.assertIn("::error::", r.stdout)
+                    self.assertFalse(uploaded.exists())
+
+    def test_gates_downloads_into_a_directory_of_its_own(self):
+        step = self._step("gates", "Download the shard coverage data")
+        self.assertEqual(self._with(step, "path"), "${{ runner.temp }}/coverage-shards")
+        self.assertEqual(self._with(step, "pattern"), "coverage-shard-*")
+
+    def _floor(self, downloaded, planted_in_tree=()):
+        script = _step_script(self._step(
+            "gates", "Coverage floor (D9: line >= 80% on scripts + runtime/scripts)"))
+        with tempfile.TemporaryDirectory() as tmp:
+            shards, tree = Path(tmp) / "coverage-shards", Path(tmp) / "tree"
+            shards.mkdir()
+            tree.mkdir()
+            for name in downloaded:
+                (shards / name).write_text("data", encoding="utf-8")
+            for name in planted_in_tree:
+                (tree / name).write_text("padded", encoding="utf-8")
+            r, calls = _run_with_stub(script, {"RUNNER_TEMP": tmp}, tree, "coverage", "exit 0\n")
+            return r, calls, tmp
+
+    def test_the_floor_combines_exactly_the_six_shard_files(self):
+        names = [f"coverage-shard-{n}.data" for n in self.SHARDS]
+        r, calls, tmp = self._floor(names, planted_in_tree=(".coverage.pad", ".coverage"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len(calls), 2, calls)
+        self.assertEqual(calls[0].split(), ["combine"] + [f"{tmp}/coverage-shards/{n}"
+                                                          for n in names])
+        self.assertEqual(calls[1].split(), ["report"])
+
+    def test_a_missing_or_extra_data_file_fails_before_anything_is_combined(self):
+        names = [f"coverage-shard-{n}.data" for n in self.SHARDS]
+        for downloaded in (names[:5], names + [".coverage.pad"], names + ["coverage-shard-7.data"]):
+            with self.subTest(downloaded=downloaded):
+                r, calls, _ = self._floor(downloaded)
+                self.assertNotEqual(r.returncode, 0, "the floor ran on the wrong data files")
+                self.assertIn("::error::", r.stdout)
+                self.assertEqual(calls, [])
+
+
 class TheNegativeControlDiagnosticIsReachable(unittest.TestCase):
     """2026-10-23 review, §5 CI: `set -uo pipefail` under the runner's default `bash -e` ended
     the step on the pipeline, so the "demo itself is RED" diagnostic never printed. The step is
@@ -650,7 +1479,8 @@ class TheNegativeControlDiagnosticIsReachable(unittest.TestCase):
         text = (ROOT / ".github" / "workflows" / "negative-control.yml").read_text(
             encoding="utf-8")
         steps = [s for s in _steps(_jobs(text)["pinned-demo"])
-                 if "evals/demo/negative-control/run.sh" in "\n".join(s)]
+                 if "evals/demo/negative-control/run.sh" in "\n".join(s)
+                 and "DRIFTED" in "\n".join(s)]
         self.assertEqual(len(steps), 1, "the demo step is gone")
         return _step_script(steps[0])
 

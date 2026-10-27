@@ -36,8 +36,9 @@ python3 scripts/gen-badges.py --check --release   # on a cut: the tests badge at
 python3 -m unittest discover -s tests         # full suite green (about an hour serially; `--fast` reports it as SKIP(--fast))
 python3 runtime/scripts/proof_status.py --check   # every proof_evidence resolves
 python3 runtime/scripts/run_report.py         # every claimed tier binds to artifacts
-RELEASE_SHA=$(git rev-parse HEAD) gh run list --workflow validate --branch main --limit 1 --json conclusion,headSha \
-  -q '.[0] | select(.conclusion=="success" and .headSha==env.RELEASE_SHA) | "bound GREEN at \(.headSha)"'
+export RELEASE_SHA=$(git rev-parse HEAD)   # the runs at exactly this commit, on any branch
+gh run list --workflow validate --commit "$RELEASE_SHA" --limit 20 --json conclusion,headSha \
+  -q '[.[] | select(.headSha==env.RELEASE_SHA)][0] | select(.conclusion=="success") | "bound GREEN at \(.headSha)"'
 # bound GREEN at <the recorded SHA> — empty output fails the gate: a stale green from another SHA does not count
 ```
 
@@ -93,16 +94,44 @@ grep -rlE 'vfbench\.py|vf-bench/gate\.py' .github/workflows/   # non-empty: #412
 grep -rl 'negative-control' .github/workflows/                 # non-empty: #413 landed
 ```
 
+The two greps are the quick look; the script holds CI to a decidable rule (whether a shell line
+is reached is not decidable, so nothing looser is read). For each of `bench/vf-bench/gate.py`
+(or `vfbench.py`) and `evals/demo/negative-control/run.sh`, some workflow must run on every pull
+request (a bare `pull_request:` trigger, no filter under it) and hold a job step whose whole
+`run:` value, stripped, is exactly one line: `python3`, `bash` or `sh` followed by the script
+path and nothing else (no option before it, no argument after it), or `./<script>` alone, with
+no `;`, `&`, `|`, `<`, `>`, backtick, `$(` or line break anywhere. Neither the step nor its job may carry `if:` or
+`continue-on-error:`; the job may have no `needs:` (GitHub skips it when a prerequisite is
+skipped), `strategy:` (a matrix can expand to no job), `uses:` or `container:`; the step may not
+set `shell:` or `working-directory:`; neither its job nor the workflow may set `defaults:`. And
+the workflow is read only if every line of it is in the block YAML subset a line-by-line read
+sees as GitHub does (`block_yaml_offenders`: plain keys, two-space nesting, one `- ` per item,
+scalars only, no control characters), so a quoted `"needs":`, `needs :`, an explicit `? needs`
+key or an anchor cannot hide a key from the check. So `exit 0` or `if false; then …` before the
+script, `bash -n`, `python3 -h`, `gate.py --help`, a second command on the line, or a
+dispatch-only workflow does not count
+(2026-10-27 security audit, W6-10; PR #718 reviews). Not read: the step's environment, what an
+earlier step does, the runner.
+
 ## Gate 4 — install is one command (epic DoD 4)
 
 ```bash
 grep -c 'sh scripts/install.sh' README.md docs/distribution.md
 # README.md: >=1, docs/distribution.md: >=1 (same command in both)
 test -f docs/release-1.0-checklist.md && echo "this file exists"
-RELEASE_SHA=$(git rev-parse HEAD) gh run list --workflow install --branch main --limit 1 --json conclusion,headSha \
-  -q '.[0] | select(.conclusion=="success" and .headSha==env.RELEASE_SHA) | "bound GREEN at \(.headSha)"'
+export RELEASE_SHA=$(git rev-parse HEAD)   # the runs at exactly this commit, on any branch
+gh run list --workflow install --commit "$RELEASE_SHA" --limit 20 --json conclusion,headSha \
+  -q '[.[] | select(.headSha==env.RELEASE_SHA)][0] | select(.conclusion=="success") | "bound GREEN at \(.headSha)"'
 # bound GREEN at <the recorded SHA> — empty output fails the gate: a stale green from another SHA does not count
 ```
+
+Both CI checks (gate 0's `validate`, gate 4's `install`) read the runs at exactly HEAD, whatever
+branch they ran on, and require the newest of them green (2026-10-27 security audit, W6-12).
+[ops.md](ops.md#release-cut) starts a cut on a release branch, whose HEAD has no run on `main`;
+reading by branch also let a fork's pull request from a same-named branch take the one run read
+(PR #718 re-attack). A release branch gets its `validate` run from its pull request. `install`
+runs there only when the PR touches an install path, so when HEAD did not trigger it, run it
+there with `gh workflow run install.yml --ref <the release branch>` and wait for it to finish.
 
 ## Gate 5 — runtime re-pinned, chaining exercised (epic DoD 5)
 

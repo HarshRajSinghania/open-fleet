@@ -345,6 +345,22 @@ def build_fixtures(tmp, token="zeta_token"):
     }
 
 
+# The peak RSS (KiB) of a child's own process image. ru_maxrss survives execve on Linux -- a child
+# starts with its parent's RSS at fork as its maximum -- so a test runner that built a large fixture
+# masked the very growth a child measures; VmHWM belongs to the image exec created. Spliced into
+# the children below.
+PEAK_KIB = ("import resource\n"
+            "def peak_kib():\n"
+            "    try:\n"
+            "        with open('/proc/self/status', encoding='ascii') as fh:\n"
+            "            for line in fh:\n"
+            "                if line.startswith('VmHWM:'):\n"
+            "                    return int(line.split()[1])\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // (1024 if sys.platform == 'darwin' else 1)\n")
+
+
 class _Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1120,11 +1136,11 @@ class TestOldSqliteNeverSizesAValueByLoadingIt(_Base):
              "    subprocess.run([sys.executable, '-I', '-c', grow, db], check=True)\n"
              "    return real(*args, **kwargs)\n"
              "mod._open_watched = grow_then_open\n"
-             "scale = 1024 if sys.platform == 'darwin' else 1\n"
-             "base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // scale\n"
+             + PEAK_KIB +
+             "base = peak_kib()\n"
              "conn = mod._sqlite_ro(Path(db))\n"
              "rows = mod._rows(conn, 'messages') if conn is not None else None\n"
-             "peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // scale\n"
+             "peak = peak_kib()\n"
              "print(json.dumps({'opened': conn is not None, 'rows': None if rows is None else len(rows),\n"
              "                  'grew_kib': peak - base}))\n")
 
@@ -1152,20 +1168,33 @@ class TestTheLimitsComeBeforeTheSchemaIsRead(_Base):
     any statement. The child lowers the cap through the module's knob (4 MiB) against a 48 MiB
     DEFAULT and measures its own peak RSS across the open."""
 
+    # argv: module, store, mode. "real" keeps the runtime's own capability probes; "no-octets" and
+    # "no-limits" force the fallback a SQLite before 3.43 or a Python before 3.11 takes.
     CHILD = ("import importlib.util, io, json, resource, sys, contextlib\n"
              "from pathlib import Path\n"
              "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
              "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
              "mod.MAX_FILE_BYTES = 4 << 20\n"
-             "scale = 1024 if sys.platform == 'darwin' else 1\n"
-             "base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // scale\n"
+             "mode = sys.argv[3]\n"
+             "if mode == 'no-octets': mod._OCTETS = None\n"
+             "if mode == 'no-limits': mod._LIMITS = False\n"
+             "connects = []\n"
+             "real = mod._connect\n"
+             "def counted(*args, **kwargs):\n"
+             "    connects.append(1)\n"
+             "    return real(*args, **kwargs)\n"
+             "mod._connect = counted\n"
+             + PEAK_KIB +
+             "base = peak_kib()\n"
              "err = io.StringIO()\n"
              "with contextlib.redirect_stderr(err):\n"
              "    conn = mod._sqlite_ro(Path(sys.argv[2]))\n"
-             "peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // scale\n"
-             "print(json.dumps({'opened': conn is not None, 'grew_kib': peak - base, 'said': err.getvalue()}))\n")
+             "peak = peak_kib()\n"
+             "print(json.dumps({'opened': conn is not None, 'grew_kib': peak - base, 'said': err.getvalue(),\n"
+             "                  'capable': mod._OCTETS is not None and bool(mod._LIMITS),\n"
+             "                  'connects': len(connects)}))\n")
 
-    def test_a_store_whose_schema_is_over_the_cap_is_refused_without_loading_it(self):
+    def big_schema_store(self):
         db = self.tmp / "big-schema" / "sessions.db"
         db.parent.mkdir(parents=True)
         with closing(sqlite3.connect(db)) as conn:
@@ -1173,14 +1202,39 @@ class TestTheLimitsComeBeforeTheSchemaIsRead(_Base):
                          + "d" * (48 << 20) + "')")
             conn.commit()
         self.assertLess(db.stat().st_size, self.mod.MAX_STORE_BYTES, "the store must pass the store-size guard")
-        proc = subprocess.run([sys.executable, "-I", "-c", self.CHILD, str(SEARCH_PY), str(db)],
+        return db
+
+    def child(self, db, mode):
+        proc = subprocess.run([sys.executable, "-I", "-c", self.CHILD, str(SEARCH_PY), str(db), mode],
                               capture_output=True, text=True, timeout=120)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         got = json.loads(proc.stdout.strip().splitlines()[-1])
         self.assertLess(got["grew_kib"], 24 * 1024,
-                        f"recall's memory grew {got['grew_kib']} KiB: SQLite loaded the 48 MiB schema first")
-        self.assertFalse(got["opened"], "a store whose schema is over the cap was opened")
-        self.assertIn("schema holds a statement over", got["said"])
+                        f"recall's memory grew {got['grew_kib']} KiB: SQLite loaded the 48 MiB schema ({mode})")
+        self.assertFalse(got["opened"], f"a store whose schema is over the cap was opened ({mode})")
+        return got
+
+    def test_a_store_whose_schema_is_over_the_cap_is_refused_without_loading_it(self):
+        # The runtime's own probes pick the branch; neither is skipped. On a capable runtime
+        # (octet_length and setlimit) this is the ordering regression: SQLite opens the store and
+        # must refuse the schema under limits set before its first statement.
+        got = self.child(self.big_schema_store(), "real")
+        if got["capable"]:
+            self.assertEqual(got["connects"], 1, "the store never reached SQLite, so the ordering went untested")
+            self.assertIn("schema holds a statement over", got["said"])
+        else:
+            self.assertEqual(got["connects"], 0)
+            self.assertIn("without octet_length", got["said"])
+
+    def test_without_octet_length_or_setlimit_the_store_is_refused_by_its_size(self):
+        # The fallback, forced, so CI runs it whatever its SQLite and Python: the store-size bound
+        # refuses the store before SQLite is asked to open it.
+        db = self.big_schema_store()
+        for mode in ("no-octets", "no-limits"):
+            with self.subTest(mode=mode):
+                got = self.child(db, mode)
+                self.assertEqual(got["connects"], 0, "SQLite was asked to open the store at all")
+                self.assertIn("without octet_length (before 3.43) or a Python without setlimit", got["said"])
 
     def test_every_recall_connection_is_opened_by_the_one_helper(self):
         source = SEARCH_PY.read_text(encoding="utf-8")

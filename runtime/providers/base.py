@@ -508,6 +508,43 @@ def most_restrictive_profile(*profiles: str | None) -> str:
     return min(present, key=lambda p: PROFILE_RANK[p]) if present else ""
 
 
+# Flags whose value is free TEXT: the next token is the value whatever it looks like (`--text
+# --json` sends "--json"), except the bare `--` terminator (W2-01, PR #720 review).
+TEXT_FLAGS = frozenset({"--text", "--spec", "--subject", "--body", "--question"})
+
+
+def split_output_flag(argv: list[str]) -> tuple[list[str], list[str]]:
+    """`(options, tail)`: argv without the dispatcher's own `--json` output flag, cut at the first
+    bare `--` in option position (`tail` starts with it, or is empty). `--json` is removed only
+    where it IS that option: never as the value a text flag takes, and never after `--`, where
+    every token is an operand. Stripping every `--json` ate `--text --json`'s value and a
+    `-- --json` payload (W2-01, PR #720 review)."""
+    options: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            return options, list(argv[i:])
+        if tok in TEXT_FLAGS and i + 1 < len(argv) and argv[i + 1] != "--":
+            options += argv[i:i + 2]
+            i += 2
+            continue
+        if tok != "--json":
+            options.append(tok)
+        i += 1
+    return options, []
+
+
+def _send_text(flags: dict[str, Any], rest: list[str]) -> str:
+    """`terminal send`'s text: `--text <text>` / `--text=<text>`, or the operands after a bare `--`
+    (`-- <text>`, `--text -- <text>`), the spelling for text that looks like an option."""
+    if rest:
+        if isinstance(flags.get("text"), str):
+            raise ProviderError("invalid_argument", "terminal send got its text twice: --text <text> and operands after --")
+        return " ".join(rest)
+    return _text_flag(flags, "text")
+
+
 def _text_flag(flags: dict[str, Any], key: str, default: Any = "") -> Any:
     """The value of a flag whose value is TEXT. `--key` with no value (last, or followed by another
     `--flag`) parses as True and a repeated one as a list: neither is text, and passing it on
@@ -521,9 +558,11 @@ def _text_flag(flags: dict[str, Any], key: str, default: Any = "") -> Any:
     return val
 
 
-def _parse_flag_map(tokens: list[str]) -> tuple[list[str], dict[str, Any]]:
+def _parse_flag_map(tokens: list[str], rest: list[str] | None = None) -> tuple[list[str], dict[str, Any]]:
     """Parse CLI flag tokens (`--key val`, `--key=val`, or boolean `--flag`) into
-    `(positionals, flags)`; a bare `--` ends the flags."""
+    `(positionals, flags)`; a bare `--` ends the flags, and the operands after it are also
+    appended to `rest` when one is given. A TEXT_FLAGS flag takes the next token as its value
+    whatever it starts with, unless that token is `--`."""
     pos: list[str] = []
     flags: dict[str, Any] = {}
     BOOL_FLAGS = {
@@ -547,7 +586,13 @@ def _parse_flag_map(tokens: list[str]) -> tuple[list[str], dict[str, Any]]:
             # A bare `--` ends the flags: every token after it is positional, however it is
             # spelled, so text that starts with `-` is never read as an option (W2-01).
             pos.extend(tokens[i + 1:])
+            if rest is not None:
+                rest.extend(tokens[i + 1:])
             break
+        if tok in TEXT_FLAGS and i + 1 < len(tokens) and tokens[i + 1] != "--":
+            add(tok.lstrip("-"), tokens[i + 1])
+            i += 2
+            continue
         if tok == "--json":
             i += 1
             continue
@@ -594,7 +639,8 @@ class RuntimeProvider:
         """Route a canonical CLI `argv` list to the corresponding typed provider method."""
         if env is None:
             env = getattr(self, "env", None)
-        clean = [a for a in argv if a != "--json"]
+        options, tail = split_output_flag(argv)
+        clean = options + tail
         if not clean:
             return self.status()
         head = clean[0]
@@ -642,7 +688,8 @@ class RuntimeProvider:
                 )
         if head == "terminal" and len(clean) >= 2:
             sub = clean[1]
-            pos, flags = _parse_flag_map(clean[2:])
+            rest: list[str] = []
+            pos, flags = _parse_flag_map(clean[2:], rest)
             if sub == "create":
                 return self.terminal_create(
                     worktree=flags.get("worktree"),
@@ -673,9 +720,10 @@ class RuntimeProvider:
                     timeout_ms=int(flags.get("timeout-ms", 90000)),
                 )
             if sub == "send":
+                before = pos[: len(pos) - len(rest)]  # a positional handle never comes after `--`
                 return self.terminal_send(
-                    terminal=flags.get("terminal") or (pos[0] if pos else ""),
-                    text=_text_flag(flags, "text"),
+                    terminal=flags.get("terminal") or (before[0] if before else ""),
+                    text=_send_text(flags, rest),
                     enter=not bool(flags.get("no-enter")),
                 )
         if head == "orchestration" and len(clean) >= 2:

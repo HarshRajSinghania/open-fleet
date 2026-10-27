@@ -139,6 +139,55 @@ class TestFlagValuesAndEnvKeysStayData(unittest.TestCase):
                     self.assertEqual(ctx.exception.code, "invalid_argument")
                     self.assertIn("--text=", ctx.exception.message)
 
+    def _sent(self, argv):
+        """What `terminal send` hands the terminal when routed through the public dispatch()."""
+        posix = _load_posix()
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s" / "runtime.db"),
+                   "OPEN_FLEET_CLI_CWD": tmp, "OPEN_FLEET_POSIX_BACKEND": "dry-run"}
+            prov = posix.PosixWorktreeProvider(env=env, runner=lambda **kw: sent.append(kw["text"]))
+            with prov.state._connect() as conn:
+                conn.execute(
+                    "INSERT INTO terminals(handle, worktree, title, command, shell, pid, backend, log_path, state, created_at) "
+                    "VALUES ('t1', '', 't', 'x', '/bin/sh', 0, 'dry-run', '', 'running', 0)")
+            prov.dispatch(argv)
+        return sent
+
+    def test_only_the_dispatchers_own_json_flag_is_consumed(self):
+        # PR #720 review (P2): dispatch() stripped EVERY `--json` before parsing, so a text whose
+        # value is `--json` lost its operand, and a `--json` after a bare `--` was deleted as well.
+        send = ["terminal", "send", "--terminal", "t1"]
+        for argv, want in (([*send, "--text", "--json"], "--json\n"),
+                           ([*send, "--text", "--", "--json"], "--json\n"),
+                           ([*send, "--", "--json"], "--json\n"),
+                           ([*send, "--text", "--hello"], "--hello\n"),
+                           (["terminal", "send", "t1", "--", "-R", "x"], "-R x\n"),
+                           (["--json", *send, "--text", "hi", "--json"], "hi\n")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self._sent(argv), [want])
+        with self.assertRaises(self.base.ProviderError) as ctx:
+            self._sent([*send, "--text", "a", "--", "b"])
+        self.assertEqual(ctx.exception.code, "invalid_argument")
+
+    def test_orca_forwards_its_json_flag_only_in_option_position(self):
+        orca = importlib.import_module("runtime.providers.orca")
+        seen = []
+
+        def run(cmd, **_kw):
+            seen.append(cmd)
+            raise OSError("recorded")
+        prov = orca.OrcaProvider(env={})
+        send = ["terminal", "send", "--terminal", "t1"]
+        with mock.patch.object(orca.OrcaProvider, "binary", return_value="/x/orca"), \
+                mock.patch.object(orca.subprocess, "run", side_effect=run):
+            for argv in ([*send, "--text", "--json"], [*send, "--", "--json"], ["--json", *send, "--text", "hi"]):
+                with self.assertRaises(self.base.ProviderError):
+                    prov.dispatch(argv)
+        self.assertEqual(seen, [["/x/orca", *send, "--text", "--json", "--json"],
+                                ["/x/orca", *send, "--json", "--", "--json"],
+                                ["/x/orca", *send, "--text", "hi", "--json"]])
+
     def test_a_launch_env_key_must_be_a_shell_identifier(self):
         ok = self.base.shell_launch_line({"env": {"A_1": "v w", "_B": "x"}, "argv": ["run"]})
         self.assertEqual(ok, "env A_1='v w' _B=x run")

@@ -31,12 +31,12 @@ RUN: mission=<mission> tier=<doctrine-only|self-run|external-run> inventory_at=<
 | Target | `<repo, surface, PR, or tracker>` |
 | Fixed point | BASE `<branch>` @ `<sha>` · FORK_POINT `<sha>` · frozen spec / issue list `<ref + digest>` |
 | Coordinator / workers | `<host + model>` · worker profiles `PROFILE=<ro or rw>` · TASK pack `<matt or addy>` |
-| Orca | `orca status --json` → `runtime.reachable: true` at `<time>` (paste the line) |
+| Runtime | `OPEN_FLEET_RUNTIME=<provider>` (unset means `orca`) · on `orca`: `orca status --json` → `runtime.reachable: true` at `<time>` (paste the line) |
 | Human gates | `<gate>` — `<who>` @ `<time>` — `<decision>` |
 
 ## Terminal state
 
-The mission's named terminal (from its `## Two terminal outcomes` section, degradation marker
+The mission's named terminal (from its terminal-outcomes section, degradation marker
 included when one applies) and the ledger rows that show it, in the mission's canonical row shape:
 
 `| task_id | unit | BUILD_DONE | PR_OPEN | BOT | REVIEWED | MERGED | WT_CLEAN | lighting | park | evidence |`

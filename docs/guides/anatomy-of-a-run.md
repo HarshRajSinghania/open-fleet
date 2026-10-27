@@ -2,7 +2,7 @@
 
 Every mission guide describes its machinery in the abstract. This page does the opposite: it
 walks one real run end to end — the 2026-07-15 sweep of `dodopayments/chimely` that became the
-[`oss-contribute` proving run](../runs/2026-07-16-oss-contribute-external-run.md) — quoting the
+[`oss-contribute` external run](../runs/2026-07-16-oss-contribute-external-run.md) — quoting the
 actual ledger and dispatch log, including the parts that went wrong. Nothing here is
 illustrative fiction; the incidents below each changed a runtime policy, and this page names
 which.

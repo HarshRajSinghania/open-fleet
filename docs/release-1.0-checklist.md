@@ -87,7 +87,7 @@ python3 runtime/scripts/run_report.py         # every claimed tier binds to arti
 ## Gate 3 — verifier moat held by CI (epic DoD 3)
 
 ```bash
-python3 bench/vf-bench/gate.py               # exit 0: corpus pinned, no trap skipped, verify.py false-done 0/25, controls green
+python3 bench/vf-bench/gate.py               # exit 0: corpus pinned, no trap skipped, verify.py false-done 0/53, controls green
 sh demo/negative-control/run.sh | tail -2    # PASS: self-scorer GREEN ... RED (exit 0 overall)
 grep -rlE 'vfbench\.py|vf-bench/gate\.py' .github/workflows/   # non-empty: #412 landed
 grep -rl 'negative-control' .github/workflows/                 # non-empty: #413 landed
@@ -169,7 +169,7 @@ git tag --list 'v1.0.*'                       # v1.0.0 still present, v1.0.1 bes
 ```
 
 Plugin consumers pick up the fix by reinstalling (`/plugin install open-fleet`
-re-copies the repo at the new tip); symlink consumers `git pull` and re-run
+re-copies the `dist` branch, which the new tag republishes); symlink consumers `git pull` and re-run
 `sh scripts/install.sh --check`. If the bad 1.0 was a *release-process* failure
 (wrong cut, lightweight tag) rather than a code failure, stop after recording:
 do not amend the cut, recreate the tag, or reset the published mapping —

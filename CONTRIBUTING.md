@@ -38,7 +38,7 @@ A mission PR must include:
    - `name:` equal to the folder name (lowercase, hyphens);
    - `description:` 1–1024 chars including a "Use when…" trigger *and* a "Not for…" pointer to
      the neighboring missions it will be confused with;
-   - `compatibility:` ≤ 500 chars declaring the Orca dependency and tooling;
+   - `compatibility:` ≤ 500 chars declaring the runtime dependency and tooling;
    - a **Composes/rides clause** naming, in backticks, every playbook and runtime policy it
      uses (bare names — `` `decide-and-freeze` `` — never paths). At least one backticked name
      is mandatory; the validator rejects a clause it cannot machine-check.
@@ -62,7 +62,8 @@ A mission PR must include:
      `oracle`. This is ARCHITECTURE.md's "what makes a mission a mission" test in machine-readable
      form: `scripts/validate.py` fails the build when two missions declare the same six — or merely
      restate them, since comparison is stemmed and a pair with no genuinely divergent point is one
-     mission twice — and warns when they differ on only one. If you cannot fill all six, you are describing a mode of an
+     mission twice. When they differ on only one, it warns if the other five are stated the same
+     and fails if any of them is merely reworded. If you cannot fill all six, you are describing a mode of an
      existing mission, not a new one.
    - within the instruction budget: mission BODY ≤ 110 lines and frontmatter ≤ 34 (playbooks ≤ 90,
      runtime ≤ 160). If your mission needs more body, the overflow is probably a playbook.
@@ -84,6 +85,11 @@ A mission PR must include:
    in both directions.
 5. An updated `EXPECTED_MISSIONS` set in `tests/test_architecture.py` AND `tests/test_evals.py` —
    the mission set is locked on purpose; changing it is a deliberate act.
+6. An activation-load budget in `scripts/mission-load-budgets.json` (`scripts/validate.py` fails a
+   mission without one and suggests the number), the mission name among
+   `.claude-plugin/plugin.json`'s `keywords`, and a row in
+   [docs/getting-started.md](docs/getting-started.md)'s tooling table
+   (`tests/test_doctrine_consistency.py`).
 
 Naming: outcome verbs (`ship-it`, `clean-sweep`), never vendors or techniques. The contract
 tests reject mission names containing vendor tokens.
@@ -157,8 +163,8 @@ python3 -m unittest discover -s tests -v   # all contract + validator fixture te
 # (CI's version is hash-pinned in .github/ci-tools.lock; rules are in ruff.toml)
 ```
 
-The validator finishes in under a second; the suite takes a few minutes because it builds real
-git repositories. It runs on Linux and macOS; tmux tests use a fake agent and never start your
+The validator finishes in a few seconds; the suite takes about an hour serially because it builds
+real git repositories. It runs on Linux and macOS; tmux tests use a fake agent and never start your
 installed agent CLI. Neither is optional. PRs that fail either
 will be asked to fix before review. ruff is CI-only (not required locally). If you add validator behavior, add the negative-path fixture that proves
 the new failure branch fires — the suite's standard is that every guard must be demonstrably

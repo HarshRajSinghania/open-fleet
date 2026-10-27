@@ -309,7 +309,7 @@ function buildRuntimeProvidersSvg(theme) {
   <!-- TOP BAND -->
   <rect x="60" y="52" width="1480" height="114" rx="14" fill="${p.nodeFill}" stroke="${p.blue}" stroke-width="2.2" filter="url(#glowBlue)" />
   <text x="800" y="98" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="22" font-weight="700" fill="${p.textPrimary}">MISSIONS (skills/) + PLAYBOOKS (playbooks/)</text>
-  <text x="800" y="134" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="14.2" font-weight="400" fill="${p.textSecondary}">zero vendor lock-in — workflows call neutral runtime/scripts/*.py entrypoints (spawn_worker.sh · task_ops.py · worker_ops.py · worktree_ops.py · send_msg.py)</text>
+  <text x="800" y="134" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="14.2" font-weight="400" fill="${p.textSecondary}">zero vendor lock-in — workflows call neutral runtime/scripts/ entrypoints (spawn_worker.sh · task_ops.py · worker_ops.py · worktree_ops.py · send_msg.py)</text>
 
   <!-- Arrows from Top Band to Left & Right Panels -->
   <line x1="420" y1="166" x2="420" y2="204" stroke="${p.blue}" stroke-width="2.2" marker-end="url(#arrowBlue)" />
@@ -337,19 +337,20 @@ function buildRuntimeProvidersSvg(theme) {
   <text x="108" y="570" font-family="'JetBrains Mono', monospace" font-size="13.8" font-weight="400" fill="${p.textSecondary}">overstory · t3code · ao · superset · gastown · worktrunk ·</text>
   <text x="108" y="596" font-family="'JetBrains Mono', monospace" font-size="13.8" font-weight="400" fill="${p.textSecondary}">jcode-swarm · emdash · vibe-kanban · paperclip · multiclaude · openhands</text>
 
-  <!-- MIDDLE RIGHT PANEL: 11 CODING-AGENT HARNESSES -->
+  <!-- MIDDLE RIGHT PANEL: 15 CODING-AGENT HARNESSES -->
   <rect x="820" y="210" width="720" height="432" rx="16" fill="${p.containerFill}" stroke="${p.containerStroke}" stroke-width="2" />
-  <text x="1180" y="248" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="18.5" font-weight="700" fill="${p.textPrimary}">11 CODING-AGENT HARNESSES (OPEN_FLEET_HARNESS)</text>
+  <text x="1180" y="248" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="18.5" font-weight="700" fill="${p.textPrimary}">15 CODING-AGENT HARNESSES (spawn_worker.sh [agent])</text>
 
   <!-- Right Row 1: harnesses list (blue outline) -->
   <rect x="844" y="268" width="672" height="166" rx="12" fill="${p.nodeFill}" stroke="${p.blue}" stroke-width="2" filter="url(#glowBlue)" />
-  <text x="1180" y="328" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="18.5" font-weight="700" fill="${p.textPrimary}">claude · codex · gemini · opencode · omp · pi ·</text>
-  <text x="1180" y="366" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="18.5" font-weight="700" fill="${p.textPrimary}">jcode · goose · hermes · crush · openhands</text>
+  <text x="1180" y="316" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="18.5" font-weight="700" fill="${p.textPrimary}">claude · codex · gemini · opencode · omp · pi ·</text>
+  <text x="1180" y="352" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="18.5" font-weight="700" fill="${p.textPrimary}">jcode · goose · hermes · crush · openhands</text>
+  <text x="1180" y="396" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="15" font-weight="400" fill="${p.textSecondary}">+ cursor · antigravity · grok · droid (rw only)</text>
 
   <!-- Right Row 2: uniform permission mapping (amber outline, clean navy/white fill) -->
   <rect x="844" y="456" width="672" height="166" rx="12" fill="${p.nodeFill}" stroke="${p.amber}" stroke-width="2.2" filter="url(#glowAmber)" />
   <text x="1180" y="510" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="19" font-weight="700" fill="${p.amber}">uniform permission mapping</text>
-  <text x="1180" y="548" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="15" font-weight="400" fill="${p.textSecondary}">--profile ro (read-only) · rw (workspace-write) ·</text>
+  <text x="1180" y="548" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="15" font-weight="400" fill="${p.textSecondary}">PROFILE=ro (read-only) · rw (workspace-write) ·</text>
   <text x="1180" y="576" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="15" font-weight="400" fill="${p.textSecondary}">danger (isolated sandbox only)</text>
 
   <!-- Arrows from Left & Right Panels to Bottom Band -->
@@ -359,7 +360,7 @@ function buildRuntimeProvidersSvg(theme) {
   <!-- BOTTOM BAND -->
   <rect x="60" y="686" width="1480" height="114" rx="14" fill="${p.nodeFill}" stroke="${p.green}" stroke-width="2.4" filter="url(#glowGreen)" />
   <text x="800" y="732" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="21.5" font-weight="700" fill="${p.green}">INDEPENDENT SHA-BOUND VERIFIER (verify.py + verify-gate.sh + run_report.py)</text>
-  <text x="800" y="768" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="14.8" font-weight="400" fill="${p.textSecondary}">git ancestry · clean-env test replay · negative control · reviewed_sha == head_sha — identical proof on every runtime</text>
+  <text x="800" y="768" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="14.8" font-weight="400" fill="${p.textSecondary}">git ancestry · content-bound test ledger · negative control · reviewed_sha == head_sha — identical proof on every runtime</text>
 
   <!-- Footer -->
   <text x="800" y="846" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="15.5" font-weight="400" fill="${p.textSecondary}">pick the orchestrator and the coding agent independently — the evidence contract never changes</text>

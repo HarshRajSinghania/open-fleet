@@ -4,7 +4,7 @@
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus parallel per-cell writer workers, each reviewed build-blind; which entities deserve a tutorial or an explanation is your call.
 > **Activation load:** ~31,900 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([DOCUMENTED](../runs/campaign-2026-09-16-document-it/), 32/32 cells terminal), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Point it at a public surface nobody has documented. Come back to a coverage map re-derived at
 > the final head with zero critical gaps — and every factual claim in every new page bound to a
@@ -81,8 +81,9 @@ flowchart TD
     F --> G[build-blind REVIEW<br/>voice · accuracy · reachable in one hop]
     G --> H[LAND]
     H --> I[RE-MAP at the final head<br/>same extractor, new SHA]
-    I -->|zero critical gaps, cells filled| J{{DOCUMENTED}}
-    I -->|explanation-needs-author / tutorial-not-warranted / diagram-needs-human| K{{DOCUMENTED-WITH-PARKED}}
+    I --> P[PUBLISH the map + landed pages<br/>versioned links · publish-evidence]
+    P -->|zero critical gaps, cells filled| J{{DOCUMENTED}}
+    P -->|explanation-needs-author / tutorial-not-warranted / diagram-needs-human| K{{DOCUMENTED-WITH-PARKED}}
 ```
 
 Reference cells for an entity land **before** its how-to and tutorial cells: reference establishes

@@ -110,17 +110,17 @@ Stage 2 (amber outline): TRUST FENCE, caption: guard_text.py normalizes text · 
 Stage 3 (green outline): VERIFIED CLOSURE, caption: single-attempt writeId + reference · proved by merged SHA in manifest
 Footer, small, centred: a ticket reflects closure — it never proves it or authorizes writes"""),
 
-n("runtime-providers", """Content: how one mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses.
-Top band: one wide box spanning the canvas, large label: MISSIONS (skills/) + PLAYBOOKS (playbooks/), caption: zero vendor lock-in — workflows call neutral runtime/scripts/*.py entrypoints (spawn_worker.sh · task_ops.py · worker_ops.py · worktree_ops.py · send_msg.py)
+n("runtime-providers", """Content: how one mission catalog runs across 14 orchestrator runtimes and 15 coding-agent harnesses.
+Top band: one wide box spanning the canvas, large label: MISSIONS (skills/) + PLAYBOOKS (playbooks/), caption: zero vendor lock-in — workflows call neutral runtime/scripts/ entrypoints (spawn_worker.sh · task_ops.py · worker_ops.py · worktree_ops.py · send_msg.py)
 Middle band: two large side-by-side panels fed by downward arrows from the top band:
 Left panel, header: 14 RUNTIME PROVIDERS (OPEN_FLEET_RUNTIME), three compact sub-rows inside:
 Row 1 (green outline): posix — standalone zero-daemon SQLite WAL + local git worktrees + tmux or headless subprocesses
 Row 2 (blue outline): orca — Orca desktop IDE + CLI worktrees, terminals, native task DAG and issue-tracker bridge (default)
 Row 3 (blue outline): 12 external orchestrators — overstory · t3code · ao · superset · gastown · worktrunk · jcode-swarm · emdash · vibe-kanban · paperclip · multiclaude · openhands
-Right panel, header: 11 CODING-AGENT HARNESSES (OPEN_FLEET_HARNESS), two compact sub-rows inside:
-Row 1 (blue outline): claude · codex · gemini · opencode · omp · pi · jcode · goose · hermes · crush · openhands
-Row 2 (amber outline): uniform permission mapping — --profile ro (read-only) · rw (workspace-write) · danger (isolated sandbox only)
-Bottom band: one wide green-outlined box fed by arrows from both panels, large label: INDEPENDENT SHA-BOUND VERIFIER (verify.py + verify-gate.sh + run_report.py), caption: git ancestry · clean-env test replay · negative control · reviewed_sha == head_sha — identical proof on every runtime
+Right panel, header: 15 CODING-AGENT HARNESSES (spawn_worker.sh [agent]), two compact sub-rows inside:
+Row 1 (blue outline): claude · codex · gemini · opencode · omp · pi · jcode · goose · hermes · crush · openhands, then a smaller line: + cursor · antigravity · grok · droid (rw only)
+Row 2 (amber outline): uniform permission mapping — PROFILE=ro (read-only) · rw (workspace-write) · danger (isolated sandbox only)
+Bottom band: one wide green-outlined box fed by arrows from both panels, large label: INDEPENDENT SHA-BOUND VERIFIER (verify.py + verify-gate.sh + run_report.py), caption: git ancestry · content-bound test ledger · negative control · reviewed_sha == head_sha — identical proof on every runtime
 Footer, small, centred: pick the orchestrator and the coding agent independently — the evidence contract never changes"""),
 ]
 

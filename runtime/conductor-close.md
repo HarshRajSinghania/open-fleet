@@ -15,7 +15,8 @@ CLOSE (in order; any mismatch is a STOP, logged, never patched over):
    the verdict's reviewed_sha and git merge-base --is-ancestor T BASE. T !=
    reviewed_sha means the review is stale (see union-invalidates). M must be
    a merge commit: ledger-contract.md MERGED = merge-commit (not squash), so
-   unit PRs merge with gh pr merge --merge only. A squash, rebase or
+   unit PRs merge only as merge commits (gh pr merge --merge, or merge_queue.py's
+   merges endpoint, merge-serialization.md). A squash, rebase or
    fast-forward merge has no M^2: the merge is non-conforming, so STOP and
    raise a human gate naming M and its merge method. Fail closed: never
    derive T another way (not M, M^1, the PR's headRefOid or a guessed commit).

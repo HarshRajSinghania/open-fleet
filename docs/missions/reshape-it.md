@@ -4,7 +4,7 @@
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel scan and deepen waves behind a pinned characterization net; bounding the target surface and any API-break are your gates.
 > **Activation load:** ~30,800 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Proof:** doctrine-only — its 2026-09-16 self-test campaign run ([PARKED at CONFIRM-SURFACE](../runs/campaign-2026-09-16-reshape-it/)) and the [unpark](../runs/2026-09-16-reshape-it-unpark/) that followed claim no tier; the protocol is mechanism, not yet field-proven.
 
 > Point it at the codebase where every change touches twelve imports. Come back to hot modules
 > sitting behind smaller, testable interfaces — with the characterization net green on both sides
@@ -39,8 +39,8 @@
 ## What it does
 
 `reshape-it` repairs architectural erosion. A **coordinator** builds a churn-weighted shallowness
-inventory over a 90-day window — `git log` touches per module × interface width (exported symbols +
-parameter surface), importer fan-in as tiebreak; a module nobody changes is not erosion — you
+inventory over a 90-day window — `git log` touches per module × interface width (exported symbols)
+÷ implementation depth, importer fan-in as tiebreak; a module nobody changes is not erosion — you
 **confirm the target surface**, and only then does code move: first a
 **characterization net** is pinned at each target's current seam and mutation-audited so it actually
 detects behaviour change; then workers deepen **one module per unit** — shrink the interface, push
@@ -68,7 +68,7 @@ mutation-audited suite, not the reviewer's memory.
 
 ```mermaid
 flowchart TD
-    A[git history + import graph] --> B[SCAN — 90-day window<br/>churn x width, fan-in tiebreak · YAGNI cut]
+    A[git history + import graph] --> B[SCAN — 90-day window<br/>churn x width ÷ depth, fan-in tiebreak · YAGNI cut]
     B --> C[CONFIRM-SURFACE — one-way gate<br/>human bounds the target list]
     C --> C2[BOOTSTRAP integration BASE<br/>preflight · BASE ≠ default branch]
     C2 --> D[CHARACTERIZE<br/>net pinned + mutation-audited BEFORE restructure]
@@ -114,8 +114,8 @@ module's one-way decision named.
 
 > refactor the hot path safely: src/api/handlers.py
 
-**Scan.** Ninety days of churn × interface width, fan-in as the tiebreak: `handlers.py` tops the
-list — 38 commits, 61 exported names, imported from 14 modules.
+**Scan.** Ninety days of churn × interface width ÷ depth, fan-in as the tiebreak: `handlers.py`
+tops the list — 38 commits, 61 exported names, imported from 14 modules.
 
 **Confirm surface (your one-way gate).** You bound the target to `handlers.py` and its two
 helpers; the fleet never grows that list itself.
@@ -129,8 +129,8 @@ reverting the deepening makes the interface measurement no longer smaller — th
 negative-control pair for a behaviour-preserving change.
 
 **Re-scan.** The same probes over the confirmed surface: every module deepened or parked. One
-helper is parked — its remaining interface is its whole reason to exist, so the deletion test
-says leave it. The run ends `RESHAPED-WITH-PARKED`.
+helper is parked — narrowing it would break a public API, a one-way decision named for you and
+never taken mid-wave. The run ends `RESHAPED-WITH-PARKED`.
 
 ## Failure modes this mission is built to prevent
 

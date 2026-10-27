@@ -4,7 +4,7 @@
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — parallel hotspot workers under a pre-declared measurement contract; you own the one-way doors.
 > **Activation load:** ~31,300 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([OPTIMIZED-WITH-PARKED](../runs/campaign-2026-09-16-speed-it/)), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Declare the journeys and their budgets. Come back to every one of them measured within budget
 > against a pre-declared statistical contract — a before/after on every fix, a CI regression
@@ -89,7 +89,7 @@ flowchart TD
     E --> F[FIX PR-per-hotspot<br/>before/after + CI GUARD]
     F --> G[REVIEW + RUNTIME-PROVE<br/>drive the journey end to end]
     G --> H[LAND<br/>merge conductor, one train]
-    H --> I[RE-BENCHMARK<br/>to the contract]
+    H --> I[RE-BENCHMARK<br/>to the contract, then keep-or-revert]
     I -->|breaches remain| D
     I -->|every journey in budget| J{{WITHIN-BUDGET}}
     I -->|only parked breaches remain| K{{OPTIMIZED-WITH-PARKED}}
@@ -115,7 +115,9 @@ Phase by phase:
    bug, not a win, and the review must catch it.
 7. **Land and re-benchmark** ([`merge-serialization`](../../runtime/merge-serialization.md)).
    The conductor merges; then the journey is re-measured to its full contract — a lucky single
-   run is not confirmation. Because fixes interact systemically, the loop re-ranks whatever is
+   run is not confirmation. Keep-or-revert follows: worse than baseline or neutral (inside the
+   noise band) lands a follow-up revert PR, even within budget; a measured improvement is kept,
+   budget met or not. Because fixes interact systemically, the loop re-ranks whatever is
    still breached and goes again.
 
 ## Terminal states
@@ -132,6 +134,8 @@ is exactly the overclaim the measurement contract exists to prevent.
 
 ## Human gates
 
+- **The journey list and budgets.** You confirm the frozen critical-journey list and its
+  per-journey budgets before any baseline — an unbounded journey list is an unbounded mission.
 - **`unmeasured` metrics.** A metric that cannot be measured to its declared contract is flagged
   to you — the fleet never quietly substitutes a weaker proxy.
 - **Parking a journey.** An over-budget journey parks only with a human reference — an infra or
@@ -167,8 +171,8 @@ an N+1 on cart items — dwarfing everything else. The worker names that single 
 ledger; a fix PR that cannot name its cause does not open.
 
 **Fix + guard.** A batched loader takes the journey from 3.8s → 2.1s, measured to the same
-contract, before/after in the PR body. The same PR adds the CI guard: a query-count assertion
-(≤ 3 per checkout) that turns a regression into a red build instead of a slow quarter.
+contract, before/after in the PR body. The same PR adds the CI guard at the declared budget
+(p95 ≤ 2.5s, not today's 2.1s), so a regression turns into a red build instead of a slow quarter.
 
 **Re-benchmark → terminal.** All three journeys measure inside budget: **WITHIN-BUDGET**. The
 counter-case is worth knowing: had image weight on browse breached with the fix being a CDN

@@ -29,7 +29,7 @@
 > offload this repo: stand up a cloud-sandbox recipe so workspaces boot from a snapshot
 ```
 
-**Needs** (the skill's `compatibility` field, verbatim): HARD dependency: open-fleet RPI runtime (Orca, posix, adapter) with vm recipe doctor. A provider account + CLI with a sandbox/VM plan, and the provider's own docs for its verbs. An agent CLI + account for the auth snapshot. git + gh. One worker playbook pack per worker (matt or addy) — never two routers in one worker.
+**Needs** (the skill's `compatibility` field, verbatim): HARD dependency: open-fleet RPI runtime (Orca, posix, not an adapter: it needs cap:sandbox-vm, which posix has only with docker on PATH) with vm recipe doctor. A provider account + CLI with a sandbox/VM plan, and the provider's own docs for its verbs. An agent CLI + account for the auth snapshot. git + gh. One worker playbook pack per worker (matt or addy) — never two routers in one worker.
 
 ## What to provide
 
@@ -162,7 +162,9 @@ with a verify-complete observation the run re-derives.
 - a doctor result with zero fail and zero warn;
 - a provision transcript with `ok: true` across create→validate→destroy;
 - state holding the AUTHENTICATED `snapshotId` plus the `authSourceSnapshotId` it superseded;
-- destroy enacted, not assumed.
+- destroy enacted, not assumed;
+- the PR merged to BASE, ancestry-verified, at its reviewed SHA, with the negative control
+  executed: revert the recipe entry and the free doctor dry-run fails.
 
 The verifier re-runs the free doctor dry-run and re-derives the transcript's resource ids
 through provider read-only verbs. It never re-provisions: a re-provision is a paid step, and
@@ -183,14 +185,15 @@ confirmed back.
 **Scaffold** writes the create/suspend/resume/destroy scripts plus the hand-run snapshot and
 auth scripts, executable, stdout clean. The **base snapshot** checkpoint gets its explicit OK;
 the build runs 20+ minutes, snapshots stopped, id parsed into state. For **agent auth** you
-run the device-auth flow in your terminal and say so; the fleet verifies the exit code,
-re-snapshots, and overwrites the state id. **Wire** points `orca.yaml` at the scripts on the
-primary branch.
+run the device-auth flow in your terminal and say so; the fleet verifies the exit code and, on
+your separate OK for the paid re-snapshot, re-snapshots and overwrites the state id. **Wire**
+points `orca.yaml` at the scripts on the unit worktree off BASE.
 
 **Doctor** dry-run returns `ok: true` with one warn — suspend without resume. That warn is
 resolved (the pair is scaffolded) before a cent of provision spend. The **provision loop**,
 under its own OK, runs create→validate→destroy to green on the second pass, the transcript
-naming the fixed JSON shape. **Verdict: OFFLOADED.** The Run-on option appears in the picker;
+naming the fixed JSON shape. The recipe PR is reviewed and lands on BASE, and its promotion PR
+opens. **Verdict: OFFLOADED.** The Run-on option appears in the picker once you merge that PR;
 the manifest holds the snapshot ids and both transcripts.
 
 ## Failure modes this mission is built to prevent
@@ -204,7 +207,7 @@ the manifest holds the snapshot ids and both transcripts.
 | Secrets in scripts, userData, state, or commits | The recipe is checked in; credentials never ride along |
 | `ok: true` with warns treated as clear | A warn keeps `ok` true — the free gate is clear only with neither |
 | Bind-mounting a host agent home | sqlite state and host config break inside the runtime |
-| Recipe only on a branch | The picker reads the primary checkout; the doctor works anywhere |
+| Writing the recipe on the primary checkout or committing it to default | It reaches default only through the promotion PR you merge; the doctor works on any branch |
 
 ## Composes
 Playbooks:

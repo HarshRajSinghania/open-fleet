@@ -4,7 +4,7 @@
 
 > **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus parallel per-path workers, and a second, deliberately source-blind worker as the oracle; freezing the questions and any cost decision are your gates.
 > **Activation load:** ~30,900 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 15% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([PARKED](../runs/campaign-2026-09-16-oncall-it/), no production path), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Point it at "the last incident took four hours because we were blind." Come back to every
 > production path in a frozen set answering its on-call questions from telemetry alone — with

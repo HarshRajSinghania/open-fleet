@@ -111,44 +111,50 @@ in its `RUN:` header and one row per dispatch wave 1..n, each labeling `wave=<k>
 (`builders=<n> reviewers=<n>`), builder throughput, verification latency (median and max), rework
 rate and freshness violations with a measured value — `run_report.py` refuses a missing, partial,
 doubled or out-of-range wave row ([TEMPLATE.md](TEMPLATE.md) shows the table). The 2026-08-28 ship-it self-run above records a first *qualitative* observation
-(it reached verified-BUILT, not verified-CLOSED) — not a protocol-compliant point; the caps stay
-ASSERTED until ≥3 runs at differing WIP settings measure verified-CLOSED-per-hour throughput.
+(it reached verified-BUILT, not verified-CLOSED) — not a protocol-compliant point. The
+[#604 WIP-curve run](2026-10-25-wip-curve-604-live.md) (12 protocol runs at four mutation-wave
+settings) measured verified-CLOSED-per-hour throughput and kept the mutation-wave caps, now
+MEASURED in `attention-budget.md`; the report-only and planning caps stay ASSERTED.
 
 ## Field-proof plan (#212)
 
 Every mission in the catalog except `clean-sweep`, `prove-it`, `harden-it`, `ship-it`, and `review-it` is `doctrine-only`; `clean-sweep`
 earned `self-run` on the 2026-09-14 tracker run closed above, `prove-it` on the 2026-09-16 run,
 `harden-it` on the 2026-09-21 run, `ship-it` the catalog's first `external-run` on the
-2026-10-13 mdtoc run, and `review-it` `external-run` on the 2026-10-13 Linux witness archived above. Each advance is a **mission run** — Orca up, human
+2026-10-13 mdtoc run, and `review-it` `external-run` on the 2026-10-13 Linux witness archived above. Each advance is a **mission run** — a runtime up, human
+gates answered, a report filed from [TEMPLATE.md](TEMPLATE.md) — never a relabel: the scoped
 demonstrations under [`docs/reports/`](../reports/) say so themselves. Every mission has a row here,
 and a test enforces that (#292): a mission with no path to a proof tier is a mission whose claim
 cannot be checked, and adding one must not be cheaper than planning how to prove it. Targets that
-make each run concrete, self-run candidates first:
+make each run concrete, self-run candidates first. Only `pin-it`'s row names the runtime as a
+blocker: since the Runtime Provider Interface landed (2026-10-19, #591), `OPEN_FLEET_RUNTIME=posix`
+runs every other mission without the Orca app ([runtimes guide](../runtimes.md)), though
+`field-test-it` and `offload-it` still call the Orca CLI inside their pipelines.
 
 | Mission | Target that exists today | Tier | Terminal to show | What blocks it |
 |---|---|---|---|---|
-| map-it | this catalog (report-only: planning branch, freeze commit, verified DAG) | self-run | `MAPPED` | Orca only |
-| attest-it | this catalog against the agentskills.io spec at a digest — obligations = the spec's required fields, evidence = `scripts/validate.py` checks | self-run | `CONFORMANT` (or `-WITH-GAPS`) | Orca; a frozen catalog digest |
+| map-it | this catalog (report-only: planning branch, freeze commit, verified DAG) | self-run | `MAPPED` | nothing beyond a runtime |
+| attest-it | this catalog against the agentskills.io spec at a digest — obligations = the spec's required fields, evidence = `scripts/validate.py` checks | self-run | `CONFORMANT` (or `-WITH-GAPS`) | a frozen catalog digest |
 | harden-it | `runtime/scripts/verify.py`, `dispatch-sign.py`, `verify-gate.sh` — audit → PoC scenario → routed profile → fix → re-attack; the [gitleaks control](../reports/harden-it-externalrun/README.md) is one unit | self-run | `CLEAN` | — proven 2026-09-21/22 (#409, six rounds to a clean re-audit; see the archive rows above) |
 | prove-it | `scripts/validate.py` + `runtime/scripts/verify.py` critical surface — proven 2026-09-16 (single-criterion wave PF-2 + WIP-curve row; the [PF-1 control](../reports/prove-it-selfrun/README.md) stays history) | self-run | `COVERED` | — (see the archive row above) |
-| speed-it | the catalog-gates journey (`validate.py` + `tests/` + `proof_status`), declared budget e.g. ≤30s wall, guard in CI at the declared budget | self-run | `WITHIN-BUDGET` | Orca; a declared budget (human) |
-| root-cause | the next real defect filed here, or an open bug in a small OSS repo | self-run or external-run | `DIAGNOSED` | a live bug + Orca |
-| access-it | needs a web UI — an external repo with an axe-core baseline | external-run | `CONFORMANT` (or `-WITH-MANUAL-PARKED`) | a target + Orca |
-| deflake-it | needs an observed flake — this suite ran flake-free in both audits; an external suite with a known flake | external-run | `STABLE` | a target + Orca |
-| modernize-it | needs a lockfile — this catalog has no dependencies; an external repo with one | external-run | `CURRENT` | a target + Orca |
+| speed-it | the catalog-gates journey (`validate.py` + `tests/` + `proof_status`), declared budget e.g. ≤30s wall, guard in CI at the declared budget | self-run | `WITHIN-BUDGET` | a declared budget (human) |
+| root-cause | the next real defect filed here, or an open bug in a small OSS repo | self-run or external-run | `DIAGNOSED` | a live bug |
+| access-it | needs a web UI — an external repo with an axe-core baseline | external-run | `CONFORMANT` (or `-WITH-MANUAL-PARKED`) | a target |
+| deflake-it | needs an observed flake — this suite ran flake-free in both audits; an external suite with a known flake | external-run | `STABLE` | a target |
+| modernize-it | needs a lockfile — this catalog's runtime has no dependencies; an external repo with one | external-run | `CURRENT` | a target |
 | pin-it | this catalog's `runtime/*.md` + `runtime/scripts/` against the installed Orca CLI — the audit's §2.1 claim inventory is the pre-cut backlog | self-run | `PINNED` (or `-WITH-PARKED`) | Orca (the re-witness oracle) |
-| floor-it | this catalog: dimensions = test suite, validate.py, ruff, badge freshness — most are already wired, so the run is prove-fires + GUARD (injected violation must RED each gate; the check_constraints diff-watch is new) | self-run | `FLOORED` | Orca; the freeze gate (human) |
-| reshape-it | this catalog's churn-hot modules (`git log --since=90d`) — likely `runtime/scripts/verify.py` / `scripts/validate.py`; characterization net pinned first | self-run | `RESHAPED` | Orca; the CONFIRM-SURFACE gate (human) |
+| floor-it | this catalog: dimensions = test suite, validate.py, ruff, badge freshness — most are already wired, so the run is prove-fires + GUARD (injected violation must RED each gate; the check_constraints diff-watch is new) | self-run | `FLOORED` | the freeze gate (human) |
+| reshape-it | this catalog's churn-hot modules (`git log --since=90.days.ago`) — likely `runtime/scripts/verify.py` / `scripts/validate.py`; characterization net pinned first | self-run | `RESHAPED` | the CONFIRM-SURFACE gate (human) |
 | field-test-it | needs a device/emulator app — an external mobile repo | external-run | `FIELD-PROVEN` | a target + a paired device |
-| clean-sweep | EARNED 2026-09-14: tracker run closed DRY-WITH-PARKED with artifacts in the run's own directory, an inventory pinned to the tip it names, and the verifier re-executed at promotion — [close report](2026-09-14-clean-sweep-self-run.md) | self-run | `DRY` (or `-WITH-PARKED`) | Orca |
+| clean-sweep | EARNED 2026-09-14: tracker run closed DRY-WITH-PARKED with artifacts in the run's own directory, an inventory pinned to the tip it names, and the verifier re-executed at promotion — [close report](2026-09-14-clean-sweep-self-run.md) | self-run | `DRY` (or `-WITH-PARKED`) | — (see the archive row above) |
 | review-it | EARNED `external-run` 2026-10-13 (claimed 2026-10-14): stablyai/orca PR #28206 reviewed to NO-GO on the Linux witness with every artifact in the run's own directory — [run report](2026-10-13-review-it-linux.md) | external-run | `NO-GO` / `GO` | — (see the archive row above) |
 | ship-it | EARNED `external-run` 2026-10-13: ravidsrk/mdtoc built from a maintainer-frozen spec to BUILT @ `046d1f8d` on the Linux witness via the executed-control lane — [run report](2026-10-13-ship-it-mdtoc.md) | external-run | `BUILT` | — (see the archive row above) |
-| oss-contribute | the next upstream tracker — the 2026-07-16 chimely run kept its artifacts in the fork worktree | external-run | `CONTRIBUTED` (or `-WITH-PARKED`) | Orca; an upstream target + retained artifacts |
-| absorb-it | this repo's own inbound PR queue once it has one; otherwise an external repo with open community PRs | external-run | `ABSORBED` (or `-WITH-PARKED`) | Orca; an inbound queue that exists |
-| document-it | this catalog's own zero-coverage doc cells — `runtime/scripts/` has modules with no guide entry | self-run | `DOCUMENTED` | Orca; a frozen public surface to document against |
-| migrate-it | needs a stateful schema — this catalog has no database; an external repo with a live migration | external-run | `MIGRATED` | a target with real data + Orca |
-| oncall-it | a bounded external staging-service path set, with 2–4 frozen on-call questions per path; establish operability using the proof below | external-run | `OPERABLE` / `OPERABLE-WITH-PARKED` | Orca; staging failures that can be induced safely; an observable alert destination; human path/question and cost/ownership gates |
-| offload-it | this catalog's own Run-on recipe — interview → snapshots → doctor → provision loop against a real provider | self-run | `OFFLOADED` (or `-WITH-PARKED`) | Orca; a funded provider account + agent login (human) |
+| oss-contribute | the next upstream tracker — the 2026-07-16 chimely run kept its artifacts in the fork worktree | external-run | `CONTRIBUTED` (or `-WITH-PARKED`) | an upstream target + retained artifacts |
+| absorb-it | this repo's own inbound PR queue once it has one; otherwise an external repo with open community PRs | external-run | `ABSORBED` (or `-WITH-PARKED`) | an inbound queue that exists |
+| document-it | this catalog's own zero-coverage doc cells — `runtime/scripts/` has modules with no guide entry | self-run | `DOCUMENTED` | a frozen public surface to document against |
+| migrate-it | needs a stateful schema — this catalog has no database; an external repo with a live migration | external-run | `MIGRATED` | a target with real data |
+| oncall-it | a bounded external staging-service path set, with 2–4 frozen on-call questions per path; establish operability using the proof below | external-run | `OPERABLE` / `OPERABLE-WITH-PARKED` | staging failures that can be induced safely; an observable alert destination; human path/question and cost/ownership gates |
+| offload-it | this catalog's own Run-on recipe — interview → snapshots → doctor → provision loop against a real provider | self-run | `OFFLOADED` (or `-WITH-PARKED`) | a funded provider account + agent login (human) |
 
 For **oncall-it**, retain the question→signal queries and outputs, symptom alerts with two
 severities and justified thresholds, linked runbooks, and test-fire receipts from the destination.

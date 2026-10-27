@@ -15,8 +15,9 @@ Three layers, strictly separated:
 - **Missions** — `skills/<name>/SKILL.md`. The only discoverable, auto-triggering skills.
 - **Playbooks** — `playbooks/<name>.md`. Callable phase protocols a mission injects into a
   worker's TASK. Not skills. They have no frontmatter and never auto-trigger.
-- **Runtime** — `runtime/*.md` policies + `runtime/scripts/`. Orca dispatch/gate/merge/liveness/
-  sandbox mechanics. Missions call these; users never invoke them. Runtime control files sit
+- **Runtime** — `runtime/*.md` policies + `runtime/scripts/` + `runtime/providers/`. Orca and
+  multi-runtime dispatch/gate/merge/liveness/sandbox mechanics. Missions call these; users never
+  invoke them. Runtime control files sit
   beside them: `runtime/pins.json` (upstream pins), `runtime/one-way-doors.json`, and
   `runtime/quarantine.json` — the component quarantine deny-list (#558) that `validate.py`,
   `preflight.py --mission` and `quarantine_check.py` enforce fail-closed. Only a human adds,
@@ -59,7 +60,7 @@ changes the proof's shape or its parking classes → different mission.
 ## Execution model
 
 1. Match the request to a mission (even a 30% match is worth checking).
-2. Read the mission's `SKILL.md` in full — it declares its Orca dependency, tooling, gates, and
+2. Read the mission's `SKILL.md` in full — it declares its runtime dependency, tooling, gates, and
    the playbooks it composes.
 3. Follow the mission's pipeline exactly; each phase runs its playbook.
 4. Do not co-mount two upstream packs in one worker (see below).

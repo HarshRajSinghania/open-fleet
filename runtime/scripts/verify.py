@@ -3319,7 +3319,7 @@ def check_class_downgrade(m, unit_class, record_ref, pubkey_ref):
                 "and reviewer_mode from a unit that changed behaviour. Verify it as a mutation, "
                 "or have the coordinator sign the downgrade (#310)"]
     return [f"NOTE: {unit_class} (unsupervised) — claimed with no signed dispatch record. "
-            "base_sha..head_sha changes docs/tests only, so the class is consistent with the "
+            "base_sha..head_sha changes prose (docs) only, so the class is consistent with the "
             "change, but nothing off-worker authorized it (#310)"]
 
 

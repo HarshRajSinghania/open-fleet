@@ -25,6 +25,6 @@ The rules `python3 scripts/changelog.py check` enforces (CI runs it in `validate
 - UTF-8, LF line endings, a final newline.
 
 On a pull request CI also runs `python3 scripts/changelog.py check --base <base>`, which fails if
-`CHANGELOG.md`'s `## [Unreleased]` section gained an entry. The entries already there predate
-fragments; the cut folds them in after the fragments. `python3 scripts/changelog.py preview`
+`CHANGELOG.md`'s `## [Unreleased]` section gained an entry. The entries written there before
+fragments existed were folded in at the 1.0.0 cut. `python3 scripts/changelog.py preview`
 prints what the next release section will hold.

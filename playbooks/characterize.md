@@ -42,7 +42,10 @@ reads, not descriptions of them (evidence-manifest.md §1 carries the full schem
 | `command` | the criterion-bound proof command, ONE string | executed lane |
 
 A `hand` mutant carries its unified diff in the `artifact` rather than a `mutant` id, and that diff
-must touch the lines the unit changed — the verifier binds hunks, not just files (#280).
+must touch the lines the unit changed — the verifier binds hunks, not just files (#280). A test-only
+net changes no production line: there the coordinator's contract (never the manifest) authorizes the
+mutant's path:line set and artifact sha256 as `oracle_scope` kind `characterization`
+(evidence-manifest.md §1).
 
 `binding_audit` records the coverage method; `metric_contract` carries coverage before/after and
 nothing else. The mutation is the proof; the coverage number is context.

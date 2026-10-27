@@ -6,7 +6,7 @@ state** (git, a clean-env test run, the runtime, the deploy target). A unit adva
 
 ## 1. The manifest (every worker emits this in `worker_done`)
 
-The worker writes it to the path the dispatcher passed as Orca's typed `--report-path` flag and names that path in `worker_done`. Shape (JSON; a mission may add fields):
+The worker writes it to the path its dispatch names and passes that path in `worker_done` as the typed `--report-path` flag of `orchestration send` (dispatch-lifecycle.md). Shape (JSON; a mission may add fields):
 
 ```json
 {

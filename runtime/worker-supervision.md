@@ -57,7 +57,8 @@ transcript persists and stays citable):
 ## Watchdog: what is mechanized, what stays manual
 
 `runtime/scripts/watchdog.py --heartbeats <snapshot>.json --dry-run`
-(classify only; drop `--dry-run` and add `--state`/`--log` for live) polls
+(classify only; live mode drops `--dry-run` and needs a `nudge_command` argv in the config —
+`null` as shipped, so live exits 2 until one is set; `--state`/`--log` default under `.orca/`) polls
 worker heartbeats and classifies OK / SLOW / HUNG / WEDGED per the ladder:
 past-STOP silence is HUNG, an explicit wedge marker (or frozen-past-STOP
 plus an unanswered nudge) is WEDGED, slow-but-alive is not stuck. A heartbeat

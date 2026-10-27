@@ -40,7 +40,7 @@ In the source repository, `skills/<name>/SKILL.md` references its phase playbook
 
 ## Prerequisites, pinned
 
-`scripts/install.sh` separates **install** prerequisites (hard requirements to link and validate the catalog) from **run** prerequisites (warned at install time; enforced by `preflight.py` when starting a mission):
+`scripts/install.sh` separates **install** prerequisites (hard requirements to link and validate the catalog) from **run** prerequisites (warned at install time; when a mission starts, `preflight.py` enforces `gh` and the runtime's capabilities, while Orca pin drift is only a `spawn_worker.sh` NOTE):
 
 | Prerequisite | Class | Enforced requirement | Witnessed baseline |
 |---|---|---|---|

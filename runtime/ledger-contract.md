@@ -58,11 +58,14 @@ the fleet *can* run.
 ## DECISIONS log (durable auto-resolves)
 
 Path: a `DECISIONS.md` file under the run's REPO_ROOT `docs/` (create if absent). Every mechanical
-or taste auto-resolve appends one line:
+or taste auto-resolve appends one line with `runtime/scripts/decisions.py append` (it refuses a
+malformed line):
 
 `ts · gate-or-ask-id · class · answer · why · task_id?`
 
-One-way answers that came from a human are logged the same way with `class=one-way`. This file is
+One-way answers that came from a human are logged the same way with `class=one-way` plus
+`--source human:<who>` — decisions.py refuses a one-way line without it (and, once
+`.orca/human-grant-pubkey` is pinned, without `--grant-sig`). This file is
 part of RESUME input — a fresh coordinator re-reads it before re-asking.
 
 ## CONTEXT HANDOFF (compaction / shift-change)

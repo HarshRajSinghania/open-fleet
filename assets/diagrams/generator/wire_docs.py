@@ -1,7 +1,8 @@
 """Wire the regenerated images into the docs: light/dark <picture> embeds, new embeds, contract alt text.
 
-ARCHITECTURE.md is deliberately left alone: it is a root doc every mission's activation load counts, and an
-image block there costs every coordinator ~200 tokens per run for a picture no agent can see."""
+ARCHITECTURE.md is deliberately left alone: it is a root doc counted in the activation load of every mission
+that links it, and an image block there costs each such coordinator ~200 tokens per run for a picture no
+agent can see."""
 import pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import specs  # noqa: E402
@@ -29,7 +30,7 @@ NEW_ALT = {
  "mission-identity": "The six-point mission-identity test: unit of work, per-unit state machine, convergence proof, ordering and isolation, parking and failure semantics, and the oracle; audit findings, tracker issues and doc claims are one mission, clean-sweep, while a perf breach is a different proof and therefore a different mission, speed-it",
  "threat-boundaries": "The four security boundaries from threat-model.md — sandbox with isolated worktree, ro/rw/danger profiles, PreToolUse deny-hook and v1.4.229 OS process/memory ceiling; network with hash-chained egress.py receipts; supply chain with runtime/pins.json, pin_review.py rug-pull audit, one pack per worker and guard_text.py trust envelope; identity and access with ed25519 dispatch-sign.py contract digest, human-only one-way gates and an independent SHA-bound verifier — beside the five-rung response ladder from steer, reduce and stop to revoke and fail-closed quarantine",
  "tracker-enumeration": "Four-stage pipeline for hosted trackers: GitHub Issues/PRs, Linear via orca linear, and Jira via orca jira at v1.4.229 enter the T0 twin-query denominator paged until truncated is false and reconciled across two independent workers, pass through the guard_text.py trust fence so ticket text remains data rather than authority, and close with single-attempt writeId or read-back plus orca reference add/find backed by a verified merge SHA",
- "runtime-providers": "How the mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects posix (standalone SQLite WAL and local git worktrees), orca, or 12 external orchestrators while OPEN_FLEET_HARNESS selects the coding agent and maps ro, rw and danger profiles; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)",
+ "runtime-providers": "How the mission catalog runs across 14 orchestrator runtimes and 15 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects orca (the default), posix (standalone SQLite WAL and local git worktrees) or one of 12 external orchestrators, while each worker's agent argument to spawn_worker.sh selects its coding agent (cursor, antigravity, grok and droid rw only) and PROFILE maps it to ro, rw or danger; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)",
 }
 
 def picture(prefix, name, alt, width):

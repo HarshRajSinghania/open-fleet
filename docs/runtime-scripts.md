@@ -74,9 +74,9 @@ the same way. Private import-only library, loaded by path (no `sys.path` edits) 
 Source `runtime/scripts/_catalog_grammar.py:1-26`; behavior pinned by
 `tests/test_validate_catalog_grammar.py` and `tests/test_quarantine_closure.py`.
 
-API: `parse_frontmatter`, `frontmatter_lines`, `clause_refs`, `deferred_declared`,
-`deferred_words`, `explicit_protocol_refs`, `protocol_mentions`, `protocol_closure`,
-`clause_token_typos`.
+API: `parse_frontmatter`, `frontmatter_lines`, `is_url_md_token`, `bare_md_stems`,
+`compose_clause_backticks`, `clause_refs`, `deferred_declared`, `deferred_words`,
+`explicit_protocol_refs`, `protocol_mentions`, `protocol_closure`, `clause_token_typos`.
 
 `parse_frontmatter(text)` returns `(data, None)` or `(None, error)`. The fences are lines that are
 exactly `---` (BOM and CRLF tolerated; a `---` inside a value is content). Top-level keys map to
@@ -146,7 +146,7 @@ Exits: n/a (library).
 ## `certification.py`
 
 Validator and renderer for the provider/harness certification record,
-`runtime/providers/certification.json` (#596). Source `runtime/scripts/certification.py:1-50`;
+`runtime/providers/certification.json` (#596). Source `runtime/scripts/certification.py:1-56`;
 behavior pinned by `tests/test_certification.py`.
 
 Usage: `certification.py [check|matrix|markdown] [--root DIR] [--record FILE] [--pins FILE] [--json]`
@@ -163,8 +163,9 @@ partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any o
 - a group with no limitation;
 - an `unsupported` group with no typed `refusal`;
 - a `live-witnessed` group without `witnessed`, without an exact upstream version, or without a
-  `docs/runs/*.md` report whose `RUN:` header records `verifier=GREEN` and which binds under
-  `run_report.py` (needs full git history, like `validate.py`);
+  `docs/runs/*.md` report whose `RUN:` header records `verifier=GREEN` at a `self-run` or
+  `external-run` tier and which binds under `run_report.py` (needs full git history, like
+  `validate.py`);
 - a `live-witnessed` group whose cited run does not name its route. `witnessed.route` quotes
   whole lines of artifacts in the run's own directory that the report's inventory binds. The
   lines are read from git at the run's `inventory_at`. Together they must name the provider, put
@@ -185,8 +186,8 @@ partition `base.py`'s `SUPPORTED_HARNESSES` x `{ro, rw}`. It also fails on any o
 A moved pin also makes every cell of that provider read `stale`. `--pins` points the freshness
 check at a candidate pins file, so a re-pin can preview the cells it voids.
 
-Exits: 0 valid and fresh · 1 invalid or stale (`matrix`/`markdown` still print) · 2 unreadable or
-usage.
+Exits: 0 valid and fresh · 1 invalid or stale (`matrix`/`markdown` still print; an unreadable
+`--pins` file is a `FAIL:` line here) · 2 the record or `capabilities.json` unreadable, or usage.
 
 > Why: "supported" meant "an adapter exists", and the matrix could not say which routes had ever
 > run against a real upstream (#596). One record, one cell per advertised route, gives a fixture a
@@ -198,7 +199,7 @@ usage.
 Executable form of `runtime/mission-chaining.md`'s degraded-terminal stop rule: classifies a
 mission terminal as `clean`, `degraded`, `handoff`, or `unknown`, gates whether a sequential chain may
 advance to its next step, and audits the catalog's `skills/*/SKILL.md` terminal labels against
-the classification rule. Source `runtime/scripts/chain_check.py:1-27`; behavior pinned by
+the classification rule. Source `runtime/scripts/chain_check.py:1-29`; behavior pinned by
 `tests/test_chain_check.py`.
 
 Usage: `chain_check.py {classify,gate,audit} ...`
@@ -214,12 +215,13 @@ API: `classify`, `gate`, `audit`.
 `classify` prints `clean`, `degraded`, `handoff`, or `unknown` for a terminal name, comparing in
 one canonical spelling (case, `-`, `_` and spaces folded, so `Done-With-Parked` is degraded); an
 `unknown` name (not a terminal's shape, or an unrecognised `-WITH-` qualifier) exits 1. `gate`
-prints `PROCEED` (exit 0) only when the terminal is neither degraded nor unknown AND appears in
-`--allowed`, otherwise `STOP <why>` (exit 1); `audit` checks every bold terminal in `skills/*/SKILL.md` so degraded terminals carry
+prints `PROCEED: <why>` (exit 0) only when the terminal is neither degraded nor unknown AND appears in
+`--allowed`, otherwise `STOP: <why>` (exit 1); `audit` checks every bold terminal in `skills/*/SKILL.md` so degraded terminals carry
 the `(degraded)` label and clean/handoff terminals do not.
 
-Exits: 0 ok or proceed · 1 stop (`STOP`), an `unknown` terminal, or catalog audit mismatch · 2
-usage or could-not-run.
+Exits: 0 ok or proceed · 1 stop (`STOP`), an `unknown` terminal, or catalog audit mismatch (an
+unreadable `SKILL.md` also exits 1, with a traceback) · 2 usage. An `audit --root` that holds no
+`skills/*/SKILL.md` checks nothing and exits 0.
 
 > Why: before this script, the degraded-terminal rule lived in prose and missed `ABANDONED`
 > (`migrate-it`'s rolled-back terminal), letting a failed migration leg read as clean. Putting
@@ -250,8 +252,10 @@ A `--wait` that times out (`timedOut`) is exit 0 with `TIMED_OUT=yes`, not a fai
 Each message prints as a `--- <id> (<type>) from <handle>` block with `SUBJ:` and
 the body (capped at 2000 chars with a truncation marker); malformed entries skip
 with a stderr WARN. Consuming reads show what they consumed — a later check may
-never see these messages again. Every printed field passes through pm.py's
-`_visible`, so control and invisible characters render inertly, never actively.
+never see these messages again. Every message field (id, type, sender, subject, body) passes
+through pm.py's `_visible`, so control and invisible characters render inertly, never actively;
+the `COUNT=… DELIVERY=… TIMED_OUT=…` and `REPLIED=… FOR=…` receipt lines print the runtime's ids
+and your `--id` as-is.
 
 Exits: 0 checked/replied · 1 runtime/refusal/receipt failure · 2 usage or
 validation refusal (nothing invoked).
@@ -265,21 +269,24 @@ validation refusal (nothing invoked).
 ## `decisions.py`
 
 Writer, reader, and validator for the DECISIONS log (`docs/DECISIONS.md`). Source
-`runtime/scripts/decisions.py:1-91`; behavior pinned by `tests/test_decisions.py`.
+`runtime/scripts/decisions.py:1-93`; behavior pinned by `tests/test_decisions.py`.
 
 Usage: `python3 runtime/scripts/decisions.py [--file PATH] [--doors PATH] <subcommand> ...`
 
 Subcommands: `append`, `active`, `tally`, `check`, `grant-keygen`, `sign-grant`.
 
-Flags: `--file` (log path, default `docs/DECISIONS.md`), `--doors` (door registry,
+Flags: `--file` (log path, default `$OPEN_FLEET_DECISIONS_FILE`, then `$ORCA_DECISIONS_FILE`,
+then `docs/DECISIONS.md`), `--doors` (door registry,
 default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-pubkey` from that
 git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
 the checked tree could have been written by a worker). `append` takes `--id`, `--class`, `--answer`,
-`--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `tally` takes `--lens`, `--json`;
-`sign-grant` takes `--key`, `--id`, `--answer`, `--why`, `--task`, `--ts`.
+`--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `active` takes `--json`; `tally` takes
+`--lens`, `--json`; `grant-keygen` takes `--out` (required) and `--in-repo-ok`; `sign-grant` takes
+`--key`, `--id`, `--answer`, `--why`, `--task`, `--ts`.
 
 Log line format: `ts · gate-or-ask-id · class · answer · why · task?` with classes
-`mechanical`, `taste`, `one-way`. `append` refuses unknown classes, empty id/answer/why,
+`mechanical`, `taste`, `one-way`. `append` refuses unknown classes (an argparse usage error,
+exit 2), empty id/answer/why,
 fields containing `·` or newlines, credential-shaped values, lines tripping the one-way
 keyword net without class `one-way`, and `one-way` lines without `source=human:<name>`
 (via `--source`). `active` lists non-superseded lines (newest per id wins; an answer of
@@ -295,12 +302,12 @@ does not verify (a hand-written unsigned grant included). `append`, `sign-grant`
 refuse a `ts` more than 300 s in the future (`MAX_FUTURE_SKEW_SECONDS`) (2026-10-23 review,
 P1-8, P2-3).
 
-Exits: 0 ok · 1 validation failure · 2 could-not-run.
+Exits: 0 ok · 1 validation failure · 2 could-not-run or usage.
 
 > Why: the log was a parser without a writer — hand-typed lines let two coordinators
 > disagree about the same record. `append` refuses reclassification by wording (the net
 > is built from the registry at `runtime/scripts/decisions.py:load_doors`) and demands a
-> human source for one-way lines (`runtime/scripts/decisions.py:HUMAN_SOURCE`). Tallies
+> human source for one-way lines (`runtime/scripts/decisions.py:HUMAN_SOURCE_SUFFIX`). Tallies
 > live in committed state so a crashed run's gate verdict survives, and the `security`,
 > `privacy`, `data-migration` lenses never gate off
 > (`runtime/scripts/decisions.py:NEVER_GATE`): their value is the miss they would catch —
@@ -310,7 +317,7 @@ Exits: 0 ok · 1 validation failure · 2 could-not-run.
 ## `deny-hook.sh`
 
 PreToolUse guard for read-write workers (Bash, Edit, Write). Reads the hook event JSON
-on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-165`;
+on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-184`;
 behavior pinned by `tests/test_deny_hook.py`, `tests/test_deny_hook_multi_harness.py` and the
 differential corpus `tests/test_deny_hook_conformance.py` (#598, below).
 
@@ -375,7 +382,8 @@ about, while `sh -c "rm -r ./build"` and `psql -c "DROP TABLE …"` still are (#
 Interpreter code is read as a command only for the literals it hands to an exec-shaped call
 (`os.system`, `subprocess.run`, a backtick), not every string it also prints (PR #648 review).
 
-When `ORCA_UNIT_WORKTREE` is set, writes outside it deny — Edit/Write `file_path`,
+When `OPEN_FLEET_UNIT_WORKTREE` (or its legacy alias `ORCA_UNIT_WORKTREE`, read only when the
+former is unset) is set, writes outside it deny — Edit/Write `file_path`,
 NotebookEdit `notebook_path`, and absolute-path Bash redirects and `tee` destinations —
 resolved through the full symlink chain. The self-guard denies, with or without a worktree, a
 write, redirect, `tee`, `rm`/`mv`/`cp`/`ln`/`install`/`rsync`, `sed -i`/`perl -i`, `truncate`,
@@ -408,7 +416,7 @@ runs the line. A receipt `&&`-before a pipeline arms one program a stage reads f
 
 Shell grammar and versions (#598). `scripts/deny_hook_corpus.py` differential-tests the
 parser against real bash: each template runs with an inert sentinel in the hole in a throwaway
-directory (PATH holding only the sentinel, `bash`, `cat` and `find`; CPU, file-size and 5 s
+directory (PATH holding only the sentinels and `bash`, `sh`, `cat`, `find`, `tee` and `xargs`; CPU, file-size and 5 s
 wall limits; the sentinel stands for a binary, so `sh orca_sentinel …` runs nothing), while
 the same hole holding `git push --force origin main` (HIGH),
 `gh issue close 34` (rule 5) or `rm -r -f ./build` (Never list) is only ever fed to the hook.
@@ -446,8 +454,10 @@ copy of the hook, e.g. a mutant or `git show <base>:runtime/scripts/deny-hook.sh
 
 Exits: 0 in hook-decision mode — the decision is the output, not the status — except exit 2
 (reason on stderr) for an empty or unparseable payload, a missing or broken `grep`/`sed`/`tr`,
-and strict mode (`ORCA_HOOK_STRICT_EXIT=1` or a non-Claude tool name), where an ask also
-becomes a deny. `--settings` exits 2 when the worktree is missing/invalid or python3 is absent;
+and strict mode (`ORCA_HOOK_STRICT_EXIT=1`, `OPEN_FLEET_HOOK_STRICT_EXIT=1`,
+`OPEN_FLEET_HOOK_EXIT2=1`, a set `JCODE_HOOK_TOOL_NAME`, or a non-Claude tool name), where an ask
+also becomes a deny. Outside strict mode, `CODEX_CI`, `CODEX_SANDBOX` or
+`OPEN_FLEET_HEADLESS_STRICT` also turn an ask into a deny, still at exit 0. `--settings` exits 2 when the worktree is missing/invalid or python3 is absent;
 `--verify-settings` exits 2 when the registration is not armed; any other argument exits 2
 as well.
 
@@ -512,10 +522,10 @@ Exits: 0 classified (or `--predict-merge`: clean) · 1 `--predict-merge` only: a
 
 ## `diffparse.py`
 
-Hunk-counted unified-diff reader shared by the diff-reading guards (`runtime/scripts/floor_guard.py`
-and `runtime/scripts/verify.py`). Import-only library — no CLI. Source
-`runtime/scripts/diffparse.py:1-21`; behavior pinned by `tests/test_floor_guard.py` and
-`tests/test_verify.py`.
+Hunk-counted unified-diff reader for the diff-reading guards outside `verify.py`
+(`runtime/scripts/floor_guard.py`; `runtime/scripts/verify.py` keeps its own `_diff_records`,
+the grammar this module copies). Import-only library — no CLI. Source
+`runtime/scripts/diffparse.py:1-21`; behavior pinned by `tests/test_floor_guard.py`.
 
 API: `records`.
 
@@ -535,7 +545,7 @@ Exits: n/a (library).
 ## `ed25519.py`
 
 Vendored pure-Python Ed25519 (RFC 8032), dependency-free. Import-only library — no CLI.
-Source `runtime/scripts/ed25519.py:1-21`; verified against the RFC 8032 test vectors in
+Source `runtime/scripts/ed25519.py:1-27`; verified against the RFC 8032 test vectors in
 `tests/test_ed25519.py`.
 
 API: `publickey`, `signature`, `checkvalid`.
@@ -544,9 +554,12 @@ API: `publickey`, `signature`, `checkvalid`.
 `signature(msg, seed, pub)` returns the 64-byte signature; `checkvalid(sig, msg, pub)`
 returns True iff valid. Hardening beyond the bare reference: rejects non-canonical
 `S >= L`, non-canonical point encodings, and small-order/identity public keys (cofactor
-check). Not constant-time: signs and verifies tiny dispatch-provenance records only, never
-bulk data or network secrets. Used by `runtime/scripts/dispatch-sign.py` (sign, off the
-graded worker) and `runtime/scripts/verify.py` (verify at the gate).
+check). Not constant-time: signs and verifies small provenance records only (dispatch
+records, verifier transcripts, inventories, retention receipts, human grants), never bulk data
+or network secrets. Used by `runtime/scripts/dispatch-sign.py` (sign, off the graded worker),
+`runtime/scripts/verify.py` (verify at the gate) and `runtime/scripts/decisions.py` (human
+grants), and through `dispatch-sign.py`'s loader by `runtime/scripts/inventory.py` and
+`runtime/scripts/run_report.py`.
 
 Exits: n/a (library).
 
@@ -562,7 +575,7 @@ Exits: n/a (library).
 
 Content-free, hash-chained receipts for everything the fleet sends off-repo. One JSON
 object per line in `.orca/egress.jsonl` (mode 0600), appended BEFORE the send. Source
-`runtime/scripts/egress.py:1-73`; behavior pinned by `tests/test_egress.py`.
+`runtime/scripts/egress.py:1-76`; behavior pinned by `tests/test_egress.py`.
 
 Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
 refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
@@ -577,7 +590,8 @@ Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 Subcommands: `write`, `verify`, `head` (verify, then print the head to anchor),
 `grants`.
 
-Flags: `--ledger` (default `$ORCA_EGRESS_LEDGER` or `.orca/egress.jsonl`). `write` takes
+Flags: `--ledger` (default `$OPEN_FLEET_EGRESS_LEDGER`, then `$ORCA_EGRESS_LEDGER`, then
+`.orca/egress.jsonl`). `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
 else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger) and
@@ -610,7 +624,7 @@ wrappers: `preflight.py`, `task_ops.py create`, `spawn_worker.sh` (`OPEN_FLEET_R
 `setsid`), the installed guard checked with `deny-hook.sh --verify-settings`, delivery of the
 spec, the worker result (`worker_ops.py`, `check_reply.py`), `verify.py --unit-class report-only`
 in a checkout the coordinator cuts at the evidence head, and `worker_ops.py retain` then
-`release`. Source `runtime/scripts/first_run.py:1-53`; behavior pinned by
+`release`. Source `runtime/scripts/first_run.py:1-57`; behavior pinned by
 `tests/test_certification.py`.
 
 Usage: `first_run.py [run] [--profile ro|rw] [--agent <harness>] [--worker inert|live]
@@ -694,7 +708,8 @@ its sandbox: on Ctrl-C, on an error, on `kill` (SIGTERM) and when its terminal c
 A `setsid` worker runs in its own session, where none of those signals reaches it. A run ended
 that way writes no receipt and keeps the sandbox.
 
-Exits: 0 GO · 1 NO-GO · 2 usage · 143 on SIGTERM and 129 on SIGHUP, after its workers are stopped.
+Exits: 0 GO · 1 NO-GO (also a non-empty `--workdir`, refused before any receipt is written) ·
+2 usage · 143 on SIGTERM and 129 on SIGHUP, after its workers are stopped.
 
 > Why: the provider matrix was certified by adapter unit tests alone, and no documented path
 > took a fresh clone through dispatch to independently verified evidence (#596). The inert and
@@ -704,14 +719,16 @@ Exits: 0 GO · 1 NO-GO · 2 usage · 143 on SIGTERM and 129 on SIGHUP, after its
 
 The process containment every paid runner shares: [`first_run.py`](#first_runpy), #606's ablation
 runner (`scripts/_ablation_run.py`, whose watchdog and `contained_run` use it) and the WIP-curve
-runner. It ships in the runtime bundle with `first_run.py`.
+runner. It ships in the runtime bundle with `first_run.py`. Source
+`runtime/scripts/containment.py:1-22`; behavior pinned by `tests/test_containment.py`.
 
 - **The marker.** Every process of a call carries `OF_CALL_ID=<its tag>` in its environment. A
   descendant that calls `setsid()` leaves its call's process group, and its process tree once its
   parent exits, but it keeps the marker.
-- **`sweep(roots, groups, exclude, wait_s, tag, table)`** SIGKILLs everything carrying the tag,
-  every member of `groups` and every descendant of any of them, until a fresh scan finds none
-  (True). It returns False when one survives `wait_s`, or when the process table cannot be read.
+- **`sweep(roots, groups, exclude, wait_s, tag, table, marker)`** SIGKILLs everything carrying
+  the tag under `marker` (`OF_CALL_ID` by default), every member of `groups` and every descendant
+  of any of them, until a fresh scan finds none (True). It returns False when one survives
+  `wait_s`, or when the process table cannot be read.
 - **`containment_problem(system_binary, table)`** is the host check a paid live run makes before
   it reserves anything. Probes in sessions of their own, carrying a marker, must show up in the
   process table by it, or it names why not.
@@ -794,7 +811,7 @@ a test in `tests/test_wip_curve.py` that fails on `54fe725bee`:
 
 Append-only lifecycle event record, and the WIP-curve rows derived from it (#603). One
 hash-chained JSON object per observed transition in `.orca/events.jsonl` (mode 0600). Source
-`runtime/scripts/events.py:1-60`; behavior pinned by `tests/test_events.py`, over the fixture
+`runtime/scripts/events.py:1-61`; behavior pinned by `tests/test_events.py`, over the fixture
 streams and golden reports in `tests/fixtures/events/`.
 
 Status: local evidence tooling, not telemetry — no network, no daemon. Existing observations
@@ -806,7 +823,7 @@ the transcript's `manifest_sha256`), and a Claude worker's stream-json `result` 
 records them with `emit`. No provider and no verifier calls `emit` itself. `ingest-state` reads
 the R04 (#597) launch gate (a monitor claim, or a gate closed before any claim) to tell a launch
 from a dispatch that never ran, but not its recovery receipts; those, and the R06 (#599)
-merge-queue receipts once that lands, are the next sources.
+merge-queue receipts `merge_queue.py` now writes, are the next sources.
 
 Usage: `events.py [--log PATH] <emit|ingest-state|ingest-transcript|ingest-usage|verify|report|check> ...`
 
@@ -822,8 +839,8 @@ machine; producers on one host share one label). `emit` takes `--kind`, `--task`
 derived from the content) and `--data` (the kind's fields as JSON). `ingest-state` takes `--db`;
 `ingest-transcript` takes `--transcript`, `--manifest` and `--task`; `ingest-usage` takes
 `--stream`, `--task`, `--dispatch` and `--observed-at`. `report` takes `--run` (required when
-the record holds several runs) and `--json`; `check` takes `--run-report`; `verify`, `report`
-and `check` take `--expect-head` and `--expect-ancestor`.
+the record holds several runs) and `--json`; `check` takes `--run-report` and `--run`; `verify`,
+`report` and `check` take `--expect-head` and `--expect-ancestor`.
 
 Kinds (`runtime/scripts/events.py:KINDS`, each a closed schema — no free text rides in):
 `run.start`, `coordinator.resume`, `wave.open` (wave, builders, reviewers, the planned task
@@ -934,7 +951,7 @@ behavior pinned by `tests/test_floor_guard.py`.
 
 Usage: `floor_guard.py [--base REF] [--constraints FILE] [--waivers FILE] [--repo DIR] [--quiet]`
 
-Flags: `--base` (default origin/HEAD, then origin/main, main, master), `--constraints`
+Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master), `--constraints`
 (numbers file, default CONSTRAINTS.md), `--waivers` (DECISIONS log, default
 `docs/DECISIONS.md`), `--repo` (default `.`), `--quiet` (findings only, no clean banner).
 
@@ -991,8 +1008,8 @@ gate id plus `--answer`, `--date`; `waive` takes a gate id plus `--reason`, `--d
 `render` takes `--out`, `--check`.
 
 Gates move `owed` to exactly one of `answered`, `waived`, `overtaken` — re-transitioning
-is an error. Gate ids look like `G1`. `stale` reports gates owed past N days and never
-notifies; `render --check` verifies the view matches the store. `related`/`blocking` are
+is an error. Gate ids look like `G1`. `stale` reports gates owed N or more days (`--days`,
+default 7) and never notifies; `render --check` verifies the view matches the store. `related`/`blocking` are
 store-only and never render.
 
 Exits: 0 ok (stale/list report exit 0 either way) · 1 `render --check` drift (the view
@@ -1010,8 +1027,11 @@ differs from the store) · 2 usage or store error.
 
 Single git resolution rule and hardened git environment for the read-side tools
 (`runtime/scripts/inventory.py`, `runtime/scripts/evidence-run.py`,
-`runtime/scripts/floor_guard.py`, `runtime/scripts/preflight.py`). Import-only library — no CLI.
-Source `runtime/scripts/gitexec.py:1-62`; behavior pinned by `tests/test_inventory.py`,
+`runtime/scripts/floor_guard.py`, `runtime/scripts/preflight.py`,
+`runtime/scripts/decisions.py` for `--pin-ref`, `runtime/scripts/hint_provenance.py`) and the
+paid runners in `scripts/` (`ablation.py`, `_trajectories.py`, `wip_curve.py`,
+`live_container.py`). Import-only library — no CLI.
+Source `runtime/scripts/gitexec.py:1-64`; behavior pinned by `tests/test_inventory.py`,
 `tests/test_evidence_run.py`, `tests/test_floor_guard.py`, `tests/test_preflight.py`,
 `tests/test_diff_scope.py`, and `tests/test_gitexec_config_commands.py`.
 
@@ -1049,8 +1069,10 @@ name holding `=` at its first `=` and blanks a different key. The config is read
 key handed back through `os.fsdecode`, which `subprocess` reverses, because a driver name is any
 bytes git accepts (`0xff`, an invalid UTF-8 sequence) and an attribute selects exactly those; a
 text decode named a different driver (PR #649 review). A read that MATERIALISES working-tree
-content passes its pairs; a read of committed objects alone selects no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, and `wtree.sh` exit 1 with no fingerprint. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
-`stdin=subprocess.DEVNULL`, as `driver_blanks` does, so a hook, filter or git itself never
+content passes its pairs (not `hint_provenance.py`'s working-tree `diff`, `live_container.py`'s
+`status` of the catalog checkout, or `_trajectories.py`'s replay, which takes `.gitattributes` from
+the empty tree instead); a read of committed objects alone selects no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2 and wip_curve.py's `RunFailed`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller but `hint_provenance.py` passes
+`stdin=subprocess.DEVNULL` (or input of its own), as `driver_blanks` does, so a hook, filter or git itself never
 waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
 parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
 own argv (`runtime/scripts/floor_guard.py:DIFF_RENDERING`). `runtime/scripts/diff_scope.py`
@@ -1164,8 +1186,9 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 | `STALE` | `path-changed:<p>`, `path-deleted:<p>`, `path-renamed:<old>-><new>`, `symbol-changed:<p>::<s>`, `symbol-gone:<p>::<s>`, `tests-changed:<t>`, `divergent-branch`, `ahead-of-live`, `artifact-modified:<f>`/`:manifest` | suppressed |
 | `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes` — only a record whose own revision and artifact checks held may supersede), `current-evidence:<p>=<outcome>` | suppressed |
 
-The worst reason is the label. Scope is the concrete path a match resolves to (a basename or
-directory match checks the query's path; two patterns cannot be resolved); a `path::symbol` or
+The worst reason is the label. Scope is the concrete path a match resolves to (a basename match checks
+whichever side names a directory, a directory match the deeper of the two paths; two patterns
+cannot be resolved); a `path::symbol` or
 `path#symbol` token (or a unit's `symbols` list) keeps a changed file's entry current while that
 symbol's own definition block — its decorators included — is byte-identical. Python source is
 bounded by its parser (`ast`): the first decorator's row through the definition's `end_lineno`,
@@ -1269,9 +1292,10 @@ Live arm spend guard (#605), the one #606's runner uses (`scripts/_ablation_run.
   `measured_calls` and `unmeasured_calls`. `stopped` names why the run ended early, and
   `complete` is true only when every planned call ran. A stopped run exits 1.
 
-The owner-authorised live run (USD 40 cap; 2 scenarios × 3 arms × 3 attempts = 18 calls at a
-USD 2 reservation each, so all 18 fit even if every call were charged its full reservation), from
-a disposable checkout. The live tier now runs only inside the container-based live harness
+The shape of the owner-authorised live run (USD 40 cap; 2 scenarios × 3 arms × 3 attempts = 18
+calls at a USD 2 reservation each, so all 18 fit even if every call were charged its full
+reservation), from a disposable checkout; the bound run substituted `--model claude-opus-5-5` and an
+`--agent-cmd` with an `--allowedTools` list (its report quotes the exact command). The live tier now runs only inside the container-based live harness
 ([live harness guide](guides/live-harness.md)); run directly, this command is refused, exit 2,
 before the corpus is read:
 
@@ -1317,8 +1341,9 @@ only between the EDIT markers, run it from the diagnosis loop. Source
 
 Usage: `hitl-loop.template.sh [--rounds N] [--dry-run] [--help]`
 
-Env: `HITL_ASK=1` routes asks through `runtime/scripts/hitl_ask.py` (durable ask/resume instead of
-shell `read`; `HITL_ASK_HELPER` overrides the helper path). Timeouts print the timed-out
+Env: `HITL_ASK=1` routes asks through `hitl_ask.py` (durable ask/resume instead of shell `read`):
+the template runs `hitl_ask.py` from `PATH`, or the executable path in `HITL_ASK_HELPER` (e.g.
+`<catalog>/runtime/scripts/hitl_ask.py`); with neither, the first capture exits 2. Timeouts print the timed-out
 capture number: rerun with `HITL_RESUME_AT=N` (default 1) to resume capture N while
 earlier captures re-ask fresh — without it a later-capture answer lands on the wrong
 question. `step()` stays keyboard.
@@ -1353,7 +1378,8 @@ re-ask. Source `runtime/scripts/hitl_ask.py:1-23`; behavior pinned by
 Usage: `hitl_ask.py (--question TEXT | --resume MSG_ID) [--to RUN] [--run RUN] [--options CSV] [--timeout-ms MS] [--from SENDER] [--retry-request ID]`
 
 Flags: exactly one of `--question`/`--resume`; `--options` only on a new question;
-`--timeout-ms` clamped to 1..1800000 (default budget 600000). Every knob also reads
+`--timeout-ms` must be 1..1800000 (anything else is refused, exit 2; omitted, upstream's default
+budget of 600000 applies). Every knob but `--question` and `--retry-request` also reads
 an env fallback (`HITL_RESUME`, `HITL_ASK_TIMEOUT_MS`, `HITL_ASK_OPTIONS`,
 `HITL_ASK_TO`, `HITL_ASK_FROM`, `HITL_ASK_RUN`), flag winning; `--from` defaults to
 `ORCA_TERMINAL_HANDLE` and refuses disagreement.
@@ -1499,10 +1525,14 @@ or refused input · 3 not the owner (fenced, lease held, unknown token).
 ## `orca_cli.py`
 
 Resolves the Orca CLI command name once, for every script that talks to Orca. Source
-`runtime/scripts/orca_cli.py:1-38`; behavior pinned by `tests/test_orca_cli.py`, which also
+`runtime/scripts/orca_cli.py:1-45`; behavior pinned by `tests/test_orca_cli.py`, which also
 fails on any script under `runtime/scripts/` that spells the executable itself.
 
-Usage: `orca_cli.py [--path]`; library `from orca_cli import resolve, run_json`.
+Usage: `orca_cli.py [--path | --version | <domain> ARGS…]`; library `from orca_cli import resolve, run_json`.
+On a non-Orca runtime it is also the CLI shim the fleet scripts execute: a first argument in
+`orchestration`, `worktree`, `terminal`, `vm`, `search`, `environment`, `linear`, `jira` or
+`reference` is dispatched to the active provider and printed as a JSON envelope; `--version`
+prints `open-fleet-rpi <pinned Orca version>`.
 `run_json(argv, timeout=, error=, nonzero=)` is the one `--json` envelope reader the eight
 operator tools share: it raises the caller's exception class on an unrunnable CLI, unreadable
 or non-object JSON, or an `error` envelope, and returns `result`; `nonzero` keeps each tool's
@@ -1510,12 +1540,14 @@ exit-status rule (`strict`, `no-receipt` for `runtime/scripts/check_reply.py`, `
 `runtime/scripts/hitl_ask.py`).
 
 Order (upstream's own, skill-stubs/_shared/cli-resolution.md in stablyai/orca):
-`ORCA_CLI_COMMAND` when set (Orca exports it inside the sessions it manages; the test
-suite points it at a stub) → `orca-dev` when `ORCA_DEV_REPO_ROOT` is set → `orca-ide` on
-Linux and WSL → `orca` elsewhere. Resolution never consults PATH; `--path` additionally
+`OPEN_FLEET_CLI_COMMAND`, else `ORCA_CLI_COMMAND`, when set (Orca exports the latter inside the
+sessions it manages; the test suite points it at a stub) → `orca_cli.py` itself when
+`OPEN_FLEET_RUNTIME`/`ORCA_FLEET_RUNTIME` selects a non-Orca runtime → `orca-dev` when
+`ORCA_DEV_REPO_ROOT` is set → `orca-ide` on Linux and WSL → `orca` elsewhere. Resolution never consults PATH; `--path` additionally
 looks the resolved name up and fails when it is absent.
 
-Exits: 0 printed · 1 (`--path`) the resolved command is not on PATH · 2 usage.
+Exits: 0 printed · 1 (`--path`) the resolved command is not on PATH, or a provider dispatch
+failed · 2 usage, or an unknown `OPEN_FLEET_RUNTIME`.
 
 > Why: Orca's Linux executable, `.deb` and `.rpm` are all `orca-ide` by construction
 > (`src/main/cli/bundled-cli-launcher-path.ts` LINUX_CLI_COMMAND_NAME), and bare `orca` on a
@@ -1560,9 +1592,10 @@ Flags: none — the single argument is the input file. There is no help flag: pa
 Output prints `MESSAGES: <n>`, then per message `ID`, `FROM`, `TYPE`, `SUBJ`, `BODY`,
 `PAYLOAD`. Missing `ID`/`FROM`/`TYPE`/`SUBJ` print as `?`, but a missing `BODY` prints
 as an empty string and a missing `PAYLOAD` prints as `None`. Every printed field passes
-through escaping for
-C0/C1 controls, DEL, and invisible Unicode (Cf, Zl, Zp), so hostile text can neither
-drive the terminal nor reorder what it shows. Malformed segments are skipped line-wise
+through escaping for C0/C1 controls (except LF and TAB, kept literal for readability), DEL, and
+invisible Unicode (Cf, Zl, Zp), so hostile text can neither drive the terminal nor reorder
+characters. Because LF passes through, a multi-line field (a `BODY`) can print a line that looks
+like a message header: read the message boundaries from the structure, never from a line's look. Malformed segments are skipped line-wise
 (counted on stderr); envelopes carrying a `messages` key outside the expected shape warn
 as unrecognized rather than silently undercounting.
 
@@ -1582,7 +1615,7 @@ Exits: 0 ok · 1 usage (no input file) · 2 unreadable input.
 The matcher behind the component quarantine switch (#558): reads
 `runtime/quarantine.json` and reports where the catalog still routes through a
 quarantined component. One implementation, three gates — `scripts/validate.py`
-imports `violations()` with its own catalog view, `preflight.py --mission` refuses
+imports `catalog_view()` and `violations()` from it, `preflight.py --mission` refuses
 a run start, and this CLI answers ad hoc. Source `runtime/scripts/quarantine_check.py:1-42`;
 behavior pinned by `tests/test_quarantine.py` and `tests/test_quarantine_closure.py`.
 
@@ -1596,7 +1629,7 @@ unreadable one cannot be cleared; any other mention counts once it resolves (exa
 `architecture` never matches a bundle's `ARCHITECTURE.md`), and a reached document that cannot
 be read refuses too.
 
-Exits: 0 nothing quarantined is in play · 2 violation · 3 cannot evaluate
+Exits: 0 nothing quarantined is in play · 2 violation, or a usage error · 3 cannot evaluate
 (unreadable or malformed deny-list, bad root, a declared or reached dependency missing or
 unreadable) — a broken deny-list never reads as an empty one. A root with no
 `runtime/quarantine.json` is not a fleet catalog: exit 0 with "no quarantine in force" on
@@ -1665,10 +1698,10 @@ host), or usage.
 ## `search_sessions.py`
 
 `orca search` behind an `--index-status` precheck: never query an index the host
-reports broken. Source `runtime/scripts/search_sessions.py:1-41`; behavior pinned by
+reports broken. Source `runtime/scripts/search_sessions.py:1-43`; behavior pinned by
 `tests/test_search_sessions.py` and (episodic hints) `tests/test_hint_provenance.py`.
 
-Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback on non-Orca runtimes); every snippet and title is fenced by `guard_text`.
+Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`.
 
 The precheck runs first: `enabled=false` or phase `degraded`/`closed` refuses with
 exit 2 before the query fires; `current`/`idle`/`indexing` proceed (`--fresh` asks
@@ -1698,7 +1731,10 @@ merges live `orca search` hits when a query is passed, and emits a bounded `<= 1
   commit's date when the live repo has it, else the record's own claimed date; `match` says why the
   entry was selected (`exact`, `query-glob`, `dir`, `basename`, `record-glob`). Session hits carry
   `src=unknown@unknown` and the digest of the hit as received.
-- **Currency.** Without `--repo` every entry is `UNKNOWN:no-live-source`. With `--repo DIR`
+- **Currency.** Without `--repo` no entry is `CURRENT`: entries are `UNKNOWN` (`no-live-source`,
+  or `no-revision` for records without a `head_sha` and for session hits), but the archive checks
+  still apply (a tampered manifest is `STALE:artifact-modified`, suppressed in current mode) and
+  supersession still runs. With `--repo DIR`
   (the working tree, uncommitted edits and untracked files included; `--live-rev REV` pins a
   commit instead) entries
   are `CURRENT`, `UNKNOWN`, `STALE` or `SUPERSEDED` per the reason table under
@@ -1757,19 +1793,25 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 
 Fail-closed Orca worker dispatch for fleet coordinators: supervised lane
 (`worker-start`: worktree + agent terminal + readiness + dispatch) and custom-argv lane
-(`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-156`;
+(`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-171`;
 behavior pinned by `tests/test_spawn_worker.py`. For non-`ro` profiles it also checks
-deny-hook arming (#562): with `ORCA_DENY_HOOK_SETTINGS` naming the operator-wired
-settings file, the file must register `runtime/scripts/deny-hook.sh` and the hook must
-answer a deny probe, else `SPAWN=REFUSED`; unset, the spawn proceeds with a loud
-`UNVERIFIED` warning — the guard is never claimed unchecked. On Orca the custom-argv lane's
+deny-hook arming (#562): with `OPEN_FLEET_DENY_HOOK_SETTINGS` (legacy alias
+`ORCA_DENY_HOOK_SETTINGS`) naming the operator-wired settings file, the file must register
+`runtime/scripts/deny-hook.sh` and the hook must answer a deny probe, else `SPAWN=REFUSED`;
+unset, the spawn proceeds with a loud `UNVERIFIED` warning — the guard is never claimed unchecked. On Orca the custom-argv lane's
 `terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
 `new-top-level` there are refused before any task is created, since only `worker-start` creates a
 worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,
 such as `agent-trust-workspace`, Claude Code's folder-trust question), the spawn fails naming it
 and injects nothing: a trust prompt is the operator's to answer (#596). A refused `dispatch --inject` keeps its
 receipt's code, reason and `nextSteps`. It exits 2 on a typed policy refusal such as
-`inject_rejected`, as the supervised lane does, and 1 otherwise.
+`inject_rejected`, as the supervised lane does, and 1 otherwise. One exception (#680): for
+`PROFILE=ro` `claude` with no command override, an `inject_rejected`/`no_agent_detected` answer
+for a pane that Orca's spawn record names `claude` and whose screen (`terminal show`) shows
+Claude's prompt in plan mode is not a refusal: the script takes Orca's own nextStep, a dispatch
+without `--inject`, delivers its preamble with `terminal send --enter --wait-submit
+$SUBMIT_SECS`, and proves the turn start from the send receipt (exit 0, or 3 if unproven; 1 if
+the send fails).
 
 Usage: `SP=<dir> [PROFILE=rw] spawn_worker.sh [options] (<task_id> <worktree_selector> | --spec TEXT <worktree_selector>) <title> [agent] [effort]`
 
@@ -1782,7 +1824,10 @@ cwd/pane resolution); `--retry-of` + `--retry-request` (retries link the failed
 dispatch; one id, one mutation); `--on` (remote placement); `--environment`,
 `--pairing-code`, `--cli-cwd` (routing; ambient disagreement refuses, `--from`
 against `ORCA_TERMINAL_HANDLE`);
-`--task-brief` (brief spawn-time read). Documented refusals, not silent drops:
+`--task-brief` (brief spawn-time read); `--parent-profile ro|rw|danger` (monotonic narrowing:
+the most restrictive of this flag, `OPEN_FLEET_PARENT_PROFILE`/`ORCA_PARENT_PROFILE` and the
+caller's `OPEN_FLEET_SANDBOX_PROFILE`/`ORCA_SANDBOX_PROFILE` caps `PROFILE`; a wider child
+refuses, exit 2). Documented refusals, not silent drops:
 `--task-status`/`--task-ready` (a filtered view cannot verify deps, so the DAG check
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).
@@ -1799,19 +1844,25 @@ allowlist and `--disabled-tools` set; hermes' `HERMES_WRITE_SAFE_ROOT=/dev/null`
 `--toolsets file,web,session_search`), and crush `ro` refuses there, because its read-only mode
 is a `<data-dir>/crush.json` that only the posix provider installs (#596). The Orca claude `ro` row
 is plan mode plus base.py's `--disallowedTools=Edit,Write,MultiEdit,NotebookEdit`, like every
-other claude `ro` launch and alias (`tests/test_claude_ro_launches.py`): the coordinator's in-pane
-plan approval exits plan mode, and the set still holds after it. That row is the live-witnessed
-Orca route, and its witness predates the set, so it is owed a fresh one. `opencode`, `omp` and
+other claude `ro` line the fleet builds (`tests/test_claude_ro_launches.py`): the coordinator's
+in-pane plan approval exits plan mode, and the set still holds after it. That row is the
+live-witnessed Orca route: the 2026-10-26 #680 witness (Orca 1.4.239, Claude Code 2.1.304) ran it
+with the set, through the no-inject fallback. `opencode`, `omp` and
 `pi` have no Orca row for any profile, so they refuse on Orca without a `WORKER_CMD`. Profiles: `ro`, `rw`
 (default), `danger` — least privilege; `danger` needs the ephemeral sandbox plus
 `ORCA_SANDBOX_RECIPE`, and the script runs the doctor transcript itself into
-`ORCA_SANDBOX_DOCTOR` for `runtime/scripts/sandbox_doctor.py`. Note: `danger` is
-currently undispatched — after a clear doctor the script still refuses with exit 2
-because no authoritative prelaunch placement binding is supported yet. Env: `SP` (receipt dir,
+`ORCA_SANDBOX_DOCTOR` for `runtime/scripts/sandbox_doctor.py`. Note: on Orca, `danger` is
+undispatched — after a clear doctor the script still refuses with exit 2 because no
+authoritative prelaunch placement binding is supported there. Off Orca (#585) it proceeds through
+`worker-start --on <recipe>` only when the doctor transcript passes `sandbox_doctor.py
+--require-placement` for a portable backend and no command override is set; otherwise it refuses
+the same way. Env (each `ORCA_*` name in this paragraph is the legacy alias of its
+`OPEN_FLEET_*` twin, which the script reads first): `SP` (receipt dir,
 default cwd), `PROFILE`, `ORCA_COORD_ALLOW_AUTONOMOUS_WRITE` (must be 1 for rw),
 `ORCA_COORD_ALLOW_DANGER` (must be 1 for danger), `ORCA_SANDBOX_RECIPE`,
 `ORCA_SANDBOX_DOCTOR`, `WORKER_CMD` (generic override; needs
-`ORCA_COORD_ALLOW_CMD_OVERRIDE=1`), `SETTLE_SECS` (default 20, custom-argv lane).
+`ORCA_COORD_ALLOW_CMD_OVERRIDE=1`), `SETTLE_SECS` (default 20, custom-argv lane), `SUBMIT_SECS`
+(default 30, how long the #680 `terminal send` waits to observe the submit).
 
 Exits: 0 dispatched · 1 spawn/dispatch step failed · 2 usage or policy refusal (every
 typed refusal code) · 3 custom-argv turn UNPROVEN (inspect, never respawn, never
@@ -1826,7 +1877,7 @@ guidance; inspect via the receipt's nextCommands, never respawn) · 5 LAUNCHED_U
 > (`runtime/scripts/spawn_worker.sh:MARK_READY` is an explicit opt-in gated on completed
 > deps) because forcing it strands children on deps that will never complete. Profiles
 > are least-privilege with the dangerous ones behind env gates, and read-only never
-> takes the supervised lane — the host default would silently upgrade it.
+> takes the supervised lane on Orca — the host default would silently upgrade it.
 
 ## `task_ops.py`
 
@@ -2083,9 +2134,12 @@ the full tree into it, prints `git write-tree` of that index — the real index 
 touched. Source `runtime/scripts/wtree.sh:1-50`; exercised by `tests/test_evidence_run.py` and
 `tests/test_gitexec_config_commands.py`.
 
-Usage: `wtree.sh [repo-dir]` (default: current directory).
+Usage: `wtree.sh [repo-dir]` (default: current directory), or `wtree.sh predict-merge <base>
+<branch> [repo-dir]` (also `wtree.sh <repo-dir> predict-merge <base> <branch>`), which execs
+`runtime/scripts/diff_scope.py --predict-merge` and exits as it does (2 when an argument is
+missing).
 
-Flags: none — one optional positional argument.
+Flags: none — positional arguments only.
 
 Untracked non-ignored files are included; .gitignore'd scratch stays out. Committing
 identical content does not change the fingerprint, so a record made on a dirty tree stays
@@ -2138,8 +2192,10 @@ hard or impossible to reverse, or out of the fleet's authority. Source
 
 Top-level keys: `version` (currently 1), `note` (the registry contract), `doors` (the
 list). Each door carries `id`, `title`, `why`, and `keywords` — multi-word destructive
-phrasings, matched case-insensitively as substrings after whitespace folding, so a single
-common word never fires on ordinary prose.
+phrasings, matched as substrings once the phrase and the line both pass
+`runtime/scripts/decisions.py:fold` (case, hyphens and punctuation flatten; filler words drop;
+verb forms and a few destructive-verb synonyms fold to one token), so a single common word
+never fires on ordinary prose.
 
 Keys:
 
@@ -2174,8 +2230,9 @@ and `scripts/install.sh`; shape and rug-pull review artifacts pinned by `tests/t
 
 Each entry carries `repo`, `commit` (full 40-char SHA), `version`, `witnessed` (YYYY-MM-DD),
 `witness` (`live` or `source`), and `aliases` (tokens matched against `skills/*/SKILL.md`
-`compatibility:` fields). The `orca` entry additionally records `witness_binary` and
-`onpath_at_witness`.
+`compatibility:` fields). The `orca` entry additionally records `next_review` (the dated
+re-pin trigger `upstream_probe.py review-date` reads), `live_receipts` (`{version, witnessed,
+run}`: the live replay a `source` re-pin stands on), `witness_binary` and `onpath_at_witness`.
 
 Keys:
 

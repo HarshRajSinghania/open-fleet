@@ -4,7 +4,15 @@
 for topology and isolation, keep the verification + ops-hardening layer as the differentiator.*
 
 > Companion to [`docs/research/2026-08-28-forward-roadmap-and-defensibility-plan.md`](research/2026-08-28-forward-roadmap-and-defensibility-plan.md).
-> The platform is a moving target; every row is a dated snapshot (2026-08-28), not a standing contract.
+> The platform is a moving target; every row is a dated snapshot (2026-08-28, refreshed 2026-10-17), not a standing contract.
+> Since the Runtime Provider Interface landed (2026-10-19, #577–#590), open-fleet takes worktree
+> isolation, the task DAG and the mailbox from its runtime provider (Orca natively; `posix` and the
+> 12 external providers keep the DAG and mailbox in `runtime/providers/local_state.py`, which also
+> records file touches), dispatches workers and `ro` reviewers with `spawn_worker.sh` rather than
+> agent teams or subagents, and wires no `TeammateIdle` hook (`hooks/hooks.json` binds only `Stop`
+> and `TaskCompleted`): the *Coordinator + workers*, *Isolated worker*, *Build-blind reviewer*,
+> *Serialization substrate* and *Attention budget* rows below record the 2026-08 ride plan, not what
+> the catalog runs today.
 
 ## The principle
 
@@ -40,7 +48,7 @@ budget on B + D, which the platform does not provide.
 | Per-worker credentials | MCP **agent-identity / delegation** (roadmap) | one-router-per-worker + sandbox profiles; attest the verifier as a distinct principal |
 | Workspace tracker links & agent lookup | **`orca reference list\|add\|remove\|find`** + **`orca agent launch --retry-launch`** (Orca v1.4.229) | T0 twin-query denominator + single-attempt write verification (`linear-enumeration.md`) |
 | Per-terminal resource ceiling | **`ORCA_TERMINAL_PROCESS_CEILING`** + **`ORCA_TERMINAL_MEMORY_MAX`** cgroup/Job limits on `orca serve` (Orca v1.4.229) | fail-closed PreToolUse deny-hook + `ro`/`rw`/`danger` profiles (`sandbox-policy.md`) |
-| Agent-readable CLI diagnostics | structured JSON + non-interactive error contracts (`gstack` CAP4/CAP6 DX contract) | fail-closed exit codes (`0`/`2`/`3`) with machine-parseable refusal codes (`verify.py`, `guard_text.py`) |
+| Agent-readable CLI diagnostics | structured JSON + non-interactive error contracts (`gstack` CAP4/CAP6 DX contract) | fail-closed exit codes (`verify.py` `0`/`1`/`2`, `guard_text.py` `0`/`2`/`3`) with machine-parseable refusal codes |
 
 **Load-bearing move:** run the verifier as a *different session/process*, **never as a teammate** —
 teammate/cross-session messages are in-band and self-certifying, which is exactly the trace-as-oracle

@@ -10,7 +10,8 @@ description: >-
   BUG (root-cause) or ready-to-build intent (ship-it).
 license: MIT
 compatibility: >-
-  HARD dependency: open-fleet RPI runtime (Orca, posix, adapter). A wayfinder/research worker playbook
+  HARD dependency: open-fleet RPI runtime (Orca, posix, adapter). git + gh (the freeze lands as a
+  planning-branch PR). A wayfinder/research worker playbook
   (mattpocock wayfinder + research) — one router per worker.
 metadata:
   proof: doctrine-only

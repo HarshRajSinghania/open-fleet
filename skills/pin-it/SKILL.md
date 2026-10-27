@@ -13,7 +13,7 @@ license: MIT
 compatibility: >-
   HARD dependency: Orca runtime + orchestration skill (Orca CLI) — the binary under audit; `orca
   skills get <name>` must work, and re-witness probes run against the live local runtime from a
-  live Orca terminal. git. A worker playbook pack (mattpocock, addyosmani, gstack) — one router
+  live Orca terminal. git + gh. A worker playbook pack (mattpocock, addyosmani, gstack) — one router
   per worker.
 metadata:
   proof: doctrine-only

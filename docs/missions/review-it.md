@@ -132,7 +132,7 @@ Phase by phase:
 | State | Meaning | Who acts on it |
 |---|---|---|
 | `GO` | Every axis reported, zero Critical and zero Required findings, the whole bound to `reviewed_sha` | a human, or the mission that owns the merge |
-| `NO-GO` | Any Critical or any Required (merge-blocking) finding — a "conditional" note may accompany it, never rename it | route the findings to `ship-it` / `clean-sweep` |
+| `NO-GO` (degraded) | Any Critical or any Required (merge-blocking) finding — a "conditional" note may accompany it, never rename it | route the findings to `ship-it` / `clean-sweep` |
 
 Either way the verdict names the worst issue per axis, and it expires with its SHA: a head that
 moves past `reviewed_sha` leaves you holding an opinion about code that no longer exists.

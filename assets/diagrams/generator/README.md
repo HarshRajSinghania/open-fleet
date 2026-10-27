@@ -29,7 +29,8 @@ python3 assets/diagrams/generator/wire_docs.py .                                
   images at their anchors, and generates each mission card's alt text from its contract fields.
   Every anchor is checked on every run, so a renamed heading fails the rerun rather than the
   next regeneration; `tests/test_wire_docs.py` holds the committed docs to be the script's fixed
-  point. It never touches ARCHITECTURE.md: that file counts toward every mission's activation load.
+  point. It never touches ARCHITECTURE.md: that file counts toward the activation load of every
+  mission that links it.
 - Model: Nano Banana Pro (`google/gemini-3-pro-image`) via OpenRouter, 2K output, fitted and
   centre-cropped to each spec's `dims`, saved as progressive JPEG. About $0.14 per image.
 

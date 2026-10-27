@@ -12,8 +12,8 @@ description: >-
   (field-test-it CLEAN-ENV), or re-pinning runtime doctrine (pin-it).
 license: MIT
 compatibility: >-
-  HARD dependency: open-fleet RPI runtime (Orca, posix, adapter) with vm recipe doctor. A
-  provider account + CLI with a sandbox/VM plan, and the provider's own docs for its verbs. An
+  HARD dependency: open-fleet RPI runtime (Orca, posix, not an adapter: it needs cap:sandbox-vm, which
+  posix has only with docker on PATH) with vm recipe doctor. A provider account + CLI with a sandbox/VM plan, and the provider's own docs for its verbs. An
   agent CLI + account for the auth snapshot. git + gh. One worker playbook pack per worker
   (matt or addy) — never two routers in one worker.
 metadata:

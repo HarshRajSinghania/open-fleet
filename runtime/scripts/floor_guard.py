@@ -284,7 +284,7 @@ def resolve_base(repo, base):
     for candidate in DEFAULT_BASES:
         if git(repo, "rev-parse", "--verify", "-q", candidate + "^{commit}") is not None:
             return candidate
-    raise GuardError("no base ref could be resolved (tried origin/HEAD, origin/main, main, master)")
+    raise GuardError("no base ref could be resolved (tried origin/HEAD, origin/main, origin/master, main, master)")
 
 
 def merge_base(repo, base):

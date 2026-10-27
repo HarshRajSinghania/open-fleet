@@ -1,5 +1,5 @@
 # Coverage measurement for the D9 (coverage) floor constraint (CONSTRAINTS.md).
-# The frozen gate is `coverage combine` over the four per-shard parallel-mode
+# The frozen gate is `coverage combine` over the six per-shard parallel-mode
 # data files (each matrix job traces its own shard, then uploads it) followed
 # by `coverage report`: default line coverage over scripts/ + runtime/scripts/,
 # failing below 80 (fail_under). Collection fanned out; the bar did not move.

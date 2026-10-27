@@ -4,7 +4,7 @@ A fleet is an **outcome**, not an ingredient. Missions are named for what they a
 ("ship it", "close every issue", "find the root cause"), never for the pack whose technique
 a worker happens to run. This repo has no `matt-*` or `gstack-*` skills. The upstream packs
 (mattpocock/skills, garrytan/gstack, addyosmani/agent-skills) are sources of *recipes* that
-missions compose; the Orca runtime is the substrate every mission rides.
+missions compose; a runtime provider (Orca by default) is the substrate every mission rides.
 
 ## Three layers, strictly separated
 
@@ -79,7 +79,7 @@ argued here.
   terminal class `clean-sweep` lacks (a refuted doctrine claim is removed with its receipt
   kept, never "closed"). Different oracle, different proof shape and parking; its own mission.
   Measured rather than asserted since #288: `pin-it` and `clean-sweep` share ZERO near points of
-  the six (mean similarity 0.015), so they do not differ only in oracle — they differ in all of it.
+  the six (mean similarity 0.074), so they do not differ only in oracle — they differ in all of it.
   The 2026-09-11 review argued `pin-it` folds into `clean-sweep` as an `oracle=` source; that
   finding is withdrawn, and the naming objection with it — `PINNED` / `PINNED-WITH-PARKED` are
   terminal states the repository reaches, the same shape as `DRY`, not the artifact being edited.
@@ -139,7 +139,7 @@ operational specifics, not despite them. These are preserved as runtime policies
 
 This repo's predecessor (ravidsrk/autonomous-fleet) died of doctrine outrunning evidence: twelve
 missions with two proven, a portable substrate with zero field hours, and ~42K tokens of mandatory
-instruction surface. Two structural guards inherit that lesson:
+instruction surface. Three structural guards inherit that lesson:
 
 - **Proof status.** Every mission's `metadata:` block carries `proof:` — `doctrine-only`,
   `self-run`, or `external-run`. Advancing past doctrine-only requires `proof_evidence:` at a run

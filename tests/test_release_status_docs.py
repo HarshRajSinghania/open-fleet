@@ -112,7 +112,8 @@ class OpsRollbackNamesThePublishingWorkflows(unittest.TestCase):
             with self.subTest(workflow=wf):
                 self.assertIn(wf, step)
         self.assertIn("git revert -m 1 <merge-sha>", step)
-        # A merge changes the tree clones and the marketplace install; only tags publish versions.
+        # A merge changes the tree clones install; the marketplace installs the `dist` branch a tag
+        # republishes, and only tags publish versions.
         self.assertNotIn("publishes nothing", step)
         self.assertIn("marketplace", step)
         self.assertIn("new version", step, "a bad release is corrected with a new version, not a re-tag")

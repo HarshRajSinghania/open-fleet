@@ -2,9 +2,9 @@
 
 [Documentation](../README.md) · [Mission selector](README.md#choose-by-task) · [Prompt recipes](../recipes.md)
 
-> **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus isolated per-phase workers; phases of one table are strictly serial, and the destructive CONTRACT step is your one-way door.
+> **Autonomy:** L4 (Osmani L0-L5, parallel delegation) — a coordinator plus isolated per-phase workers; phases of one table are strictly serial, and FREEZE, every phase's promotion and deploy, and the destructive CONTRACT step are your one-way doors.
 > **Activation load:** ~32,000 tokens — this SKILL.md plus every playbook and runtime doc its Composes/rides clause makes mandatory, about 16% of a 200k-token context before the first dispatch ([why it is measured](../../ARCHITECTURE.md#instruction-budget))
-> **Proof:** doctrine-only — no recorded run yet; the protocol is mechanism, not yet field-proven.
+> **Proof:** doctrine-only — it ran once, in the 2026-09-16 self-test campaign ([PARKED](../runs/campaign-2026-09-16-migrate-it/), zero tables), recorded history rather than a promotion bid; the protocol is mechanism, not yet field-proven.
 
 > Point it at "we need to rename this column and we cannot take downtime." Come back to a table
 > moved one deployable phase at a time — each phase with a down path that was actually run, old
@@ -214,9 +214,10 @@ ALTER TABLE users DROP COLUMN name;
 
 > migrate the database: users.name → users.full_name, no downtime
 
-**Plan.** One table, the phase ladder, a down path per phase; the integration BASE is bootstrapped.
+**Plan.** One table, the phase ladder, a down path per phase.
 
-**Freeze.** You confirm the one-table set and its ladder.
+**Freeze.** You confirm the one-table set and its ladder; each phase then bootstraps its own BASE
+off the current default.
 
 **Expand → dual-write.** `full_name` is added; you merge the phase's promotion PR and grant the
 deploy; deploy, bake. Every insert and update path writes

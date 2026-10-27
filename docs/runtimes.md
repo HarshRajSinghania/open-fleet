@@ -2,10 +2,10 @@
 
 [Documentation Hub](README.md) · [Certification Matrix](certification.md) · [Runtime Scripts](runtime-scripts.md) · [Verify Gate](verify-gate.md)
 
-`open-fleet` decouples mission outcomes, phase playbooks, and verification gates from any single orchestrator binary through the **Runtime Provider Interface (RPI)**. Every general mission runs across **14 orchestrator providers** and dispatches workers across **10 CLI coding-agent harnesses** (plus the `openhands` SDK agent) under uniform least-privilege sandbox profiles (`ro`, `rw`, `danger`).
+`open-fleet` decouples mission outcomes, phase playbooks, and verification gates from any single orchestrator binary through the **Runtime Provider Interface (RPI)**. Every general mission runs across **14 orchestrator providers** (two need more than core orchestration: `offload-it` requires `cap:sandbox-vm`, native on `orca` and a Docker-probed fallback on `posix`, so the other 12 providers refuse it; `field-test-it` needs `adb` or `xcrun` on `PATH` off `orca`) and dispatches workers across **14 CLI coding-agent harnesses** (10 with verified headless `ro` and `rw` launches; `cursor`, `antigravity`, `grok`, and `droid` `rw`-only where a provider launches them) plus the `openhands` SDK agent, under uniform least-privilege sandbox profiles (`ro`, `rw`, `danger`).
 
 > [!IMPORTANT]
-> **Advertised vs. Certified:** Every provider, profile, and harness listed below has an explicit certification status in **[Provider & harness certification](certification.md)** (`live-witnessed`, `fixture-tested`, `source-only`, `refused`, or `unknown`). Today, Claude Code is live-witnessed on both the `orca` route (`ro`, `rw`) and the standalone `posix` route (`ro`, `rw`, bound [2026-10-24](runs/2026-10-24-review-it-first-run.md)).
+> **Advertised vs. Certified:** Every provider, profile, and harness listed below has an explicit certification status in **[Provider & harness certification](certification.md)** (`live-witnessed`, `fixture-tested`, `source-only`, `unsupported`, or `unavailable`, plus a computed `stale` when a pin moves). Today, Claude Code is live-witnessed on both the `orca` route (`ro`, `rw`) and the standalone `posix` route (`ro`, `rw`, bound [2026-10-24](runs/2026-10-24-review-it-first-run.md)).
 
 ---
 
@@ -13,7 +13,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/diagrams/runtime-providers.jpg">
     <source media="(prefers-color-scheme: light)" srcset="../assets/diagrams/runtime-providers-light.jpg">
-    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects posix (standalone SQLite WAL and local git worktrees), orca, or 12 external orchestrators while OPEN_FLEET_HARNESS selects the coding agent and maps ro, rw and danger profiles; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
+    <img src="../assets/diagrams/runtime-providers-light.jpg" alt="How the mission catalog runs across 14 orchestrator runtimes and 11 coding-agent harnesses: missions and playbooks call neutral runtime/scripts entrypoints; OPEN_FLEET_RUNTIME selects posix (standalone SQLite WAL and local git worktrees), orca, or 12 external orchestrators while each worker's agent argument selects the coding agent and PROFILE maps ro, rw and danger; both feed the same independent SHA-bound verifier (verify.py, verify-gate.sh and run_report.py)" width="820">
   </picture>
 </p>
 
@@ -65,11 +65,11 @@ Runtime scripts accept `OPEN_FLEET_*` variables alongside legacy `ORCA_*` aliase
 | Capability ID | Description | Portable fallback |
 |---|---|---|
 | `cap:core-orchestration` | Worktree lifecycle, run/task DAG state, worker spawn/fence, and mailbox messaging | `runtime/providers/local_state.py` (SQLite WAL + `git worktree` + `tmux` / `cmux` / `setsid`) |
-| `cap:sandbox-vm` | Disposable VM or container isolation for untrusted execution and recipe checks | `posix` Docker `--on <image>` launch certified by [`runtime/scripts/sandbox_doctor.py`](../runtime/scripts/sandbox_doctor.py) (`docker`, `bwrap`, `gondolin`, `devcontainer`, `hermes-docker`, `apptainer`, `superset-cloud`, `openhands-docker`) |
+| `cap:sandbox-vm` | Disposable VM or container isolation for untrusted execution and recipe checks | `posix` only: a Docker `--on <image>` launch, probed for `docker` on `PATH`; [`runtime/scripts/sandbox_doctor.py`](../runtime/scripts/sandbox_doctor.py) certifies recipe transcripts from its portable backends (`docker`, `bwrap`, `gondolin`, `devcontainer`, `hermes-docker`, `apptainer`, `superset-cloud`, `openhands-docker`) |
 | `cap:session-search` | Cross-session transcript search for prior-art recall | [`runtime/scripts/search_sessions.py`](../runtime/scripts/search_sessions.py) `--local-harnesses` |
 | `cap:browser` | Headless browser DOM snapshot, console/network capture, and CWV/a11y probing | Playwright CLI / Chrome DevTools MCP |
 | `cap:mobile-emulator` | iOS Simulator and Android Emulator lifecycle, screenshot, and UI hierarchy dump | `xcrun simctl` (macOS) and Android `adb` |
-| `cap:issue-tracker` | Issue and PR enumeration, creation, commenting, and state transitions | GitHub CLI (`gh`) and `runtime/scripts/pm.py` |
+| `cap:issue-tracker` | Issue and PR enumeration, creation, commenting, and state transitions | GitHub CLI (`gh`) |
 | `cap:scheduler` | Recurring cron/interval execution for unattended sweeps | POSIX `crontab` / `systemd-run` / GitHub Actions `schedule` |
 | `cap:orca-self-audit` | Live inspection of the `stablyai/orca` binary and `orca skills get` bundle | **None** — exclusive to `orca` (required only by [`pin-it`](../skills/pin-it/SKILL.md)) |
 
@@ -78,7 +78,7 @@ Runtime scripts accept `OPEN_FLEET_*` variables alongside legacy `ORCA_*` aliase
 [`runtime/scripts/preflight.py`](../runtime/scripts/preflight.py) verifies mission capability requirements against the active runtime provider and fails closed (exit `2`) when a required capability is missing:
 
 ```bash
-# General missions pass on posix and all other RPI providers:
+# A core-orchestration-only mission (ship-it) passes on posix and every other RPI provider:
 python3 runtime/scripts/preflight.py --mission ship-it --runtime posix --mode readonly
 
 # pin-it requires cap:orca-self-audit and fails closed on non-orca runtimes:
@@ -94,15 +94,15 @@ python3 runtime/scripts/preflight.py --mission offload-it --runtime posix --stri
 
 All 14 providers implement [`RuntimeProvider`](../runtime/providers/base.py) and return Orca-compatible JSON envelopes so coordinator scripts (`task_ops.py`, `worker_ops.py`, `worktree_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`, `hitl_ask.py`, `watchdog.py`) run unchanged. Every adapter preserves worker commits under `refs/open-fleet/preserved/<dispatch>` before cleanup and fails closed on unsupported profiles or unverified harnesses.
 
-A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers/capabilities.json) lists only harnesses its adapter honors and that `spawn_worker.sh` launches on it. On `orca`, `spawn_worker.sh` has no default launch row for `opencode`, `omp`, or `pi` (because Orca strips their launch arguments), so those three harnesses require a non-`orca` runtime (such as `OPEN_FLEET_RUNTIME=posix`) or an explicit `WORKER_CMD` override. Conversely, the `openhands` SDK agent runs exclusively on `OPEN_FLEET_RUNTIME=openhands` (which refuses CLI harness names, while all other runtimes refuse `openhands`).
+A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers/capabilities.json) lists only harnesses its adapter honors and that `spawn_worker.sh` launches on it. On `orca`, `spawn_worker.sh` has no default launch row for `opencode`, `omp`, or `pi` (Orca strips `opencode`'s permission flag, and `omp` and `pi` are not in Orca's autonomous-argument map), so those three harnesses require a non-`orca` runtime (such as `OPEN_FLEET_RUNTIME=posix`) or an explicit `WORKER_CMD` override. Conversely, the `openhands` SDK agent runs exclusively on `OPEN_FLEET_RUNTIME=openhands` (which refuses CLI harness names, while all other runtimes refuse `openhands`).
 
 ### Tier 1 — Primary providers
 
 | Provider | Upstream | Transport | Profiles | Native capabilities |
 |---|---|---|---|---|
-| `orca` | `stablyai/orca` | Native desktop/CLI control plane | `ro`, `rw` (`danger` refused; requires off-`orca` placement binding) | All 8 capabilities including `cap:orca-self-audit` |
-| `posix` | `open-fleet/posix` | SQLite WAL + `git worktree` + `tmux` / `cmux` / `setsid`; `danger` = Docker (`--cap-drop ALL`, `no-new-privileges`, private git dir synced on exit) | `ro`, `rw`, `danger` | `cap:core-orchestration` (`cap:sandbox-vm` when Docker is available) |
-| `overstory` | `jayminwest/overstory` | `ov sling` / `ov spec write` / `ov mail` | `ro` (`claude`, `pi`, `sapling`), `rw` | `cap:core-orchestration` |
+| `orca` | `stablyai/orca` | Native desktop/CLI control plane | `ro` (not `crush`, `cursor`, `antigravity`, `grok`, `droid`), `rw` (`danger` refused; requires off-`orca` placement binding) | All 8 capabilities including `cap:orca-self-audit` |
+| `posix` | `open-fleet/posix` | SQLite WAL + `git worktree` + `tmux` / `cmux` / `setsid`; `danger` = Docker (`--cap-drop ALL`, `no-new-privileges`, private git dir synced on exit) | `ro`, `rw`, `danger` (`danger` refused for `hermes`) | `cap:core-orchestration` (`cap:sandbox-vm` only as a Docker-probed fallback, refused under `--strict-native-capabilities`) |
+| `overstory` | `jayminwest/overstory` | `ov sling` / `ov spec write` / `ov mail` | `ro` (`claude`, `pi`), `rw` | `cap:core-orchestration` |
 | `t3code` | `pingdotgg/t3code` | MCP `t3_thread_*` tools via `t3 acp-mcp-call` | `ro`, `rw` | `cap:core-orchestration` |
 | `ao` | `ComposioHQ/agent-orchestrator` | Loopback HTTP daemon `POST /api/v1/sessions` | `rw` | `cap:core-orchestration` |
 | `superset` | `superset-sh/superset` | `superset terminals create` (`ro`), `agents create --prompt` (`rw`) | `ro`, `rw` | `cap:core-orchestration` |
@@ -111,7 +111,7 @@ A provider's `supported_harnesses` in [`capabilities.json`](../runtime/providers
 
 | Provider | Upstream | Transport | Profiles | Native capabilities |
 |---|---|---|---|---|
-| `gastown` | `gastownhall/gastown` | `gt sling <bead>` + `bd` beads graph, `gt mail`, `gt polecat status` | `ro`, `rw` | `cap:core-orchestration`, `cap:issue-tracker` |
+| `gastown` | `gastownhall/gastown` | `gt sling <bead>` + `bd` beads graph, `gt mail`, `gt polecat status` | `ro` (`claude`, `codex`, `gemini`), `rw` | `cap:core-orchestration`, `cap:issue-tracker` |
 | `worktrunk` | `max-sixty/worktrunk` | `wt switch --create` + detached `tmux`; `wt remove --reap` after HEAD preservation | `ro`, `rw` | `cap:core-orchestration` |
 | `jcode-swarm` | `1jehuang/jcode` | `jcode serve` daemon socket (`comm_spawn` / `comm_read_context` / `comm_stop`) | `rw` (`jcode` only) | `cap:core-orchestration` |
 | `emdash` | `generalaction/emdash` | `workspace.sock` framed wire protocol | `ro` (`claude`), `rw` | `cap:core-orchestration` |
@@ -165,7 +165,7 @@ When running coordinators or dispatching workers across multiple harnesses, keep
 | Constraint / quirk | Harnesses affected | How `open-fleet` handles it |
 |---|---|---|
 | **Skill & context body size limits** | Codex (`AGENTS.md` 32 KiB cap; skill body truncation past ~8 KB), compacting hosts | `scripts/validate.py` enforces strict line budgets (`SKILL.md` body ≤ 110 lines, frontmatter ≤ 34 lines, playbooks ≤ 90 lines, runtime ≤ 160 lines) and deferred phase reads (`read <name>.md`) so activation load stays compact |
-| **Launch argument stripping on `orca`** | `opencode`, `omp`, `pi` | `spawn_worker.sh` has no default `orca` launch row for `opencode`, `omp`, or `pi`; dispatch those harnesses on `OPEN_FLEET_RUNTIME=posix` (or pass an explicit `WORKER_CMD` override) |
+| **No default `orca` launch row** (Orca strips `opencode`'s permission flag; `omp` and `pi` are not in its autonomous-argument map) | `opencode`, `omp`, `pi` | `spawn_worker.sh` has no default `orca` launch row for `opencode`, `omp`, or `pi`; dispatch those harnesses on `OPEN_FLEET_RUNTIME=posix` (or pass an explicit `WORKER_CMD` override) |
 | **SDK-only agent runtime coupling** | `openhands` | Runs exclusively on `OPEN_FLEET_RUNTIME=openhands` (which refuses CLI harness names, while all other runtimes refuse `openhands`) |
 | **No verified headless read-only (`PROFILE=ro`) CLI flag** | `cursor`, `agy`, `grok`, `droid` | Fail-closed in `build_harness_command` (`unsupported_profile` / `unsupported_prompt`); use `claude`, `codex`, `gemini`, `opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, or `crush` for unattended worker dispatch |
 | **`PROFILE=ro` workers cannot run shell commands to signal completion** | All harnesses under `PROFILE=ro` on `posix` | `worker_start` appends an `OPEN_FLEET_WORKER_DONE <dispatch-id> <succeeded\|failed>` instruction; the exit monitor parses the final transcript line via `runtime/providers/transcript.py` |
@@ -177,7 +177,7 @@ When running coordinators or dispatching workers across multiple harnesses, keep
 
 Contributors adding or re-certifying a runtime provider (`runtime/providers/<name>.py`) or coding-agent harness in [`runtime/providers/base.py`](../runtime/providers/base.py) follow a five-point **Definition of Done**:
 
-1. **Monotonic profile enforcement (`ro < rw < danger`):** Implement `build_harness_command` so `PROFILE=ro` strips write/exec tools at the CLI flag or config level, `PROFILE=rw` wires `hooks/deny-hook.sh` (or harness equivalent) to fence edits inside `OPEN_FLEET_UNIT_WORKTREE`, and `PROFILE=danger` requires `OPEN_FLEET_COORD_ALLOW_DANGER=1` plus a placement-bound sandbox recipe (`sandbox_doctor.py --require-placement`). Fail closed (`exit 2`) if the harness cannot enforce the requested profile.
+1. **Monotonic profile enforcement (`ro < rw < danger`):** Implement `build_harness_command` so `PROFILE=ro` strips write/exec tools at the CLI flag or config level, `PROFILE=rw` wires `runtime/scripts/deny-hook.sh` (or harness equivalent) to fence edits inside `OPEN_FLEET_UNIT_WORKTREE`, and `PROFILE=danger` requires `OPEN_FLEET_COORD_ALLOW_DANGER=1` plus a placement-bound sandbox recipe (`sandbox_doctor.py --require-placement`). Fail closed (`exit 2`) if the harness cannot enforce the requested profile.
 2. **Worktree preservation before cleanup:** Ensure `worktree-remove` and crash recovery preserve the worker's `HEAD` commit under `refs/open-fleet/preserved/<dispatch>` before deleting any worktree directory.
 3. **Completion & transcript contract:** Verify that `rw` workers can invoke `send_msg.py --type worker_done` and `ro` workers emit a parseable final answer for `runtime/providers/transcript.py`.
 4. **Declare capabilities & supported harnesses:** Register the provider or harness in [`runtime/providers/capabilities.json`](../runtime/providers/capabilities.json) and [`runtime/providers/certification.json`](../runtime/providers/certification.json) at the honest status tier (`source-only`, `fixture-tested`, or `live-witnessed`).

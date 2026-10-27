@@ -79,7 +79,8 @@ and dark-outside-Lane-A fail there; stop-list data it never sees): `--lighting d
 value, never the worker's manifest) **waives the independent-review leg** while the negative control +
 tests remain the required oracle — and because that oracle must be *unfakeable*, verify.py accepts a
 dark-eligible unit only when an out-of-band coordinator contract corroborates it (`--contract-source`
-+ `--contract-digest`), else it fails closed. So a dark-eligible unit completes without a human
++ `--contract-digest`) AND the negative control is EXECUTED (`--execute-nc`, #256), else it fails
+closed. So a dark-eligible unit completes without a human
 review, never without its unfakeable check.
 
 ## Pre-build plan gate (irreversible units)

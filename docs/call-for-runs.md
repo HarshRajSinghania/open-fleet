@@ -49,7 +49,7 @@ it is still listed, the promotion has not landed yet.
 - [ ] `floor-it` — this catalog: prove each gate fires on an injected violation, then guard them.
 - [ ] `map-it` — this catalog (report-only: freeze commit, verified DAG).
 - [ ] `migrate-it` — needs a live schema: an external repo with a migration to run without downtime.
-- [ ] `modernize-it` — needs a lockfile: an external repo with one (this catalog has no dependencies).
+- [ ] `modernize-it` — needs a lockfile: an external repo with one (this catalog's runtime has no dependencies).
 - [ ] `offload-it` — this catalog's own recipe: a funded provider account plus the agent login.
 - [ ] `oncall-it` — this catalog's blind spots, or an external service missing alerts and runbooks.
 - [ ] `oss-contribute` — the next upstream tracker, with artifacts retained in the run directory this time.

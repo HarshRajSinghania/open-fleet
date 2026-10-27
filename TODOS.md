@@ -3,8 +3,8 @@
 This file is a pointer, not a backlog. Open work lives where it is machine-checked or
 issue-tracked, so this surface cannot drift into "nothing open" while gaps stand:
 
-- **Current product roadmap** — [the October 20 roadmap](docs/roadmap.md) reconciles
-  the live release epic with the runtime expansion and new GitHub/paper research.
+- **Product roadmap (done 2026-10-25)** — [the October 20 roadmap](docs/roadmap.md) reconciles
+  the release epic with the runtime expansion and new GitHub/paper research.
   It links the detailed work packages and distinguishes proposed experiments from
   existing release gates; dated reviews below remain historical evidence.
 - **The 2026-09-28 release-readiness review** —
@@ -22,10 +22,9 @@ issue-tracked, so this surface cannot drift into "nothing open" while gaps stand
 - **Standing gaps** — [`docs/completion/GAPS.md`](docs/completion/GAPS.md): every finding
   between HEAD and the completion definition with a FINISH / CUT / DEFER decision (a dated
   snapshot; live proof counts are in the README's generated proof-status sentence). G-09
-  (field proof) and G-19 (ops-step precision) are the open DEFER rows. Their tracking ISSUES
-  (#212 and the S5-C filings) are closed; the register rows stay open deliberately — a closed
-  tracker is not a closed gap, and `docs/runs/README.md`'s field-proof plan is G-09's live
-  tracker.
+  (field proof) is the open DEFER row. Its tracking issue (#212) is closed; the register row
+  stays open deliberately — a closed tracker is not a closed gap, and `docs/runs/README.md`'s
+  field-proof plan is G-09's live tracker.
 - **Field-proof plan** — [`docs/runs/README.md`](docs/runs/README.md#field-proof-plan-212):
   per-mission targets, tiers, terminals, and blockers for advancing `doctrine-only` missions.
   A tier moves only through a recorded mission run, never a relabel.

@@ -280,7 +280,7 @@ Each adapter takes what it delivers from the case's pinned recording, whose dige
 
 The harness's own recording stays beside the composed one as `live.jsonl`. A case stays UNRUN,
 with the reason, when its tool output comes from another service (FA-02's pull request), when
-`watchdog.py` withholds its retry (HO-02), or when it does not grant Read (CN-02). A live worker
+`watchdog.py` withholds its retry, or when it does not grant Read (HO-02, CN-02). A live worker
 cannot edit a file it may not read, so HO-01, BN-02 and BN-03 now grant Read; their recordings
 use no Read, so their replay grades are unchanged. The results record `live_adapters` and the
 prompt template's digest. Each cell materializes its case's pinned initial state fresh and runs the

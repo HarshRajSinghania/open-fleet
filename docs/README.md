@@ -32,7 +32,7 @@ Step-by-step tutorials, installation procedures, team rollout playbooks, prompt 
 | **[Adoption guide (Greenfield vs. Brownfield)](adoption-guide.md)** | How-To | Day 0 greenfield setup and a 4-phase incremental brownfield rollout (Zero Production Changes → Stabilize the Oracle → Bounded Drains → Full Delivery). |
 | **[Mission guides](missions/README.md)** | Reference / Catalog | Deep-dive reference for every mission grouped by job-to-be-done: inputs, phases, terminal states, observable `"It's working if…"` behavioral tells, human gates, and failure modes. |
 | **[Prompt recipes](recipes.md)** | How-To | Copy-ready prompts with concrete inputs, acceptance criteria, and stop conditions across all mission categories and multi-mission chains. |
-| **[Multi-runtime & harness guide](runtimes.md)** | How-To / Ref | Running missions across 14 orchestrator providers (`orca`, standalone `posix`, `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, `openhands`) and 10 CLI coding-agent harnesses (plus the `openhands` SDK agent), cross-harness loader quirks, and harness porting checklist. |
+| **[Multi-runtime & harness guide](runtimes.md)** | How-To / Ref | Running missions across 14 orchestrator providers (`orca`, standalone `posix`, `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, `openhands`) and 14 CLI coding-agent harnesses (10 with verified headless `ro` and `rw` launches; `cursor`, `antigravity`, `grok`, and `droid` `rw`-only where a provider launches them) plus the `openhands` SDK agent, cross-harness loader quirks, and harness porting checklist. |
 | **[Anatomy of a run](guides/anatomy-of-a-run.md)** | Walkthrough | Hour-by-hour trace of a recorded multi-worker run, including worker dispatch, verification failures, and recovery. |
 | **[Troubleshooting](troubleshooting.md)** | How-To | Symptom → Cause → Fix reference for installation issues, stacked-install conflicts, context compaction recovery, model cyber-safeguard refusals, preflight errors, stalled workers, and verification gate rejections. |
 
@@ -45,16 +45,16 @@ Conceptual explanations, ecosystem comparisons, security boundaries, and exact C
 | Document | Quadrant | What it covers |
 |---|---|---|
 | **[Concepts & glossary](concepts.md)** | Explanation | Core mental model and ubiquitous-language dictionary (`_Avoid_:` synonyms): integration `BASE`, coordinator vs. workers, evidence manifests, negative controls, one-router-per-worker, gate classification, and proof tiers. |
-| **[Ecosystem comparison & pack composition](comparison.md)** | Explanation | How `open-fleet` relates to and composes `mattpocock/skills`, `garrytan/gstack`, `addyosmani/agent-skills`, `obra/superpowers`, and `EveryInc/compound-engineering-plugin`, and when to use a single-session skill vs. an autonomous fleet. |
+| **[Ecosystem comparison & pack composition](comparison.md)** | Explanation | How `open-fleet` composes `mattpocock/skills`, `garrytan/gstack`, and `addyosmani/agent-skills`, how it relates to `obra/superpowers` and `EveryInc/compound-engineering-plugin`, and when to use a single-session skill vs. an autonomous fleet. |
 | **[Architecture](../ARCHITECTURE.md)** | Explanation | The strict three-layer separation (`skills/`, `playbooks/`, `runtime/`), the six-point mission-identity test, and activation-load budgets. |
-| **[Verify gate](verify-gate.md)** | Reference | How `runtime/scripts/verify-gate.sh` and `runtime/scripts/verify.py` enforce completion, all `ORCA_*` environment variables, negative-control replay (`ORCA_EXECUTE_NC`), and the off-worker trust boundary. |
-| **[Runtime scripts](runtime-scripts.md)** | Reference | Complete CLI reference (flags, JSON outputs, and exit codes) for every script in `runtime/scripts/` and operator configuration file in `runtime/`. |
+| **[Verify gate](verify-gate.md)** | Reference | How `runtime/scripts/verify-gate.sh` and `runtime/scripts/verify.py` enforce completion, every gate input under its `OPEN_FLEET_*` name and legacy `ORCA_*` alias, negative-control replay (`OPEN_FLEET_EXECUTE_NC` / `ORCA_EXECUTE_NC`), and the off-worker trust boundary. |
+| **[Runtime scripts](runtime-scripts.md)** | Reference | CLI reference (flags, JSON outputs, and exit codes) for the runtime helpers in `runtime/scripts/` and the operator configuration files in `runtime/`; the verification tools (`preflight.py`, `verify.py`, `verify-gate.sh`, `evidence-run.py`, `dispatch-sign.py`, `inventory.py`, `run_report.py`, `proof_status.py`) are indexed to their dedicated guides. |
 | **[Provider & harness certification](certification.md)** | Reference | Certification matrix across orchestrator providers and coding-agent harnesses, plus reproducible first-run harnesses. |
 | **[Distribution & packaging](distribution.md)** | Reference | Enforced vs. observed prerequisite pins, self-contained `dist/` bundle semantics, and ecosystem indexer compatibility. |
-| **[Compliance provenance](compliance-provenance.md)** | Reference | Mapping evidence-manifest provenance blocks to EU AI Act (Articles 12 & 50), SOC 2, and NIST SSDF audit requirements. |
+| **[Compliance provenance](compliance-provenance.md)** | Reference | What an evidence manifest's provenance block can and cannot support in an audit (EU AI Act Art. 12/50 applicability, the offline retention receipt); naming SOC 2 or NIST SSDF in a manifest establishes no conformance. |
 | **[A2A AgentCard export](a2a-export.md)** | Reference | Exporting mission metadata to Agent-to-Agent (A2A) protocol AgentCards and validating against the pinned schema. |
 | **[Adversarial trajectory evals](adversarial-evals.md)** | Reference | Red-team trajectory evaluations testing whether runtime guards hold against prompt-injected worker instructions. |
-| **[Platform capabilities](platform-ride.md)** | Explanation | Which primitives `open-fleet` delegates to Claude Code, the Agent SDK, MCP, and Orca vs. what it implements directly. |
+| **[Platform capabilities](platform-ride.md)** | Explanation | A dated ride-vs-keep snapshot of which Claude Code, Agent SDK, MCP, and Orca primitives `open-fleet` rides vs. keeps as its differentiator, plus the platform absorption-risk register. |
 
 ---
 
@@ -66,9 +66,9 @@ Guides for developing `open-fleet`, cutting releases, and inspecting retained ru
 
 - **[Local development](development.md)** — Running `validate.py`, contract tests, eval suites, diagram wiring, and badge generators locally with zero external dependencies.
 - **[Contributing](../CONTRIBUTING.md)** — Rules for modifying missions, playbooks, runtime scripts, and bookkeeping fragments (`changelog.d/`, `docs/runs/index/`, `tests/shard-weights/`).
-- **[Frozen quality bar](../CONSTRAINTS.md)** — Enforced CI thresholds, line-budget caps, and ratchet baselines ([CI workflow](../.github/workflows/validate.yml)).
+- **[Frozen quality bar](../CONSTRAINTS.md)** — Enforced CI thresholds, the floor-guard surface, and ratchet baselines ([CI workflow](../.github/workflows/validate.yml)).
 - **[Security policy](../SECURITY.md)** — Vulnerability disclosure process and secret-handling rules.
-- **[Maintainer ops](ops.md)** — Release procedures, weekly pin probes, quarantine operations, and incident response.
+- **[Maintainer ops](ops.md)** — Account inventory, maintainer roles, the merge gate, release cut and publishing, and incident response. (Weekly pin probes: [`runtime/orca-pin.md`](../runtime/orca-pin.md); component quarantine: [`quarantine_check.py`](runtime-scripts.md#quarantine_checkpy).)
 - **[1.0 release checklist](release-1.0-checklist.md)** & **[Product roadmap](roadmap.md)** — Exit criteria for 1.0 and prioritized engineering roadmap.
 - **[Live experiment harness](guides/live-harness.md)** — Running controlled live experiment arms in disposable containers ([WIP-curve experiment](experiments/wip-curve-prereg.md): mutation-wave caps measured and kept · [Instruction-load ablation pre-registration](experiments/ablation-prereg.md): current activation load kept).
 - **[Repository metadata](about.md)** — Canonical GitHub repository description and topics.
@@ -76,6 +76,6 @@ Guides for developing `open-fleet`, cutting releases, and inspecting retained ru
 ### Evidence & Historical Archives
 
 - **[Retained run archive](runs/README.md)** — Every recorded mission execution, its SHA-256 inventory, and whether it binds to advance a mission's `metadata.proof` tier (`doctrine-only` → `self-run` → `external-run`).
-- **[Architectural decisions](DECISIONS.md)** & **[Changelog](../CHANGELOG.md)** — Record of architectural trade-offs and release history.
+- **[Decision log](DECISIONS.md)** & **[Changelog](../CHANGELOG.md)** — Durable gate decisions (mechanical, taste, and one-way auto-resolves, including floor waivers) and release history.
 - **[Research archive](research/README.md)** — Dated ecosystem comparisons, positioning snapshots, and the ledger of rejected mission candidates.
-- **[Historical reviews](reviews/)** & **[Completion records](completion/STATUS.md)** — Point-in-time repository audits (`2026-09-10`, `2026-09-11`, `2026-09-14`, `2026-09-28`) and issue closure witnesses. Read historical records at their recorded date and SHA; always use [Install](install.md) and [Local development](development.md) for current commands.
+- **[Historical reviews](reviews/)** & **[Completion records](completion/STATUS.md)** — Point-in-time repository audits (`2026-09-10`, `2026-09-11`, `2026-09-14`, `2026-09-28`, `2026-10-17`, `2026-10-23`, `2026-10-26`) and issue closure witnesses. Read historical records at their recorded date and SHA; always use [Install](install.md) and [Local development](development.md) for current commands.

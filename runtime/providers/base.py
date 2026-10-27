@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""base.py — Runtime Provider Interface (RPI) base contract and 9-harness launch table.
+"""base.py — Runtime Provider Interface (RPI) base contract and harness launch table.
 
 Defines the canonical `RuntimeProvider` interface, `ProviderError` exception, monotonic
-privilege narrowing (`ro < rw < danger`), and the verified 9-harness launch table
-(`claude`, `codex`, `opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, `crush`) used by
-`open-fleet` (and backward-compatible `orca-fleet` callers) across all 15 supported
-orchestrator runtimes.
+privilege narrowing (`ro < rw < danger`), and the launch table for the 14 CLI harnesses in
+`SUPPORTED_HARNESSES` (verified `ro` and `rw` launches for `claude`, `codex`, `gemini`,
+`opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, `crush`; `cursor`, `antigravity`, `grok`
+and `droid` launch `rw` only, without a prompt) used by `open-fleet` (and backward-compatible
+`orca-fleet` callers) across all 14 supported orchestrator runtimes.
 """
 from __future__ import annotations
 
@@ -163,7 +164,7 @@ def _build_harness_command(
     bridge_dir: str | None = None,
     data_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Build the verified CLI command, argv, env, and profile_flag for any of the 9 CLI harnesses.
+    """Build the CLI command, argv, env, and profile_flag for any of the 14 CLI harnesses.
 
     Source-audited across all cloned harnesses to avoid silent permission bypasses:
       - `pi` has no `--cwd` flag and no built-in permission prompt (requires `cd` + `--exclude-tools` on `ro`).

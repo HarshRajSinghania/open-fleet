@@ -73,7 +73,7 @@ Each **mission** is a complete engineering workflow: a coordinator decomposes yo
 
 ## Quick start
 
-**One-command install** (validates the catalog, links missions into `~/.claude/skills`, and prints completion-gate setup; verified in CI from a clean container — [transcript](docs/completion/evidence/414-clean-container-install.txt)):
+**One-command install** (validates the catalog, links missions into `~/.claude/skills`, and prints completion-gate setup; verified in CI by a from-scratch install into an empty `HOME` ([`install.yml`](.github/workflows/install.yml)), with a one-off clean-container [transcript](docs/completion/evidence/414-clean-container-install.txt) retained):
 
 ```bash
 git clone https://github.com/ravidsrk/open-fleet.git && cd open-fleet && sh scripts/install.sh
@@ -126,7 +126,7 @@ You:
 
 Coordinator (ship-it):
   [PHASE 0 · PREFLIGHT]
-  $ python3 runtime/scripts/preflight.py --mission ship-it --base ship-it/integration
+  $ python3 runtime/scripts/preflight.py --mission ship-it --base ship-it/integration --fork-point 0b073fb41a2c
   preflight: OK — repo=acme/service, base=ship-it/integration, default=refs/remotes/origin/main, fork_point=0b073fb41a2c
   $ pnpm test
   PASS (42 passed in 1.8s) — baseline test suite green at T0
@@ -152,7 +152,9 @@ Coordinator (ship-it):
   $ python3 runtime/scripts/verify.py --manifest docs/reports/u1-manifest.json --base ship-it/integration \
       --contract-source specs/healthz.md@0b073fb --contract-digest sha256:8f1c… \
       --execute-nc --nc-command "pnpm test src/health"
-  VERIFY=PASS unit=U1 scope=2/2 ancestor=OK review=FRESH negative_control=RED_ON_REVERT (exit 1)
+  NOTE: negative control EXECUTED — with the revert control applied at head_sha the bound command exited 1 on an assertion failure (RED, as required)
+  NOTE: the same command exits 0 at clean head_sha, before AND after the control run — …
+  verify: OK — all required checks passed   (exit 0)
   Opened promotion PR #15 (ship-it/integration → main). Terminal state: PROMOTION_READY.
 ```
 
@@ -183,7 +185,7 @@ To run missions on a target repository, you need ([pinned prerequisites](docs/di
    - **Standalone local (`posix`):** Set `OPEN_FLEET_RUNTIME=posix` (or `OPEN_FLEET_RUNTIME=auto` to use `orca` when on `PATH` and fall back to `posix` otherwise) to dispatch workers via local git worktrees, SQLite WAL state, and background processes (`tmux`, `cmux`, or `setsid`) with zero external orchestrator daemon.
    - **Default (`orca`):** The [Orca app](https://github.com/stablyai/orca) at or above the catalog pin **v1.4.239** (`runtime/pins.json`) with orchestration enabled, the `orca` CLI (`orca-ide` on Linux), and Orca's `orchestration` and `orca-cli` skills installed.
    - **External orchestrators (12 providers):** Set `OPEN_FLEET_RUNTIME` to `overstory`, `t3code`, `ao`, `superset`, `gastown`, `worktrunk`, `jcode-swarm`, `emdash`, `vibe-kanban`, `paperclip`, `multiclaude`, or `openhands`.
-2. **A coding-agent harness (`OPEN_FLEET_HARNESS`):** Claude Code (`claude`), Codex (`codex`), Gemini CLI (`gemini`), OpenCode (`opencode`), Oh My Pi (`omp`), Pi (`pi`), `jcode`, Goose (`goose`), Hermes Agent (`hermes`), or Crush (`crush`), plus the OpenHands SDK agent (`openhands` on `OPEN_FLEET_RUNTIME=openhands`; `opencode`, `omp`, and `pi` require a non-`orca` runtime such as `posix` or a `WORKER_CMD` override — see [certification matrix](docs/certification.md)).
+2. **A coding-agent harness, chosen per worker** (the `[agent]` argument of `runtime/scripts/spawn_worker.sh`, default `claude`): Claude Code (`claude`), Codex (`codex`), Gemini CLI (`gemini`), OpenCode (`opencode`), Oh My Pi (`omp`), Pi (`pi`), `jcode`, Goose (`goose`), Hermes Agent (`hermes`), or Crush (`crush`), plus the OpenHands SDK agent (`openhands` on `OPEN_FLEET_RUNTIME=openhands`). `opencode`, `omp`, and `pi` require a non-`orca` runtime such as `posix` or a `WORKER_CMD` override; `cursor`, `antigravity`, `grok`, and `droid` launch only as `PROFILE=rw` workers on the providers that start them — see [certification matrix](docs/certification.md).
 3. **`git` and `gh`** (authenticated for GitHub PR and review verification, or `orca linear` / `orca jira` for hosted trackers).
 4. **Python 3.11+** (standard library only) for catalog validation and runtime verification scripts.
 5. **Upstream methodology packs** referenced by the missions you run ([mattpocock/skills](https://github.com/mattpocock/skills), [garrytan/gstack](https://github.com/garrytan/gstack), [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)) — mounted one pack per worker ([why](docs/concepts.md#one-router-per-worker)). Per-mission CLI tools are listed in [Getting started](docs/getting-started.md#prerequisites).
@@ -233,7 +235,7 @@ Every mission represents a distinct engineering outcome with its own unit of wor
 |---|---|---|---|
 | 📦 **[modernize-it](docs/missions/modernize-it.md)** | `doctrine-only` | Dependency currency via expand/migrate/contract at the code level: `CURRENT` or `CURRENT-WITH-PINNED`, every pin justified | "update the dependencies", "framework migration" |
 | 🧬 **[reshape-it](docs/missions/reshape-it.md)** | `doctrine-only` | Confirmed hot modules deepened behind smaller, testable interfaces with behaviour demonstrably unchanged: `RESHAPED` or `RESHAPED-WITH-PARKED` | "god file", "architecture erosion", "refactor the hot path safely" |
-| 🗄️ **[migrate-it](docs/missions/migrate-it.md)** | `doctrine-only` | A stateful shape change landed across deploys — expand → dual-write → backfill → switch reads → zero readers → contract: `MIGRATED`, `MIGRATED-WITH-PARKED`, or `ABANDONED` | "migrate the database", "rename this column safely", "backfill without downtime" |
+| 🗄️ **[migrate-it](docs/missions/migrate-it.md)** | `doctrine-only` | A stateful shape change landed across deploys — expand → dual-write → backfill → switch reads → zero readers → retire writes → zero writers → contract: `MIGRATED`, `MIGRATED-WITH-PARKED`, or `ABANDONED` | "migrate the database", "rename this column safely", "backfill without downtime" |
 
 ### 6. Operate, Document & Provision
 
@@ -384,14 +386,14 @@ Full setup, per-host coordinator paths, verification, update, and removal steps 
 <details>
 <summary><b>Do I need the Orca desktop app to run missions?</b></summary>
 
-No. Every mission except `pin-it` (which audits the Orca binary itself) runs without the Orca desktop app by setting `export OPEN_FLEET_RUNTIME=posix` (or `auto`). In `posix` mode, `open-fleet` manages state in a zero-daemon SQLite WAL store and dispatches workers in local git worktrees via `tmux`, `cmux`, or `setsid`. See the [Multi-runtime & harness guide](docs/runtimes.md).
+Not for most missions. Every mission except `pin-it` (which audits the Orca binary itself) passes preflight without the Orca desktop app by setting `export OPEN_FLEET_RUNTIME=posix` (or `auto`), provided its fallback tooling is on `PATH`: `field-test-it` needs `adb` or `xcrun`, and `offload-it` needs `docker` (preflight refuses otherwise). Two missions still lean on the Orca CLI inside their pipelines: `offload-it` builds an Orca per-workspace environment recipe (`orca.yaml`, checked by `orca vm recipe doctor`), and `field-test-it` loads its emulator guides with `orca skills get`. In `posix` mode, `open-fleet` manages state in a zero-daemon SQLite WAL store and dispatches workers in local git worktrees via `tmux`, `cmux`, or `setsid`. See the [Multi-runtime & harness guide](docs/runtimes.md).
 
 </details>
 
 <details>
 <summary><b>Will a fleet ever push to or merge into <code>main</code> on its own?</b></summary>
 
-Never. `runtime/scripts/preflight.py` refuses to start a code-mutating mission if `BASE` is your default branch (`main`/`master`). Workers open PRs only against a fleet-managed integration `BASE` branch, and promoting `BASE` to your default branch is always a human one-way gate.
+Never. `runtime/scripts/preflight.py` refuses to start a code-mutating mission if `BASE` is your default branch (`main`/`master`). Workers on missions that land code open PRs only against a fleet-managed integration `BASE` branch, and promoting `BASE` to your default branch is always a human one-way gate. (`oss-contribute` differs: it opens PRs from your fork to an upstream repository you do not control, and never merges them.)
 
 </details>
 
@@ -421,8 +423,8 @@ Start with Phase 1 non-landing missions that never merge production code (`revie
 ```text
 skills/          Discoverable missions (one SKILL.md per outcome)
 playbooks/       Callable phase protocols composed by missions
-runtime/         Runtime policies, control files, and CLI helpers (runtime/scripts/)
-hooks/           Native completion-gate and safety hooks
+runtime/         Runtime policies, control files, RPI provider adapters (runtime/providers/), and CLI helpers incl. the deny hook (runtime/scripts/)
+hooks/           Completion-gate hook wiring (plugin hooks.json + settings snippet)
 scripts/         Catalog validator, badge generator, eval runner, bundler
 tests/           Contract and negative-path test suite (Python stdlib unittest)
 evals/ & bench/  Routing evals and vf-bench verifier-soundness benchmark

@@ -12,7 +12,7 @@ missions already have those.
 | Surface | Account / handle | Lives in | Notes |
 |---|---|---|---|
 | GitHub | `ravidsrk` | [ravidsrk/open-fleet](https://github.com/ravidsrk/open-fleet) | source of truth, Actions (`validate` gates + `negative-control-demo` pinned-demo gate; `alert-on-failure` files a `ci-failure` issue when either fails on `main`), private vulnerability reporting |
-| GitHub peer review | `agentsalpha` (designated second maintainer) | [Repository invitations](https://github.com/ravidsrk/open-fleet/invitations) | write invitation `335422854` sent 2026-09-30; acceptance and an actual approving review still pending; role boundaries below |
+| GitHub peer review | `agentsalpha` (designated second maintainer) | [Repository invitations](https://github.com/ravidsrk/open-fleet/invitations) | write invitation `335422854` sent 2026-09-30, never accepted; OpenAI Codex is the second reviewer instead (#595, below); role boundaries below |
 | Claude plugin marketplace | GitHub self-host + buildwithclaude auto-index | [`.claude-plugin/`](../.claude-plugin/plugin.json) | `/plugin marketplace add ravidsrk/open-fleet`; external listing history and submission status are in [distribution](distribution.md) |
 | greptile | maintainer CLI | [greptile.com](https://greptile.com/) | pre-push review on the maintainer machine; GitHub check on PRs |
 | agentskills.io listing | not submitted | local `uvx --from skills-ref agentskills validate` | repository claims (`proof`, `autonomy`, `proof_evidence`) live under `metadata:` — [CONTRIBUTING](../CONTRIBUTING.md) |
@@ -31,13 +31,13 @@ those decisions.
 
 `agentsalpha` is the designated second maintainer for ordinary code review and protected
 merges. A write invitation was sent on 2026-09-30 (GitHub invitation `335422854`);
-it must be accepted and access verified before peer ownership becomes effective. Ravindra
-authorized preparing the ownership entries in #541 while acceptance remains pending.
+it was never accepted, so peer ownership never became effective. Ravindra
+authorized preparing the ownership entries in #541 while acceptance was pending.
 CODEOWNERS covers `runtime/`, `scripts/`, `.github/` and this page. Each maintainer
 reviews the other's changes on these paths. Approval does not permit bypassing the required
 checks, changing an immutable tag, or treating a review from the author as an independent
-review. #530 closes only after a PR actually merges with the second maintainer's approving
-review, recorded in HUMAN_ACTIONS.
+review. #530 closed on 2026-09-30 without that review; H-10 in HUMAN_ACTIONS is done
+instead by the owner's disposition (#595, below).
 
 ## Merge gate
 
@@ -405,7 +405,7 @@ environment holds.
    through the normal gates — never a force-push or a history rewrite
    on `main`. There is no hosted service or staging environment. A merge
    to `main` is the "deploy" above: it changes the default-branch tree that
-   clones and the marketplace (`source: "./"`) install. Versioned
+   clones install; the marketplace installs the `dist` branch (`"ref": "dist"`). Versioned
    publication is separate — `release.yml` (the GitHub Release) and
    `publish-dist.yml` (the `dist` branch) run on a `v*` tag push or a
    manual run naming an existing tag, and a tag exists only for an exact

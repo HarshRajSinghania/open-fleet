@@ -23,7 +23,9 @@ Subcommands
     gate --allowed A,B <terminal>  exit 0 + PROCEED, or exit 1 + STOP <why>
     audit [--root DIR]             check every skills/*/SKILL.md terminal label
 
-Exit codes: 0 ok / proceed · 1 stop, an unknown terminal, or audit failure · 2 usage / could not run.
+Exit codes: 0 ok / proceed · 1 stop, an unknown terminal, or audit failure · 2 usage.
+An unreadable SKILL.md is not caught: audit currently raises (traceback, exit 1). A --root
+with no skills/*/SKILL.md under it audits nothing and exits 0.
 """
 import argparse
 import re

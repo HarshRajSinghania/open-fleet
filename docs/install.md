@@ -10,9 +10,9 @@ Install the `open-fleet` catalog once on your workstation, then invoke missions 
 
 | Path | Best for | Completion gate (`verify-gate.sh`) | Witness status |
 |---|---|---|---|
-| **[Symlink install](#symlink-the-catalog)** *(recommended)* | Evaluating `open-fleet`, selecting specific missions, or hacking on the catalog | Wire into `~/.claude/settings.json` via `sh hooks/print-settings-snippet.sh` | Verified in CI ([clean-container transcript](completion/evidence/414-clean-container-install.txt) · [symlink witness](completion/evidence/CF-02-r2-happy-symlink-install.txt)) |
+| **[Symlink install](#symlink-the-catalog)** *(recommended)* | Evaluating `open-fleet`, selecting specific missions, or hacking on the catalog | Wire into `~/.claude/settings.json` via `sh hooks/print-settings-snippet.sh` | Verified in CI ([`install.yml`](../.github/workflows/install.yml)); one-off [clean-container transcript](completion/evidence/414-clean-container-install.txt) · [symlink witness](completion/evidence/CF-02-r2-happy-symlink-install.txt) |
 | **[Claude Code plugin](#claude-code-plugin)** | Installing the entire catalog as a managed Claude Code plugin | Automatically wired via `${CLAUDE_PLUGIN_ROOT}` in `hooks/hooks.json` | Verified ([lean plugin witness](completion/evidence/CF-02c-lean-plugin-install.txt) · [plugin install](completion/evidence/CF-02b-plugin-install.txt) · [uninstall](completion/evidence/CF-02b-plugin-uninstall.txt)) |
-| **[Non-Claude coordinator hosts](#installing-into-non-claude-coordinator-hosts)** | Running the coordinator in Codex, Gemini CLI, OpenCode, Oh My Pi (`omp`), Pi, or Antigravity | Coordinator invokes `verify.py` / `verify-gate.sh` directly per phase | `posix` + `orca` routes certified in [certification matrix](certification.md) |
+| **[Non-Claude coordinator hosts](#installing-into-non-claude-coordinator-hosts)** | Running the coordinator in Codex, Gemini CLI, OpenCode, Oh My Pi (`omp`), Pi, or Antigravity | Coordinator invokes `verify.py` / `verify-gate.sh` directly per phase | Worker routes tiered per provider in [certification matrix](certification.md) (live-witnessed: `claude` only) |
 | **[Copy installer / `dist/` bundle](#copy-installers-and-bundles)** | External copy-based skill installers that copy individual skill folders | Requires separate hook wiring and `OPEN_FLEET_ROOT` | Repo-root copy unsupported; self-contained `dist` branch published per release tag |
 
 ### Pick one install path per host (do not stack)
@@ -130,7 +130,7 @@ Instead of running interactive `/plugin` commands on each machine, you can decla
 
 ## Installing into non-Claude coordinator hosts
 
-`open-fleet` separates the **coordinator host** (the interactive agent session where you invoke a mission) from the **worker harness** (`WORKER_HARNESS=claude|codex|opencode|omp|pi|jcode|goose|hermes|crush|gemini`, which `runtime/scripts/spawn_worker.sh` launches automatically inside each worker worktree — see [Multi-runtime & harness guide](runtimes.md)).
+`open-fleet` separates the **coordinator host** (the interactive agent session where you invoke a mission) from the **worker harness** (the `[agent]` argument of `runtime/scripts/spawn_worker.sh` — `claude` by default, or `codex`, `opencode`, `omp`, `pi`, `jcode`, `goose`, `hermes`, `crush`, `gemini` and others — which it launches inside each worker worktree; see [Multi-runtime & harness guide](runtimes.md)).
 
 To load `open-fleet` missions into a non-Claude coordinator host, symlink the `skills/<name>` directories into your host's skill discovery path (keeping the `open-fleet` clone intact so `../../playbooks/` and `../../runtime/` resolve):
 
@@ -141,7 +141,7 @@ To load `open-fleet` missions into a non-Claude coordinator host, symlink the `s
 | **Gemini CLI** | `~/.gemini/skills/<mission>` or `.agents/skills/<mission>` | Natural language (`"use ship-it to build..."`) | Avoid `/plan` collision with Gemini CLI's built-in plan mode; invoke `map-it` by name |
 | **OpenCode** | `~/.config/opencode/skills/<mission>` or `.claude/skills/<mission>` | `/review-it` or natural language | For OpenCode workers, use `OPEN_FLEET_RUNTIME=posix` (`orca` strips OpenCode launch args) |
 | **Oh My Pi (`omp`) & Pi (`pi`)** | `~/.omp/agent/skills/<mission>` or `~/.pi/agent/skills/<mission>` | `/skill:review-it` or natural language | Use `OPEN_FLEET_RUNTIME=posix` when dispatching `omp` or `pi` workers |
-| **Antigravity (`agy`)** | `~/.gemini/antigravity-cli/skills/<mission>` or `.agents/skills/<mission>` | `/review-it` or natural language | Interactive coordinator host only; headless worker dispatch uses a CLI harness (`claude`, `codex`, `gemini`, etc.) |
+| **Antigravity (`agy`)** | `~/.gemini/antigravity-cli/skills/<mission>` or `.agents/skills/<mission>` | `/review-it` or natural language | As a worker, `antigravity` launches only as `PROFILE=rw` where a provider starts it; `ro` and headless worker dispatch use a CLI harness (`claude`, `codex`, `gemini`, etc.) |
 
 Example installing the catalog into Codex or Gemini CLI using `--skills-dir`:
 
@@ -151,7 +151,7 @@ sh scripts/install.sh --skills-dir="$HOME/.codex/skills"
 
 ### Windows & WSL2 support note
 
-`scripts/install.sh`, `runtime/scripts/verify-gate.sh`, and `runtime/scripts/spawn_worker.sh` are POSIX `sh` scripts that rely on filesystem symlinks (`ln -s`) and POSIX process groups.
+`scripts/install.sh` and `runtime/scripts/verify-gate.sh` are POSIX `sh` scripts and `runtime/scripts/spawn_worker.sh` is a `bash` script; they rely on filesystem symlinks (`ln -s`) and POSIX process groups.
 - **Recommended on Windows:** Clone and run `open-fleet` inside **WSL2** (Ubuntu/Debian), where symlinks, `tmux`/`setsid`, and `.sh` completion hooks work identically to Linux.
 - **If cloning on a Windows filesystem:** Ensure Developer Mode is enabled and clone with `git clone -c core.symlinks=true https://github.com/ravidsrk/open-fleet.git` so Git creates real symlinks rather than plain-text pointer files.
 
@@ -195,7 +195,7 @@ After merging the output of `sh hooks/print-settings-snippet.sh` into `~/.claude
 ORCA_MANIFEST=/nonexistent.json sh runtime/scripts/verify-gate.sh --event stop
 ```
 
-**Expected output:** `BLOCKING (fail-closed)` with exit code `2` because `/nonexistent.json` does not exist. When `ORCA_MANIFEST` is unset (normal turns with no unit in flight), the hook exits `0` silently. Full environment and trust-boundary details are in **[Verify gate](verify-gate.md)**.
+**Expected output:** `BLOCKING (fail-closed)` with exit code `2` because `/nonexistent.json` does not exist. When `ORCA_MANIFEST` is unset (normal turns with no unit in flight), the `Stop` hook exits `0` with a one-line `nothing to verify, allowing` note on stderr; `--event task` with no manifest still blocks (exit `2`). Full environment and trust-boundary details are in **[Verify gate](verify-gate.md)**.
 
 ---
 

@@ -18,7 +18,8 @@ small. Sequential only. No DAG, no expression language, no preset catalog.
   degradation marker (`-WITH-PARKED`, `-WITH-OPEN-ITEMS`, `-WITH-GAPS`, `-WITH-MANUAL-PARKED`,
   `-WITH-BLOCKED`, `-WITH-QUARANTINE`, `-WITH-PINNED`) OR is `NO-GO` / `INCONCLUSIVE` / `ABANDONED`
   (migrate-it's rolled-back terminal: the expand was undone, so nothing landed to build a next leg
-  on). Every other
+  on). A `-WITH-` qualifier this rule does not list, or a name not shaped like a terminal, is
+  `unknown` and STOPS the chain too (fail closed). Every other
   named terminal is **clean** and may proceed when the chain named it (e.g. `BUILT`, `RELEASED`, `DRY`,
   `CLEAN`, `STABLE`, `COVERED`, `CURRENT`, `WITHIN-BUDGET`, `CONFORMANT`, `CONTRIBUTED`, `MAPPED`,
   `GO`, `DIAGNOSED`), including **handoff terminals** such as

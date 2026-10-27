@@ -264,9 +264,7 @@ class TestVerify(EgressBase):
         self.assertIn("2 receipt(s)", r.stdout)
 
     def test_a_missing_ledger_is_an_empty_intact_chain(self):
-        # Only when the caller says no receipts were expected (Codex review of 82a2d00c): by
-        # default no receipts is EXIT_NO_RECEIPTS, never a pass (TestTheLedgerIsWhereItSays).
-        r = self.run_egress("verify", "--allow-empty")
+        r = self.run_egress("verify")
         self.assertEqual(r.returncode, 0)
         self.assertIn("0 receipt(s)", r.stdout)
 
@@ -764,31 +762,45 @@ class TestTheLedgerIsWhereItSays(EgressBase):
         self.assertFalse((Path(self.tmp) / "a").exists())
 
     def test_no_ledger_is_not_reported_as_an_intact_chain(self):
-        # Codex review of 82a2d00c: a missing (or empty) canonical ledger still verified with exit 0,
-        # so a close whose receipts went elsewhere passed. No receipts is now its own non-passing
-        # exit unless the caller says none were expected; an anchor naming a receipt always fails.
+        # Codex review of 82a2d00c: a missing (or empty) canonical ledger still verified as "chain
+        # intact", so a close whose receipts went elsewhere passed. No receipts is never called
+        # intact, and the close's form (--require-receipts) fails on it; an anchor naming a receipt
+        # always fails. (Making the plain form fail too changes an origin/main assertion, so that
+        # half rides fix/secaudit-w5-03-waiver.)
         for setup in ("no ledger file", "an empty ledger file"):
             with self.subTest(setup=setup):
                 if setup == "an empty ledger file":
                     self.ledger.parent.mkdir(parents=True, exist_ok=True)
                     self.ledger.write_bytes(b"")
-                r = self.run_egress("verify")
+                plain = self.run_egress("verify")
+                self.assertNotIn("chain intact", plain.stdout + plain.stderr)
+                self.assertIn("NO RECEIPTS", plain.stdout)
+                r = self.run_egress("verify", "--require-receipts")
                 self.assertEqual(r.returncode, egress.EXIT_NO_RECEIPTS, r.stdout + r.stderr)
                 self.assertNotEqual(egress.EXIT_NO_RECEIPTS, 0)
                 self.assertNotIn("chain intact", r.stdout + r.stderr)
                 self.assertIn("NO RECEIPTS", r.stderr)
                 for anchors in (("--expect-ancestor", "(empty)"),):
-                    self.assertEqual(self.run_egress("verify", *anchors).returncode, egress.EXIT_NO_RECEIPTS,
-                                     "an empty PREVIOUS close says nothing about this one")
-                allowed = self.run_egress("verify", "--allow-empty")
-                self.assertEqual(allowed.returncode, 0, allowed.stderr)
-                self.assertIn("0 receipt(s)", allowed.stdout)
-                sealed_empty = self.run_egress("verify", "--expect-head", "(empty)")
+                    self.assertEqual(self.run_egress("verify", "--require-receipts", *anchors).returncode,
+                                     egress.EXIT_NO_RECEIPTS, "an empty PREVIOUS close says nothing about this one")
+                sealed_empty = self.run_egress("verify", "--require-receipts", "--expect-head", "(empty)")
                 self.assertEqual(sealed_empty.returncode, 0, "an anchored empty head is an explicit none-expected")
                 for anchors in (("--expect-ancestor", "ab" * 32), ("--expect-head", "ab" * 32)):
-                    anchored = self.run_egress("verify", "--allow-empty", *anchors)
+                    anchored = self.run_egress("verify", *anchors)
                     self.assertEqual(anchored.returncode, 3, "an anchor names a receipt; none is not intact")
                     self.assertIn("TAMPER", anchored.stderr)
+
+    def test_a_close_routed_elsewhere_fails_the_required_form(self):
+        # Codex's exact repro: the receipt goes to a routed ledger, the canonical one stays absent.
+        routed = Path(self.tmp) / "mine.jsonl"
+        w = self.bare(*self.WRITE, cwd=self.repo, env={**self.env, egress.PRIMARY_LEDGER_ENV: str(routed)})
+        self.assertEqual(w.returncode, 0, w.stderr)
+        self.assertTrue(routed.is_file())
+        self.assertFalse((self.repo / ".orca" / "egress.jsonl").exists())
+        r = self.bare("verify", "--require-receipts", cwd=self.repo)
+        self.assertEqual(r.returncode, egress.EXIT_NO_RECEIPTS, r.stdout + r.stderr)
+        self.assertNotIn("chain intact", r.stdout + r.stderr)
+        self.assertNotIn("chain intact", self.bare("verify", cwd=self.repo).stdout)
 
 
 class TestGrantsAnswerOnlyForAVerifiedChain(EgressBase):

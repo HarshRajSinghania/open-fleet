@@ -53,8 +53,8 @@ CLOSE (in order; any mismatch is a STOP, logged, never patched over):
    lists — receipts appended since are expected; a rewritten or truncated ledger
    loses an anchored line, and only its id binds a receipt written after the last close.
    The anchors live in committed records the ledger writer alone cannot rewrite
-   (#561). A run that sent nothing says so: `--allow-empty` in place of the id
-   (no receipts otherwise exits 4). A mismatch (3) or exit 4 is a RED leg under rule 6.
+   (#561), and `--require-receipts` (no receipts exits 4); only a run that sent
+   nothing omits it, and says so. A mismatch (3) or exit 4 is a RED leg under rule 6.
 
 Scope: the unit binds T (records must bind head_sha's tree — evidence-manifest.md); the integrated tree M is covered by the PR's merge-commit CI, never this close.
 

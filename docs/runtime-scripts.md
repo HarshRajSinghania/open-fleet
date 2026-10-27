@@ -609,8 +609,8 @@ ever created. `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file` (streamed),
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
 else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger),
-`--expect-ancestor` (repeatable; close-to-close, appends tolerated) and `--allow-empty` (this run
-sent nothing); `grants` takes `--json`.
+`--expect-ancestor` (repeatable; close-to-close, appends tolerated) and `--require-receipts` (a
+close that expects receipts); `grants` takes `--json`.
 Text fields are printable ASCII; `--consent` names a grant (letters, digits, `` ._:/#()@+,=-``,
 starting with a letter or digit).
 
@@ -628,10 +628,10 @@ for byte and, through `prev`, every line before it. Keep them off the writer (th
 ledger row) and pass them back: `--expect-ancestor` requires each still in the chain,
 `--expect-head` requires the ledger to end there. A receipt written since the last close is bound
 only by the id its `write` printed — the close head alone cannot see a rewrite after it. No
-receipts — no ledger file ("no ledger file there") or an empty one — is never a pass: `verify`
-exits 4 (`NO RECEIPTS`) unless the caller says none were expected with `--allow-empty` or a
-sealed empty head (`--expect-head "(empty)"`), and any anchor naming a receipt against it is
-TAMPER (exit 3), `--allow-empty` or not.
+receipts — no ledger file ("no ledger file there") or an empty one — is never called an intact
+chain: plain `verify` exits 0 and says `NO RECEIPTS`, `verify --require-receipts` (the close's
+form) exits 4 unless a sealed empty head (`--expect-head "(empty)"`) says none were expected, and
+any anchor naming a receipt against it is TAMPER (exit 3).
 
 Migration: a pre-v2 ledger (no `v` key) keeps verifying while each legacy line is exactly what the
 v1 writer produced (its keys, canonical bytes, types and v1 id), which binds it as fully; v2
@@ -653,9 +653,9 @@ acts. That is the fail-closed design, not a fault to route around, and the proce
    follows reads the old file with those ids as anchors (`--ledger <moved file>`) and counts the
    rotation as a RED leg until that record is reviewed.
 4. *Resume.* The next `write` starts a new chain at genesis; until it does, the close verifies the
-   new ledger with `--allow-empty`, and the next close anchors from the new chain's head.
+   new ledger without `--require-receipts`, and the next close anchors from the new chain's head.
 
-Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, or an anchor missing) · 4 `verify` found no receipts and none was allowed.
+Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, or an anchor missing) · 4 `verify --require-receipts` found no receipts.
 
 > Why: the integrity inventory hashes what a run produced, but nothing recorded what it
 > sent — this ledger is the second half. Receipts are content-free (hash + count + kind)

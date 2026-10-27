@@ -5,6 +5,9 @@
 # W6-13): a tag can be re-pointed, a digest cannot. The tag stays beside it for the
 # reader; Docker pulls by the digest. To re-pin, read the tag's index digest from the
 # registry (the Docker-Content-Digest of its manifest) and re-hash the index it names.
+# The app containers install requirements.lock (uv.lock's export, every package hash-pinned)
+# and run the app from /srv/app, where `python -m` finds it: no `pip install -e .`, so neither
+# the pyproject's `>=` ranges nor its build backend resolve at run time (W6-13).
 services:
   app:
     image: python:3.13-slim@sha256:b3575dcf816cdacc5292df77a6e3e59b8941631078373a045efa2ac1e9c5c3b2
@@ -15,7 +18,7 @@ services:
     environment:
       DATABASE_URL: sqlite:////srv/data/app.db
       TARGET_APP_SCRAPE_GAUGE: "1"
-    command: sh -c "pip install --quiet -e . && python -m app.seed --count 0 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: 'sh -c "pip install --quiet --require-hashes --only-binary :all: -r requirements.lock && python -m app.seed --count 0 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"'
     ports:
       - "127.0.0.1:8000:8000"
 
@@ -28,7 +31,7 @@ services:
     environment:
       DATABASE_URL: sqlite:////srv/data/staging.db
       TARGET_APP_SCRAPE_GAUGE: "1"
-    command: sh -c "pip install --quiet -e . && python -m app.seed --count 0 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: 'sh -c "pip install --quiet --require-hashes --only-binary :all: -r requirements.lock && python -m app.seed --count 0 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"'
     ports:
       - "127.0.0.1:8001:8000"
 

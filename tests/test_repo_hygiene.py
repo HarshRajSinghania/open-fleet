@@ -703,6 +703,42 @@ class EveryWorkflowToolComesFromAHashedLock(unittest.TestCase):
             with self.subTest(workflow=path.name):
                 self.assertEqual(self._mutable_images(path.read_text(encoding="utf-8")), [])
 
+    APP = ROOT / "evals" / "demo" / "target-app"
+
+    def test_the_demo_containers_install_only_hashed_requirements(self):
+        # PR #718 re-attack (W6-13 residual): the app containers ran `pip install -e .` against
+        # the pyproject's `>=` ranges, resolved at run time, and pulled the build backend too.
+        # They install the uv.lock export with --require-hashes and run the app from /srv/app.
+        compose = (self.APP / "compose.yaml").read_text(encoding="utf-8")
+        installs = [ln.strip() for ln in compose.splitlines()
+                    if "pip install" in ln and not ln.lstrip().startswith("#")]
+        self.assertEqual(len(installs), 2, "the app and staging containers each install once")
+        for line in installs:
+            with self.subTest(line=line):
+                self.assertIn("pip install --quiet --require-hashes --only-binary :all: "
+                              "-r requirements.lock", line)
+                self.assertNotRegex(line, r"\s-e\s|--editable")
+
+    def test_the_containers_lock_is_the_uv_lock(self):
+        import tomllib
+        lock = tomllib.loads((self.APP / "uv.lock").read_text(encoding="utf-8"))
+        locked = {p["name"]: p["version"] for p in lock["package"] if "version" in p}
+        text = (self.APP / "requirements.lock").read_text(encoding="utf-8")
+        pinned = dict(re.findall(r"(?m)^([a-z0-9][a-z0-9._-]*)==([^\s;\\]+)", text))
+        self.assertGreaterEqual(len(pinned), 10)
+        for name, version in pinned.items():
+            with self.subTest(package=name):
+                self.assertEqual(locked.get(name), version, "re-export: uv export --frozen "
+                                 "--no-dev --no-emit-project --format requirements-txt")
+        blocks = re.split(r"(?m)^(?=[a-z0-9])", text)
+        for block in (b for b in blocks if re.match(r"[a-z0-9]", b)):
+            with self.subTest(block=block.split()[0]):
+                self.assertIn("--hash=sha256:", block)
+        project = tomllib.loads((self.APP / "pyproject.toml").read_text(encoding="utf-8"))
+        wanted = {re.split(r"[<>=!~\[ ;]", d, maxsplit=1)[0].lower().replace("_", "-")
+                  for d in project["project"]["dependencies"]}
+        self.assertEqual(sorted(wanted - set(pinned)), [], "a runtime dependency is not pinned")
+
     def test_the_image_scan_can_actually_see_one(self):
         digest = "@sha256:" + "c" * 64
         for ref in ("python:3.13-slim", "prom/prometheus:v2.53.0", "grafana/loki",

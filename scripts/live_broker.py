@@ -19,10 +19,16 @@ Every connection has a socket timeout (HANDLER_TIMEOUT_S) and a body deadline, a
 MAX_CONNECTIONS are served at once, so a client that connects and sends nothing cannot park the
 threads the arm's model calls need (W5-16). count_tokens is free but bounded: FREE_CALLS_MAX
 calls and FREE_BYTES_MAX body bytes per broker, a "free" tally every FREE_RECORD_EVERY calls and
-the tally on every later event, and a refusal past the bound (W5-17). A fault anywhere in a
-request is recorded in the ledger as a "fault" event (the exception type and the frames, never a
-message, a request or the token), and a call's settle always runs, settling the whole
-reservation when its usage cannot be priced (W5-18): the container keeps no log.
+the tally on every later event, and a refusal past the bound (W5-17). The container keeps no log,
+so every exception in a request is a "fault" line in the ledger (where, the exception type and
+the frames; never a message, a request, a response or the token): one escaping a handler, a body
+that never arrived, an upstream or client failure caught while relaying (and the 502 that could
+not be sent), and a usage report settle cannot price. The exceptions that are not faults are a
+malformed request's own (a non-integer Content-Length answered 411, a body that is not JSON
+answered 400 and recorded as a refusal), a stream line that is not JSON, which is skipped, and a
+whole answer that is not JSON, which settles its call's whole reservation.
+A call's settle always runs, settling the whole reservation when its usage cannot be priced
+(W5-18).
 
 The cap is a reservation ledger. A call starts only when the settled spend, the reservations of
 the calls still in flight and its own reservation fit under --cap-usd. Its reservation is its
@@ -387,7 +393,8 @@ class Broker(BaseHTTPRequestHandler):
                 return None
             try:
                 chunk = self.rfile.read1(min(left, 1 << 20))
-            except OSError:  # the handler's socket timeout
+            except OSError as err:  # the handler's socket timeout, or the client left
+                self.ledger.fault("body", err)
                 return None
             if not chunk:
                 return None
@@ -452,11 +459,13 @@ class Broker(BaseHTTPRequestHandler):
                 elif status != 200:  # an error the API answered at once bills nothing
                     complete = True
         except Exception as err:  # the client left, or the API did: whatever ran is settled below
+            # Recorded where it is kept (the container keeps no log): type and frames only.
+            self.ledger.fault("relay", err)
             if status is None:
                 try:
                     self.fail(502, "api_error", f"the API could not be reached ({type(err).__name__})")
-                except OSError:
-                    pass
+                except OSError as reply_err:  # the client is gone too
+                    self.ledger.fault("relay-reply", reply_err)
         finally:
             if conn is not None:
                 conn.close()

@@ -31,6 +31,7 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -1257,6 +1258,54 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         self.assertTrue(faults[0]["frames"], "the fault names no frame")
         self.assertNotIn(self.token, self.ledger_path.read_text(encoding="utf-8"))
         self.assertNotIn("boom", self.ledger_path.read_text(encoding="utf-8"), "a fault records no message text")
+
+    def test_an_upstream_that_resets_mid_call_is_recorded_as_a_fault(self):
+        # Codex review of 82a2d00c: relay() caught the upstream's (or the client's) exception,
+        # maybe answered 502, and recorded nothing, so the container (--log-driver none) kept
+        # no trace of it. A stand-in API that resets the connection before, then after, its status.
+        def resetting(send):
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(4)
+            self.addCleanup(listener.close)
+
+            def serve():
+                while True:
+                    try:
+                        conn, _ = listener.accept()
+                    except OSError:
+                        return
+                    with conn:
+                        conn.settimeout(5)
+                        with contextlib.suppress(OSError):
+                            conn.recv(1 << 16)
+                            conn.sendall(send)
+                        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            threading.Thread(target=serve, daemon=True).start()
+            return f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+        for when, send in (("before its status", b""),
+                           ("mid-response", b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                                            b"Content-Length: 100000\r\n\r\nevent: message_start\n")):
+            with self.subTest(when=when):
+                self.ledger_path = self.tmp / f"spend-{len(send)}.jsonl"
+                server, ledger = lb.serve(self.token, self.ledger_path, 5.0, port=0, upstream=resetting(send))
+                self.addCleanup(ledger.fh.close)
+                self.addCleanup(server.server_close)
+                self.addCleanup(server.shutdown)
+                self.port = server.server_address[1]
+                with contextlib.suppress(http.client.HTTPException, OSError):
+                    self.post()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and "settle" not in [e["event"] for e in self.events()]:
+                    time.sleep(0.05)
+                events = self.events()
+                faults = [e for e in events if e["event"] == "fault"]
+                self.assertTrue(faults, f"an upstream reset {when} left no fault in the ledger: {events}")
+                self.assertEqual(faults[0]["where"], "relay")
+                self.assertTrue(faults[0]["frames"])
+                self.assertEqual([e["event"] for e in events].count("settle"), 1, "the call was not settled")
+                self.assertNotIn(self.token, self.ledger_path.read_text(encoding="utf-8"))
 
     def test_a_body_whose_fields_have_the_wrong_type_is_refused_not_crashed_on(self):
         self.broker()

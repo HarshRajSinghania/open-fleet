@@ -8,6 +8,7 @@ receipt contracts against Orca v1.4.199 — the SHIPPED tag, not upstream HEAD. 
 library only.
 """
 import importlib
+import importlib.util
 import copy
 import json
 import os
@@ -24,6 +25,85 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SPAWN = ROOT / "runtime" / "scripts" / "spawn_worker.sh"
 HOOK = ROOT / "runtime" / "scripts" / "deny-hook.sh"
+IDENTITY = ROOT / "runtime" / "scripts" / "spawn_identity.py"
+
+# A process that starts children and runs commands on request (JSON lines on its stdin), so a test
+# builds a REAL process tree — a pty host with panes, a coordinator's agent process — and runs a
+# spawn exactly where a worker's or a coordinator's would run. Synchronous: no sleeps.
+PROC_FIXTURE = r"""
+import json, subprocess, sys
+kids = {}
+def reply(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+for line in sys.stdin:
+    req = json.loads(line)
+    if req["op"] == "spawn":
+        kids[req["name"]] = p = subprocess.Popen([sys.executable, __file__], stdin=subprocess.PIPE,
+                                                 stdout=subprocess.PIPE, text=True, env=req["env"],
+                                                 start_new_session=True)
+        reply({"pid": p.pid})
+    elif req["op"] == "call":
+        p = kids[req["name"]]
+        p.stdin.write(json.dumps(req["req"]) + "\n")
+        p.stdin.flush()
+        reply(json.loads(p.stdout.readline()))
+    elif req["op"] == "run":
+        r = subprocess.run(req["argv"], env=req["env"], capture_output=True, text=True)
+        reply({"rc": r.returncode, "out": r.stdout, "err": r.stderr})
+for p in kids.values():
+    p.stdin.close()
+    p.wait()
+"""
+
+
+class ProcTree:
+    """One fixture process (see PROC_FIXTURE); `spawn` starts a named child of it (a pane, in its
+    own session, with exactly the given environment) and `run` runs a command in it or in a child."""
+
+    def __init__(self, tmp, env=None):
+        script = Path(tmp) / "proc_fixture.py"
+        if not script.exists():
+            script.write_text(PROC_FIXTURE)
+        self.p = subprocess.Popen([sys.executable, str(script)], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True,
+                                  env=env or {"PATH": "/usr/bin:/bin"}, start_new_session=True)
+
+    def _ask(self, req):
+        self.p.stdin.write(json.dumps(req) + "\n")
+        self.p.stdin.flush()
+        return json.loads(self.p.stdout.readline())
+
+    def spawn(self, name, env):
+        return self._ask({"op": "spawn", "name": name, "env": env})["pid"]
+
+    def run(self, argv, env, via=None):
+        req = {"op": "run", "argv": [str(a) for a in argv], "env": env}
+        r = self._ask({"op": "call", "name": via, "req": req}) if via else self._ask(req)
+        return r["rc"], r["out"], r["err"]
+
+    def close(self):
+        if self.p.poll() is None:
+            self.p.stdin.close()
+            self.p.wait(timeout=60)
+
+
+def pane_tree(test, tmp, *handles):
+    """A pty host with one pane process per handle, each with an environment that names it (as
+    Orca's and posix's panes do), alive until the test ends: what registration finds as the
+    worker's root. The first pane is named "pane", the rest by their handle."""
+    tree = ProcTree(tmp)
+    test.addCleanup(tree.close)
+    for i, handle in enumerate(handles):
+        tree.spawn("pane" if i == 0 else handle, {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": handle})
+    return tree
+
+
+def process_key(pid):
+    spec = importlib.util.spec_from_file_location("spawn_identity_under_test", IDENTITY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.key(pid)
 
 
 def run(title, agent="claude", effort="high", task="task_test"):
@@ -44,7 +124,7 @@ def run_spawn(args, env_extra=None, task_list=None):
     (written to a file the stub cats, so no shell quoting of the JSON).
     """
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca"}
+        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca"}
         if task_list is not None:
             payload = Path(tmp) / "task-list.json"
             payload.write_text(json.dumps(task_list))
@@ -535,7 +615,7 @@ esac
         return log
 
     def _run(self, tmp, args, env_extra=None):
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(SPAWN), *args], env=env,
@@ -924,7 +1004,7 @@ esac
             shutil.copytree(ROOT / "runtime", root / "runtime",
                             ignore=shutil.ignore_patterns("__pycache__"))
         (root / "runtime" / "pins.json").write_text(json.dumps(pins))
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(root / "runtime" / "scripts" / "spawn_worker.sh"), *args],
@@ -1414,7 +1494,7 @@ class TestNonOrcaLaunchTableIsBasePy(unittest.TestCase):
 
     def test_orca_runtime_launch_rows_are_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                    "SW_PRINT_LAUNCH": "1", "PROFILE": "ro"}
             p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                env=env, capture_output=True, text=True)
@@ -1461,7 +1541,7 @@ class TestParentProfileNarrowing(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --dangerously-skip-permissions"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_SANDBOX_PROFILE": "rw",
                    "OPEN_FLEET_PARENT_PROFILE": "danger"}
@@ -1562,6 +1642,7 @@ class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
         """Launch through the stubbed lane with HOME=tmp; return the --command terminal create
         received (None on the supervised lane)."""
         self._stub(tmp)
+        pane_tree(self, tmp, "term_shell1", "term_agent1")  # the panes the stub's handles name
         stub = Path(tmp) / "orca"
         stub.write_text(stub.read_text().replace(
             '*terminal\\ create*)   cat',
@@ -1576,7 +1657,7 @@ class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
 
     def as_worker(self, tmp, handle, env_extra, args=("task_child", "current", "child", "claude", "high")):
         """spawn_worker.sh run FROM the pane `handle` (its ORCA_TERMINAL_HANDLE), to the print hook."""
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": handle, **env_extra}
         return subprocess.run(["bash", str(SPAWN), *args], env=env, capture_output=True, text=True)
 
@@ -1693,7 +1774,7 @@ class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --permission-mode plan"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "OPEN_FLEET_RUNTIME": "posix",
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro", "OPEN_FLEET_WORKER_ID": "w1"}
             p = subprocess.run(["bash", str(SPAWN), "task_x", "path:/tmp/of-wt", "t", "claude"],
                                env=env, capture_output=True, text=True)
@@ -1718,7 +1799,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
 
     def _run(self, tmp, args, env_extra=None):
         """The lane harness, with HOME=tmp unless env_extra says otherwise (None unsets it)."""
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1", **(env_extra or {})}
         return subprocess.run(["bash", str(SPAWN), *args], env={k: v for k, v in env.items() if v is not None},
                               capture_output=True, text=True)
@@ -1742,10 +1823,13 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
         return sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) if d.is_dir() else []
 
     def reserve(self, tmp, profile, launcher, pid):
+        """A launch reservation as spawn_worker.sh writes one: `<profile> <launcher pane>
+        <launcher pid> <launcher start>` (a dead launcher's start is 0)."""
         d = self.registry(tmp) / ".pending"
         d.mkdir(parents=True, exist_ok=True)
-        (d / "r-test").write_text(f"{profile} {launcher} {pid}\n")
-        return d / "r-test"
+        start = (process_key(pid) or f"{pid}.0").split(".", 1)[1]
+        (d / "r.test").write_text(f"{profile} {launcher} {pid} {start}\n")
+        return d / "r.test"
 
     def hook(self, tmp, verb, handle, children, before=""):
         """Make the stubbed `verb` run each child spawn FROM the launched pane `handle` before the
@@ -1803,6 +1887,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
         # override) before terminal create has returned the handle its record is keyed by.
         with tempfile.TemporaryDirectory() as tmp:
             self._stub(tmp)
+            pane_tree(self, tmp, "term_shell1")  # the pane the launch's command runs in
             child = self.hook(tmp, "terminal create", "term_shell1",
                               [{**self.RW, "RESERVATION_WAIT_SECS": "0"},
                                {**self.BYPASS, "RESERVATION_WAIT_SECS": "0"}])
@@ -1824,6 +1909,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
     def test_a_spawn_run_inside_worker_start_is_capped(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._stub(tmp)
+            pane_tree(self, tmp, "term_agent1")
             child = self.hook(tmp, "worker-start", "term_agent1",
                               [{**self.DANGER, "RESERVATION_WAIT_SECS": "0"},
                                {**self.BYPASS, "RESERVATION_WAIT_SECS": "0"}])
@@ -1838,31 +1924,28 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
             self.assertEqual((self.registry(tmp) / "term_agent1").read_text().strip(), "rw")
             self.assertEqual(self.pending(tmp), [])
 
-    def test_a_reservation_caps_every_unrecorded_pane_but_its_launcher(self):
+    def test_a_reservation_caps_every_session_nothing_identifies(self):
+        # Codex round 3 (P1): a session with no pane handle — a harness that drops ORCA_*, as
+        # Codex's does — was NOT capped by an open reservation (this test used to pin that). The
+        # handle a session claims exempts nothing either: only a coordinator ANCHOR does
+        # (TestIdentitySurvivesAScrubbedEnvironment).
         with tempfile.TemporaryDirectory() as tmp:
-            self.reserve(tmp, "ro", "term_coord", os.getpid())  # in flight: its owner is alive
+            self.reserve(tmp, "ro", "term_coord", os.getpid())  # in flight: its launcher is alive
             fast = {**self.RW, "RESERVATION_WAIT_SECS": "0"}
-            r = self.as_worker(tmp, "term_coord", fast)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("LAUNCH=", r.stdout)
-            for env in ({"ORCA_TERMINAL_HANDLE": "term_other"}, {"OPEN_FLEET_TERMINAL_HANDLE": "term_other"}):
+            for env in ({"ORCA_TERMINAL_HANDLE": "term_coord"}, {"ORCA_TERMINAL_HANDLE": "term_other"},
+                        {"OPEN_FLEET_TERMINAL_HANDLE": "term_other"}, {}):
                 with self.subTest(env=env):
                     r = self.as_worker(tmp, "", {**fast, **env})
                     self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                     self.assertIn("parent profile 'ro'", r.stderr)
                     self.assertNotIn("LAUNCH=", r.stdout)
-            # A session outside any runtime pane has no record to wait for, so a reservation does
-            # not cap it (a worker whose harness drops ORCA_TERMINAL_HANDLE is bounded by its
-            # environment alone — the documented residual).
-            r = self.as_worker(tmp, "", fast)
-            self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_a_waiting_spawn_reads_the_record_that_replaces_the_reservation(self):
         # The wait resolves to the pane's own record, not to a blanket cap: the reservation says
         # ro, the record that replaces it says rw, and the child is judged against rw.
         with tempfile.TemporaryDirectory() as tmp:
             reservation = self.reserve(tmp, "ro", "term_coord", os.getpid())
-            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                    "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": "term_new",
                    "RESERVATION_WAIT_SECS": "60", **self.DANGER}
             p = subprocess.Popen(["bash", str(SPAWN), "task_child", "current", "child", "claude", "high"],
@@ -1931,6 +2014,148 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
                 r = self._run(tmp, self.ARGS, {**env, "HOME": tmp})
                 self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertEqual(self.pending(tmp), [], r.stderr)
+
+
+class TestIdentitySurvivesAScrubbedEnvironment(unittest.TestCase):
+    """W4-04, Codex round 3 (P1): an Orca ro Codex worker whose shell drops ORCA_* (Codex's
+    shell_environment_policy does, as ordinary behaviour) had no pane handle, no profile and no
+    worker identity left, and `PROFILE=rw ORCA_COORD_ALLOW_AUTONOMOUS_WRITE=1 spawn_worker.sh`
+    ran uncapped: a missing handle read as "coordinator". Registration now records the worker's
+    pane ROOT process (pid + start time, found by the handle in the pane's initial environment)
+    and a spawn walks its own ancestry; a session nothing identifies inside a provider's process
+    tree is capped at the live workers; only a coordinator ANCHOR (its own processes, recorded by
+    an uncapped launch) is exempt. Real process trees (ProcTree), no sleeps. And (P1) a
+    worker-start response that names a handle registers it whatever the exit code."""
+
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    _stub = TestSpawnWorkerV5Lanes._stub
+    RW = {"PROFILE": "rw", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1"}
+    DANGER = {"PROFILE": "danger", "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1"}
+    BYPASS = {"PROFILE": "ro", "WORKER_CMD": "claude --dangerously-skip-permissions",
+              "ORCA_COORD_ALLOW_CMD_OVERRIDE": "1"}
+    CHILD = ["bash", str(SPAWN), "task_child", "current", "child", "claude", "high"]
+    LAUNCH = ["bash", str(SPAWN), "task_test", "path:/tmp/wt", "t"]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._stub(self.tmp)
+
+    def tree(self):
+        t = ProcTree(self.tmp)
+        self.addCleanup(t.close)
+        return t
+
+    def lane(self, **extra):
+        """A coordinator's launch environment (the stubbed runtime)."""
+        return {"PATH": f"{self.tmp}:/usr/bin:/bin", "SP": self.tmp, "HOME": self.tmp,
+                "ORCA_CLI_COMMAND": "orca", "SETTLE_SECS": "0", "SUBMIT_SECS": "1", **extra}
+
+    def scrubbed(self, **extra):
+        """What survives a harness that drops ORCA_*: no pane handle, no profile, no worker id."""
+        return {"PATH": "/usr/bin:/bin", "HOME": self.tmp, "SP": self.tmp, "SW_PRINT_LAUNCH": "1",
+                "OPEN_FLEET_CLI_COMMAND": "orca", **extra}
+
+    def roots(self):
+        d = Path(self.tmp) / ".open-fleet" / "spawn-profiles" / ".roots"
+        return sorted(p.read_text().split()[:2] for p in d.iterdir() if not p.name.startswith(".")) if d.is_dir() else []
+
+    def assert_capped(self, result, needle):
+        rc, out, err = result
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn(needle, err)
+        self.assertNotIn("LAUNCH=", out)
+
+    def test_a_scrubbed_ro_worker_is_capped_by_its_process_tree(self):
+        # The Codex round 3 PoC, from inside the worker's pane with ORCA_* dropped.
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_shell1"})
+        agent = self.tree()  # the coordinator's agent process, outside every provider tree
+        rc, out, err = agent.run(self.LAUNCH, self.lane(PROFILE="ro"))
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.roots(), [["ro", "term_shell1"]])
+        self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.RW), via="pane"), "parent profile 'ro'")
+        self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.BYPASS), via="pane"), "coordinator-only")
+        # A process in the same provider tree that nothing identifies (a pane with no record),
+        # while a capped worker is live: capped, not read as a coordinator.
+        pty.spawn("other", {"PATH": "/usr/bin:/bin"})
+        rc, out, err = pty.run(self.CHILD, self.scrubbed(**self.RW), via="other")
+        self.assert_capped((rc, out, err), "parent profile 'ro'")
+        self.assertIn("inside a provider's process tree", err)
+        # The coordinator outside any pane keeps rw and its overrides.
+        rc, out, err = agent.run(self.CHILD, self.scrubbed(**self.RW))
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err = agent.run(self.CHILD, self.scrubbed(**self.BYPASS))
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("LAUNCH=claude --dangerously-skip-permissions", out)
+
+    def test_a_coordinator_inside_a_pane_is_anchored_by_its_own_launch(self):
+        pty = self.tree()
+        pty.spawn("coord", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_coord"})
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_shell1"})
+        rc, out, err = pty.run(self.LAUNCH, self.lane(PROFILE="ro", ORCA_TERMINAL_HANDLE="term_coord"), via="coord")
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err = pty.run(self.CHILD, self.scrubbed(**self.RW, ORCA_TERMINAL_HANDLE="term_coord"), via="coord")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("SPAWN=NOTE", err)
+        self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.RW), via="pane"), "parent profile 'ro'")
+
+    def test_a_scrubbed_rw_worker_spawns_within_its_cap(self):
+        # Two live workers: a ro one and a rw one. The rw worker is capped by ITS OWN root (rw),
+        # not by the most restrictive live worker (ro), which is what a session nothing
+        # identifies gets.
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_agent1"})
+        pty.spawn("ro-pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_shell1"})
+        agent = self.tree()
+        rc, out, err = agent.run(self.LAUNCH, self.lane(PROFILE="ro"))  # the custom-argv lane
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err = agent.run(self.LAUNCH, self.lane(**self.RW))  # the supervised lane
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.roots(), [["ro", "term_shell1"], ["rw", "term_agent1"]])
+        self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.RW), via="ro-pane"), "parent profile 'ro'")
+        rc, out, err = pty.run(self.CHILD, self.scrubbed(**self.RW), via="pane")
+        self.assertEqual(rc, 0, out + err)
+        self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.DANGER), via="pane"),
+                           "child PROFILE=danger exceeds parent profile 'rw'")
+        # It really launches a ro child (the custom-argv lane, no pane handle in its env), and
+        # its launch, being capped, anchors nothing: the coordinator stays the only anchored one.
+        worker_lane = {k: v for k, v in self.lane(PROFILE="ro").items() if k != "ORCA_CLI_COMMAND"}
+        rc, out, err = pty.run(self.LAUNCH, {**worker_lane, "OPEN_FLEET_CLI_COMMAND": "orca"}, via="pane")
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err = agent.run(self.CHILD, self.scrubbed(**self.RW))
+        self.assertEqual(rc, 0, out + err)
+
+    def test_a_lookup_that_cannot_scan_is_not_a_lookup_that_found_nothing(self):
+        # 3 (no process carries the handle: no local worker, the reservation goes) must never be
+        # what a host that cannot list process environments answers: that is 1, and keeps it.
+        spec = importlib.util.spec_from_file_location("spawn_identity_scan", IDENTITY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        args = ["record-root", "--registry", self.tmp, "--handle", "term_none", "--profile", "ro", "--wait", "0"]
+        self.assertEqual(mod.main(args), 3)
+        failed = subprocess.CompletedProcess([], 1, "", "ps: illegal option -- E")
+        with mock.patch.object(mod, "PROC", Path(self.tmp) / "no-proc"), \
+                mock.patch.object(mod.subprocess, "run", return_value=failed):
+            self.assertEqual(mod.main(args), 1)
+        with mock.patch.object(mod, "PROC", Path(self.tmp) / "no-proc"), \
+                mock.patch.object(mod.subprocess, "run", side_effect=OSError("no ps")):
+            self.assertEqual(mod.main(args), 1)
+
+    def test_a_nonzero_start_that_names_a_handle_is_registered(self):
+        # Codex round 3 (P1): a ready receipt from a worker-start that exited nonzero read as
+        # failed, skipped registration and dropped the reservation: a live worker had neither.
+        self._stub(self.tmp, ws_rc=1)
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_agent1"})
+        agent = self.tree()
+        rc, out, err = agent.run(self.LAUNCH, self.lane(**self.RW))
+        self.assertNotEqual(rc, 0, out + err)  # still reported as the failure it is
+        record = Path(self.tmp) / ".open-fleet" / "spawn-profiles" / "term_agent1"
+        self.assertEqual(record.read_text().strip(), "rw")
+        self.assertEqual(self.roots(), [["rw", "term_agent1"]])
+        self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.DANGER), via="pane"),
+                           "exceeds parent profile 'rw'")
 
 
 class TestNonOrcaDanger(unittest.TestCase):
@@ -2054,7 +2279,7 @@ class TestRuntimeNameIsCaseInsensitive(unittest.TestCase):
         for spelled in ("ORCA", "Orca", " orca "):
             for var in ("OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME"):
                 with self.subTest(runtime=spelled, var=var), tempfile.TemporaryDirectory() as tmp:
-                    env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+                    env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                            "SW_PRINT_LAUNCH": "1", "PROFILE": "ro", var: spelled}
                     p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                        env=env, capture_output=True, text=True)
@@ -2198,7 +2423,7 @@ esac
 def run_orca_launch(agent, profile="ro", env_extra=None):
     """spawn_worker.sh up to its resolved launch (SW_PRINT_LAUNCH) ON ORCA: the custom-argv rows."""
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "ORCA_CLI_COMMAND": "orca",
+        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SW_PRINT_LAUNCH": "1", "PROFILE": profile, **(env_extra or {})}
         p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", agent, "high"],
                            env=env, capture_output=True, text=True)

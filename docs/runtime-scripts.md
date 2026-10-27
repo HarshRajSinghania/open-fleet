@@ -44,7 +44,7 @@ The remaining reference sections cover:
   [sending](#send_msgpy), [decision log](#decisionspy), [human asks](#hitl_askpy),
   [ask/reply loop](#hitl-looptemplatesh), [gate batches](#gate-batchpy),
   [one-way door registry](#one-way-doorsjson).
-- **Workers and workspace operations:** [spawn](#spawn_workersh), [workers](#worker_opspy),
+- **Workers and workspace operations:** [spawn](#spawn_workersh), [spawn identity](#spawn_identitypy), [workers](#worker_opspy),
   [tasks](#task_opspy), [terminals](#terminal_opspy), [worktrees](#worktree_opspy),
   [working-tree fingerprints](#wtreesh), [session search](#search_sessionspy) and its
   [episodic-hint provenance](#hint_provenancepy),
@@ -1908,6 +1908,28 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 > of these after the fact; refusing client-side keeps the mistake a usage error with
 > no dispatch touched.
 
+## `spawn_identity.py`
+
+Who is spawning, by process tree: the identity `spawn_worker.sh` reads when an environment says
+nothing (W4-04, Codex round 3). Source `runtime/scripts/spawn_identity.py`; behavior pinned by
+`tests/test_spawn_worker.py` (`TestIdentitySurvivesAScrubbedEnvironment`).
+
+Usage: `spawn_identity.py whoami --registry <dir> --pid <pid>` (one line per fact: `ROOT <profile>
+<key>` for each recorded worker root among the pid's ancestors, `INTREE`, `ANCHORED`, `LIVE
+<profile>` per live worker, `RESERVATION <profile> <in-flight> <path>` per open launch reservation
+the caller is not exempt from, `SELF <key>`); `spawn_identity.py record-root --registry <dir>
+--handle <h> --profile <p> [--launcher <pid>] [--wait <secs>]` (record the topmost process whose
+initial environment names pane `h` as a root, its parent as a host, and — with `--launcher`, for
+an uncapped launch only — the launcher's own ancestors below the one it shares with the worker
+as anchors). A key is `<pid>.<start time>`, so a reused pid never matches; dead roots, hosts and
+anchors are pruned on read, and an anchor stops counting once a live root or a host descends
+from it.
+
+Exits: 0 answered/recorded · 3 the lookup worked and no process carries the handle (no local
+worker process: `spawn_worker.sh` drops the reservation, the handle record stands) · 1 the
+processes cannot be listed or the ancestry is unreadable (`spawn_worker.sh` keeps the
+reservation, or caps the caller at `ro`).
+
 ## `spawn_worker.sh`
 
 Fail-closed Orca worker dispatch for fleet coordinators: supervised lane
@@ -1956,23 +1978,39 @@ reads `ro`, a foreign value refuses); the launch command itself is never changed
 depends on the pane's shell. Because the worker's command runs before the runtime returns its
 handle, each launch first RESERVES its profile in `~/.open-fleet/spawn-profiles/.pending/`
 (before any task mutation or launch call; a reservation that cannot be written — `HOME` unset or
-unwritable — refuses the spawn, exit 2), and the pane's record replaces it. A session in a
-runtime pane (it carries `ORCA_TERMINAL_HANDLE` or `OPEN_FLEET_TERMINAL_HANDLE`) with no record of
-its own waits for every reservation another pane holds (`RESERVATION_WAIT_SECS`, default 120) and
-is then capped at the most restrictive one still open, so the absence of a record never reads as
-uncapped while a launch is unrecorded; the reserving pane itself is exempt.
-A launch that may have left a worker live with no record (no handle in the receipt, or a record
-that could not be written) KEEPS its reservation, says so, and it caps every unrecorded session
-until removed — on the custom-argv lane nothing is injected into such a pane. A runtime pane
-with `HOME` unset is capped at `ro`. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
+unwritable — refuses the spawn, exit 2), and the worker's records replace it. Identity does not
+rest on the environment alone, since a harness may drop `ORCA_*` from the worker's shell (Codex's
+`shell_environment_policy` does): for a worker that runs on this host as an Orca or posix pane,
+registration also records its pane ROOT process by pid and start time
+([`spawn_identity.py`](#spawn_identitypy) finds it by the handle in the pane's initial
+environment), and every spawn walks its own process ancestry, so a recorded root among its
+ancestors caps it whatever its environment says. A session that no record and no root identifies
+waits for every open reservation it is not exempt from (`RESERVATION_WAIT_SECS`, default 120) and
+is then capped at the most restrictive one still open; inside a provider's process tree (under a
+recorded pty host or tmux pane) it is capped at the most restrictive LIVE worker. Only an ANCHORED
+session is exempt: a process of a coordinator that launched a worker while uncapped (recorded at
+that launch: its ancestors below the one it shares with the worker), which no worker can descend
+from; and never from a reservation whose launch it descends from. A launch that may have left a
+worker live unrecorded — a receipt that names no handle, a handle record that cannot be written,
+or a host where the processes carrying a handle cannot be listed — KEEPS its reservation and
+says so, and it caps every unanchored session until removed; on the custom-argv
+lane a pane whose handle record fails gets no task. A lookup that works and finds no process
+carrying the handle (`SPAWN_ROOT_WAIT_SECS`, default 1) means the worker is not a local process
+(it exited, runs remotely or in another uid's container, or the backend is a dry run): its
+handle record is its record. A worker-start response that names a handle
+is registered whatever its exit code or verdict. A session whose identity cannot be read at all
+is capped at `ro`. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
 `OPEN_FLEET_WORKER_ID`, `OPEN_FLEET_UNIT_WORKTREE` or an `ORCA_` alias — with no profile in its
 environment or the registry is capped at `ro`, and `--parent-profile` cannot raise that (the flag
 only narrows). A capped session cannot use a command override (`WORKER_CMD`, `CLAUDE_CMD`,
-`CODEX_CMD`): overrides are a coordinator-only facility. All of it is the worker's own
-environment or a file its uid can write: it bounds the fleet's spawn path against an omitted or
-inherited profile, not a worker that unsets `ORCA_TERMINAL_HANDLE` (or whose harness drops it,
-as Codex's `shell_environment_policy` drops `ORCA_*`), edits the registry, or calls the runtime
-CLI or an agent directly. Documented refusals, not silent drops:
+`CODEX_CMD`): overrides are a coordinator-only facility. All of it is files the worker's uid can
+write and a process tree it runs in: it bounds the fleet's spawn path against an omitted,
+inherited or scrubbed profile, not a worker that edits the registry, calls the runtime CLI or an
+agent directly, or daemonizes out of its process tree after its root has exited (reparented to
+init, it descends from no recorded root or host). A worker whose HOME is not its coordinator's
+reads another registry, and a launch command that clears its own environment (`env -i …`)
+leaves no process carrying the handle; both are the coordinator's or the worker's own doing. On a host without `/proc`, roots are found through `ps -E` (BSD/macOS;
+unwitnessed there). CLI or an agent directly. Documented refusals, not silent drops:
 `--task-status`/`--task-ready` (a filtered view cannot verify deps, so the DAG check
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).

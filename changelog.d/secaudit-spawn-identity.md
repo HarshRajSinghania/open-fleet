@@ -6,10 +6,13 @@
   `spawn_worker.sh` records every launch's profile under the pane handle the runtime returns
   (`~/.open-fleet/spawn-profiles/`), so a spawn from that pane is capped at it on Orca as well as
   posix. Each launch reserves its profile there before any launch call (an unwritable registry or
-  an unset `HOME` refuses the spawn), and a session in a runtime pane with no record waits on
-  other panes' reservations and is then capped at any still open, so a worker that spawns
-  before its record is written is capped too; a launch that may have left a worker live
-  unrecorded keeps its reservation. A session carrying fleet worker identity with no profile is
+  an unset `HOME` refuses the spawn), and registration records the worker's pane root process by
+  pid and start time (`spawn_identity.py`), so a spawn is capped by its own process ancestry
+  even when its harness drops `ORCA_*`; a session nothing identifies waits on open reservations
+  and is capped at any still open, and inside a provider's process tree at the live workers,
+  unless it is an anchored coordinator. A launch that may have left a worker live unrecorded
+  keeps its reservation, and a worker-start response that names a handle is registered whatever
+  its exit code. A session carrying fleet worker identity with no profile is
   capped at `ro` and a `--parent-profile` flag cannot raise that; a capped session cannot use a
   command override. These are the worker's own environment and files: a guard on the spawn path,
   not a sandbox.
@@ -19,8 +22,8 @@
   `upstream_probe.py`. `sandbox_doctor.py` reads the recipe from recipe fields only, refuses a
   malformed recipe field, a repeated JSON key and a contradicting envelope, and reads placement
   claims in every spelling. `worker_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`,
-  `orca_cli.run_json`, `pm.py` and `spawn_worker.sh` print every receipt field escaped and on one
-  line; no body line, tail item or list row stands at column 0 in the shape of a line those
+  `orca_cli.run_json`, `pm.py` and `spawn_worker.sh` print every receipt field, and every error
+  and exception message (the provider-dispatch path included), escaped and on one line; no body line, tail item or list row stands at column 0 in the shape of a line those
   printers write (`KEY=`, `---`, `===`, a `(…)` marker, a printer's own `SUBJ:`/`ID:` headers),
   the first body line included;
   a failed sandbox doctor's output and `sandbox_doctor.py`'s reason print escaped; and a lone

@@ -169,9 +169,12 @@
 #   SETTLE_SECS               TUI settle delay (default 20 seconds) — custom-argv lane.
 #   SUBMIT_SECS               how long terminal send waits to observe the submit (default 30) — the
 #                             ro claude no-inject fallback (#680).
-#   RESERVATION_WAIT_SECS     how long a session with no spawn record waits for other panes' launch
+#   RESERVATION_WAIT_SECS     how long a session nothing identifies waits for open launch
 #                             reservations to resolve before it is capped at them (default 120;
 #                             0 caps at once). Lowering it only caps sooner (W4-04).
+#   SPAWN_ROOT_WAIT_SECS      how long registration looks for the process carrying a new pane's
+#                             handle (default 1). Lowering it only gives up sooner, which keeps
+#                             the launch reservation (W4-04).
 set -Eeuo pipefail  # -E: ERR trap fires inside functions (orca_json) too
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # sibling scripts (sandbox_doctor.py)
 # The CLI command name, resolved the way upstream documents it (#510): ORCA_CLI_COMMAND when set,
@@ -463,7 +466,7 @@ from runtime.providers import ProviderError, active_provider_name
 try:
     print(active_provider_name())
 except ProviderError as err:
-    print(err.message, file=sys.stderr)
+    print("".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(err.message)), file=sys.stderr)
     raise SystemExit(2)
 PY
 ); then
@@ -494,73 +497,83 @@ profile_rank() { case "$1" in ro) echo 0 ;; rw) echo 1 ;; danger) echo 2 ;; *) e
 # under the pane handle Orca (or posix) gives the worker, which its pane then carries as
 # ORCA_TERMINAL_HANDLE. A spawn from a recorded pane is capped at that record; an empty record
 # fails safe (ro), a foreign value refuses.
-# The ABSENCE of a record never reads as uncapped for a session that may be a worker (Codex round
-# 2): the worker's command runs before its handle is known (terminal create and worker-start both
-# return it after starting the command), so each launch first RESERVES its profile in .pending/
-# (`<profile> <launcher pane> <launcher pid>`), and a launch whose reservation cannot be written
-# is refused. A session in a runtime pane (it carries a pane handle) with no record of its own
-# waits for every reservation another pane holds (RESERVATION_WAIT_SECS, default 120) and re-reads
-# its record each time; whatever is still open then caps it at the most restrictive reserved
-# profile. A session with no pane handle has no record to wait for, and is bounded by its
-# environment alone (the residual below: one that unsets the handle). A reservation's launcher pane is exempt
-# (the coordinator is not the pane it is launching), and one whose launcher is gone is not
-# waited on: it was kept because a worker may be live with no record, and it caps until removed.
-SPAWN_REGISTRY="${HOME:+$HOME/.open-fleet/spawn-profiles}"
+# The ABSENCE of a record never reads as uncapped for a session that may be a worker (Codex rounds
+# 2 and 3). The worker's command runs before its handle is known (terminal create and worker-start
+# both return it after starting the command), so each launch first RESERVES its profile in
+# .pending/ (`<profile> <launcher pane> <launcher pid> <launcher start>`); a launch whose
+# reservation cannot be written is refused. And a harness may drop ORCA_* from the worker's shell
+# (Codex's shell_environment_policy does), so the handle is not the only identity: registration
+# also records the worker's pane ROOT process by pid and start time (spawn_identity.py, found by
+# the handle in the pane's initial environment), and a spawn walks its own ancestry, so a ro
+# worker is capped at ro whatever its environment says. A session no record and no root identifies:
+#   - waits for every open reservation it is not exempt from (RESERVATION_WAIT_SECS, default 120),
+#     re-reading its identity each time, and is then capped at the most restrictive one still open;
+#   - is capped at the most restrictive LIVE worker when it runs inside a provider's process tree
+#     (under a recorded host: the pty host, a tmux pane) — unless it is ANCHORED: a process of the
+#     coordinator that launched a worker while uncapped, which no worker can descend from. Only an
+#     anchored session is exempt from a reservation, and never from one whose launch it descends
+#     from. A reservation whose launcher is gone is not waited on: it was kept because its worker
+#     may be live unrecorded, and it caps until removed.
+# The residual: a worker that daemonizes out of its process tree AND whose root has exited.
+SPAWN_HOME="${HOME:-}"
+if [ -z "$SPAWN_HOME" ]; then  # a scrubbed HOME still reads the uid's registry
+  SPAWN_HOME=$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)
+fi
+SPAWN_REGISTRY="${SPAWN_HOME:+$SPAWN_HOME/.open-fleet/spawn-profiles}"
 SPAWN_PENDING="${SPAWN_REGISTRY:+$SPAWN_REGISTRY/.pending}"
 registry_key_ok() { case "$1" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._:-]*) return 1 ;; esac; return 0; }
 own_handles=()
 for _ph in "${ORCA_TERMINAL_HANDLE:-}" "${OPEN_FLEET_TERMINAL_HANDLE:-}"; do
   if registry_key_ok "$_ph"; then own_handles+=("$_ph"); fi
 done
-read_own_records() {  # registered_profiles ← the record of each handle this pane carries
-  registered_profiles=()
-  [ -n "$SPAWN_REGISTRY" ] || return 0
+# identify: registered_profiles ← this pane's handle records and every recorded root among this
+# process's ancestors; plus the reservations, liveness and tree position whoami reports.
+identify() {
+  registered_profiles=(); open_reservations=(); open_profiles=(); live_profiles=()
+  reservations_in_flight=0; in_tree=no; anchored=no; self_key=""; identity_ok=1
+  [ -n "$SPAWN_REGISTRY" ] || { identity_ok=0; return 0; }
+  local _out _k _a _b _c
+  if ! _out=$(python3 -I "$HERE/spawn_identity.py" whoami --registry "$SPAWN_REGISTRY" --pid "$$" 2>/dev/null); then
+    identity_ok=0; return 0
+  fi
+  while read -r _k _a _b _c; do
+    case "$_k" in
+      ROOT) registered_profiles+=("$_a") ;;
+      LIVE) live_profiles+=("$_a") ;;
+      INTREE) in_tree="$_a" ;;
+      ANCHORED) anchored="$_a" ;;
+      SELF) self_key="$_a" ;;
+      RESERVATION)
+        open_profiles+=("$_a"); open_reservations+=("$_c")
+        if [ "$_b" = "1" ]; then reservations_in_flight=1; fi ;;
+    esac
+  done <<< "$_out"
   for _ph in ${own_handles[@]+"${own_handles[@]}"}; do
     [ -f "$SPAWN_REGISTRY/$_ph" ] || continue
     _rp=$(head -n 1 -- "$SPAWN_REGISTRY/$_ph" 2>/dev/null || true)
     registered_profiles+=("${_rp:-ro}")
   done
 }
-scan_reservations() {  # open_reservations/open_profiles ← every reservation another pane holds
-  open_reservations=(); open_profiles=(); reservations_in_flight=0
-  [ -n "$SPAWN_PENDING" ] && [ -d "$SPAWN_PENDING" ] || return 0
-  for _rf in "$SPAWN_PENDING"/*; do
-    _rv_p=""; _rv_l=""; _rv_pid=""
-    if ! { read -r _rv_p _rv_l _rv_pid _ < "$_rf"; } 2>/dev/null && [ ! -f "$_rf" ]; then continue; fi
-    _mine=0
-    for _ph in ${own_handles[@]+"${own_handles[@]}"}; do
-      if [ "$_rv_l" = "$_ph" ]; then _mine=1; fi
-    done
-    if [ "$_mine" = "1" ]; then continue; fi
-    open_reservations+=("$_rf"); open_profiles+=("${_rv_p:-ro}")
-    case "$_rv_pid" in
-      ""|*[!0-9]*) ;;
-      *) if kill -0 "$_rv_pid" 2>/dev/null; then reservations_in_flight=1; fi ;;
-    esac
-  done
-}
-read_own_records
-if [ -z "$SPAWN_REGISTRY" ] && [ "${#own_handles[@]}" -gt 0 ]; then
+identify
+if [ "$identity_ok" = "0" ]; then
   registered_profiles=(ro)
-  echo "SPAWN=NOTE task=${tname} this session runs in a runtime pane (${own_handles[0]}) but HOME is unset, so its spawn record cannot be read: the child is capped at ro rather than left uncapped (W4-04)" >&2
-elif [ "${#registered_profiles[@]}" -eq 0 ] && [ "${#own_handles[@]}" -gt 0 ]; then
+  echo "SPAWN=NOTE task=${tname} this session's spawn identity cannot be read (no registry location, or its process ancestry is unreadable): the child is capped at ro rather than left uncapped (W4-04)" >&2
+elif [ "${#registered_profiles[@]}" -eq 0 ]; then
   _rwait="${RESERVATION_WAIT_SECS:-120}"
   case "$_rwait" in ""|*[!0-9]*) _rwait=120 ;; esac
   _rdeadline=$((SECONDS + _rwait))
-  while :; do
-    # Reservations FIRST: a launch writes its record before it drops its reservation, so a
-    # reservation gone at this scan means the record (if this pane has one) is readable below.
-    scan_reservations
-    read_own_records
-    if [ "${#registered_profiles[@]}" -gt 0 ] || [ "$reservations_in_flight" = "0" ] \
-       || [ "$SECONDS" -ge "$_rdeadline" ]; then
-      break
-    fi
+  while [ "${#registered_profiles[@]}" -eq 0 ] && [ "$reservations_in_flight" = "1" ] \
+        && [ "$SECONDS" -lt "$_rdeadline" ]; do
     sleep 0.2
+    identify
   done
   if [ "${#registered_profiles[@]}" -eq 0 ] && [ "${#open_reservations[@]}" -gt 0 ]; then
     registered_profiles=("${open_profiles[@]}")
-    echo "SPAWN=NOTE task=${tname} this session has no spawn record, and ${#open_reservations[@]} launch(es) in the spawn registry have not recorded their pane (${open_reservations[*]}): it may be the worker one of them started, so the child is capped at the most restrictive reserved profile (W4-04). A reservation whose launcher is gone was kept because its worker may be live unrecorded; remove it once worker-list shows no such worker." >&2
+    echo "SPAWN=NOTE task=${tname} this session has no spawn record, and ${#open_reservations[@]} launch(es) in the spawn registry have not recorded their worker (${open_reservations[*]}): it may be the worker one of them started, so the child is capped at the most restrictive reserved profile (W4-04). A reservation whose launcher is gone was kept because its worker may be live unrecorded; remove it once worker-list shows no such worker." >&2
+  elif [ "${#registered_profiles[@]}" -eq 0 ] && [ "$in_tree" = "yes" ] && [ "$anchored" = "no" ] \
+       && [ "${#live_profiles[@]}" -gt 0 ]; then
+    registered_profiles=("${live_profiles[@]}")
+    echo "SPAWN=NOTE task=${tname} this session runs inside a provider's process tree, nothing identifies it (no spawn record, no recorded worker root among its ancestors, no coordinator anchor), and ${#live_profiles[@]} capped worker(s) are live: it is capped at the most restrictive of them rather than read as a coordinator (W4-04)" >&2
   fi
 fi
 known_parent() {  # refuse, in this shell (never a subshell), a parent profile outside the keyset
@@ -601,9 +614,13 @@ if [ -n "${PARENT_PROFILE:-}" ]; then
   known_parent "$PARENT_PROFILE"
   eff_parent_profile=$(fold_parent "$eff_parent_profile" "$PARENT_PROFILE")
 fi
-# register_spawn <handle>: record this launch's PROFILE under the pane handle it was given, THEN
-# drop its reservation (that order, so a reader never sees neither). A record that cannot be
-# written returns 1 and leaves the reservation in place, still capping every unrecorded session.
+# register_spawn <handle>: record this launch's PROFILE under the pane handle it was given and
+# under the worker's pane ROOT process (spawn_identity.py: the process whose initial environment
+# names the handle; an uncapped launcher also records its own anchors), THEN drop the reservation
+# (that order, so a reader never sees neither). Returns 1 when the handle record cannot be
+# written and 2 when the processes carrying the handle cannot be listed: either way the
+# reservation stays, still capping every session nothing else identifies. A scan that finds no
+# process (SPAWN_ROOT_WAIT_SECS, default 1) means no local worker process to record.
 register_spawn() {
   if ! registry_key_ok "$1"; then
     echo "SPAWN=WARNING task=${task} the launched pane's handle is not a registry key, so its PROFILE=${PROFILE} cannot be recorded under it (W4-04)" >&2
@@ -614,6 +631,31 @@ register_spawn() {
     rm -f -- "$SPAWN_REGISTRY/.$1.$$" 2>/dev/null || true
     echo "SPAWN=WARNING task=${task} could not record PROFILE=${PROFILE} for pane $1 in the spawn registry (${SPAWN_REGISTRY}) (W4-04)" >&2
     return 1
+  fi
+  local _wait="${SPAWN_ROOT_WAIT_SECS:-1}" _anchor=()
+  case "$_wait" in ""|*[!0-9.]*) _wait=1 ;; esac
+  # Only a worker that runs HERE, as a process carrying its pane handle, has a process tree to
+  # record: Orca's and posix's panes on this host. A remote placement (--environment, --on) or
+  # another runtime's worker (an OpenHands conversation, a hosted agent) has none on this host,
+  # and its handle record is its record.
+  if { [ "$ACTIVE_RUNTIME" != "orca" ] && [ "$ACTIVE_RUNTIME" != "posix" ]; } \
+     || [ "$ENV_GIVEN" = "1" ] || [ "$ON_GIVEN" = "1" ]; then
+    if [ -z "$launch_reservation" ] || rm -f -- "$launch_reservation" 2>/dev/null; then
+      launch_reservation=""; keep_reservation=0
+    fi
+    return 0
+  fi
+  if [ -z "$eff_parent_profile" ]; then _anchor=(--launcher "$$"); fi  # only an uncapped launcher anchors
+  local _rr=0
+  python3 -I "$HERE/spawn_identity.py" record-root --registry "$SPAWN_REGISTRY" --handle "$1" \
+    --profile "$PROFILE" --wait "$_wait" ${_anchor[@]+"${_anchor[@]}"} >/dev/null 2>&1 || _rr=$?
+  # 3: the scan worked and no process carries the handle — the worker is not a local process (it
+  # exited, runs remotely or in another uid's container, or the backend is a dry run), so nothing
+  # on this host can spawn under it and its handle record is its record. Anything else unproven
+  # (1: no way to scan) keeps the reservation.
+  if [ "$_rr" != "0" ] && [ "$_rr" != "3" ]; then
+    echo "SPAWN=WARNING task=${task} pane $1 is recorded, but the processes carrying its handle could not be listed, so its worker's process tree is NOT: the launch reservation stays, capping every session nothing else identifies, until it is removed (W4-04)" >&2
+    return 2
   fi
   if [ -z "$launch_reservation" ] || rm -f -- "$launch_reservation" 2>/dev/null; then
     launch_reservation=""; keep_reservation=0
@@ -979,7 +1021,8 @@ try:
     print(launch["shell"])
     print(launch["profile_flag"])
 except ProviderError as err:
-    print(f"spawn_worker: base.py has no {sys.argv[3]} launch for {sys.argv[2]}: {err.message}", file=sys.stderr)
+    msg = "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(err.message))
+    print(f"spawn_worker: base.py has no {sys.argv[3]} launch for {sys.argv[2]}: {msg}", file=sys.stderr)
 PY
 }
 base_profile_flag=""
@@ -1136,12 +1179,12 @@ fi
 # with the pane's record; the EXIT trap drops it on every path where no worker was started.
 step=reserve-launch
 _rtmp=""
-if [ -z "$SPAWN_REGISTRY" ] || ! { mkdir -p -m 700 -- "$SPAWN_REGISTRY" && mkdir -p -m 700 -- "$SPAWN_PENDING" \
+if [ -z "${HOME:-}" ] || [ -z "$SPAWN_REGISTRY" ] || ! { mkdir -p -m 700 -- "$SPAWN_REGISTRY" && mkdir -p -m 700 -- "$SPAWN_PENDING" \
     && _rtmp=$(mktemp "$SPAWN_PENDING/.r.XXXXXXXX") \
-    && printf '%s %s %s\n' "$PROFILE" "${own_handles[0]:--}" "$$" > "$_rtmp" \
+    && printf '%s %s %s %s\n' "$PROFILE" "${own_handles[0]:--}" "${self_key%%.*}" "${self_key#*.}" > "$_rtmp" \
     && mv -f -- "$_rtmp" "$SPAWN_PENDING/r.$$.${_rtmp##*.}"; } 2>/dev/null; then
   if [ -n "$_rtmp" ]; then rm -f -- "$_rtmp" 2>/dev/null || true; fi
-  echo "SPAWN=REFUSED task=${task} cannot reserve this launch in the spawn registry (${SPAWN_REGISTRY:-HOME is unset}): a worker launched without a record would spawn uncapped, so nothing is launched (W4-04)" >&2
+  echo "SPAWN=REFUSED task=${task} cannot reserve this launch in the spawn registry ($([ -n "${HOME:-}" ] && printf '%s' "$SPAWN_REGISTRY" || printf 'HOME is unset')): a worker launched without a record would spawn uncapped, so nothing is launched (W4-04)" >&2
   exit 2
 fi
 launch_reservation="$SPAWN_PENDING/r.$$.${_rtmp##*.}"
@@ -1425,6 +1468,8 @@ if state == "outcome_unknown":
     raise SystemExit(0)
 if state is not None and state != "ready":
     print(f"VERDICT=failed STATE={_f(state)}")
+    if h:  # a receipt naming a handle may have a live worker behind it: the shell registers it
+        print(f"HANDLE={_f(h)} READY={_f(state)}")
     raise SystemExit(0)
 
 if state is None:
@@ -1555,15 +1600,19 @@ PY
   # already has its task, so a record that cannot be written (or a receipt naming no handle)
   # keeps the reservation, which goes on capping every unrecorded session; refused and failed
   # verdicts started no worker, and drop it.
+  # Any response that NAMES a handle may have a live worker behind it, whatever the exit code and
+  # whatever the verdict (Codex round 3: a ready receipt from a call that exited nonzero read as
+  # failed, skipped registration and dropped the reservation, so a live worker had neither).
   step=register-spawn
-  case "$verdict" in
-    ready|unknown|unusable)
-      ws_handle=$(printf '%s\n' "$payload" | sed -n 's/^HANDLE=\([^ ]*\) READY=.*/\1/p' | head -n 1)
-      if [ -n "$ws_handle" ] && ! register_spawn "$ws_handle"; then
-        echo "SPAWN=WARNING task=${task} worker ${ws_handle} is live with no spawn record; its launch reservation stays instead (W4-04)" >&2
-      fi ;;
-    *) keep_reservation=0 ;;
-  esac
+  ws_handle=$(printf '%s\n' "$payload" | sed -n 's/^HANDLE=\([^ ]*\) READY=.*/\1/p' | head -n 1)
+  if [ -n "$ws_handle" ]; then
+    _rs=0; register_spawn "$ws_handle" || _rs=$?
+    if [ "$_rs" = "1" ]; then
+      echo "SPAWN=WARNING task=${task} worker ${ws_handle} may be live with no spawn record; its launch reservation stays instead (W4-04)" >&2
+    fi
+  else
+    case "$verdict" in ready|unknown|unusable) : ;; *) keep_reservation=0 ;; esac
+  fi
 
   step=verify-ready
   case "$verdict" in
@@ -1631,7 +1680,8 @@ PY
   # The record replaces the reservation before anything is injected. If it cannot be written the
   # pane gets no task, and its reservation stays (the EXIT trap says so), capping it regardless.
   step=register-spawn
-  if ! register_spawn "$h"; then
+  _rs=0; register_spawn "$h" || _rs=$?
+  if [ "$_rs" = "1" ]; then
     echo "SPAWN=FAILED task=${task} step=${step} rc=1 — pane ${h} is LIVE but its PROFILE=${PROFILE} could not be recorded, so nothing was injected into it: close it (${ORCA_BIN} terminal close --terminal ${h}) (W4-04)" >&2
     exit 1
   fi

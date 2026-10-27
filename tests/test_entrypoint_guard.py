@@ -54,6 +54,8 @@ ENTRY_POINTS = (
     "runtime/scripts/diff_scope.py",
     "runtime/scripts/chain_check.py",
     "runtime/scripts/orca_cli.py",
+    # spawn_worker.sh's identity reader (W4-04): it decides a spawn's cap.
+    "runtime/scripts/spawn_identity.py",
     "scripts/bind_check.py",
     "scripts/validate.py",
     "scripts/hint_replay.py",

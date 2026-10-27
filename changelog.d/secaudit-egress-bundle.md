@@ -20,7 +20,9 @@
   bytes the build writes anyway, so a forged marker with true digests deletes or overwrites
   nothing, inside a mission directory too; otherwise an overwrite refuses and a stale file is left
   in place and reported. Every check, delete and write walks `--out` from one directory handle
-  without following a link; a marker naming anything a build does not write, carrying a malformed
+  without following a link, and each overwrite or delete is one atomic exchange or quarantine
+  rename whose displaced file must be the exact file checked (inode and sha256) before it is
+  destroyed, else it is put back and the build refuses; a marker naming anything a build does not write, carrying a malformed
   name, or that is a symlink or FIFO refuses; a mission that ships `.gitignore`, `.gitattributes`,
   `.gitmodules` or `.git` fails the build; and a `--out` built before digests or without a build
   record refuses once if the build changes anything there ([install](../docs/install.md)).
@@ -35,7 +37,9 @@
   pins the Claude Code installer and binary by sha256 ([live harness](../docs/guides/live-harness.md)).
   `search_sessions.py` reads only regular files (a link, FIFO or device is said, never opened) and
   only a SQLite store's plain tables' stored columns (never a view, virtual table or generated
-  column), capped per file and per scan as the bytes arrive; a `.zst` transcript is walked frame
+  column), capped per file and per scan as the bytes arrive, a row's stored size charged as
+  SQLite reads it so no value past either cap ever reaches Python, and a store over 1 GiB never
+  opened; a `.zst` transcript is walked frame
   by frame in linear work, a damaged tail kept up to its last whole frame and said; a record nested
   past the parser's depth is skipped, never fatal; and a store swapped for a FIFO during SQLite's own
   open fails closed and is said, never hangs recall.

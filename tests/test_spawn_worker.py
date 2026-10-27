@@ -215,6 +215,24 @@ class TestSpawnWorkerHardening(unittest.TestCase):
         self.assertNotEqual(key_a, key_b,
                             "tr-colliding titles must yield distinct scratch keys")
 
+    def test_a_long_title_is_bounded_and_stays_distinct(self):
+        # W4-12: the label is truncated BEFORE anything uses it as a filename or worktree name,
+        # and the checksum still covers the WHOLE title, so two titles that differ only past
+        # the cut keep distinct labels.
+        head = "Fix the flaky retry loop " + "y" * 400
+        keys = []
+        for tail in ("a", "b"):
+            rc, out, err = run(head + tail)
+            self.assertEqual(rc, 0, err)
+            keys.append(next(ln for ln in out.splitlines()
+                             if ln.startswith("safe_title="))[len("safe_title="):])
+        self.assertNotEqual(keys[0], keys[1])
+        for key in keys:
+            self.assertLessEqual(len(key), 80, key)
+            self.assertTrue(key.startswith("Fix-the-flaky-retry-loop-yyy"), key)
+        rc, out, _ = run("short title")
+        self.assertIn("safe_title=short-title-", out)
+
     def test_invalid_effort_is_refused(self):
         # #43: effort is interpolated into the codex launch command; an unknown value must
         # be rejected (fail closed), never interpolated verbatim. Same strict contract as
@@ -555,6 +573,26 @@ esac
 
     def test_parallel_same_title_tasks_and_retries_keep_supervised_receipts(self):
         self._parallel_scratch_attempts(self.RW, "ws-*.json")
+
+    def test_a_long_title_still_dispatches_with_a_bounded_name(self):
+        # W4-12 (2026-10-27 audit): the title became `<slug>-<cksum>` with no length bound, so a
+        # 300-character title made every receipt name longer than NAME_MAX. The first redirect
+        # (tl-<name>.json) failed `File name too long` AFTER the task existed: SPAWN=FAILED at
+        # verify-task-ready, a ready task left behind, and the same over-long --name for the worktree.
+        title = "Review " + "x" * 300
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._stub(tmp)
+            r = self._run(tmp, ["task_test", "new-child", title], self.RW)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("File name too long", r.stderr)
+            self.assertIn("HANDLE=term_agent1", r.stdout)
+            start = next(ln for ln in log.read_text().splitlines() if "worker-start" in ln).split()
+            name = start[start.index("--name") + 1]
+            self.assertLessEqual(len(name), 80, name)
+            self.assertTrue(name.startswith("Review-xxxx"), name)
+            name_max = os.pathconf(tmp, "PC_NAME_MAX")
+            for receipt in Path(tmp).rglob("*.json*"):
+                self.assertLessEqual(len(receipt.name), name_max, receipt.name)
 
     def test_a_stderr_line_beside_the_receipt_does_not_change_the_verdict(self):
         # 2026-10-26 review (dispatch track, P1): worker-start and terminal wait captured stderr

@@ -494,8 +494,13 @@ fi
 # Keep a readable worktree/receipt label with a checksum to distinguish squashed titles (#44).
 # This is NOT attempt identity: identical titles, retries, and checksum collisions are possible.
 # Actual scratch isolation is the atomic directory allocation below, independent of this label.
+# Bounded BEFORE any use (W4-12): the label becomes every receipt filename (dispatch-noinject-
+# <label>.json is the longest) and the worktree --name, so an unbounded 300-character title failed
+# `File name too long` after the task existed. The slug keeps its first 64 bytes (tr leaves it
+# ASCII); the checksum still covers the WHOLE title, so titles differing past the cut stay distinct.
 title_hash=$(printf '%s' "$title" | cksum | cut -d' ' -f1)
-safe_title="$(printf '%s' "$title" | tr -c 'A-Za-z0-9._-' '-')-${title_hash}"
+title_slug="$(printf '%s' "$title" | tr -c 'A-Za-z0-9._-' '-')"
+safe_title="${title_slug:0:64}-${title_hash}"
 
 # Self-test hook: compute the two hardened values and exit before any orchestration side
 # effect. Lets the contract test assert effort-validation and title disambiguation without

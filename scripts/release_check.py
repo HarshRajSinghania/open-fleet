@@ -433,11 +433,28 @@ def gate0(ctx):
 
 def check_gate_batch_owed(ctx):
     """The store is gate-batch.json (#419), read through its own CLI — never a
-    grep over the rendered .md, which is a view of the store, not the store."""
+    grep over the rendered .md, which is a view of the store, not the store.
+
+    W3-06 / PR #719 review: whether an answer is a human's is decided by the human
+    grant key, and the key is read at refs/remotes/origin/main — resolved once,
+    through any symbolic chain, to a commit — never from the tree being released,
+    where a deleted pin turned typed answers back on. That ref is what this clone's
+    fetch of the reviewed default branch wrote, and a key lands there only by a
+    reviewed one-way grant; the release HEAD is the thing being judged. No such
+    commit here is a FAIL: a missing key cannot be told from a deleted one."""
     name = "gate1/gate-batch-owed"
     tool = "runtime/scripts/gate-batch.py"
-    label = f"gate-batch.py --run {GATE_BATCH_RUN} list --status owed"
-    r = ctx.py(tool, "--run", GATE_BATCH_RUN, "list", "--status", "owed")
+    anchor = "refs/remotes/origin/main"
+    target = ctx.run(["git", "symbolic-ref", "-q", anchor], memo=False)
+    ref = target.stdout.strip() if target.ok and target.stdout.strip() else anchor
+    commit = ctx.run(["git", "rev-parse", "--verify", "-q", f"{ref}^{{commit}}"], memo=False)
+    pin = commit.stdout.strip() if commit.ok else ""
+    if not (ref.startswith("refs/remotes/") and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", pin)):
+        return (name, FAIL, f"the human grant key is read at {anchor}, which names no "
+                            "remote-tracking commit in this checkout (fetch origin): a key read "
+                            "from the tree being released could be one it deleted (W3-06)")
+    label = f"gate-batch.py --run {GATE_BATCH_RUN} --pin-ref {pin[:12]} list --status owed"
+    r = ctx.py(tool, "--run", GATE_BATCH_RUN, "--pin-ref", pin, "list", "--status", "owed")
     if r.missing:
         return (name, FAIL, r.stderr)
     if r.timeout:
@@ -454,7 +471,7 @@ def check_gate_batch_owed(ctx):
     owed = [m.group(1) for m in (OWED_LINE.match(ln) for ln in r.stdout.splitlines()) if m]
     if owed:
         return (name, FAIL, f"{len(owed)} owed gate(s) in {GATE_BATCH_RUN}: {', '.join(owed)}")
-    listing = ctx.py(tool, "--run", GATE_BATCH_RUN, "list")
+    listing = ctx.py(tool, "--run", GATE_BATCH_RUN, "--pin-ref", pin, "list")
     states = [f"{m.group(1)} {m.group(2)}"
               for m in (LIST_LINE.match(ln) for ln in listing.stdout.splitlines()) if m]
     detail = f"no owed gates in {GATE_BATCH_RUN}"

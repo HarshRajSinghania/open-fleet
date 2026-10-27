@@ -138,7 +138,32 @@ def make_fixture(root, *, harden_proof="self-run", witness="live", witnessed="20
             gb.transition(data, "G1", "answered", "answered in the fixture",
                           answered="2026-09-16", source="human:lia")
         gb.save_batch(path, data)
+    anchor_fixture(root)
     return root
+
+
+def anchor_fixture(root):
+    """W3-06: gate 1 reads the human grant key at refs/remotes/origin/main, never from the tree
+    it judges — so the fixture is a clone with that ref (an empty anchor commit: nothing pinned,
+    the fixture's own files left for a test to commit), and gate-batch.py has the siblings it
+    reads and verifies the key with (decisions.py, ed25519.py, gitexec.py)."""
+    for name in ("decisions.py", "ed25519.py", "gitexec.py"):
+        shutil.copy(ROOT / "runtime" / "scripts" / name, root / "runtime" / "scripts" / name)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m",
+                    "the fixture's key anchor"], check=True)
+    subprocess.run(["git", "-C", str(root), "update-ref", "refs/remotes/origin/main", "HEAD"],
+                   check=True)
+
+
+def git_commit(root, message):
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", message],
+                   check=True)
+    subprocess.run(["git", "-C", str(root), "update-ref", "refs/remotes/origin/main", "HEAD"],
+                   check=True)
 
 
 def ctx_for(root):
@@ -421,6 +446,80 @@ esac
 printf '%s\\n' "$out"
 exit "${GH_CMD_EXIT:-0}"
 """
+
+
+class GateOneReadsTheHumanKeyAtTheAnchor(unittest.TestCase):
+    """PR #719 review (P1, W3-06): gate 1 ran `gate-batch.py … list` with no --pin-ref. With
+    ORCA_PROVENANCE set, gate-batch's own rule refused it, so gate 1 failed every release; without
+    it, the key came from the WORKING TREE — delete the pin, type the answers, and the original
+    bypass was back. Gate 1 now reads the key at refs/remotes/origin/main, resolved once: a signed
+    answer passes on both lanes, a typed one does not, and deleting the pin changes nothing.
+    Driven through the real release_check → gate-batch.py → decisions.py path."""
+
+    SEED = bytes(range(9, 41))
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.root = make_fixture(self._td.name, owed=True)
+        spec = importlib.util.spec_from_file_location(
+            "ed25519_for_release_check", ROOT / "runtime" / "scripts" / "ed25519.py")
+        self.ed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.ed)
+        pin = self.root / ".orca" / "human-grant-pubkey"
+        pin.parent.mkdir()
+        pin.write_text(self.ed.publickey(self.SEED).hex() + "\n", encoding="utf-8")
+        git_commit(self.root, "the human grant key lands on main")
+        self.store = self.root / "docs" / "runs" / rc.GATE_BATCH_RUN / "gate-batch.json"
+
+    def answer(self, signed):
+        data = gb.load_batch(self.store)
+        gate = gb.transition(data, "G1", "answered", "ship it", answered="2026-09-16",
+                             source="human:lia")
+        if signed:
+            gate["grant_sig"] = self.ed.signature(gb.answer_payload(data, gate), self.SEED,
+                                                  self.ed.publickey(self.SEED)).hex()
+        gb.save_batch(self.store, data)
+
+    def gate1(self, env=None):
+        with mock.patch.dict(os.environ, env or {}):
+            for var in ("ORCA_PROVENANCE", "OPEN_FLEET_PROVENANCE"):
+                if var not in (env or {}):
+                    os.environ.pop(var, None)
+            return find(rc.gate1(ctx_for(self.root)), "gate1/gate-batch-owed")
+
+    def test_a_signed_answer_passes_on_both_lanes(self):
+        self.answer(signed=True)
+        for env in (None, {"ORCA_PROVENANCE": "ci"}):
+            with self.subTest(env=env):
+                _, status, detail = self.gate1(env)
+                self.assertEqual(status, rc.PASS, detail)
+
+    def test_a_typed_answer_stays_owed(self):
+        self.answer(signed=False)
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+        self.assertIn("G1", detail)
+
+    def test_deleting_the_working_tree_pin_does_not_restore_typed_answers(self):
+        (self.root / ".orca" / "human-grant-pubkey").unlink()
+        self.answer(signed=False)
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+        # ...and committing the deletion moves HEAD, not the anchor the key is read at.
+        subprocess.run(["git", "-C", str(self.root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "-m", "drop the pin"], check=True)
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+
+    def test_no_anchor_fails_closed(self):
+        subprocess.run(["git", "-C", str(self.root), "update-ref", "-d",
+                        "refs/remotes/origin/main"], check=True)
+        self.answer(signed=True)
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+        self.assertIn("refs/remotes/origin/main", detail)
 
 
 class GitHubAnswersAreVerdicts(unittest.TestCase):

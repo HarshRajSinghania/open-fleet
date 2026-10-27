@@ -1021,7 +1021,11 @@ takes a gate id plus `--reason`, `--source human:<name>` (required), `--date`;
 Gates move `owed` to exactly one of `answered`, `waived`, `overtaken` — re-transitioning
 is an error. Gate ids look like `G1`. `stale` reports gates owed N or more days (`--days`,
 default 7) and never notifies; `render --check` verifies the view matches the store, and the
-release gate (`scripts/release_check.py` gate 1) runs it whenever the `.md` exists. `related`/`blocking` are
+release gate (`scripts/release_check.py` gate 1) runs it whenever the `.md` exists. Gate 1 reads
+the human grant key with `--pin-ref` at `refs/remotes/origin/main` resolved once to a commit —
+what the release clone's fetch of the reviewed default branch wrote — never at the tree being
+released, and FAILs when that ref names no remote-tracking commit (a missing key cannot be told
+from a deleted one). `related`/`blocking` are
 store-only and never render.
 
 Who closed a gate (W3-06, 2026-10-27 audit): `source` is shape-checked only and the store is

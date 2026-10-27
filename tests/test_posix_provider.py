@@ -628,18 +628,26 @@ class TestTmuxWorkerLifecycle(PosixRealProcessBase):
         self.assertEqual(self.prov.worker_show(res["dispatchId"])["worker"]["state"], "stopped")
         self.assertEqual(out.stat().st_mtime, stamp)
 
+    def test_the_tmux_send_argv_ends_options_before_a_dash_leading_payload(self):
+        # W2-01, tmux-free half (re-attack P3): the provider's own send argv must put `--` before
+        # the text, so a `-R`/`--help` payload is never read as a tmux flag. This fails on revert
+        # even where tmux is absent, unlike the delivery half below.
+        for text in ("-R", "--help", "plain"):
+            self.assertEqual(self.posix.tmux_send_keys_argv("pane", text),
+                             ["tmux", "send-keys", "-t", "pane", "-l", "--", text])
+            argv = self.posix.tmux_send_keys_argv("pane", text)
+            self.assertEqual(argv[argv.index("--") + 1], text, "the payload rides after `--`")
+
     def test_a_dash_leading_payload_arrives_and_is_never_read_as_a_flag(self):
         # W2-01: `tmux send-keys -l -R` parsed the text as -R (reset terminal), exited 0, and the
-        # send was recorded as accepted with nothing delivered. With no tmux on the host the
-        # backend is setsid, which has no input channel and must refuse rather than fake it.
+        # send was recorded as accepted with nothing delivered. This half needs a real pane; where
+        # tmux is absent the revert-failing coverage is the argv test above (a floor_guard waiver
+        # would be needed to skipUnless here, and the argv test already fails on revert everywhere).
+        if not self.has_tmux:
+            return
         got = Path(self.tmp.name) / "got.txt"
         reader = f"IFS= read -r line; printf '%s' \"$line\" > {shlex.quote(str(got))}"
         handle = self.prov.terminal_create(worktree="current", title="reader", command=reader)["terminal"]["handle"]
-        if not self.has_tmux:
-            with self.assertRaises(self.providers.ProviderError) as ctx:
-                self.prov.terminal_send(handle, "-R")
-            self.assertEqual(ctx.exception.code, "unsupported_operation")
-            return
         sent = self.prov.dispatch(["terminal", "send", "--terminal", handle, "--text=-R"])
         self.assertTrue(sent["send"]["accepted"])
         self.assertTrue(_wait_for(got.is_file), "the reader never got a line")
@@ -1125,6 +1133,77 @@ class TestCoordinatorGitRunsNoDriverAddedMidCall(PosixRealProcessBase):
         self.assertTrue(wt.is_dir())
 
 
+class TestCustodyStatusMatchesTheRepo(PosixRealProcessBase):
+    """Codex round 4 (P2): the custody git dir must give the repository's own clean/dirty verdict,
+    so a clean worktree removes without --force. It copies the shared index, honours the repo's
+    data-only settings (filemode, ignorecase, sparse, object format) and its `info/exclude`, and
+    refuses an `extensions.*` it cannot honour (a planted partial clone) rather than guess."""
+
+    def _provider_on(self, repo):
+        db = Path(self.tmp.name) / f"state-{repo.name}" / "runtime.db"
+        return self.providers.get_provider("posix", env={**self.env, "OPEN_FLEET_CLI_CWD": str(repo),
+                                                         "OPEN_FLEET_REPO_ROOT": str(repo), "OPEN_FLEET_STATE_DB": str(db)})
+
+    def _clean_removes(self, prov, name, prepare):
+        wt = Path(prov.worktree_create(name)["worktree"]["path"])
+        prepare(wt)
+        self.assertEqual(_git("status", "--porcelain", cwd=wt).stdout, "", f"{name}: the tree really is clean to git")
+        self.assertTrue(prov.worktree_rm(f"path:{wt}")["removed"], f"{name}: a clean worktree read dirty")
+
+    def test_a_split_index_worktree_reads_clean(self):
+        def prep(wt):
+            _git("update-index", "--split-index", cwd=wt)
+            self.assertTrue(any(c.name.startswith("sharedindex.")
+                                for c in (self.repo / ".git" / "worktrees" / "split").iterdir()))
+            later = time.time() + 5
+            os.utime(wt / "README.md", (later, later))  # stat dirty: a status that cannot load the shared index dies
+        self._clean_removes(self.prov, "split", prep)
+
+    def test_a_filemode_false_worktree_ignores_an_exec_bit_change(self):
+        _git("config", "core.filemode", "false", cwd=self.repo)
+        self._clean_removes(self.prov, "fmode", lambda wt: os.chmod(wt / "README.md", 0o755))
+
+    def test_an_info_exclude_ignored_untracked_file_reads_clean(self):
+        with open(self.repo / ".git" / "info" / "exclude", "a", encoding="utf-8") as fh:
+            fh.write("ignored-*.tmp\n")
+        self._clean_removes(self.prov, "excl", lambda wt: (wt / "ignored-1.tmp").write_text("x", encoding="utf-8"))
+
+    def test_a_sparse_checkout_worktree_reads_clean(self):
+        for d in ("keep", "drop"):
+            (self.repo / d).mkdir()
+            (self.repo / d / "f.txt").write_text(f"{d}\n", encoding="utf-8")
+        _git("add", "-A", cwd=self.repo)
+        _git("commit", "-qm", "two", cwd=self.repo)
+
+        def prep(wt):
+            _git("sparse-checkout", "init", "--cone", cwd=wt)
+            _git("sparse-checkout", "set", "keep", cwd=wt)
+            self.assertFalse((wt / "drop").exists(), "sparse really dropped the directory")
+        self._clean_removes(self.prov, "sparse", prep)
+
+    def test_a_sha256_worktree_reads_clean(self):
+        repo = Path(self.tmp.name) / "repo256"
+        _git("init", "-q", "-b", "main", "--object-format=sha256", str(repo), cwd=Path(self.tmp.name))
+        _git("config", "user.email", "t@e", cwd=repo)
+        _git("config", "user.name", "t", cwd=repo)
+        (repo / "a.txt").write_text("a\n", encoding="utf-8")
+        _git("add", "a.txt", cwd=repo)
+        _git("commit", "-qm", "init", cwd=repo)
+        prov = self._provider_on(repo)
+        wt = Path(prov.worktree_create("s256")["worktree"]["path"])
+        self.assertEqual((wt / "a.txt").read_text(encoding="utf-8"), "a\n", "sha256 worktree checked out")
+        self.assertTrue(prov.worktree_rm(f"path:{wt}")["removed"], "a clean sha256 worktree read dirty")
+
+    def test_a_planted_unhonourable_extension_is_refused_not_guessed(self):
+        wt = Path(self.prov.worktree_create("pc")["worktree"]["path"])
+        _git("config", "extensions.partialClone", "origin", cwd=self.repo)
+        _git("config", "core.repositoryformatversion", "1", cwd=self.repo)
+        with self.assertRaises(self.providers.ProviderError) as ctx:
+            self.prov.worktree_rm(f"path:{wt}")
+        self.assertEqual(ctx.exception.code, "worktree_rm_failed")
+        self.assertTrue(wt.is_dir(), "the worktree was neither removed nor its state guessed")
+
+
 class TestSandboxGitRoundTrip(PosixRealProcessBase):
     """The container's private git dir: commits reach the host, the host repo stays untouched."""
 
@@ -1209,8 +1288,12 @@ class TestSandboxGitRoundTrip(PosixRealProcessBase):
                     _git("config", "core.alternateRefsCommand", probe, cwd=self.repo)
                 else:
                     target = "ssh://evil.invalid/x" if plant == "ssh" else "evil::x"
+                    scheme = "ssh" if plant == "ssh" else "evil"
                     _git("config", f"url.{target}.insteadOf", meta["sandbox_git"], cwd=self.repo)
                     _git("config", "core.sshCommand", probe, cwd=self.repo)
+                    # Codex round 4: a per-protocol allow beats the generic `protocol.allow=never`,
+                    # so the floor must not rely on config precedence (GIT_ALLOW_PROTOCOL does not).
+                    _git("config", f"protocol.{scheme}.allow", "always", cwd=self.repo)
                 with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
                     try:
                         res = self.posix.sync_sandbox_git(meta, f"disp_t{n}")
@@ -1225,6 +1308,29 @@ class TestSandboxGitRoundTrip(PosixRealProcessBase):
                     self.assertTrue(res["branchUpdated"])
                 if plant != "alternates":
                     _git("config", "--unset", f"url.{target}.insteadOf", cwd=self.repo)
+                    _git("config", "--unset", f"protocol.{scheme}.allow", cwd=self.repo)
+
+    def test_a_planted_promisor_remote_never_lazily_fetches_through_the_coordinator(self):
+        # Codex round 4 class sweep: `extensions.partialClone=x` + `remote.x.promisor` +
+        # `remote.x.uploadpack=<payload>` makes even a plain `rev-parse <ref>^{commit}` lazily
+        # fetch a missing object and run the payload as the coordinator (GIT_ALLOW_PROTOCOL=file
+        # does not stop it, the fetch target being a file remote). GIT_NO_LAZY_FETCH does.
+        pwned = Path(self.tmp.name) / "pwned"
+        donor = Path(self.tmp.name) / "donor.git"
+        _git("init", "-q", "--bare", str(donor), cwd=Path(self.tmp.name))
+        _git("config", "remote.x.url", str(donor), cwd=self.repo)
+        _git("config", "remote.x.promisor", "true", cwd=self.repo)
+        _git("config", "remote.x.uploadpack", f"sh -c 'echo up >> {shlex.quote(str(pwned))}; exit 1'", cwd=self.repo)
+        _git("config", "extensions.partialClone", "x", cwd=self.repo)
+        _git("config", "core.repositoryformatversion", "1", cwd=self.repo)
+        (self.repo / ".git" / "refs" / "heads" / "ghost").write_text("1" * 40 + "\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            proc = self.posix._git(["rev-parse", "--verify", "-q", "ghost^{commit}"], cwd=self.repo)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertFalse(pwned.exists(), "a coordinator rev-parse lazily fetched through a planted promisor")
+            subprocess.run([self.posix.gitexec.GIT, "-C", str(self.repo), "rev-parse", "--verify", "-q", "ghost^{commit}"],
+                           env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}, capture_output=True)
+        self.assertTrue(pwned.exists(), "control: a bare git never lazily fetched; the exploit is not set up")
 
     def test_symlink_planted_in_sandbox_is_refused_and_host_untouched(self):
         wt, meta, cenv = self._sandbox()

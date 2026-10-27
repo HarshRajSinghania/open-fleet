@@ -3,14 +3,19 @@
   posix provider ran a bare `git` with the coordinator's whole environment on `worktree add`,
   `worktree remove` and the `danger` sandbox sync, and the adapters did the same for their dirty
   check, HEAD pin, t3code's worktree cut and worktrunk's merge prediction, so a
-  `core.hooksPath`/`post-checkout`, a `core.fsmonitor`, a `filter.<d>.smudge` or a merge driver
+  `core.hooksPath`/`post-checkout`, a `core.fsmonitor`, a `filter` smudge command or a merge driver
   written into the shared `.git/config` (or the same-uid `~/.gitconfig`) ran as the coordinator.
   Every such git now runs through one custody (`run_git` in `runtime/providers/posix.py`):
-  `runtime/scripts/gitexec.py`'s floor plus fixed keys for `fetch`'s alternate-refs command, every
-  transport but the local one, submodule recursion and signature verification. A git that could
-  apply a filter, diff or merge driver (the clean check, the merge prediction, a new worktree's
-  checkout) runs against a git dir the coordinator builds, whose config declares no driver, so a
-  worker cannot add one between a check and its use; any other such git is refused. A worktree
+  `runtime/scripts/gitexec.py`'s floor plus fixed keys for `fetch`'s alternate-refs command,
+  submodule recursion and signature verification, and `GIT_ALLOW_PROTOCOL=file` +
+  `GIT_NO_LAZY_FETCH=1` in the environment so a per-protocol `protocol.ssh.allow=always` or an
+  `extensions.partialClone` + a promisor remote's `uploadpack` cannot run a payload the config names. A git
+  that could apply a filter, diff or merge driver (the clean check, the merge prediction, a new
+  worktree's checkout) runs against a git dir the coordinator builds, whose config declares no
+  driver, so a worker cannot add one between a check and its use; it carries the repository's
+  index (with any split-index shared file), sparse-checkout and data-only `core.*` settings so a
+  clean worktree still reads clean, and refuses an `extensions.*` it cannot honour. Any other
+  driver-applying git is refused. A worktree
   the coordinator creates therefore holds the committed bytes (LFS pointer files, git-crypt
   ciphertext) and runs no `post-checkout` hook, and the adapters' dirty check counts a checked-out
   submodule as uncommitted work. Also: git output is decoded byte-for-byte, so a `\r` or non-UTF-8

@@ -698,6 +698,14 @@ def _load_hermes_config(user_cfg: Path, env: dict[str, str]) -> dict[str, Any]:
     return loaded
 
 
+def tmux_send_keys_argv(ref: str, text: str) -> list[str]:
+    """argv for sending `text` LITERALLY to tmux pane `ref`. `--` ends tmux's options so a
+    `-`-leading payload (`-R`, `--help`) is the text, never a flag: `tmux send-keys -l -R` parsed
+    the text as -R (reset terminal), exited 0, and the send was recorded as accepted with nothing
+    delivered (W2-01)."""
+    return ["tmux", "send-keys", "-t", ref, "-l", "--", text]
+
+
 def prepare_hermes_home(lane_dir: Path, wt_path: str, hook: str, env: dict[str, str]) -> dict[str, str]:
     """A per-dispatch HERMES_HOME (outside the worktree) whose config carries our deny hook.
 
@@ -800,10 +808,11 @@ def git_location(args: list[str], cwd: str | Path | None) -> tuple[str, str | No
 #     in a submodule WITHOUT the GIT_CONFIG_COUNT floor, under the submodule's own config;
 #   log.showSignature + gpg.*.program - `log` verifying a signed HEAD runs gpg.program;
 #   maintenance.auto / gc.auto - no auto-maintenance child after a fetch.
+# The transport is pinned by PROVIDER_FLOOR_ENV (GIT_ALLOW_PROTOCOL), not a `protocol.*.allow`
+# config pair, because a worker's SPECIFIC `protocol.ssh.allow=always` beats a generic
+# `protocol.allow=never` (PR #720 Codex round 4).
 PROVIDER_FLOOR: tuple[tuple[str, str], ...] = (
     ("core.alternateRefsCommand", "exit 0"),
-    ("protocol.allow", "never"),
-    ("protocol.file.allow", "always"),
     ("submodule.recurse", "false"),
     ("fetch.recurseSubmodules", "false"),
     ("status.submoduleSummary", "false"),
@@ -815,6 +824,37 @@ PROVIDER_FLOOR: tuple[tuple[str, str], ...] = (
     ("maintenance.auto", "false"),
     ("gc.auto", "0"),
 )
+# Environment the floor sets that no repository config can outrank:
+#   GIT_ALLOW_PROTOCOL=file - git documents it overrides ANY `protocol.*.allow`, so a worker's
+#     `protocol.ssh.allow=always` cannot re-enable ssh (and `core.sshCommand`) for a
+#     `url.ssh://....insteadOf=<sandbox>` rewrite, nor `protocol.<helper>.allow=always` an
+#     `<helper>::` remote. The provider's git only ever uses the local file transport (the sandbox
+#     clone/fetch from an absolute path), so `file` is exactly what it needs and nothing more;
+#   GIT_NO_LAZY_FETCH=1 - a worker's `extensions.partialClone` + `remote.<n>.promisor` +
+#     `remote.<n>.uploadpack=<payload>` makes even a plain `rev-parse <ref>^{commit}` lazily fetch
+#     a missing object and run the payload as the coordinator; this refuses the fetch, so a missing
+#     object is a could-not-run, never a worker command (PR #720 Codex round 4).
+PROVIDER_FLOOR_ENV: dict[str, str] = {"GIT_ALLOW_PROTOCOL": "file", "GIT_NO_LAZY_FETCH": "1"}
+
+# Data-only (never a command) core.* settings that change whether a working-tree file reads clean
+# or dirty. Without them a custody `status` can read a clean worktree as modified (a false DIRTY
+# that blocks an unforced removal): `filemode`/`symlinks` (an exec bit or a symlink the filesystem
+# cannot keep), `ignorecase`/`precomposeunicode`/`protecthfs`/`protectntfs` (name folding),
+# `sparsecheckout`/`sparsecheckoutcone` (cone matching for `info/sparse-checkout`),
+# `autocrlf`/`eol` (built-in line-ending conversion), `checkstat`/`trustctime` (which stat fields
+# count). Read from the repository and passed as the custody call's own GIT_CONFIG pairs. NOT
+# `core.excludesFile`: honouring a worker-set global ignore file could HIDE an untracked file and
+# lose its work, so the custody errs toward DIRTY there (`info/exclude`, the repo's own, is copied).
+_CUSTODY_CORE_KEYS: tuple[str, ...] = (
+    "filemode", "symlinks", "ignorecase", "precomposeunicode", "protecthfs", "protectntfs",
+    "sparsecheckout", "sparsecheckoutcone", "autocrlf", "eol", "checkstat", "trustctime",
+)
+# Repository-format extensions the custody git dir reproduces (object format is written into its
+# config; the others do not change the objects it reads through the alternate or the index it
+# copies). Any OTHER `extensions.*` - `partialClone` above all - is refused: the custody dir cannot
+# honour it, and guessing a clean/dirty verdict without it would be wrong (PR #720 Codex round 4).
+_HONOURABLE_EXTENSIONS: frozenset[bytes] = frozenset(
+    b"objectformat compatobjectformat worktreeconfig refstorage relativeworktrees".split())
 
 
 class GitCustodyRefused(OSError):
@@ -926,16 +966,19 @@ def _custody_kind(sub: str, rest: list[str]) -> str:
 
 
 def _direct(args: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float,
-            input: bytes | None = None) -> subprocess.CompletedProcess:
-    """One git child: gitexec's absolute git and floor plus PROVIDER_FLOOR, stdin closed, output
+            input: bytes | None = None, extra_blanks: list[tuple[str, str]] = []) -> subprocess.CompletedProcess:
+    """One git child: gitexec's absolute git and floor plus PROVIDER_FLOOR (config) and
+    PROVIDER_FLOOR_ENV (environment the floor sets that no config can outrank); stdin closed; output
     captured as BYTES (never decoded here: a `\\r` or a non-UTF-8 byte in a path survives). The
     drivers the config declares where it runs are blanked too, a belt for the direct commands
-    (which apply none) and empty for a custody git dir (which declares none)."""
+    (which apply none) and empty for a custody git dir (which declares none). `extra_blanks` adds
+    the custody call's data-only `core.*` fidelity pairs (_custody_settings)."""
     repo, git_dir = git_location(args, cwd)
-    blanks = [*gitexec.driver_blanks(repo, git_dir=git_dir, base=base), *PROVIDER_FLOOR]
+    blanks = [*gitexec.driver_blanks(repo, git_dir=git_dir, base=base), *PROVIDER_FLOOR, *extra_blanks]
     feed: dict[str, Any] = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
-    return subprocess.run(gitexec.argv(*args), cwd=cwd, capture_output=True, env=gitexec.env(base, blanks=blanks),
-                          timeout=timeout, **feed)
+    env = gitexec.env(base, blanks=blanks)
+    env.update(PROVIDER_FLOOR_ENV)
+    return subprocess.run(gitexec.argv(*args), cwd=cwd, capture_output=True, env=env, timeout=timeout, **feed)
 
 
 def _line(out: str | bytes) -> Any:
@@ -970,13 +1013,27 @@ def _read_regular(path: str) -> tuple[bytes, os.stat_result] | None:
         return fh.read(), st
 
 
+def _copy_regular(src: str, dst: str) -> None:
+    """Copy `src` (bytes + mtime) to `dst` if it is a regular file; a missing one is skipped, a
+    non-regular one refuses (so a worker FIFO or symlink at an expected path is never followed)."""
+    got = _read_regular(src)
+    if got is not None:
+        with open(dst, "wb") as fh:
+            fh.write(got[0])
+        os.utime(dst, ns=(got[1].st_atime_ns, got[1].st_mtime_ns))
+
+
 @contextlib.contextmanager
-def _custody_git_dir(common: str, object_format: str, head: str | None, index: str | None):
+def _custody_git_dir(common: str, object_format: str, head: str | None, gitdir: str | None):
     """A git dir the coordinator builds and no worker can name: its own config (no filter, diff or
     merge driver, so none can be added between a check and a use), the shared object store as a
-    read-only alternate, HEAD pinned to `head`, and copies of the repository's `info/exclude`,
-    `shallow` and (when `index` names it) index, the index with its mtime so racy-git reads it
-    exactly as the repository's own. Removed on exit."""
+    read-only alternate, HEAD pinned to `head`, and copies of what a `status`/`read-tree` there must
+    read to match the repository's own verdict: the common `info/exclude` and `shallow`, and - when
+    `gitdir` names the per-worktree admin dir - its `index` (mtime kept, so racy-git reads it as the
+    repository does), every `sharedindex.<hash>` the index references (a split index, PR #720 Codex
+    round 4) and `info/sparse-checkout`. The data-only `core.*` settings (filemode, ignorecase,
+    sparse, ...) ride as the custody call's own GIT_CONFIG pairs (_custody_settings), not this file.
+    Removed on exit."""
     if object_format not in ("sha1", "sha256"):
         raise GitCustodyRefused(f"git custody: unknown object format {object_format!r}")
     root = tempfile.mkdtemp(prefix="open-fleet-git-custody-")
@@ -992,16 +1049,42 @@ def _custody_git_dir(common: str, object_format: str, head: str | None, index: s
             fh.write(f"{head}\n" if head else "ref: refs/heads/open-fleet-unborn\n")
         with open(os.path.join(root, "objects", "info", "alternates"), "wb") as fh:
             fh.write(_c_quote(os.fsencode(os.path.join(common, "objects"))) + b"\n")
-        copies = [(os.path.join(common, "info", "exclude"), "info/exclude"), (os.path.join(common, "shallow"), "shallow")]
-        for src, dst in copies + ([(index, "index")] if index else []):
-            got = _read_regular(src)
-            if got is not None:
-                with open(os.path.join(root, dst), "wb") as fh:
-                    fh.write(got[0])
-                os.utime(os.path.join(root, dst), ns=(got[1].st_atime_ns, got[1].st_mtime_ns))
+        _copy_regular(os.path.join(common, "info", "exclude"), os.path.join(root, "info", "exclude"))
+        _copy_regular(os.path.join(common, "shallow"), os.path.join(root, "shallow"))
+        if gitdir is not None:
+            _copy_regular(os.path.join(gitdir, "index"), os.path.join(root, "index"))
+            _copy_regular(os.path.join(gitdir, "info", "sparse-checkout"), os.path.join(root, "info", "sparse-checkout"))
+            for name in (sorted(os.listdir(gitdir)) if os.path.isdir(gitdir) else []):
+                if name.startswith("sharedindex."):
+                    _copy_regular(os.path.join(gitdir, name), os.path.join(root, name))
         yield root
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def _custody_settings(lead: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float) -> list[tuple[str, str]]:
+    """The data-only `core.*` pairs (_CUSTODY_CORE_KEYS) the repository the call names declares,
+    read effectively (`config --get`, honouring `includeIf` and `extensions.worktreeConfig`), to
+    pass as the custody call's own GIT_CONFIG pairs so its `status`/`read-tree` matches the repo's
+    clean/dirty verdict. Refuses first if the repository declares any `extensions.*` the custody
+    git dir cannot honour (a partial clone above all): the verdict would be wrong (PR #720 Codex
+    round 4). Reads bytes; never runs a config VALUE (these keys are data, not commands)."""
+    ext = _direct([*lead, "config", "-z", "--get-regexp", r"^extensions\."], cwd, base, timeout)
+    if ext.returncode not in (0, 1):
+        raise GitCustodyRefused(f"git custody: cannot read the repository's extensions: {os.fsdecode(ext.stderr).strip()[:200]}")
+    for record in ext.stdout.split(b"\0"):
+        if not record:
+            continue
+        name = record.split(b"\n", 1)[0].split(b".", 1)[1].lower()
+        if name not in _HONOURABLE_EXTENSIONS:
+            raise GitCustodyRefused(f"git custody: the repository declares extensions.{os.fsdecode(name)}, "
+                                    "which the custody git dir cannot honour")
+    pairs: list[tuple[str, str]] = []
+    for key in _CUSTODY_CORE_KEYS:
+        got = _direct([*lead, "config", "-z", "--get", f"core.{key}"], cwd, base, timeout)
+        if got.returncode == 0 and got.stdout:
+            pairs.append((f"core.{key}", os.fsdecode(got.stdout.split(b"\0")[0])))
+    return pairs
 
 
 def _repo_facts(lead: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float) -> dict[str, str | None]:
@@ -1078,6 +1161,12 @@ def run_git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, st
     - anything else (`commit`, `checkout`, `reset --hard`, `diff`, `add`, ...): GitCustodyRefused,
       never run.
 
+    A non-direct command carries NO leading `-c`, including the `safe.directory` /
+    `protocol.file.allow` pairs `_split_git_args` lets a direct call pass: the custody runs its
+    `status`/`read-tree`/`merge-tree` against the dir it builds, with its own settings, so a caller
+    `-c` there is refused. No caller passes one today (the sandbox sync's `-c` pairs ride only its
+    direct `rev-parse`/`fetch`/`update-ref`).
+
     The env the call is handed loses every repository-selecting GIT_* variable (git_call_base)."""
     base = git_call_base(env)
     lead, sub, rest = _split_git_args(list(args))
@@ -1085,7 +1174,7 @@ def run_git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, st
     if kind == "direct":
         return _direct(list(args), cwd, base, timeout, input)
     if any(tok == "-c" for tok in lead):
-        raise GitCustodyRefused(f"git custody: refusing `-c` on `git {sub}`")
+        raise GitCustodyRefused(f"git custody: refusing `-c` on the non-direct `git {sub}`")
     facts = _repo_facts(lead, cwd, base, timeout)
     opts, pos = _options(rest)
     if kind == "merge-tree":
@@ -1095,6 +1184,7 @@ def run_git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, st
             if not sha:
                 return subprocess.CompletedProcess(args, 128, b"", os.fsencode(f"fatal: {rev!r} is not a commit\n"))
             shas.append(sha)
+        _custody_settings(lead, cwd, base, timeout)  # refuse an extension the custody dir cannot honour
         with _custody_git_dir(str(facts["common"]), str(facts["format"]), None, None) as gd:
             proc = _direct(["--git-dir", gd, "merge-tree", *opts, *shas], None, base, timeout)
         return subprocess.CompletedProcess(args, proc.returncode, proc.stdout, proc.stderr)
@@ -1103,12 +1193,12 @@ def run_git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, st
     if not facts["top"] or os.path.realpath(str(facts["top"])) != os.path.realpath(named):
         # The work tree the call names, never one config (`core.worktree`) redirects it to.
         raise GitCustodyRefused(f"git custody: `git {sub}` runs at the top of the work tree it names ({named!r})")
-    index = os.path.join(str(facts["gitdir"]), "index")
-    with _custody_git_dir(str(facts["common"]), str(facts["format"]), facts["head"], index) as gd:
+    settings = _custody_settings(lead, cwd, base, timeout)
+    with _custody_git_dir(str(facts["common"]), str(facts["format"]), facts["head"], str(facts["gitdir"])) as gd:
         # `dirty`: a submodule's recorded commit is compared, its work tree never inspected (that
         # inspection is a child git without the floor, under the submodule's own config).
         proc = _direct(["--git-dir", gd, "--work-tree", str(facts["top"]), "--no-optional-locks", "status",
-                        *opts, "--ignore-submodules=dirty"], facts["top"], base, timeout)
+                        *opts, "--ignore-submodules=dirty"], facts["top"], base, timeout, extra_blanks=settings)
     return subprocess.CompletedProcess(args, proc.returncode, proc.stdout, proc.stderr)
 
 
@@ -1132,8 +1222,10 @@ def checkout_worktree(root: str | Path, wt: str | Path, branch: str, *, timeout:
     if os.path.islink(str(wt)) or not os.path.isdir(str(wt)):
         raise GitCustodyRefused(f"git custody: {str(wt)!r} is not a directory to check out into")
     admin = registered_admin_dir(common, wt)
-    with _custody_git_dir(common, fmt, head, os.path.join(admin, "index")) as gd:
-        proc = _direct(["--git-dir", gd, "--work-tree", str(wt), "read-tree", "-u", "--reset", head], str(wt), base, timeout)
+    settings = _custody_settings(at_root, None, base, timeout)
+    with _custody_git_dir(common, fmt, head, admin) as gd:
+        proc = _direct(["--git-dir", gd, "--work-tree", str(wt), "read-tree", "-u", "--reset", head],
+                       str(wt), base, timeout, extra_blanks=settings)
         if proc.returncode == 0:
             _install_index(os.path.join(gd, "index"), admin)
     return proc
@@ -3593,9 +3685,7 @@ if {repr(self.backend)} == "cmux":
             )
         elif backend == "tmux":
             ref = term_row["backend_ref"] or f"openfleet-{handle}"
-            # `--` ends tmux's options: `-l -R` parsed the text as -R (reset terminal), exited 0, and
-            # the send was recorded as accepted with nothing delivered (W2-01).
-            proc = subprocess.run(["tmux", "send-keys", "-t", ref, "-l", "--", text], capture_output=True, text=True)
+            proc = subprocess.run(tmux_send_keys_argv(ref, text), capture_output=True, text=True)
             if proc.returncode == 0 and enter:
                 proc = subprocess.run(["tmux", "send-keys", "-t", ref, "Enter"], capture_output=True, text=True)
             if proc.returncode != 0:

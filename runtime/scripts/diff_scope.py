@@ -165,8 +165,18 @@ class ScopeError(Exception):
 # verify.py loads this file by path: a sibling import would join the signed verifier
 # toolchain (verify._Transcript.TOOLCHAIN / run_report.TOOLCHAIN_FILES). The copy is
 # the WHOLE floor — no global/system config, safe.directory — and a test pins it to
-# gitexec.HARDENED so it cannot fall behind again (2026-10-23 review, §5).
-GIT = shutil.which("git") or "git"
+# gitexec.HARDENED so it cannot fall behind again (2026-10-23 review, §5). Absent at import is
+# None, never a bare "git" that every later call re-resolves against PATH (W4-14): _argv raises.
+_found = shutil.which("git")
+GIT = os.path.abspath(_found) if _found else None
+
+
+def _argv(*args):
+    """[GIT, *args], or FileNotFoundError (an OSError: each caller's could-not-run path) when no
+    git was on PATH at import — gitexec.argv's GitAbsent rule, inlined like the rest."""
+    if GIT is None:
+        raise FileNotFoundError("git is not on PATH (resolved once, at startup)")
+    return [GIT, *args]
 
 
 def _git_env(blanks=()):
@@ -212,7 +222,7 @@ def _driver_blanks(repo):
     prints output that is not NUL-terminated keys raises ScopeError(diff_failed) — never [],
     which would run the diff with every planted driver live (PR #649 review)."""
     try:
-        r = subprocess.run([GIT, "-C", str(repo), "config", "--list", "-z", "--name-only"],
+        r = subprocess.run(_argv("-C", str(repo), "config", "--list", "-z", "--name-only"),
                            capture_output=True, timeout=60, env=_git_env(), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as err:
         raise ScopeError(f"cannot read {repo}'s driver config: {err}", kind="diff_failed") from err
@@ -248,7 +258,7 @@ def git(repo, *args, tolerate=False, blanks=()):
     try:
         # surrogateescape: a non-UTF-8 path round-trips instead of raising
         # UnicodeDecodeError (an uncaught crash would exit 1 — the conflict code).
-        r = subprocess.run([GIT, "-C", str(repo), *args], capture_output=True, text=True,
+        r = subprocess.run(_argv("-C", str(repo), *args), capture_output=True, text=True,
                            encoding="utf-8", errors="surrogateescape",
                            timeout=60, env=_git_env(blanks), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
@@ -477,8 +487,8 @@ def predict_merge(repo, base, branch):
     blanks = _driver_blanks(repo)
     try:
         r = subprocess.run(
-            [GIT, "-C", str(repo), "-c", "core.quotePath=false",
-             "merge-tree", "--write-tree", base, branch],
+            _argv("-C", str(repo), "-c", "core.quotePath=false",
+                  "merge-tree", "--write-tree", base, branch),
             capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
             timeout=60, env=_git_env(blanks), stdin=subprocess.DEVNULL,
         )

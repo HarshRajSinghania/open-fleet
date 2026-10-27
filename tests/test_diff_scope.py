@@ -198,6 +198,28 @@ class TestHardenedGit(ScopeBase):
     def test_git_is_resolved_to_an_absolute_path(self):
         self.assertTrue(Path(diff_scope.GIT).is_absolute(), diff_scope.GIT)
 
+    def test_git_absent_at_import_fails_closed_and_never_resolves_later(self):
+        # W4-14: `shutil.which("git") or "git"` made "not found at import" fall back to a bare
+        # name, so every later call re-resolved against whatever PATH said then — the class
+        # gitexec.py raises GitAbsent to avoid. Absent at import is now a could-not-run.
+        with mock.patch("shutil.which", return_value=None):
+            spec = importlib.util.spec_from_file_location("diff_scope_gitless", SCOPE)
+            gitless = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gitless)
+        self.assertIsNone(gitless.GIT)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        marker = tmp / "late-git-ran"
+        (tmp / "git").write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 0\n', encoding="utf-8")
+        (tmp / "git").chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{tmp}{os.pathsep}{os.environ.get('PATH', '')}"}):
+            self.assertIsNone(gitless.git(self.repo, "rev-parse", "HEAD"))
+            with self.assertRaises(gitless.ScopeError):
+                gitless._driver_blanks(self.repo)
+            with self.assertRaises(gitless.ScopeError):
+                gitless.predict_merge(self.repo, "main", "main")
+        self.assertFalse(marker.exists(), "a git found on PATH after import answered the call")
+
     def test_replace_refs_do_not_swap_the_compared_base(self):
         # A `refs/replace/` ref pointing main's commit at one carrying tests/ would make the
         # diff against main hide a test change; GIT_NO_REPLACE_OBJECTS reads the real commit.

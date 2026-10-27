@@ -1850,7 +1850,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt failure · 2 usage or precheck refusal.
 ## `send_msg.py`
 
 Orchestration `send` with the handler's rules enforced client-side plus sender
-assertion. Source `runtime/scripts/send_msg.py:1-24`; behavior pinned by
+assertion. Source `runtime/scripts/send_msg.py:1-32`; behavior pinned by
 `tests/test_send_msg.py`.
 
 Usage: `send_msg.py --subject S [--to DEST] [--run R] [--from SENDER] [--body B] [--type T] [--priority P] [--thread-id T] [--payload JSON] [--task-id ID] [--dispatch-id ID] [--outcome O] [--files-modified JSON] [--report-path P] [--phase P] [--retry-request ID] [--dispatch-capability C]`
@@ -1859,7 +1859,12 @@ Gates (all exit 2, zero side effects): `--type` from the 9-value keyset;
 `worker_done` requires `--outcome succeeded|failed` and `--outcome` rides nothing
 else; `worker_done`/`heartbeat` never target a group address and never run
 identity-less (needs `--from` or `ORCA_TERMINAL_HANDLE`; disagreement between them
-refuses). `--payload` must be JSON.
+refuses). `--payload` must be JSON. That disagreement check catches an ACCIDENTAL mismatch
+only: both sides are the caller's own, so a worker that sets `ORCA_TERMINAL_HANDLE` to a
+sibling's handle passes it. The sender is self-asserted client-side; the authority is the
+runtime (Orca's `sender_not_assignee` / `task_dispatch_mismatch`, and `dispatch_capability_invalid`
+for a wrong `--dispatch-capability`, the one secret-bound proof when the preamble carries one),
+and posix records the sender as given (W5-19). The receipt's `MESSAGE_ID` prints inert, on one line.
 
 Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refusal.
 

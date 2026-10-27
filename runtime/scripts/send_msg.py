@@ -12,9 +12,17 @@ enforced client-side, before any orca call (exit 2, zero side effects):
   signals belong to one Dispatch.
 * worker_done|heartbeat never run identity-less: without --from AND without
   ORCA_TERMINAL_HANDLE the lifecycle sender is refused (focus is not lifecycle
-  authority). An explicit --from that disagrees with ORCA_TERMINAL_HANDLE is
-  refused — naming the sender is an identity claim, and a wrong one speaks as
-  a sibling worker. Otherwise --from defaults to the env handle.
+  authority). Otherwise --from defaults to the env handle.
+* An explicit --from that disagrees with ORCA_TERMINAL_HANDLE is refused. Both
+  sides are the caller's own (its argv, its own environment), so this catches an
+  ACCIDENTAL mismatch (a pasted sibling handle, a stale variable) and nothing
+  more: a worker that sets ORCA_TERMINAL_HANDLE to a sibling's handle passes it
+  (W5-19). The sender is self-asserted here, and no in-repo source can prove it
+  client-side. The authority is the runtime's own check: Orca's send handler
+  refuses sender_not_assignee / task_dispatch_mismatch, and a wrong
+  --dispatch-capability (a per-dispatch secret, present only when the preamble
+  carries one) is refused dispatch_capability_invalid, the one secret-bound
+  proof. The posix provider records the sender as given.
 
 --payload must be JSON. Everything else rides through nonempty-checked. Argv is
 a list, never a shell string. Live delivery is PARKED (needs-human: send a
@@ -32,6 +40,8 @@ try:
 except ImportError:  # loaded by file path (tests): the resolver sits beside this script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pm import _visible
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -67,13 +77,20 @@ def _nonempty(value, flag):
     return value
 
 
+def _line(value):
+    """A printed field, inert and on one line: pm._visible plus a folded newline (W5-19)."""
+    return _visible(value).replace("\n", "\\n")
+
+
 def resolve_from(explicit, env):
+    """--from, else ORCA_TERMINAL_HANDLE. Both are the caller's own, so a disagreement is an
+    accidental mismatch caught here; agreement proves nothing (module docstring, W5-19)."""
     ambient = env.get("ORCA_TERMINAL_HANDLE", "")
     if explicit is not None:
         _nonempty(explicit, "--from")
         if ambient and explicit != ambient:
-            raise Refused(f"--from '{explicit}' disagrees with "
-                          f"ORCA_TERMINAL_HANDLE='{ambient}' — passing another "
+            raise Refused(f"--from '{_line(explicit)}' disagrees with "
+                          f"ORCA_TERMINAL_HANDLE='{_line(ambient)}' — passing another "
                           f"pane's handle would speak as that worker")
         return explicit
     return ambient or None
@@ -158,7 +175,7 @@ def format_send(result):
         raise Failed("send receipt is not an object")
     relay = result.get("relay") if isinstance(result.get("relay"),
                                               dict) else {}
-    return [f"MESSAGE_ID={relay.get('messageId') or 'unknown'}"]
+    return [f"MESSAGE_ID={_line(relay.get('messageId') or 'unknown')}"]
 
 
 def main(argv=None, env=None):

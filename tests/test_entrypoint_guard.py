@@ -18,8 +18,7 @@ every entry point the control plane runs, three ways:
 What counts as an entry point (ENTRY_POINTS): the B3/B4 carriers of the audit's threat model,
 every script a pull_request CI job runs from runtime/scripts/ or scripts/ over the graded tree,
 and the gate steps missions and playbooks run (preflight's quarantine gate, chain_check, the
-risk-review diff_scope signals). Not listed, with the reason: scripts/release_check.py (its
-top-of-file belongs to another fix in the same run — add it here when that lands);
+risk-review diff_scope signals, the release gate). Not listed, with the reason:
 runtime/scripts/upstream_probe.py (scheduled over the default branch, never a graded tree);
 evidence-run.py (the WORKER's recorder; verify.py re-derives what it writes).
 """
@@ -59,6 +58,7 @@ ENTRY_POINTS = (
     "scripts/eval.py",
     "scripts/bundle.py",
     "scripts/verdict_check.py",
+    "scripts/release_check.py",
 )
 
 # The guard, as code (comments are free; the logic is not). `os` comes from sys.modules — it is

@@ -6,6 +6,7 @@ never lands on disk), it is tamper-evident (an edited line breaks the chain), an
 it is fail-closed on write (a sink that cannot receipt must not send). Each has a
 test that would fail if the property were quietly dropped.
 """
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -19,7 +20,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -126,30 +127,24 @@ class TestWrite(EgressBase):
         self.assertEqual(self.write_one().returncode, 0)
         tail_read = threading.Event()
         release = threading.Event()
-        original_open = Path.open
+        # The writer reads the ledger through the descriptor it holds locked (W5-02), so the
+        # snapshot is observed at that read, not at a re-open of the path.
+        original_read = egress._read_all
 
-        def observed_open(path, *args, **kwargs):
-            fh = original_open(path, *args, **kwargs)
-            if path == self.ledger and args == ("rb",):
-                original_read = fh.read
-
-                def paused_read(*read_args, **read_kwargs):
-                    snapshot = original_read(*read_args, **read_kwargs)
-                    if not tail_read.is_set():
-                        tail_read.set()
-                        if not release.wait(10):
-                            raise TimeoutError("test did not release the first tail snapshot")
-                    return snapshot
-
-                fh.read = paused_read
-            return fh
+        def paused_read(fd):
+            snapshot = original_read(fd)
+            if not tail_read.is_set():
+                tail_read.set()
+                if not release.wait(10):
+                    raise TimeoutError("test did not release the first tail snapshot")
+            return snapshot
 
         def write(sink):
             return egress.write_receipt(self.ledger, sink, "fixture.invalid", "test", "fixture")
 
         # Pause real filesystem I/O after the first tail snapshot. The second writer
         # either completes (the buggy overlap) or waits for the first transaction.
-        with patch.object(Path, "open", observed_open), ThreadPoolExecutor(2) as pool:
+        with patch.object(egress, "_read_all", paused_read), ThreadPoolExecutor(2) as pool:
             first = pool.submit(write, "first")
             try:
                 self.assertTrue(tail_read.wait(5), "first writer never read the ledger")
@@ -305,6 +300,15 @@ class TestVerify(EgressBase):
         r = self.run_egress("verify")
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertIn("line break", r.stderr)
+        # The line-break rule is not what binds this record (2026-10-27 audit, W5-05): the same
+        # hand-built single line without the break, its id recomputed, is still not a line the
+        # writer produced (re-spaced JSON), and verify must refuse it on its own terms.
+        record.update(sink="s", host="h")
+        record["id"] = egress.record_id(record)
+        self.ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        r = self.run_egress("verify")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("canonical", r.stderr)
 
     def test_a_deleted_line_breaks_the_chain(self):
         self.write_one()
@@ -531,3 +535,308 @@ class TestLedgerIsNeverASymlink(EgressBase):
         folder.mkdir()
         with self.assertRaises(egress.EgressError):
             egress.write_receipt(folder, "fixture", "fixture.invalid", "test", "fixture")
+
+
+def _v1_id(record):
+    """The legacy (pre-v2) id, spelled out here rather than read from the module under test."""
+    return hashlib.sha256("\n".join(f"{k}={'' if record[k] is None else record[k]}"
+                                    for k in egress.FIELDS).encode("utf-8")).hexdigest()
+
+
+def _v1_line(record):
+    """A line exactly as the v1 writer produced it: id first, then FIELDS, compact JSON."""
+    return json.dumps({"id": _v1_id(record), **{k: record[k] for k in egress.FIELDS}}, separators=(",", ":"))
+
+
+class TestEveryByteIsBound(EgressBase):
+    """2026-10-27 security audit, W5-05 (verify-v3 §C1): `id` covered a field list and `prev` the
+    previous line, so nothing covered the LAST line's own bytes. An extra key, a re-spacing, a type
+    swap or a blank line verified as intact, and a receipt written since the last close could be
+    rewritten whole with its id recomputed while `verify --expect-ancestor` still said intact."""
+
+    def _rewrite_last(self, mutate, serialise=None):
+        lines = self.lines()
+        record = json.loads(lines[-1])
+        mutate(record)
+        record["id"] = egress.record_id(record)
+        lines[-1] = (serialise or (lambda r: json.dumps(r, separators=(",", ":"))))(record)
+        self.ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _assert_tamper(self, why=None):
+        r = self.run_egress("verify")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("TAMPER", r.stderr)
+        if why:
+            self.assertIn(why, r.stderr)
+
+    def test_a_key_appended_to_the_last_line_is_tamper(self):
+        self.write_one()
+        self.write_one(sink="issue-close")
+        self._rewrite_last(lambda r: r.update(note="FORGED-IN-AFTER-THE-FACT"))
+        self._assert_tamper("unknown key")
+
+    def test_a_respaced_last_line_is_tamper(self):
+        self.write_one()
+        self.write_one(sink="issue-close")
+        self._rewrite_last(lambda r: None, serialise=json.dumps)
+        self._assert_tamper("canonical")
+
+    def test_a_type_swapped_field_is_tamper(self):
+        # The v1 id rendered `"bytes":"12"` and `"bytes":12` alike.
+        self.write_one(extra=("--bytes", "12"))
+        self._rewrite_last(lambda r: r.update(bytes="12"))
+        self._assert_tamper("bytes")
+
+    def test_a_duplicated_key_is_tamper_even_with_the_same_value(self):
+        self.write_one()
+        lines = self.lines()
+        lines[-1] = lines[-1][:-1] + ',"host":"github.com"}'
+        self.ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._assert_tamper("canonical")
+
+    def test_a_blank_line_or_a_missing_final_newline_is_tamper(self):
+        self.write_one()
+        self.write_one(sink="issue-close")
+        first, second = self.lines()
+        self.ledger.write_text(f"{first}\n\n{second}\n", encoding="utf-8")
+        self._assert_tamper("empty line")
+        self.ledger.write_text(f"{first}\n{second}", encoding="utf-8")
+        self._assert_tamper("newline")
+
+    def test_the_id_write_prints_anchors_a_receipt_written_since_the_last_close(self):
+        # verify-v3 §C1's anchored case: close N anchors its head; a receipt written since is
+        # rewritten whole (host and bytes, id recomputed, canonical form) — the realistic forger.
+        self.write_one(extra=("--bytes", "12"))
+        close_head = self.run_egress("head").stdout.strip()
+        written = self.write_one(host="evil.example", extra=("--bytes", "2"))
+        self.assertEqual(written.returncode, 0, written.stderr)
+        receipt_id = written.stdout.strip()
+        honest = self.run_egress("verify", "--expect-ancestor", close_head, "--expect-ancestor", receipt_id)
+        self.assertEqual(honest.returncode, 0, honest.stderr)
+        self.assertEqual(self.run_egress("verify", "--expect-head", receipt_id).returncode, 0)
+        self._rewrite_last(lambda r: r.update(host="github.com", bytes=4))
+        self.assertEqual(self.run_egress("verify").returncode, 0, "the rewrite is internally consistent")
+        for anchors in (("--expect-ancestor", close_head, "--expect-ancestor", receipt_id),
+                        ("--expect-head", receipt_id)):
+            with self.subTest(anchors=anchors):
+                r = self.run_egress("verify", *anchors)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertIn("TAMPER", r.stderr)
+
+    def test_a_ledger_the_verifier_refuses_is_never_written_onto(self):
+        self.write_one()
+        self._rewrite_last(lambda r: r.update(note="FORGED"))
+        before = self.ledger.read_bytes()
+        r = self.write_one(sink="issue-close")
+        self.assertEqual(r.returncode, 3, "a receipt chained onto a tampered line locks the forgery in")
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_a_legacy_ledger_verifies_and_grows_in_v2(self):
+        base = {"ts": "2026-01-01T00:00:00Z", "sink": "pr-open", "host": "github.com",
+                "payload_class": "pr-body", "bytes": 3, "payload_sha256": None,
+                "consent": "free text the v1 writer allowed", "prev": ""}
+        first = _v1_line(base)
+        second = _v1_line({**base, "sink": "issue-close", "prev": hashlib.sha256(first.encode()).hexdigest()})
+        self.ledger.parent.mkdir(parents=True)
+        self.ledger.write_text(f"{first}\n{second}\n", encoding="utf-8")
+        self.assertEqual(self.run_egress("verify").returncode, 0)
+        self.assertEqual(self.write_one().returncode, 0)
+        r = self.run_egress("verify")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("3 receipt(s)", r.stdout)
+        newest = self.records()[-1]
+        self.assertEqual(newest.get("v"), 2)
+        self.assertEqual(newest["prev"], hashlib.sha256(second.encode()).hexdigest())
+
+    def test_a_legacy_line_is_bound_only_in_the_form_the_v1_writer_produced(self):
+        base = {"ts": "2026-01-01T00:00:00Z", "sink": "pr-open", "host": "github.com",
+                "payload_class": "pr-body", "bytes": 3, "payload_sha256": None, "consent": "k", "prev": ""}
+        self.ledger.parent.mkdir(parents=True)
+        forged = json.loads(_v1_line(base))
+        forged["note"] = "unbound"
+        self.ledger.write_text(json.dumps(forged, separators=(",", ":")) + "\n", encoding="utf-8")
+        self._assert_tamper("unknown key")
+        # And never after a v2 receipt: once the v2 writer has run, only it appends.
+        self.ledger.unlink()
+        self.write_one()
+        legacy = _v1_line({**base, "prev": hashlib.sha256(self.lines()[-1].encode()).hexdigest()})
+        with self.ledger.open("a", encoding="utf-8") as fh:
+            fh.write(legacy + "\n")
+        self._assert_tamper("legacy")
+
+
+class TestTheWriterReadsWhatTheVerifierReads(EgressBase):
+    """W5-01: the writer decoded the tail leniently and the verifier strictly, so one appended
+    byte made every later receipt succeed while `verify` and `head` refused the ledger for good."""
+
+    def test_a_byte_the_verifier_refuses_stops_the_writer_before_the_send(self):
+        self.write_one()
+        with self.ledger.open("ab") as fh:
+            fh.write(b"note=\xff\n")
+        before = self.ledger.read_bytes()
+        r = self.write_one(sink="issue-close")
+        self.assertEqual(r.returncode, 3, "the send would go ahead on a ledger the close cannot read")
+        self.assertIn("EGRESS_RECEIPT_FAILED", r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(self.ledger.read_bytes(), before)
+        self.assertEqual(self.run_egress("verify").returncode, 3)
+
+
+class TestTheLockedLedgerIsTheOneWritten(EgressBase):
+    """W5-02: `prev` was read by re-opening the PATH after locking a different open of it, so a
+    ledger swapped in between chained the receipt to a stale tail and orphaned it into an unlinked
+    file, while `write` exited 0."""
+
+    def test_a_ledger_swapped_beside_the_lock_is_refused_not_lost(self):
+        self.write_one()
+        self.write_one(sink="issue-close")
+        stale = Path(self.tmp) / "stale.jsonl"
+        stale.write_text(self.lines()[0] + "\n", encoding="utf-8")
+        real_flock = fcntl.flock
+
+        def swap_after_locking(fd, operation):
+            real_flock(fd, operation)
+            if operation == fcntl.LOCK_EX and stale.exists():
+                os.replace(stale, self.ledger)
+
+        with patch("fcntl.flock", side_effect=swap_after_locking):
+            try:
+                record = egress.write_receipt(self.ledger, "late", "fixture.invalid", "test", "fixture")
+            except egress.EgressError:
+                record = None
+        if record is not None:
+            self.assertIn(record["id"], {r["id"] for r in self.records()},
+                          "write reported success, and its receipt is on no ledger the path names")
+        verified = self.run_egress("verify")
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+
+
+class TestTheLedgerIsWhereItSays(EgressBase):
+    """W5-03: the default ledger was relative to the working directory and an env var could route
+    it anywhere, silently; a missing ledger verified as an intact empty chain; the first receipt
+    created any directory tree above itself."""
+
+    WRITE = ("write", "--sink", "pr-open", "--host", "github.com", "--payload-class", "pr-body",
+             "--consent", "grant:pr-open")
+
+    def setUp(self):
+        super().setUp()
+        self.repo = Path(self.tmp) / "repo"
+        (self.repo / ".git").mkdir(parents=True)
+        (self.repo / "sub" / "deeper").mkdir(parents=True)
+        self.env = {k: v for k, v in os.environ.items()
+                    if k not in (egress.PRIMARY_LEDGER_ENV, egress.LEDGER_ENV)}
+
+    def bare(self, *args, cwd, env=None):
+        return subprocess.run([sys.executable, str(EGRESS), *args], capture_output=True, text=True,
+                              cwd=cwd, env=env or self.env)
+
+    def test_the_default_ledger_is_the_repository_roots_from_any_subdirectory(self):
+        r = self.bare(*self.WRITE, cwd=self.repo / "sub" / "deeper")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.repo / ".orca" / "egress.jsonl").is_file())
+        self.assertFalse((self.repo / "sub" / "deeper" / ".orca").exists())
+        self.assertIn("1 receipt(s)", self.bare("verify", cwd=self.repo).stdout)
+
+    def test_outside_a_repository_the_default_refuses(self):
+        outside = Path(self.tmp) / "outside"
+        outside.mkdir()
+        r = self.bare(*self.WRITE, cwd=outside)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertFalse((outside / ".orca").exists())
+
+    def test_a_routed_receipt_says_where_it_went(self):
+        env = {**self.env, egress.PRIMARY_LEDGER_ENV: "elsewhere.jsonl"}
+        r = self.bare(*self.WRITE, cwd=self.repo / "sub", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        routed = self.repo / "sub" / "elsewhere.jsonl"
+        self.assertTrue(routed.is_file())
+        self.assertIn(str(routed), r.stderr)
+        self.assertIn(f"not the repository ledger {self.repo / '.orca' / 'egress.jsonl'}", r.stderr)
+        self.assertIn(str(routed), self.bare("verify", cwd=self.repo / "sub", env=env).stdout)
+
+    def test_no_tree_is_created_above_the_ledgers_own_directory(self):
+        r = self.run_egress(*self.WRITE, ledger=Path(self.tmp) / "a" / "b" / "c" / "egress.jsonl")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertFalse((Path(self.tmp) / "a").exists())
+
+    def test_no_ledger_is_not_reported_as_an_intact_chain(self):
+        r = self.run_egress("verify")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no ledger file there", r.stdout)
+        anchored = self.run_egress("verify", "--expect-ancestor", "ab" * 32)
+        self.assertEqual(anchored.returncode, 3, "the anchor says a receipt exists; no ledger is not intact")
+        self.assertIn("no ledger file at all", anchored.stderr)
+
+
+class TestGrantsAnswerOnlyForAVerifiedChain(EgressBase):
+    """W5-04: `grants` printed whatever consent the file held without verifying the chain, and a
+    consent was any free text."""
+
+    def test_a_forged_consent_on_a_tampered_chain_is_never_listed(self):
+        self.write_one()
+        self.write_one(sink="issue-close")
+        lines = self.lines()
+        lines[-1] = lines[-1][:-1] + ',"consent":"grant:merge-anything"}'
+        self.ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for args in (("grants",), ("grants", "--json")):
+            with self.subTest(args=args):
+                r = self.run_egress(*args)
+                self.assertEqual(r.returncode, 3, r.stdout)
+                self.assertNotIn("merge-anything", r.stdout)
+                self.assertIn("TAMPER", r.stderr)
+
+    def test_a_consent_must_name_a_grant(self):
+        for consent in ("grant:\x1b[31mred", 'grant:"quoted"', " grant:x", "grant:x ", "grant:ünïcode",
+                        "grant:$(id)", "grant:x;y", "_grant"):
+            with self.subTest(consent=consent):
+                r = self.write_one(consent=consent)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertFalse(self.ledger.exists())
+        for consent in ("grant:pr-open-on-base", "run-2026-09-14-clean-sweep:base-writes", "k",
+                        "task_57ea07ec0722:report-push-u-442",
+                        "wip-curve run wip2-b1r1-rep1 (#604): merges only to wip-integration"):
+            with self.subTest(consent=consent):
+                self.assertEqual(self.write_one(consent=consent).returncode, 0)
+        self.assertEqual(self.run_egress("verify").returncode, 0)
+
+
+class TestDurability(EgressBase):
+    """W5-06: the receipt was flushed, never fsynced, so the send could leave the machine while
+    the receipt sat in the page cache."""
+
+    def test_the_receipt_and_a_new_ledgers_directory_are_fsynced_before_returning(self):
+        synced = []
+        real_fsync = os.fsync
+
+        def observed(fd):
+            st = os.fstat(fd)
+            synced.append((st.st_dev, st.st_ino))
+            return real_fsync(fd)
+
+        with patch.object(os, "fsync", observed):
+            egress.write_receipt(self.ledger, "fixture", "fixture.invalid", "test", "fixture")
+        for path in (self.ledger, self.ledger.parent):
+            st = path.stat()
+            with self.subTest(path=path):
+                self.assertIn((st.st_dev, st.st_ino), synced, f"{path} was never fsynced")
+
+
+class TestThePayloadIsStreamed(EgressBase):
+    """W5-07: `--payload-file` was read whole into memory just to hash it, right before the send."""
+
+    def test_a_payload_larger_than_one_read_is_hashed_without_reading_it_whole(self):
+        payload = Path(self.tmp) / "body.bin"
+        data = os.urandom(3 * (1 << 20) + 17)
+        payload.write_bytes(data)
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("the payload was read whole")), \
+                redirect_stderr(err), redirect_stdout(out):
+            code = egress.main(["--ledger", str(self.ledger), "write", "--sink", "pr-open", "--host", "github.com",
+                                "--payload-class", "pr-body", "--consent", "grant:pr-open",
+                                "--payload-file", str(payload)])
+        self.assertEqual(code, 0, err.getvalue())
+        record = self.records()[0]
+        self.assertEqual(record["payload_sha256"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(record["bytes"], len(data))

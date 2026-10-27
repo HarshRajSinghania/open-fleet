@@ -50,7 +50,8 @@ Two corrections against v1.4.199 make this rule the FLEET's, not the runtime's:
    `gh pr merge <n> --merge --delete-branch --match-head-commit <reviewed_sha>`.
    Every coordinator off-repo write — the `gh pr create`, this merge, issue closes, deploy
    triggers — is preceded by `egress.py write … &&` (#368): the receipt is appended BEFORE the
-   send, and its exit 3 stops the send; run close verifies the chain (conductor-close.md).
+   send, and its exit 3 stops the send; the id it prints is kept off the ledger, and run close
+   verifies the chain against it (conductor-close.md).
    Where the deny-hook is wired, an unreceipted `gh` write is refused below the model (#561);
    elsewhere the prefix is coordinator discipline. `merge_queue.py` receipts its own merges.
    A concurrent head change refuses the merge: requeue for fresh review, then repeat FRESH;

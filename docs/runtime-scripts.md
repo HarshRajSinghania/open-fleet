@@ -579,9 +579,9 @@ Exits: n/a (library).
 
 ## `egress.py`
 
-Content-free, hash-chained receipts for everything the fleet sends off-repo. One JSON
-object per line in `.orca/egress.jsonl` (mode 0600), appended BEFORE the send. Source
-`runtime/scripts/egress.py:1-76`; behavior pinned by `tests/test_egress.py`.
+Content-free, hash-chained receipts for everything the fleet sends off-repo. One canonical JSON
+object per line in `<repository root>/.orca/egress.jsonl` (mode 0600), appended BEFORE the send.
+Source `runtime/scripts/egress.py:1-94`; behavior pinned by `tests/test_egress.py`.
 
 Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
 refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
@@ -593,35 +593,54 @@ appends a receipt before each merge it sends (#599), since the hook never sees t
 
 Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 
-Subcommands: `write`, `verify`, `head` (verify, then print the head to anchor),
-`grants`.
+Subcommands: `write` (verify, append, print the receipt's id), `verify`, `head` (verify, then
+print the head to anchor), `grants` (verify, then list the consents).
 
 Flags: `--ledger` (default `$OPEN_FLEET_EGRESS_LEDGER`, legacy `$ORCA_EGRESS_LEDGER`, else
-`.orca/egress.jsonl`). `write` takes
-`--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,
+`.orca/egress.jsonl` under the repository root — the nearest directory at or above the working
+directory holding `.git`; outside a repository the default refuses, exit 3). A ledger named by
+flag or variable, or reached through a symlinked directory, is reported on `write`'s stderr, and
+`verify` prints the absolute path and where it came from. Only the ledger's own directory is
+ever created. `write` takes
+`--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file` (streamed),
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
 else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger) and
-`--expect-ancestor` (close-to-close, appends tolerated); `grants` takes `--json`.
-`verify` also fails any record whose field carries a line break: `id` hashes newline-joined
-`key=value` lines, so such a field makes the encoding ambiguous.
+`--expect-ancestor` (repeatable; close-to-close, appends tolerated); `grants` takes `--json`.
+Text fields are printable ASCII; `--consent` names a grant (letters, digits, `` ._:/#()@+,=-``,
+starting with a letter or digit).
 
-Record fields: `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
-`consent`, `prev` — never the payload text (sha256 + byte count + kind only). `prev`
-chains to the previous raw line; `id` names the line and its chain position. `verify`
-recomputes the chain and prints the head digest; pass `--expect-head` with a head anchored
-off the writer to catch a wholesale rewrite.
+Record (format v2): `v`, `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
+`consent`, `prev` — never the payload text (sha256 + byte count + kind only). `id` is the sha256
+of the record's canonical serialisation without `id`; a line must BE the canonical serialisation
+of exactly those keys, so an extra key, a re-spacing, a type swap, a blank line or a missing final
+newline is TAMPER — on the last line as on any other (2026-10-27 audit, W5-05). `prev` chains to
+the previous raw line. `write` reads the ledger through the descriptor it holds locked, refuses
+(exit 3, before the send) any ledger `verify` would refuse, and fsyncs the receipt — and a new
+ledger's directory — before printing the id.
 
-Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, or chain broken).
+Anchors: the head digest `head` prints, and the `id` each `write` prints, each name one line byte
+for byte and, through `prev`, every line before it. Keep them off the writer (the loop-log, a
+ledger row) and pass them back: `--expect-ancestor` requires each still in the chain,
+`--expect-head` requires the ledger to end there. A receipt written since the last close is bound
+only by the id its `write` printed — the close head alone cannot see a rewrite after it. A missing
+ledger is reported as "no ledger file there", and any non-empty anchor against it is TAMPER.
+
+Migration: a pre-v2 ledger (no `v` key) keeps verifying while each legacy line is exactly what the
+v1 writer produced (its keys, canonical bytes, types and v1 id), which binds it as fully; v2
+receipts chain onto it, and a legacy line after a v2 one is refused. A legacy line the v1 writer
+could not have produced was never bound and now reads as TAMPER.
+
+Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, or an anchor missing).
 
 > Why: the integrity inventory hashes what a run produced, but nothing recorded what it
 > sent — this ledger is the second half. Receipts are content-free (hash + count + kind)
 > because the ledger is forensic observability, not an exfiltration control: it records
 > attempted egress so an accident is auditable, while anything with a shell can still
-> send without one. The chain (`runtime/scripts/egress.py:record_id` over fixed
-> `runtime/scripts/egress.py:FIELDS`) proves continuity with a genesis, never with THE
-> genesis — a rewritten history links correctly — so `verify` prints the head
-> (`runtime/scripts/egress.py:head_digest`) for anchoring off the writer, and unanchored
-> output says so rather than reading as a clean bill.
+> send without one. The chain (`runtime/scripts/egress.py:record_id` over the canonical record,
+> `runtime/scripts/egress.py:FIELDS` in fixed order) proves continuity with a genesis, never with
+> THE genesis — a rewritten history links correctly — so `verify` prints the head
+> (`runtime/scripts/egress.py:head_digest`) and `write` the id for anchoring off the writer, and
+> unanchored output says so rather than reading as a clean bill.
 
 ## `first_run.py`
 

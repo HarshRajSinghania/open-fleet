@@ -42,7 +42,11 @@ def run_spawn(args, env_extra=None, task_list=None):
     (written to a file the stub cats, so no shell quoting of the JSON).
     """
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca"}
+        # The arming gate refuses an rw/danger spawn whose deny-hook settings var is unset unless
+        # this opt-out is set (W4-06); these helpers exercise other behaviour, so they opt out and
+        # the dedicated arming tests assert the refusal without it.
+        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+               "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
         if task_list is not None:
             payload = Path(tmp) / "task-list.json"
             payload.write_text(json.dumps(task_list))
@@ -394,10 +398,41 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
             self.assert_refused(rc, err, "not armed")
 
     def test_unverified_arming_warns_but_proceeds_past_the_gate(self):
-        # Unset: the spawn must SAY the guard is unverified (then go on to
-        # fail later for want of a real orca — the warning is what we pin).
+        # Unset, with the opt-out run_spawn carries: the spawn SAYS the guard is unverified (then
+        # goes on to fail later for want of a real orca — the warning is what we pin).
         _rc, _, err = run_spawn(self.BASE_ARGS, env_extra=dict(self.RW))
         self.assertIn("deny-hook arming UNVERIFIED", err)
+
+    def test_an_unset_guard_refuses_an_rw_spawn_without_the_optin(self):
+        # W4-06 (2026-10-27 audit): an unset settings var only WARNED, so the default rw spawn
+        # ran a bypass worker on an unverified PreToolUse guard. It refuses now unless the named
+        # opt-out is set.
+        rc, _, err = run_spawn(self.BASE_ARGS,
+                               env_extra={**self.RW, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "0"})
+        self.assert_refused(rc, err, "deny-hook arming UNVERIFIED")
+        self.assertIn("OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK", err)
+
+    def test_the_named_optin_restores_the_unverified_warning_path(self):
+        _rc, _, err = run_spawn(self.BASE_ARGS,
+                                env_extra={**self.RW, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"})
+        self.assertIn("deny-hook arming UNVERIFIED", err)
+        self.assertNotIn("SPAWN=REFUSED task=task_test deny-hook arming", err)
+
+    def test_a_ro_spawn_verifies_a_named_guard_rather_than_skipping_it(self):
+        # W4-06: ro used to skip the arming block entirely, so a wired guard went unchecked and a
+        # ro worker (which can still write through Bash, W4-05) never even saw the warning. ro now
+        # verifies a named registration, and refuses when it is not armed.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / "settings.json"
+            settings.write_text("{}")
+            rc, _, err = run_spawn(["task_test", f"path:{Path(tmp) / 'wt'}", "t", "claude"],
+                                   env_extra={"PROFILE": "ro", "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assert_refused(rc, err, "not armed")
+
+    def test_a_ro_spawn_without_a_guard_proceeds_with_a_note(self):
+        _rc, _, err = run_spawn(self.BASE_ARGS, env_extra={"PROFILE": "ro"})
+        self.assertNotIn("SPAWN=REFUSED", err.split("\n")[0] if err else "")
+        self.assertIn("PROFILE=ro", err)
 
     def test_danger_without_optin_refused(self):
         rc, _, err = run_spawn(self.BASE_ARGS, env_extra={"PROFILE": "danger"})
@@ -539,7 +574,8 @@ esac
 
     def _run(self, tmp, args, env_extra=None):
         env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
-               "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
+               "SETTLE_SECS": "0", "SUBMIT_SECS": "1",
+               "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(SPAWN), *args], env=env,
                               capture_output=True, text=True)
@@ -908,7 +944,8 @@ esac
                             ignore=shutil.ignore_patterns("__pycache__"))
         (root / "runtime" / "pins.json").write_text(json.dumps(pins))
         env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "ORCA_CLI_COMMAND": "orca",
-               "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
+               "SETTLE_SECS": "0", "SUBMIT_SECS": "1",
+               "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(root / "runtime" / "scripts" / "spawn_worker.sh"), *args],
                               env=env, capture_output=True, text=True)
@@ -1445,7 +1482,7 @@ class TestParentProfileNarrowing(unittest.TestCase):
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --dangerously-skip-permissions"}}}\' ;; esac\n')
             stub.chmod(0o755)
             env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
-                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw",
+                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw", "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_SANDBOX_PROFILE": "rw",
                    "OPEN_FLEET_PARENT_PROFILE": "danger"}
             p = subprocess.run(["bash", str(SPAWN), "task_x", "new-child", "t", "claude"],
@@ -1489,7 +1526,7 @@ esac
 """)
             stub.chmod(0o755)
             env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "OPEN_FLEET_RUNTIME": "posix",
-                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "danger",
+                   "ORCA_CLI_COMMAND": str(stub), "PROFILE": "danger", "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1",
                    "ORCA_SANDBOX_RECIPE": "lane-7"}
             env.update(extra)

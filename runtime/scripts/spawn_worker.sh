@@ -153,7 +153,10 @@
 #   ORCA_COORD_ALLOW_AUTONOMOUS_WRITE  must be 1 for PROFILE=rw (accept autonomous bypass workers)
 #   ORCA_DENY_HOOK_SETTINGS   settings file registering deny-hook.sh for workers; named →
 #                             verified armed (registration + live deny probe) or the spawn
-#                             refuses; unset → spawn proceeds with an UNVERIFIED warning
+#                             refuses, for EVERY profile incl. ro (W4-06); unset → rw/danger
+#                             REFUSE unless ORCA_ALLOW_UNVERIFIED_DENY_HOOK=1, ro proceeds (NOTE)
+#   ORCA_ALLOW_UNVERIFIED_DENY_HOOK  opt-out: 1 lets an rw/danger spawn proceed with an UNVERIFIED
+#                             warning when ORCA_DENY_HOOK_SETTINGS is unset (W4-06)
 #   ORCA_COORD_ALLOW_DANGER   must be 1 for PROFILE=danger (implies the above + ephemeral sandbox)
 #   ORCA_SANDBOX_RECIPE       PROFILE=danger only: the orca-per-workspace-env recipe id the lane
 #                             runs in. Required — the opt-in above is intent, this is evidence.
@@ -925,12 +928,19 @@ fi
 # nothing checked it was actually wired into the worker's settings — the claim
 # was doctrinal. When the operator names the wired settings file, verify
 # fail-closed: it must register deny-hook.sh AND the hook must answer a deny
-# probe. Unnamed, proceed but say UNVERIFIED out loud; never claim a guard
-# nobody checked. ro needs no guard (no write surface to bound); a ro-profile
-# WORKER_CMD override keeps its own semantics behind its own opt-in.
-if [ "$PROFILE" != "ro" ]; then
-  step=deny-hook-arming
-  DENY_HOOK_SETTINGS="${OPEN_FLEET_DENY_HOOK_SETTINGS:-${ORCA_DENY_HOOK_SETTINGS:-}}"
+# probe. The gate now runs for EVERY profile including ro, so a wired guard is
+# verified rather than skipped (W4-06: ro skipped the block entirely, so a ro
+# worker -- which can still write through Bash, W4-05 -- never even saw the
+# warning). When the settings var is UNSET the default spawn no longer proceeds
+# on a warning: rw/danger REFUSE unless OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1
+# (legacy ORCA_ALLOW_UNVERIFIED_DENY_HOOK) names the operator's explicit opt-out
+# (W4-06: UNVERIFIED was a warning while every other property of the same risk
+# is a refusal). ro without a wired guard proceeds: its boundary is the tool
+# filter plus the ro write floor an operator wires with `--settings --readonly`.
+step=deny-hook-arming
+DENY_HOOK_SETTINGS="${OPEN_FLEET_DENY_HOOK_SETTINGS:-${ORCA_DENY_HOOK_SETTINGS:-}}"
+ALLOW_UNVERIFIED_HOOK="${OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK:-${ORCA_ALLOW_UNVERIFIED_DENY_HOOK:-0}}"
+if true; then
   if [ -n "$DENY_HOOK_SETTINGS" ]; then
     # The hook verifies its own registration: parses the settings, then runs
     # the REGISTERED command (not this repo's copy) under its configured env
@@ -993,8 +1003,13 @@ PY
       echo "SPAWN=REFUSED task=${task} deny-hook not armed: ${_arming} — wire it (deny-hook.sh --settings <worktree>) or unset ORCA_DENY_HOOK_SETTINGS to proceed UNVERIFIED" >&2
       exit 2
     fi
+  elif [ "$PROFILE" = "ro" ]; then
+    echo "spawn_worker: NOTE deny-hook arming UNVERIFIED for PROFILE=ro (ORCA_DENY_HOOK_SETTINGS unset) — ro relies on the tool filter; wire deny-hook.sh --settings <worktree> --readonly for the in-hook write floor (W4-05)" >&2
+  elif [ "$ALLOW_UNVERIFIED_HOOK" != "0" ] && [ -n "$ALLOW_UNVERIFIED_HOOK" ]; then
+    echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset, OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK set) — worktree + review are the only safety layer for this spawn" >&2
   else
-    echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset) — worktree + review are the safety layer for this spawn" >&2
+    echo "SPAWN=REFUSED task=${task} deny-hook arming UNVERIFIED for PROFILE=${PROFILE}: ORCA_DENY_HOOK_SETTINGS is unset, so the PreToolUse guard this tier's safety story names is not verified (W4-06). Wire it (deny-hook.sh --settings <worktree>) and name it, or set OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1 to proceed on worktree + review alone." >&2
+    exit 2
   fi
 fi
 

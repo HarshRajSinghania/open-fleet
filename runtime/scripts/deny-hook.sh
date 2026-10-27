@@ -202,12 +202,14 @@ usage() {
   cat <<'USAGE'
 deny-hook.sh — PreToolUse deny/ask guard for read-write workers.
 
-Usage: deny-hook.sh [--help] [--settings <worktree>]
+Usage: deny-hook.sh [--help] [--settings <worktree> [--readonly]]
        deny-hook.sh --verify-settings <file> [--harness <name>] [--boundary <dir>]
   Reads a PreToolUse event JSON object on stdin; writes a decision object on
   stdout when the action is denied or must be asked, nothing when it is allowed.
   --settings <worktree> prints the settings.json block that registers this hook
   for one worker, with the boundary path resolved. Nothing registers it for you.
+  --readonly adds the ro-tier write floor (OPEN_FLEET_HOOK_READONLY): every write
+  the hook can see is then denied regardless of the boundary.
   --verify-settings proves a registration is armed by running it against deny
   and allow probes in the harness's own tool names. <name> is claude, codex,
   openhands, goose, crush, hermes (config.yaml), opencode/omp/pi (the .ts
@@ -224,6 +226,12 @@ Environment:
                       naming an absolute path. ORCA_UNIT_WORKTREE is its legacy
                       alias, read only when OPEN_FLEET_UNIT_WORKTREE is unset
                       or empty.
+  OPEN_FLEET_HOOK_READONLY (or ORCA_HOOK_READONLY)  ro-tier write floor: every
+                      write the hook can see (a redirect, tee, file-tool edit or
+                      apply_patch) is denied regardless of the boundary, while
+                      read-only shell still runs. Defense-in-depth, not an fs
+                      sandbox (cp/mv/rm and an interpreter's own write are beyond
+                      it). See runtime/sandbox-policy.md.
   OPEN_FLEET_HOOK_STRICT_EXIT=1, OPEN_FLEET_HOOK_EXIT2=1 or the legacy
   ORCA_HOOK_STRICT_EXIT=1  strict mode (any one): ask becomes deny, deny exits 2.
   CODEX_CI, CODEX_SANDBOX or OPEN_FLEET_HEADLESS_STRICT  set to anything but
@@ -237,16 +245,27 @@ USAGE
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
 
-# --settings <worktree>: print the registration block, boundary resolved. This is
+# --settings <worktree> [--readonly]: print the registration block, boundary resolved. This is
 # the whole answer to "how do I turn this on" — there is no dispatcher step that
 # does it for you, and saying so in a --help is cheaper than a doc nobody reads.
+# --readonly emits the ro-tier write floor (OPEN_FLEET_HOOK_READONLY): every write the hook
+# can see is then denied regardless of the boundary (W4-05).
 if [ "${1:-}" = "--settings" ]; then
-  if [ -z "${2:-}" ]; then
+  _settings_ro=0
+  _settings_wt=""
+  for _sa in "$2" "${3:-}"; do
+    case "$_sa" in
+      --readonly) _settings_ro=1 ;;
+      "") : ;;
+      *) [ -n "$_settings_wt" ] || _settings_wt=$_sa ;;
+    esac
+  done
+  if [ -z "$_settings_wt" ]; then
     echo "deny-hook.sh --settings needs the worker's worktree path" >&2
     exit 2
   fi
-  _wt=$(cd "$2" 2>/dev/null && pwd -P) || {
-    echo "deny-hook.sh --settings: '$2' is not a directory" >&2
+  _wt=$(cd "$_settings_wt" 2>/dev/null && pwd -P) || {
+    echo "deny-hook.sh --settings: '$_settings_wt' is not a directory" >&2
     exit 2
   }
   _self=$(cd "$(dirname -- "$0")" && pwd -P)/$(basename -- "$0")
@@ -263,13 +282,17 @@ if [ "${1:-}" = "--settings" ]; then
   # OPEN_FLEET_UNIT_WORKTREE, so pinning only the legacy ORCA_UNIT_WORKTREE let a stale inherited
   # OPEN_FLEET_UNIT_WORKTREE silently replace the per-worktree pin. install_worktree_hooks pins
   # both for the same reason; an explicit pin must win over anything inherited.
-  python3 -I -c 'import json,shlex,sys; print(json.dumps({
-      "env": {"OPEN_FLEET_UNIT_WORKTREE": sys.argv[1], "ORCA_UNIT_WORKTREE": sys.argv[1]},
-      "hooks": {"PreToolUse": [{
-          "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit",
-          "hooks": [{"type": "command", "command": shlex.quote(sys.argv[2])}],
-      }]},
-  }, indent=2))' "$_wt" "$_self" || {
+  python3 -I -c 'import json,shlex,sys
+env = {"OPEN_FLEET_UNIT_WORKTREE": sys.argv[1], "ORCA_UNIT_WORKTREE": sys.argv[1]}
+if sys.argv[3] == "1":
+    env["OPEN_FLEET_HOOK_READONLY"] = "1"
+print(json.dumps({
+    "env": env,
+    "hooks": {"PreToolUse": [{
+        "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit",
+        "hooks": [{"type": "command", "command": shlex.quote(sys.argv[2])}],
+    }]},
+}, indent=2))' "$_wt" "$_self" "$_settings_ro" || {
     echo "deny-hook.sh --settings: python3 is required to emit valid JSON" >&2
     exit 2
   }
@@ -827,6 +850,17 @@ HOOK_STRICT=0
 if truthy "${ORCA_HOOK_STRICT_EXIT:-}" || truthy "${OPEN_FLEET_HOOK_STRICT_EXIT:-}" \
   || truthy "${OPEN_FLEET_HOOK_EXIT2:-}" || [ -n "${JCODE_HOOK_TOOL_NAME:-}" ]; then
   HOOK_STRICT=1
+fi
+# READ-ONLY tier (W4-05). When OPEN_FLEET_HOOK_READONLY (or ORCA_HOOK_READONLY) is set, every
+# write this hook can see is DENIED regardless of the boundary: the file tools, and a Bash
+# redirect, tee or apply_patch. This is the `ro` tier's defense-in-depth write floor -- plan-mode
+# Bash still runs read-only shell (git diff/log, cat, ls, running tests). It is a write floor,
+# NOT a filesystem sandbox: a mutation the hook does not model as a write record (cp/mv/rm
+# without a redirect, a package install, an interpreter writing through its own API) is out of
+# its reach, and the disposable sandbox is the real boundary for those (sandbox-policy.md).
+HOOK_READONLY=0
+if truthy "${OPEN_FLEET_HOOK_READONLY:-}" || truthy "${ORCA_HOOK_READONLY:-}"; then
+  HOOK_READONLY=1
 fi
 
 # One decision object, with the reason JSON-encoded via argv (never interpolated).
@@ -4257,6 +4291,37 @@ def _root_wipe(ws):
     return bool(recursive and targets and all(_rooty(t) for t in targets))
 
 
+_WRITE_OPS = (">", ">>", ">|", "&>", "&>>", "<>", ">&")
+
+
+def _has_write(text, depth=0):
+    """True when text performs a file write the hook can see -- a redirect to a file (not an fd
+    dup like 2>&1), or a tee -- anywhere, descending shell/-c bodies. The ro tier write floor
+    (W4-05) reads this, so a write hidden in a shell -c body is caught too."""
+    try:
+        segs = _split(text)
+    except ValueError:
+        return False
+    for _j, seg in segs:
+        try:
+            words, redirs = _redirs(seg)
+        except ValueError:
+            continue
+        for _fd, op, target in redirs:
+            if op in _WRITE_OPS and target and target != "-" and not target.isdigit():
+                return True
+        ws = _command_words(words)
+        if not ws:
+            continue
+        if ws[0].rsplit("/", 1)[-1] == "tee" and _operands(ws[1:]):
+            return True
+        if depth < 4:
+            body = _inner_body(ws)
+            if body and _has_write(body, depth + 1):
+                return True
+    return False
+
+
 def _never_git(ws):
     """Why a git command discards local work or history beyond easy recovery, or None (P2-12)."""
     if not ws or ws[0].rsplit("/", 1)[-1] != "git":
@@ -4377,6 +4442,9 @@ if _hard:
 # Y: a recursive rm whose every target is the root or home CLASS (W1-06), judged by the HIGH tier.
 if any(_root_wipe(_vw) for _vw, _w, _sg in _all_views):
     record("Y", "1")
+# Z: a file write the hook can see, anywhere (incl. a shell -c body), for the ro write floor (W4-05).
+if _has_write(raw_command):
+    record("Z", "1")
 
 
 # R: the line the as-written never-list pass reads (#598, from #602). That pass ran over the raw
@@ -4812,6 +4880,10 @@ case "$TOOL" in
   Edit|Write|NotebookEdit|MultiEdit)
     [ -n "$FILE" ] || exit 0
     guard_check
+    if [ "$HOOK_READONLY" = "1" ]; then
+      decide deny "deny-hook[READONLY]: this worker runs read-only (ro tier) and may not edit, write or create files. Run it under the rw tier if it needs to change the tree."
+      exit 0
+    fi
     if [ -n "$BOUND" ]; then
       check_edit_target "$FILE"
       while IFS= read -r _FREC; do
@@ -5373,6 +5445,20 @@ if [ -n "$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^Y //p' | sed -n '1p')" ]; the
 fi
 
 guard_check
+
+# READ-ONLY tier (W4-05): a ro worker may read and run read-only shell, but any write this hook
+# can see -- a redirect, a tee (both carry a W record) or an apply_patch (a P record) -- is
+# denied regardless of the boundary. A command the hook does not model as a write (cp/mv/rm, a
+# package install, an interpreter's own file write) is beyond this; the sandbox is the fs
+# boundary for those (sandbox-policy.md). Runs after the HIGH tier and the self-guard so a
+# refused shape keeps its own, more specific reason.
+if [ "$HOOK_READONLY" = "1" ]; then
+  if [ -n "$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^Z //p' | sed -n '1p')" ] \
+    || [ -n "$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^P //p' | sed -n '1p')" ]; then
+    decide deny "deny-hook[READONLY]: this worker runs read-only (ro tier) and may not write to a file. A shell redirect, tee or apply_patch is refused; read-only shell (git diff/log, cat, running tests) is fine."
+    exit 0
+  fi
+fi
 
 # --- worktree boundary for Bash writes ---------------------------------------
 # The boundary used to be applied only to an Edit/Write payload, so a bounded

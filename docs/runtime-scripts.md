@@ -334,7 +334,11 @@ registration is armed by running deny and allow probes in that harness's own too
 name only this hook (`[VAR=value ...] [sh] <path>/deny-hook.sh`, the same bytes), and the
 probes run it under a scrubbed environment, never through `sh -c`.
 
-Flags: `--help`, `--settings`, `--verify-settings`, `--harness`, `--boundary`.
+Flags: `--help`, `--settings`, `--readonly`, `--verify-settings`, `--harness`, `--boundary`.
+`--settings <wt> --readonly` adds the ro-tier write floor (`OPEN_FLEET_HOOK_READONLY`): the hook
+then denies every write it can see (a redirect, `tee`, file-tool edit or `apply_patch`) regardless
+of the boundary while read-only shell still runs — defense-in-depth over those channels, not a
+filesystem sandbox (W4-05; `runtime/sandbox-policy.md`).
 
 Every Bash segment is judged after one peeler strips what launches it — `VAR=`, `env`, `sudo`,
 `doas`, `nohup`, `nice`, `time`, `timeout`, `exec`, `setsid`, `stdbuf`, `ionice`, `chrt`,
@@ -1867,16 +1871,21 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 
 Fail-closed Orca worker dispatch for fleet coordinators: supervised lane
 (`worker-start`: worktree + agent terminal + readiness + dispatch) and custom-argv lane
-(`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-171`;
-behavior pinned by `tests/test_spawn_worker.py`. For non-`ro` profiles it also checks
-deny-hook arming (#562): with `OPEN_FLEET_DENY_HOOK_SETTINGS` (legacy alias
-`ORCA_DENY_HOOK_SETTINGS`) naming the operator-wired settings file, the file must register
+(`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-174`;
+behavior pinned by `tests/test_spawn_worker.py`. For EVERY profile, `ro` included, it checks
+deny-hook arming (#562; W4-06: `ro` used to skip the block entirely): with
+`OPEN_FLEET_DENY_HOOK_SETTINGS` (legacy alias `ORCA_DENY_HOOK_SETTINGS`) naming the
+operator-wired settings file, the file must register
 `runtime/scripts/deny-hook.sh` and the hook must answer a deny probe, else `SPAWN=REFUSED`.
 It must also bound the tree the spawn launches into: every selector that names an existing
 tree reaches the gate as `--boundary` (`path:`, `id:<repoId>::<path>`, and `current`/`active`/
 `name:`/`branch:` resolved through the runtime's `worktree show`; a tree it cannot resolve
-refuses), and only `new-child`/`new-top-level` are checked without one (W4-03);
-unset, the spawn proceeds with a loud `UNVERIFIED` warning — the guard is never claimed unchecked. On Orca the custom-argv lane's
+refuses), and only `new-child`/`new-top-level` are checked without one (W4-03).
+When the settings var is unset an `rw`/`danger` spawn `SPAWN=REFUSED`s rather than running a
+bypass worker on an unverified guard (W4-06) — unless `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1`
+(legacy `ORCA_ALLOW_UNVERIFIED_DENY_HOOK`) is the operator's explicit opt-out, which restores the
+loud `UNVERIFIED` warning; an unset-guard `ro` spawn proceeds with a NOTE (its boundary is the
+tool filter plus the optional `--readonly` write floor). On Orca the custom-argv lane's
 `terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
 `new-top-level` there are refused before any task is created, since only `worker-start` creates a
 worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,

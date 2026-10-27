@@ -2964,3 +2964,58 @@ class TestArchiveAndPatchWritersReachTheGuard(ReviewHookBase):
             "unzip e.zip -d build", "unzip -d out e.zip", "patch -d build -p1 < d.patch",
             "tar -czf out.tar src", "tar -tf e.tar", "tar -cf dist/app.tar build",
         ), bounded_modes=(True,))
+
+
+class TestReadOnlyTierWriteFloor(HookBase):
+    """W4-05 (2026-10-27 audit): ``ro`` was a tool filter, not a filesystem one, so plan-mode
+    Bash still wrote (``sh -c 'echo x > f'``). OPEN_FLEET_HOOK_READONLY denies every write the
+    hook can see -- a redirect, a tee, a file tool, an apply_patch -- regardless of the boundary,
+    while read-only shell still runs. It is defense in depth over those channels, not a filesystem
+    sandbox: a mutation the hook does not model as a write (cp/mv/rm, a package install) is beyond
+    it, and the disposable sandbox is the boundary for those."""
+
+    RO = {"OPEN_FLEET_HOOK_READONLY": "1"}
+
+    def _fire(self, payload):
+        return self.fire(payload, env_extra=self.RO)
+
+    def test_a_shell_write_is_denied_even_inside_the_boundary(self):
+        wt = self.tmp / "rowt"
+        wt.mkdir()
+        env = {**self.RO, "ORCA_UNIT_WORKTREE": str(wt)}
+        for command in ("echo x > in.txt", "echo x >> in.txt", "echo x | tee t.txt",
+                        "sh -c 'echo x > f'", "echo x > /tmp/anywhere.txt",
+                        "printf y | tee -a log"):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env_extra=env,
+                                                cwd=wt))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+                self.assertIn("READONLY", block["permissionDecisionReason"])
+
+    def test_file_tools_are_denied_under_readonly(self):
+        for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+                block = self.decision(self._fire(event(tool, **{key: "/tmp/whatever.py"})))
+                self.assertIsNotNone(block, tool)
+                self.assertEqual(block["permissionDecision"], "deny", tool)
+
+    def test_an_apply_patch_heredoc_is_denied_under_readonly(self):
+        command = ("apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: note.txt\n"
+                   "+hi\n*** End Patch\nEOF")
+        block = self.decision(self._fire(event("Bash", command=command)))
+        self.assertIsNotNone(block)
+        self.assertEqual(block["permissionDecision"], "deny")
+
+    def test_read_only_shell_still_runs_under_readonly(self):
+        for command in ("git diff", "git log --oneline -5", "cat README.md", "ls -la",
+                        "grep -r TODO .", "make 2>&1 | tail", "echo hello"):
+            with self.subTest(command=command):
+                r = self._fire(event("Bash", command=command))
+                self.assertEqual(r.stdout.strip(), "", command)
+
+    def test_the_header_states_the_readonly_floor_and_its_limit(self):
+        text = HOOK.read_text(encoding="utf-8")
+        self.assertIn("OPEN_FLEET_HOOK_READONLY", text)
+        self.assertIn("NOT a filesystem sandbox", text)

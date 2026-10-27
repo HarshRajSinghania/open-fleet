@@ -29,25 +29,40 @@ from .base import ProviderError, fence_state, normalize_show, parse_json_strict
 from .local_state import LocalStateStore
 from .posix import HOOK_ARTIFACTS, gitexec
 
-# Subcommands that can run an attribute-selected driver: a clean filter on an index refresh
-# (`status`, `worktree remove`'s clean check), a smudge filter on a checkout, a merge driver on a
-# 3-way merge (`merge-tree`). Their drivers are blanked where they run (W4-01 sweep).
-_CONTENT_GIT = frozenset({"status", "worktree", "reset", "checkout", "merge-tree", "diff", "add",
-                          "stash", "merge", "read-tree", "update-index"})
+def _git_location(argv: list[str], cwd: str | None) -> tuple[str, str | None]:
+    """`(repo, git_dir)` a `git` argv runs in: its leading `-C <dir>` options (each relative to the
+    one before, from the launch cwd), or a `--git-dir`, else the launch cwd itself."""
+    repo, git_dir, i = cwd or os.getcwd(), None, 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("-C", "-c", "--git-dir", "--work-tree") and i + 1 < len(argv):
+            if tok == "-C":
+                repo = os.path.join(repo, argv[i + 1])
+            elif tok == "--git-dir":
+                git_dir = argv[i + 1]
+            i += 2
+        elif tok.startswith("--git-dir="):
+            git_dir, i = tok.split("=", 1)[1], i + 1
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            break
+    return repo, (os.path.join(repo, git_dir) if git_dir else None)
 
 
-def _git_launch(argv: list[str], env: dict[str, str] | None) -> tuple[list[str], dict[str, str] | None, dict[str, Any]]:
+def _git_launch(argv: list[str], env: dict[str, str] | None, cwd: str | None = None) -> tuple[list[str], dict[str, str] | None, dict[str, Any]]:
     """`(argv, env, stdin kwargs)` to launch one upstream command. A `git` an adapter runs is
     COORDINATOR-side git over a worker's worktree — the shared `.git/config`, its `.gitattributes`,
     the same-uid `~/.gitconfig` — so it launches the way posix.py launches one (W4-01 sweep):
-    gitexec.py's absolute git and floor, stdin closed, and for a content-materialising subcommand
-    every driver the config declares where it runs (`-C <dir>`) blanked. Anything else passes as is.
-    GitAbsent (git missing at import) and DriverQueryFailed (an unreadable config) are OSErrors."""
+    gitexec.py's absolute git and floor, stdin closed, and EVERY launch carries the blanks for every
+    driver the config declares where it runs (`-C`, `--git-dir`, or the launch cwd): no subcommand
+    allowlist a future `commit`/`restore`/`rebase` could fall outside (re-attack P3). Anything that
+    is not git passes as is. GitAbsent (git missing at import) and DriverQueryFailed (an unreadable
+    config) are OSErrors."""
     if not argv or argv[0] != "git":
         return argv, env, {}
-    blanks: list[tuple[str, str]] = []
-    if len(argv) > 3 and argv[1] == "-C" and argv[3] in _CONTENT_GIT:
-        blanks = gitexec.driver_blanks(argv[2])
+    repo, git_dir = _git_location(argv, cwd)
+    blanks = gitexec.driver_blanks(repo, git_dir=git_dir)
     return gitexec.argv(*argv[1:]), gitexec.env(env, blanks=blanks), {"stdin": subprocess.DEVNULL}
 
 # Files `posix.install_worktree_hooks` writes into a worktree: dirt limited to these paths is
@@ -70,7 +85,7 @@ def real_worktree(path: Any) -> str | None:
 def run_cli(argv: list[str], *, provider: str, timeout: float = 60, cwd: str | None = None) -> dict[str, Any]:
     """Run an upstream CLI; every failure mode is a ProviderError (never a silent success)."""
     try:
-        launch, env, stdin = _git_launch(argv, None)
+        launch, env, stdin = _git_launch(argv, None, cwd)
         proc = subprocess.run(
             launch, capture_output=True, text=True, check=False, timeout=timeout, cwd=cwd, env=env, **stdin
         )

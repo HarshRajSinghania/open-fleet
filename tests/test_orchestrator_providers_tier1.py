@@ -532,6 +532,21 @@ class TestAdapterGitRunsNothingTheRepoNames(_Base):
         self.assertTrue(conflicted, "a driver that runs nothing leaves the 3-way merge conflicted")
         self.assertEqual(self.fired(), [], "worktrunk's merge-tree ran a repo-planted merge driver")
 
+    def test_every_git_launch_is_blanked_whatever_its_subcommand_or_location(self) -> None:
+        # Re-attack P3: blanks were computed only for an allowlist of subcommands, and only when
+        # the argv named its repo with `-C`. A future `commit` (its `-a` re-stages through the
+        # clean filter) or a `cwd=`-launched `checkout` (smudge) would have run the planted filter.
+        for key, value in (("user.email", "t@e"), ("user.name", "t")):
+            subprocess.run(["git", "-C", str(self.repo), "config", key, value], check=True)
+        self.plant()
+        (self.wt / "a.txt").write_text("changed\n", encoding="utf-8")
+        self.ext.run_cli(["git", "-C", str(self.wt), "commit", "-qam", "w"], provider="git")
+        self.assertEqual(self.fired(), [], "a `-C` commit ran the planted clean filter")
+        (self.wt / "a.txt").write_text("dirty again\n", encoding="utf-8")
+        self.ext.run_cli(["git", "checkout", "--", "a.txt"], provider="git", cwd=str(self.wt))
+        self.assertEqual((self.wt / "a.txt").read_text(encoding="utf-8"), "changed\n")
+        self.assertEqual(self.fired(), [], "a cwd-launched checkout ran the planted smudge filter")
+
     def test_the_same_uid_global_config_is_never_read(self) -> None:
         glob = self.config_file("worker-written.gitconfig", (
             ("core.hooksPath", str(self.hooks_dir("globalhooks"))),

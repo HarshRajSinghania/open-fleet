@@ -618,6 +618,36 @@ class OfflineAndPromotion(QueueCase):
         self.assertEqual(self.w.merge_log("start"), [])
         self.assertEqual(self.state_of(entry), "queued")
 
+    def test_the_default_ledger_is_the_repository_roots_wherever_the_queue_runs(self):
+        # Re-check of 4b24dfde (W5-03): with no ledger variable the queue wrote to
+        # `<--repo-dir>/.orca/egress.jsonl`, and --repo-dir defaults to the working directory, so a
+        # drain run from a subdirectory receipted into `<sub>/.orca` while the close verified the
+        # root. It now picks the ledger egress.py's own default picks: the repository root's, and
+        # none at all (the merge refused before the send) under a `.git` nested in the repository.
+        del self.w.env[egress.PRIMARY_LEDGER_ENV]
+        sub = self.w.conductor / "sub"
+        sub.mkdir()
+        token = self.acquire()
+        (entry,) = self.board(token, self.w.unit("alpha"))
+        self.w.cli("plan", "--token", token)
+        rc, out = self.w.cli("--repo-dir", str(sub), "merge", "--token", token)
+        self.assertEqual((rc, out.get("result")), (0, "merged"), out)
+        self.assertFalse((sub / ".orca").exists(), "the receipt landed under the working subdirectory")
+        root_ledger = self.w.conductor / egress.DEFAULT_LEDGER
+        self.assertEqual([json.loads(x)["id"] for x in root_ledger.read_text().splitlines()][:1],
+                         [out["egressReceipt"]])
+        self.assertEqual(self.w.cli("ack", "--token", token, "--entry", entry)[0], 0)
+        nested = self.w.conductor / "vendor"
+        (nested / ".git").mkdir(parents=True)
+        (entry2,) = self.board(token, self.w.unit("beta"))
+        self.w.cli("plan", "--token", token)
+        before = self.w.merge_log("start")
+        rc, out = self.w.cli("--repo-dir", str(nested), "merge", "--token", token)
+        self.assertEqual((rc, out.get("code")), (1, "egress_failed"), out)
+        self.assertEqual(self.w.merge_log("start"), before, "a merge was sent with no receipt on the run's ledger")
+        self.assertFalse((nested / ".orca").exists())
+        self.assertEqual(self.state_of(entry2), "queued")
+
 
 class NonCooperatingWriters(QueueCase):
     def test_a_merge_github_landed_on_a_moved_base_needs_an_explicit_ack(self):

@@ -1593,7 +1593,9 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
   egress-receipted like the merge. Each egress receipt's id is kept off the ledger, as an
   `egress_receipt` in the queue's own receipts (`receipts`), on stderr, and as `egressReceipt` in a
   merge's result, so run close can anchor it; a ledger routed by `$OPEN_FLEET_EGRESS_LEDGER` is said
-  on stderr (2026-10-27 re-attack, W5-05/W5-03). Its push inherits the merge boundary's lock as the merge's
+  on stderr, and the default is the one `egress.py` picks — the repository root's, wherever under
+  it `--repo-dir` points, and none (the send refused) under a nested `.git` (2026-10-27 re-attack,
+  W5-05/W5-03). Its push inherits the merge boundary's lock as the merge's
   send does, so a conductor killed mid-deletion holds the boundary until that push ends and the
   next owner records the branch as gone. Owed teardowns are read only once the boundary is held,
   and each deletion is claimed (`deleting`) in a fenced transaction that re-reads the entry just

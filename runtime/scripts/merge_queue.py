@@ -1698,7 +1698,10 @@ class MergeQueue:
         clean against every anchor a close held (2026-10-27 re-attack, W5-05). A ledger routed by
         $OPEN_FLEET_EGRESS_LEDGER / $ORCA_EGRESS_LEDGER is said too, never silent (W5-03)."""
         explicit = self.env.get(egress.PRIMARY_LEDGER_ENV) or self.env.get(egress.LEDGER_ENV)
-        default = self.repo_dir / egress.DEFAULT_LEDGER
+        # The ledger egress.py's own default picks from here (the repository root's, refusing under
+        # a nested `.git`), never `<--repo-dir>/.orca`: --repo-dir defaults to the working directory,
+        # and a queue run from a subdirectory receipted where no close looks (W5-03).
+        default, _source = egress.default_ledger(self.repo_dir)
         path = Path(os.path.abspath(explicit)) if explicit else default
         record = egress.write_receipt(path, "merge-queue", cfg["host"], payload_class, cfg["consent"],
                                       nbytes=len(body), payload_sha256=hashlib.sha256(body).hexdigest())

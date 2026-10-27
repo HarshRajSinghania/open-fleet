@@ -209,13 +209,14 @@ def _linked_worktree_of(root, outer):
     return os.path.realpath(back) == os.path.realpath(gitfile)
 
 
-def _default_ledger():
-    """(absolute path, where it came from) of the repository's own ledger, or EgressError when the
-    working directory has none: outside a repository, or under a `.git` nested in another
-    repository that is not a linked worktree of it."""
-    root, outer = _repositories()
+def default_ledger(start=None):
+    """(absolute path, where it came from) of the repository's own ledger for `start` (default:
+    the working directory), or EgressError when it has none: outside a repository, or under a
+    `.git` nested in another repository that is not a linked worktree of it. merge_queue.py
+    picks its default here too, so a queue run from a subdirectory receipts where the close looks."""
+    root, outer = _repositories(start)
     if root is None:
-        raise EgressError(f"no repository at or above {os.getcwd()} (no .git): the default ledger is "
+        raise EgressError(f"no repository at or above {os.path.abspath(start or os.getcwd())} (no .git): the default ledger is "
                           f"<repository root>/{DEFAULT_LEDGER}; run from inside the repository, or name the "
                           f"ledger with --ledger or ${PRIMARY_LEDGER_ENV}")
     if outer is not None:
@@ -239,7 +240,7 @@ def resolve_ledger(explicit=None):
         env = os.environ.get(var)
         if env:
             return Path(os.path.abspath(env)), f"${var}"
-    return _default_ledger()
+    return default_ledger()
 
 
 def ledger_path(explicit=None):
@@ -257,7 +258,7 @@ def _routing_note(path, source):
     if source.startswith("the default of linked worktree") and not via_link:
         return f"egress: receipt written to {path}: {source}, not to that repository's ledger"
     try:
-        default, default_source = _default_ledger()
+        default, default_source = default_ledger()
     except EgressError:
         default, default_source = None, None
     if default == path and default_source == "the repository default" and not via_link:

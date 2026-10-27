@@ -323,18 +323,24 @@ cut, recreate its tag, or reset published mappings to make a retry pass.
 
 `.github/workflows/release.yml` publishes a GitHub Release with the version's CHANGELOG
 section as notes on every `v*` tag push (idempotent; it never creates a tag — the tag is
-the authorization step above). The historical tags that predate it get their Releases once,
-by hand, from the maintainer's account (both publishers refuse any other actor, below):
+the authorization step above). The historical tags that predate it got their Releases once,
+by hand, from the maintainer's account (both publishers refuse any other actor, below); a
+read-back on 2026-10-27 lists all thirteen, `v1.0.0` Latest. Runs are serialized (one running,
+one pending; a third queued run cancels the pending one), so a backfill dispatches one tag and
+waits for its run before the next:
 
 ```bash
 for t in v0.1.0 v0.1.1 v0.2.0 v0.2.1 v0.3.0 v0.4.0 v0.5.0 v0.6.0 v0.6.1; do
   gh workflow run release.yml -f tag="$t"
+  sleep 15   # let the run register before asking for it
+  gh run watch --exit-status "$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 done
-gh release list --limit 20     # nine rows once the runs finish
+gh release list --limit 20
 ```
 
-A backfilled Release is published with `--latest=false`: only the newest `v*` tag on `main`, in
-version order, takes GitHub's "Latest" (2026-10-27 security audit, W6-11).
+A backfilled Release is published with `--latest=false`: only the newest `vX.Y.Z` tag the remote
+holds, in version order and read just before publishing, takes GitHub's "Latest" (2026-10-27
+security audit, W6-11; PR #718 review).
 
 `.github/workflows/publish-dist.yml` builds `scripts/bundle.py`'s self-contained tree on the
 same tag pushes (a manual run must name an existing `v*` tag; it refuses a branch) and

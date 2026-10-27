@@ -924,19 +924,28 @@ class AReleaseForAnOlderTagIsNeverLatest(unittest.TestCase):
 
     STEP = "Publish the Release (idempotent)"
 
-    def _run(self, tag):
+    def _run(self, tag, remote_only=()):
+        """Run the publish step in a clone whose `origin` (a local bare repository) holds the
+        clone's tags plus `remote_only`, which the clone itself never fetched."""
         script = _step_script(_named_step(_publisher_steps("release.yml"), self.STEP))
         self.assertTrue(script.strip(), "the publish step has no run: body")
         with tempfile.TemporaryDirectory() as tmp:
-            repo, bin_dir = Path(tmp) / "repo", Path(tmp) / "bin"
+            repo, bin_dir, origin = Path(tmp) / "repo", Path(tmp) / "bin", Path(tmp) / "origin.git"
             repo.mkdir()
             bin_dir.mkdir()
             git = lambda *a: subprocess.run(["git", *a], cwd=repo, env={**os.environ, **_GIT_FIXTURE_ENV},
                                             check=True, capture_output=True, text=True)
-            git("init", "-q")
-            for version in ("v0.9.0", "v0.10.0"):
+            git("init", "-q", "-b", "main")
+            git("init", "-q", "--bare", str(origin))
+            git("remote", "add", "origin", str(origin))
+            for version in ("v0.9.0", "v0.10.0", *remote_only):
                 git("commit", "-q", "--allow-empty", "-m", version)
                 git("tag", "-a", version, "-m", version)
+            git("push", "-q", "origin", "main", "--tags")
+            for version in remote_only:  # published by another run after this one checked out
+                git("tag", "-d", version)
+                git("reset", "-q", "--hard", "HEAD~1")
+            git("fetch", "-q", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
             git("update-ref", "refs/remotes/origin/main", "HEAD")
             log = Path(tmp) / "gh.log"
             (bin_dir / "gh").write_text(
@@ -965,6 +974,44 @@ class AReleaseForAnOlderTagIsNeverLatest(unittest.TestCase):
         self.assertEqual(len(older), 1)
         self.assertIn("--latest=false", older[0].split())
         self.assertNotIn("--latest", older[0].split())
+
+    def test_a_newer_tag_only_the_remote_has_already_outranks_this_one(self):
+        # PR #718 review (P2): a run that read its tag list before a newer release landed
+        # marked its own older tag Latest after the newer one did. The decision is read from
+        # the remote at the moment of publishing, so a tag this checkout never saw counts.
+        stale = self._run("v0.10.0", remote_only=("v0.11.0",))
+        self.assertEqual(len(stale), 1)
+        self.assertIn("--latest=false", stale[0].split())
+        self.assertNotIn("--latest", stale[0].split())
+
+    def test_the_newest_tag_is_read_from_the_remote_just_before_publishing(self):
+        script = _step_script(_named_step(_publisher_steps("release.yml"), self.STEP))
+        lines = [ln.strip() for ln in script.splitlines()]
+        read = [i for i, ln in enumerate(lines) if ln.startswith("newest=")]
+        self.assertEqual(len(read), 1, "the step no longer decides the newest tag once")
+        self.assertIn("git ls-remote --tags --refs origin", lines[read[0]])
+        self.assertNotIn("git tag", lines[read[0]], "the newest tag comes from the checkout")
+        view = next(i for i, ln in enumerate(lines) if ln.startswith("if gh release view"))
+        create = next(i for i, ln in enumerate(lines) if ln.startswith("gh release create"))
+        self.assertLess(view, read[0])
+        self.assertLess(read[0], create)
+        self.assertFalse([ln for ln in lines[read[0] + 1:create] if "git " in ln or "gh " in ln],
+                         "something runs between the fresh read and the publish")
+
+    def test_each_publisher_runs_one_at_a_time_in_a_group_of_its_own(self):
+        # One running and one pending per group, never cancelled mid-run. Not one shared
+        # group: GitHub cancels a group's pending run when another is queued, so a shared group
+        # would let one workflow's run cancel the other's pending run for a different tag.
+        groups = {}
+        for name in ("release.yml", "publish-dist.yml"):
+            text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            m = re.search(r"(?m)^concurrency:\n  group: (\S+)\n  cancel-in-progress: false\n", text)
+            with self.subTest(workflow=name):
+                self.assertIsNotNone(m, f"{name}: no top-level, never-cancelling concurrency")
+                self.assertNotIn("${{", m.group(1), "a per-run group serializes nothing")
+                groups[name] = m.group(1)
+        self.assertEqual(groups.get("release.yml"), "release")
+        self.assertEqual(groups.get("publish-dist.yml"), "publish-dist")
 
 
 class TheDistIndexIsExactlyTheBundle(unittest.TestCase):

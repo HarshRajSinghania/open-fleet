@@ -286,6 +286,29 @@ def _backend_findings(backend: str, doc: dict) -> list[str]:
     return issues
 
 
+def _dicts(node):
+    """Every dict in `node`, at any depth."""
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            yield item
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+
+
+# The transcript's own placement claims (W4-10): read at the top level, and a report that says
+# anything but true for one of them anywhere else contradicts itself.
+SELF_CLAIMS = ("ephemeral", "prelaunch_placement_bound")
+
+
+def _contradicted_claims(doc: dict) -> list[str]:
+    return [f"{key}={value!r} at a nested level contradicts {key}=true"
+            for d in _dicts(doc) if d is not doc
+            for key, value in d.items() if key in SELF_CLAIMS and value is not True]
+
+
 def portable_findings(doc: dict) -> list[str]:
     """Validate portable sandbox recipe invariants (#585) when `backend` is specified."""
     if not isinstance(doc, dict) or "backend" not in doc:
@@ -316,6 +339,7 @@ def portable_findings(doc: dict) -> list[str]:
                 issues.append(reason)
     if doc.get("prelaunch_placement_bound") is not True:
         issues.append("prelaunch_placement_bound=true required")
+    issues.extend(_contradicted_claims(doc))
     issues.extend(_backend_findings(backend, doc))
     return list(dict.fromkeys(issues))
 
@@ -359,6 +383,32 @@ def findings(obj):
     return found
 
 
+# Fields that NAME a recipe (W4-10), matched by key case-insensitively: a string, or an object
+# whose id (else recipeId, else name) is one.
+RECIPE_FIELDS = ("recipe", "recipeid", "recipe_id", "recipename", "recipe_name")
+_RECIPE_OBJECT_IDS = ("id", "recipeid", "recipe_id", "name")
+# Generic identity fields, consulted only by a report that has no recipe field at all.
+_ID_FIELDS = ("id", "name")
+
+
+def declared_recipes(doc) -> list[str]:
+    """The recipe ids a JSON transcript DECLARES, read from recipe fields at any depth — never
+    from a dict key, never from any other value."""
+    out = []
+    for d in _dicts(doc):
+        for key, value in d.items():
+            if str(key).lower() not in RECIPE_FIELDS:
+                continue
+            if isinstance(value, str):
+                out.append(value)
+            elif isinstance(value, dict):
+                low = {str(k).lower(): v for k, v in value.items()}
+                ident = next((low[k] for k in _RECIPE_OBJECT_IDS if isinstance(low.get(k), str)), None)
+                if ident is not None:
+                    out.append(ident)
+    return out
+
+
 def names_recipe(doc, raw, recipe):
     """Whether the transcript names THIS recipe — the whole id, not a piece of a longer one.
 
@@ -366,21 +416,23 @@ def names_recipe(doc, raw, recipe):
     about `prod` (#298). Recipe ids are drawn from [A-Za-z0-9._-], so in JSON the
     exact answer is a string VALUE equal to the id, and in plain text it is the id bounded by
     characters an id cannot contain — the reading `grep -F -x` gives a line, applied to a token.
+
+    In JSON the value must sit in a recipe FIELD (W4-10): this used to search every dict key and
+    every string value, so `{"web": {…}}` or `{"image": "web"}` named `web` even beside
+    `"recipe": "other"`. Recipe fields are authoritative — every one must name this recipe — and
+    a portable backend's placement claim must say which recipe it binds. Only a report with no
+    recipe field at all (Orca's doctor shape is source-, not binary-witnessed) falls back to an
+    `id`/`name` field equal to the id.
     """
     want = recipe.lower()
     if doc is not None:
-        stack = [doc]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, str):
-                if node.lower() == want:
-                    return True
-            elif isinstance(node, dict):
-                stack.extend(node.keys())
-                stack.extend(node.values())
-            elif isinstance(node, (list, tuple)):
-                stack.extend(node)
-        return False
+        declared = {d.lower() for d in declared_recipes(doc)}
+        if declared:
+            return declared == {want}
+        if isinstance(doc, dict) and str(doc.get("backend") or "").strip().lower() in PORTABLE_BACKENDS:
+            return False
+        return any(str(key).lower() in _ID_FIELDS and isinstance(value, str) and value.lower() == want
+                   for d in _dicts(doc) for key, value in d.items())
     return re.search(r"(?<![A-Za-z0-9._-])" + re.escape(recipe) + r"(?![A-Za-z0-9._-])",
                      raw, re.IGNORECASE) is not None
 

@@ -1736,12 +1736,16 @@ Flags: `--require-placement` (also require a portable backend that binds the wor
 before launch; Orca's own doctor never does). Otherwise two positional arguments.
 
 Verdict rule: the transcript must name THIS recipe (the whole id, not a substring of a
-longer one) and report no fail and no warn. JSON transcripts read structurally (empty
+longer one) and report no fail and no warn. In JSON the id must sit in a recipe field
+(`recipe`, `recipeId`, `recipe_id`, or a `recipe` object's id), never a dict key or another
+value, and every recipe field must name this recipe; a portable backend must declare one, and
+only a report with no recipe field at all falls back to an `id`/`name` field (W4-10). JSON transcripts read structurally (empty
 finding collections are good news; `ok:false` is a finding); plain-text transcripts first
 strip "none of these" shapes (`"failures": []`, `failures: 0`, `0 warnings`, `no
 failures`) before matching fail/warn/error words. A transcript naming a portable `backend`
 (#585) must also prove its isolation: ephemeral, no credential mounts, placement bound before
-launch, and the backend's own flags (docker family: cap-drop ALL, no-new-privileges, a pids
+launch (claims read at the top level; the same claim false at any nested level is a
+contradiction and an isolation finding), and the backend's own flags (docker family: cap-drop ALL, no-new-privileges, a pids
 limit; bwrap: workspace filesystem scope, no host network; gondolin: only `/workspace`
 mounted). Any backend fails on `privileged: true`, host networking, a mount of a runtime socket
 or a directory holding one, or a mount of the real home, `/root`, a home root (`/home`,

@@ -177,6 +177,72 @@ GOOD = {
 }
 
 
+class RecipeIdentityComesFromRecipeFields(unittest.TestCase):
+    """W4-10 (2026-10-27 audit): names_recipe pushed every dict KEY onto its search stack and
+    matched any string VALUE anywhere, so `{"web": {…}}` or `{"image": "web"}` named recipe
+    `web` — and a transcript declaring `recipe: other` certified `web` through one of them. The
+    id now comes from recipe fields (recipe / recipeId / recipe_id / a `recipe` object's id) and
+    those are authoritative; only a report with no recipe field falls back to `id`/`name`."""
+
+    def clear(self, doc, recipe="web"):
+        return sandbox_doctor.verdict(json.dumps(doc), recipe)
+
+    def test_a_dict_key_never_names_the_recipe(self):
+        for doc in ({"web": {"ok": True}, "failures": []},
+                    {"recipe": "other", "web": {"ok": True}, "failures": []},
+                    {"checks": {"web": "pass"}, "failures": []}):
+            with self.subTest(doc=doc):
+                clear, reason = self.clear(doc)
+                self.assertFalse(clear, "a dict key certified the recipe")
+                self.assertIn("does not name recipe", reason)
+
+    def test_a_value_outside_a_recipe_field_never_names_it(self):
+        for doc in ({"image": "web", "failures": []},
+                    {"recipe": "other", "note": "web", "failures": []},
+                    {"recipe": "other", "checks": [{"id": "web", "status": "pass"}]}):
+            with self.subTest(doc=doc):
+                self.assertFalse(self.clear(doc)[0])
+
+    def test_a_report_declaring_another_recipe_too_is_not_this_one(self):
+        self.assertFalse(self.clear({"recipe": "web", "fallback": {"recipeId": "other"},
+                                     "failures": []})[0])
+
+    def test_every_recipe_field_spelling_names_it(self):
+        for doc in ({"recipe": "web"}, {"recipeId": "WEB"}, {"recipe_id": "web"},
+                    {"recipe": {"id": "web", "name": "The web lane"}},
+                    {"result": {"recipe": {"name": "web"}}}):
+            with self.subTest(doc=doc):
+                clear, reason = self.clear(dict(doc, failures=[]))
+                self.assertTrue(clear, reason)
+
+    def test_a_portable_transcript_must_declare_its_recipe_in_a_recipe_field(self):
+        # A placement claim that does not say WHICH recipe it binds certifies none.
+        doc = {k: v for k, v in GOOD["docker"].items() if k != "recipe"}
+        doc["checks"] = [{"id": "lane-7", "status": "pass"}]
+        clear, reason, _ = sandbox_doctor.assess(json.dumps(doc), "lane-7")
+        self.assertFalse(clear)
+        self.assertIn("does not name recipe", reason)
+
+
+class SelfAssertedClaimsMustNotContradictThemselves(unittest.TestCase):
+    """W4-10: `ephemeral` and `prelaunch_placement_bound` are the transcript's own claims, read at
+    the top level only; one that says false anywhere else in the same report is not a proof."""
+
+    def test_a_contradicting_nested_claim_is_an_isolation_finding(self):
+        for key, where in (("ephemeral", "isolation"), ("prelaunch_placement_bound", "isolation")):
+            with self.subTest(key=key):
+                doc = copy.deepcopy(GOOD["docker"])
+                doc[where][key] = False
+                clear, reason, exposes = sandbox_doctor.assess(json.dumps(doc), "lane-7")
+                self.assertFalse(clear)
+                self.assertTrue(exposes, reason)
+                self.assertIn(key, reason)
+        doc = copy.deepcopy(GOOD["bwrap"])
+        doc["checks"] = [{"id": "placement", "status": "pass", "prelaunch_placement_bound": False}]
+        self.assertFalse(sandbox_doctor.assess(json.dumps(doc), "lane-7")[0])
+        self.assertFalse(sandbox_doctor.placement_bound(json.dumps(doc)))
+
+
 class PortableBackends(unittest.TestCase):
     """#585: a portable sandbox must PROVE its isolation, per backend, and fail with exit 2."""
 

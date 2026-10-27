@@ -659,11 +659,13 @@ def runs_on_every_pull_request(text):
 def invoked_script(run_value):
     """The script path when `run_value`, stripped, is exactly one invocation, else None.
 
-    One invocation: one line, `<interpreter> <script> [args...]` with the interpreter python3,
-    bash or sh and no option between it and the script, or `./<script> [args...]`, and no shell
-    metacharacter anywhere (`;`, `&`, `|`, `<`, `>`, a backtick, `$(`, a line break). Shell
-    reachability is undecidable, so nothing more permissive is read: no setup line, no prefix, no
-    second command, no option that could stop the interpreter before the script (`-h`, `-c`, `-n`).
+    One invocation: one line that is exactly `<interpreter> <script>`, the interpreter python3,
+    bash or sh, or exactly `./<script>`, with no shell metacharacter anywhere (`;`, `&`, `|`, `<`,
+    `>`, a backtick, `$(`, a line break). Shell reachability is undecidable, so nothing more
+    permissive is read: no setup line, no prefix, no second command, no option that could stop
+    the interpreter before the script (`-h`, `-c`, `-n`), and no argument after it, which the
+    script reads (`--help` printed help and ran nothing, PR #718 re-attack). The real gate-3
+    steps take none.
     """
     text = (run_value or "").strip()
     if not text or _SHELL_METACHARACTERS.search(text):
@@ -672,9 +674,9 @@ def invoked_script(run_value):
         words = shlex.split(text)
     except ValueError:
         return None
-    if len(words) >= 2 and words[0] in _GATE3_INTERPRETERS and not words[1].startswith("-"):
+    if len(words) == 2 and words[0] in _GATE3_INTERPRETERS and not words[1].startswith("-"):
         return words[1][2:] if words[1].startswith("./") else words[1]
-    if words and words[0].startswith("./") and len(words[0]) > 2:
+    if len(words) == 1 and words[0].startswith("./") and len(words[0]) > 2:
         return words[0][2:]
     return None
 

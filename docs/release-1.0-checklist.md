@@ -98,12 +98,13 @@ The two greps are the quick look; the script holds CI to a decidable rule (wheth
 is reached is not decidable, so nothing looser is read). For each of `bench/vf-bench/gate.py`
 (or `vfbench.py`) and `evals/demo/negative-control/run.sh`, some workflow must run on every pull
 request (a bare `pull_request:` trigger, no filter under it) and hold a job step whose whole
-`run:` value, stripped, is exactly one line: `python3`, `bash` or `sh` followed directly by the
-script path (no option between them) and any arguments, or `./<script>`, with no `;`, `&`, `|`,
-`<`, `>`, backtick, `$(` or line break anywhere. Neither the step nor its job may carry `if:` or
+`run:` value, stripped, is exactly one line: `python3`, `bash` or `sh` followed by the script
+path and nothing else (no option before it, no argument after it), or `./<script>` alone, with
+no `;`, `&`, `|`, `<`, `>`, backtick, `$(` or line break anywhere. Neither the step nor its job may carry `if:` or
 `continue-on-error:`; the step may not set `shell:` or `working-directory:`; neither its job nor
 the workflow may set `defaults:`. So `exit 0` or `if false; then …` before the script, `bash -n`,
-`python3 -h`, a second command on the line, or a dispatch-only workflow does not count
+`python3 -h`, `gate.py --help`, a second command on the line, or a dispatch-only workflow does
+not count
 (2026-10-27 security audit, W6-10; PR #718 reviews). Not read: the step's environment, the runner.
 
 ## Gate 4 — install is one command (epic DoD 4)

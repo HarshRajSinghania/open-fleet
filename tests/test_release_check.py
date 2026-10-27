@@ -813,7 +813,7 @@ class CiRunsMeansARunStep(unittest.TestCase):
 
     def test_exactly_one_invocation_passes(self):
         for workflow in (
-            "jobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py --strict x\n",
+            "jobs:\n  gates:\n    steps:\n      - run: python3 bench/vf-bench/gate.py\n",
             "jobs:\n  gates:\n    steps:\n      - run: ./bench/vf-bench/gate.py\n",
             "jobs:\n  gates:\n    steps:\n      - run: bash bench/vf-bench/gate.py\n",
             self.STEP.format("\n          python3 bench/vf-bench/gate.py\n\n"),
@@ -850,6 +850,9 @@ class CiRunsMeansARunStep(unittest.TestCase):
             "          python bench/vf-bench/gate.py\n",
             "          set -euo pipefail\n          python3 bench/vf-bench/gate.py\n",
             "          python3 -mpy_compile bench/vf-bench/gate.py\n",
+            "          python3 bench/vf-bench/gate.py --help\n",
+            "          python3 bench/vf-bench/gate.py --strict x\n",
+            "          ./bench/vf-bench/gate.py -h\n",
             "          cat <<EOF\n          python3 bench/vf-bench/gate.py\n          EOF\n",
         ):
             with self.subTest(body=body):

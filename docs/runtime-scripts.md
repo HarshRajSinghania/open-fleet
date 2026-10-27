@@ -279,9 +279,11 @@ Flags: `--file` (log path, default `$OPEN_FLEET_DECISIONS_FILE`, then `$ORCA_DEC
 then `docs/DECISIONS.md`), `--doors` (door registry,
 default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-pubkey` from that
 git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
-the checked tree could have been written by a worker). `REF` must be a remote-tracking ref
-(`refs/remotes/origin/main`) or a commit id — a local branch, tag or `HEAD` is refused, since the
-checked change can move it — and is resolved once, the reads naming that commit (W3-07). Without
+the checked tree could have been written by a worker). `REF` must be a commit id or a ref whose
+final target, through any symbolic chain, is remote-tracking (`refs/remotes/origin/main`) — a local
+branch, tag, `HEAD`, or a `refs/remotes/…` name symbolic to a local branch is refused — and is
+resolved once, the reads naming that commit (W3-07). Remote-tracking means what the clone's own
+fetch wrote: run over a coordinator's clone, the checked change did not write it. Without
 `--pin-ref` a working-tree pin is used with a stderr NOTE, and a caller that sets
 `ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` (a sound lane) cannot run at all (exit 2). `append` takes `--id`, `--class`, `--answer`,
 `--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `active` takes `--json`; `tally` takes

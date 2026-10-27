@@ -1190,6 +1190,24 @@ class TestPinRefIsCoordinatorOwnedW307(TestPinRefIsTheTrustAnchor):
                 self.assertIn("remote-tracking", r.stderr)
                 self.assertIn("W3-07", r.stderr)
 
+    def test_a_remote_tracking_name_symbolic_to_a_local_branch_is_not_a_trust_anchor(self):
+        # PR #719 review (P1, mirrored from verify.py's key_source): the class must be what the
+        # ref RESOLVES to — refs/remotes/<x> made a symbolic ref to a local branch carrying a
+        # swapped key passed by spelling.
+        self.swap_pin()
+        self.git("add", ".orca")
+        self.git("commit", "-q", "-m", "the change's own key")
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/main")
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        r = self.run_dec("--pin-ref", "refs/remotes/worker/key", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("refs/heads/main", r.stderr)
+        # the ordinary symbolic shape — origin/HEAD -> origin/main — still anchors
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/HEAD", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)  # origin/main pins the ORIGINAL key: differs
+        self.assertIn("differs", r.stderr)
+
     def test_a_commit_id_is_a_trust_anchor(self):
         self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
         sha = self.git("rev-parse", "main^{commit}").stdout.strip()

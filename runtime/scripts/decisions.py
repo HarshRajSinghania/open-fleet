@@ -361,16 +361,27 @@ def _pin_at_ref(root, ref):
         except (OSError, subprocess.SubprocessError) as err:
             raise DecisionsError(f"git {args[0]} failed to run: {err}") from err
 
-    resolved = git("rev-parse", "--verify", "-q", ref + "^{commit}")
+    # The class is what the ref RESOLVES to, never its spelling (PR #719 review): a refs/remotes/…
+    # name may be a symbolic ref to a local branch. Follow any symbolic chain to its final target
+    # once, and resolve THAT to a commit.
+    commit_id = re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", ref)
+    target = ref
+    if not commit_id:
+        sym = git("symbolic-ref", "-q", ref)
+        found = sym.stdout.decode("utf-8", "replace").strip()
+        target = found if sym.returncode == 0 and found else ref
+    resolved = git("rev-parse", "--verify", "-q", target + "^{commit}")
     if resolved.returncode != 0:
         raise DecisionsError(f"--pin-ref {ref!r} does not resolve to a commit in {root}")
-    # W3-07: an anchor the checked change cannot move — a remote-tracking ref or a commit id. A
-    # local branch, tag or HEAD is the change's own to `update-ref` (the trajectory harness does,
-    # one line from where it used to pass `main`), so it anchors nothing.
-    if not (ref.startswith("refs/remotes/") or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", ref)):
+    # W3-07: an anchor the checked change cannot move in the coordinator's clone — a commit id, or
+    # a ref whose final target is remote-tracking (what that clone's fetch wrote). A local branch,
+    # tag or HEAD is the change's own to `update-ref` (the trajectory harness does, one line from
+    # where it used to pass `main`), so it anchors nothing.
+    if not (commit_id or target.startswith("refs/remotes/")):
+        via = f" (a symbolic ref to {target})" if target != ref else ""
         raise DecisionsError(
-            f"--pin-ref {ref!r} is not a remote-tracking ref (refs/remotes/…) or a commit id — a "
-            "local branch, tag or HEAD is one the change under check can move, so it anchors "
+            f"--pin-ref {ref!r}{via} is not a remote-tracking ref (refs/remotes/…) or a commit id "
+            "— a local branch, tag or HEAD is one the change under check can move, so it anchors "
             "nothing (W3-07)")
     # Resolved ONCE: every read below names this commit, never the ref, which could otherwise
     # move between the validation above and the reads (W3-07).

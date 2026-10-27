@@ -28,14 +28,16 @@ count_tokens is free but bounded: FREE_CALLS_MAX calls and FREE_BYTES_MAX body b
 a "free" tally every FREE_RECORD_EVERY calls and the tally on every later event, and a refusal
 past the bound (W5-17). The container keeps no log, so every exception in a request is a "fault"
 in the ledger (where, the exception type and the frames; never a message, a request, a response
-or the token): one escaping a handler, a body that never arrived, an upstream or client failure
-caught while relaying (and the 502 that could not be sent), and a usage report settle cannot
-price. The exceptions that are not faults are a malformed request's own (a non-integer
+or the token): one escaping a handler, a client connection failing mid-body, an upstream or client
+failure caught while relaying (and the 502 that could not be sent), and a usage report settle
+cannot price. The exceptions that are not faults are a malformed request's own (a non-integer
 Content-Length answered 411, a body that is not JSON answered 400 and recorded as a refusal), a
-stream line that is not JSON, which is skipped, a whole answer that is not JSON, which settles its
-call's whole reservation, and the socket errors of a connection the broker itself evicted. Drops
-and faults are counted per kind and written at most once a DROP_RECORD_S per kind, with the
-running counts on every line, so a client that resets connections in a loop cannot grow the
+request or body past its deadline (a drop), a stream line that is not JSON, which is skipped, a
+whole answer that is not JSON, which settles its call's whole reservation, the 408 a client that
+left can no longer be sent, and the socket errors of a connection the broker itself evicted.
+Refusals, drops and faults are counted per kind and written at most once a DROP_RECORD_S per
+kind, their text bounded, with the running counts on every line and a "tally" line catching them
+up, so a client that resets connections or sends refused requests in a loop cannot grow the
 ledger without bound. A call's settle always runs, settling the whole reservation when its usage
 cannot be priced (W5-18).
 

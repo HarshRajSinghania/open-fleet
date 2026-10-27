@@ -96,7 +96,7 @@ runs:
 Repository code the jobs run (`scripts/`, `tests/`, `bench/`) is not on the list. It is the code
 under review, and it reaches a check only through an unchanged workflow step, beside the suite,
 ruff, the secret scan and the base-sourced floor guard. The bar's own settings (`.coveragerc`,
-`ruff.toml`, `.gitleaksignore`, the routing floor, the vf-bench pins) are the
+`ruff.toml`, `.gitleaksignore`, `.gitleaks.toml`, the routing floor, the vf-bench pins) are the
 floor guard's frozen surface, which `guard` checks with the base branch's `floor_guard.py`. The
 gate reads the PR's files list with its own token (Pull requests: read). A list GitHub may have
 cut short (it stops at 3000 files), or a head that moves while it is read, fails closed. An

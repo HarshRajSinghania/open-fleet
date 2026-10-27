@@ -260,15 +260,39 @@ jobs:
           # Plant a real-shaped key in the waived file itself, in a throwaway
           # clone, and require the same command to go red. The key is assembled
           # at runtime so this workflow file never contains a detectable literal.
+          #
+          # A .gitleaks.toml allowlist is a waiver too, and it waives by PATH, which
+          # the fingerprint canary cannot see (2026-10-27 security audit, W6-03): an
+          # allowlist for `^scripts/` left the planted key above reported and a real
+          # one under scripts/ silent. So the same key also goes into a new file at
+          # the root and under every top-level directory, and the report must name
+          # every planted file. (.gitleaks.toml is on floor_guard's frozen surface
+          # too, so a PR that edits it needs a recorded waiver before it can merge.)
           canary="$RUNNER_TEMP/canary"
           git clone --quiet . "$canary"
           printf 'CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' >> "$canary/tests/test_decisions.py"
-          git -C "$canary" -c user.email=ci@local -c user.name=ci commit -aqm canary
-          if (cd "$canary" && "$gl" detect --redact --no-banner --source .); then
-            echo "::error::the secret scan passed a planted credential — .gitleaksignore is waiving more than it lists"
+          planted=(tests/test_decisions.py)
+          for dir in . $(git -C "$canary" ls-tree -d --name-only HEAD); do
+            file="$dir/gitleaks-canary.txt"
+            file="${file#./}"
+            printf 'CANARY = "%s%s"\n' 'AKIA' 'ZYXWVUTSRQPONMLK' > "$canary/$file"
+            planted+=("$file")
+          done
+          git -C "$canary" add -A
+          git -C "$canary" -c user.email=ci@local -c user.name=ci commit -qm canary
+          if (cd "$canary" && "$gl" detect --redact --no-banner --source . --report-format json --report-path "$RUNNER_TEMP/canary.json"); then
+            echo "::error::the secret scan passed a planted credential — a waiver (.gitleaksignore or a .gitleaks.toml allowlist) covers more than it lists"
             exit 1
           fi
-          echo "negative control: a planted credential in the waived file is still caught"
+          python3 - "$RUNNER_TEMP/canary.json" "${planted[@]}" <<'PY'
+          import json, sys
+          reported = {finding.get("File") for finding in json.load(open(sys.argv[1], encoding="utf-8"))}
+          missed = [path for path in sys.argv[2:] if path not in reported]
+          for path in missed:
+              print(f"::error::the credential planted in {path} was not reported: a waiver covers that path")
+          sys.exit(1 if missed else 0)
+          PY
+          echo "negative control: a planted credential is caught in the waived file and under every top-level directory"
       - name: Ruff (syntax / undefined names)
         # Installed from the hashed lock above (#301), not re-resolved here.
         run: ruff check scripts runtime/scripts tests bench evals/demo

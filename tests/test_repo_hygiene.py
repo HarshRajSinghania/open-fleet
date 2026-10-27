@@ -232,6 +232,33 @@ class TheSecretWaiverCarriesIdentityNotContent(unittest.TestCase):
         self.assertRegex(run, r'(?s)if \(cd "\$canary".{0,200}?detect.{0,400}?exit 1',
                          "a passing scan of the planted key no longer fails the build")
 
+    def test_a_path_allowlist_cannot_hide_behind_the_fingerprint_canary(self):
+        """2026-10-27 security audit, W6-03: a `.gitleaks.toml` allowlist waives by path, and the
+        only canary sat in tests/test_decisions.py, so `paths = ['^scripts/.*']` passed the
+        control while a real key under scripts/ went unreported. The control now plants the key
+        under every top-level directory and requires the report to name each planted file."""
+        wf = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        run = "\n".join(ln for ln in wf.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertRegex(run, r'for dir in \. \$\(git -C "\$canary" ls-tree -d --name-only HEAD\)',
+                         "the canary no longer reaches every top-level directory")
+        self.assertRegex(run, r'printf .*AKIA.*> "\$canary/\$file"')
+        self.assertRegex(run, r'(?s)if \(cd "\$canary" && "\$gl" detect [^\n]*'
+                              r'--report-format json --report-path "\$RUNNER_TEMP/canary\.json"\)')
+        self.assertRegex(run, r'python3 - "\$RUNNER_TEMP/canary\.json" "\$\{planted\[@\]\}"')
+        self.assertIn("missed = [path for path in sys.argv[2:] if path not in reported]", run)
+
+    def test_the_scanner_config_is_on_the_frozen_guard_surface(self):
+        # The allowlist file is a waiver mechanism: an edit to it must need a recorded human
+        # waiver, the same as .gitleaksignore (floor_guard's guard-surface rule).
+        spec = importlib.util.spec_from_file_location(
+            "_floor_guard_for_hygiene", ROOT / "runtime" / "scripts" / "floor_guard.py")
+        fg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fg)
+        for line in ("[[allowlists]]", "paths = ['''^scripts/.*''']", "useDefault = false"):
+            with self.subTest(line=line):
+                self.assertEqual(fg.guard_surface_hit(".gitleaks.toml", line), ".gitleaks.toml")
+        self.assertIn("`.gitleaks.toml`", (ROOT / "CONSTRAINTS.md").read_text(encoding="utf-8"))
+
 
 class TheSuiteRunsOnTheStdlibAlone(unittest.TestCase):
     """CI installs no test dependencies, so a third-party import is a red build, not a skip.

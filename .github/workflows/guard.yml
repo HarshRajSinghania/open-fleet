@@ -5,7 +5,7 @@
 # checker, a test made easier, unfinished work left as a stub, an assertion
 # deleted from a test that stayed, a threshold walked down in CONSTRAINTS.md (or
 # a new exception row), and a touch to the frozen guard surface (.gitleaksignore,
-# the ruff rule selection and its exclusions, ROUTING_MIN_SCORE, evals/routing.json,
+# .gitleaks.toml, the ruff rule selection and its exclusions, ROUTING_MIN_SCORE, evals/routing.json,
 # the vf-bench corpus + pins, the .coveragerc fail_under and scope). Each fails without a recorded DECISIONS
 # waiver whose id is `floor-waiver:<rule>:<path>` and whose answer is `allow`.
 # The waiver is read from the BASE ref's docs/DECISIONS.md (the PR cannot

@@ -24,7 +24,9 @@ clean. This module answers the second question, read-only, against the LIVE sour
 
 Memory stays advisory data: nothing here writes a file, and every git call is a read-only
 subcommand (``git()`` refuses anything else) with optional locks off, so building a hint cannot
-edit agent instructions, permissions, the live checkout or the run archive.
+edit agent instructions, permissions, the live checkout or the run archive -- and a ``diff`` or
+``log`` runs with the checkout's own filter and diff drivers blanked, so reading it runs nothing
+its owner named (#629).
 
 Library only: no CLI, no exit codes.
 """
@@ -50,6 +52,8 @@ SUPPRESSED = frozenset({STALE, SUPERSEDED})
 # The ONLY git subcommands a hint may run. diff/ls-files run with GIT_OPTIONAL_LOCKS=0 so not even
 # the index stat cache is refreshed: retrieval leaves every byte of both repositories alone.
 READ_ONLY_GIT = frozenset({"rev-parse", "cat-file", "merge-base", "diff", "ls-files", "log"})
+# The read-only subcommands that can render content through an attribute-selected driver.
+CONTENT_GIT = frozenset({"diff", "log"})
 
 REV = re.compile(r"^[0-9a-f]{7,64}$")
 GLOB_CHARS = set("*?[")
@@ -88,13 +92,27 @@ class ProvenanceError(Exception):
 
 
 def git(repo, *args, text=True):
-    """Run one READ-ONLY git subcommand in ``repo``. Anything else is refused, not attempted."""
+    """Run one READ-ONLY git subcommand in ``repo``. Anything else is refused, not attempted.
+
+    ``diff`` and ``log`` run with every filter/diff/merge driver the repo's own config declares
+    blanked (gitexec.driver_blanks, #629): a working-tree diff runs a clean filter, and patch
+    output a textconv or diff command, that a ``.gitattributes`` or ``$GIT_DIR/info/attributes``
+    line selects -- a command the worker who owns the checkout named. The other subcommands never
+    read content through attributes, so they skip the extra config read; a ``rev-parse`` probe
+    of a path that is not a repository still comes back as a failed process, not an exception.
+    A config that cannot be read is a ProvenanceError, never a diff run with nothing blanked."""
     if not args or args[0] not in READ_ONLY_GIT:
         raise ProvenanceError(f"refused git {args[0] if args else '(none)'}: hints are read-only")
-    env = gitexec.env()
+    blanks = ()
+    if args[0] in CONTENT_GIT:
+        try:
+            blanks = gitexec.driver_blanks(repo)
+        except gitexec.DriverQueryFailed as exc:
+            raise ProvenanceError(f"cannot neutralise {repo}'s filter and diff drivers: {exc}") from exc
+    env = gitexec.env(blanks=blanks)
     env["GIT_OPTIONAL_LOCKS"] = "0"
     return subprocess.run(gitexec.argv("-C", str(repo), *args), env=env, capture_output=True,
-                          text=text, timeout=60, check=False)
+                          text=text, timeout=60, check=False, stdin=subprocess.DEVNULL)
 
 
 def _ok(proc):

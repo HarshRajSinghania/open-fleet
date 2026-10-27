@@ -45,6 +45,19 @@ floor_guard = _load("floor_guard", "floor_guard.py")
 diff_scope = _load("diff_scope", "diff_scope.py")
 evidence_run = _load("evidence_run", "evidence-run.py")
 
+
+def _load_with_siblings(name, filename):
+    """hint_provenance imports its siblings by name (diff_scope, gitexec), as it does when it runs
+    from runtime/scripts/; the directory is on the path only while it loads."""
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        return _load(name, filename)
+    finally:
+        sys.path.remove(str(SCRIPTS))
+
+
+hint_provenance = _load_with_siblings("hint_provenance", "hint_provenance.py")
+
 # The setup git runs with global/system config off, so the only driver the fixtures declare is
 # the probe (a stray ~/.gitconfig git-lfs filter never changes a test's outcome).
 _CLEAN_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -250,6 +263,36 @@ class DiffScopeWorktreeDiff(unittest.TestCase):
         p, base = self._repo()
         with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []):
             diff_scope.scope(p.repo, base)
+        self.assertIn("clean", p.fired(),
+                      "control: with the driver blanks removed the clean filter must fire")
+
+
+class HintProvenanceWorktreeDiff(unittest.TestCase):
+    """hint_provenance reads a worker's live checkout to decide whether a recorded hint is still
+    current: in working-tree mode changes_since() diffs the disk against the hint's source rev,
+    which runs a repo-config clean filter a `$GIT_DIR/info/attributes` line selects."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        p.arm_filter()
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        return p, base
+
+    def _changes(self, p, base):
+        return hint_provenance.LiveSource(str(p.repo)).changes_since(base)
+
+    def test_no_driver_command_runs_when_a_hint_reads_the_live_tree(self):
+        p, base = self._repo()
+        self.assertEqual(self._changes(p, base), {"a.txt": ("M", None)})
+        self.assertEqual(p.fired(), set(), "a repo-config filter ran inside hint_provenance")
+
+    def test_mutation_control_without_the_blanks_the_filter_fires(self):
+        p, base = self._repo()
+        with mock.patch.object(hint_provenance.gitexec, "driver_blanks", lambda repo: []):
+            self._changes(p, base)
         self.assertIn("clean", p.fired(),
                       "control: with the driver blanks removed the clean filter must fire")
 

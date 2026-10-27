@@ -1075,9 +1075,9 @@ name holding `=` at its first `=` and blanks a different key. The config is read
 key handed back through `os.fsdecode`, which `subprocess` reverses, because a driver name is any
 bytes git accepts (`0xff`, an invalid UTF-8 sequence) and an attribute selects exactly those; a
 text decode named a different driver (PR #649 review). A read that MATERIALISES working-tree
-content passes its pairs (not `hint_provenance.py`'s working-tree `diff`, `live_container.py`'s
+content passes its pairs (`hint_provenance.py` on every `diff` and `log`; not `live_container.py`'s
 `status` of the catalog checkout, or `_trajectories.py`'s replay, which takes `.gitattributes` from
-the empty tree instead); a read of committed objects alone selects no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2 and wip_curve.py's `RunFailed`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller but `hint_provenance.py` passes
+the empty tree instead); a read of committed objects alone selects no filter and skips it. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed` and hint_provenance.py's `ProvenanceError`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
 `stdin=subprocess.DEVNULL` (or input of its own), as `driver_blanks` does, so a hook, filter or git itself never
 waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
 parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
@@ -1177,7 +1177,7 @@ What a worker DOES with fenced text is graded separately, on tool events and git
 
 Provenance and currency for episodic memory hints (#605): is a historical finding still true
 against the live source? Import-only library used by `search_sessions.py --episodic-hint`.
-Source `runtime/scripts/hint_provenance.py:1-30`; behavior pinned by
+Source `runtime/scripts/hint_provenance.py:1-32`; behavior pinned by
 `tests/test_hint_provenance.py` and the replay corpus `tests/fixtures/hint-replay.json`
 (runner: `scripts/hint_replay.py`).
 

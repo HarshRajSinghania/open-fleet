@@ -336,9 +336,10 @@ probes run it under a scrubbed environment, never through `sh -c`.
 
 Flags: `--help`, `--settings`, `--readonly`, `--verify-settings`, `--harness`, `--boundary`.
 `--settings <wt> --readonly` adds the ro-tier write floor (`OPEN_FLEET_HOOK_READONLY`): the hook
-then denies every write it can see (a redirect, `tee`, file-tool edit or `apply_patch`) regardless
-of the boundary while read-only shell still runs — defense-in-depth over those channels, not a
-filesystem sandbox (W4-05; `runtime/sandbox-policy.md`).
+then denies every write it can see (a redirect, `tee`, file-tool edit or `apply_patch`, in a `-c`
+body, a substitution or a program fed to a shell too) regardless of the boundary, and a shell fed a
+program it cannot read (`cat f | sh`, `sh < f`), while read-only shell still runs —
+defense-in-depth over those channels, not a filesystem sandbox (W4-05; `runtime/sandbox-policy.md`).
 
 Every Bash segment is judged after one peeler strips what launches it — `VAR=`, `env`, `sudo`,
 `doas`, `nohup`, `nice`, `time`, `timeout`, `exec`, `setsid`, `stdbuf`, `ionice`, `chrt`,
@@ -1871,7 +1872,7 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 
 Fail-closed Orca worker dispatch for fleet coordinators: supervised lane
 (`worker-start`: worktree + agent terminal + readiness + dispatch) and custom-argv lane
-(`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-174`;
+(`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-178`;
 behavior pinned by `tests/test_spawn_worker.py`. For EVERY profile, `ro` included, it checks
 deny-hook arming (#562; W4-06: `ro` used to skip the block entirely): with
 `OPEN_FLEET_DENY_HOOK_SETTINGS` (legacy alias `ORCA_DENY_HOOK_SETTINGS`) naming the
@@ -1881,13 +1882,13 @@ It must also bound the tree the spawn launches into: every selector that names a
 tree reaches the gate as `--boundary` (`path:`, `id:<repoId>::<path>`, and `current`/`active`/
 `name:`/`branch:` resolved through the runtime's `worktree show`; a tree it cannot resolve
 refuses), and only `new-child`/`new-top-level` are checked without one (W4-03).
-When the settings var is unset a hardened coordinator sets `OPEN_FLEET_REQUIRE_DENY_HOOK=1`
-(legacy `ORCA_REQUIRE_DENY_HOOK`) to make an `rw`/`danger` spawn `SPAWN=REFUSED` rather than run a
-bypass worker on an unverified guard (W4-06); the default stays a loud `UNVERIFIED` warning for
-compatibility, since the coordinator flow installs the guard through the provider but does not yet
-name it to this gate — flipping the default to refuse is a coordinated change across `first_run.py`
-and certification that this does not make. An unset-guard `ro` spawn proceeds with a NOTE (its
-boundary is the tool filter plus the optional `--readonly` write floor). On Orca the custom-argv lane's
+When the settings var is unset the spawn `SPAWN=REFUSED`s, for every profile including `ro`,
+rather than run a worker on an unverified guard (W4-06). `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1`
+(legacy `ORCA_ALLOW_UNVERIFIED_DENY_HOOK`) is the explicit, named opt-out for a flow that cannot
+name a registration before launch — off Orca the provider installs the guard inside `worker-start`,
+after this gate, so `first_run.py` and `scripts/wip_curve.py` pass it — and turns the refusal into a
+loud `UNVERIFIED` warning. `OPEN_FLEET_REQUIRE_DENY_HOOK=1` (legacy `ORCA_REQUIRE_DENY_HOOK`) makes
+the opt-out ignored, so an inherited value cannot reopen the warning path. On Orca the custom-argv lane's
 `terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
 `new-top-level` there are refused before any task is created, since only `worker-start` creates a
 worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,

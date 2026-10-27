@@ -126,7 +126,7 @@ When `.orca/dispatch-pubkey` is active, the coordinator signs a canonical dispat
 
 **Verifying key discovery order in `verify-gate.sh`:**
 1. `ORCA_DISPATCH_PUBKEY` environment variable (trustworthy when set off-worker via `ORCA_PROVENANCE=ci|mcp|sdk|dispatch`).
-2. `.orca/dispatch-pubkey` read from `refs/remotes/origin/HEAD` in the target repository, else from `refs/remotes/origin/<ORCA_BASE>` when a base is named (a CI clone made by `actions/checkout` carries no `origin/HEAD`).
+2. `.orca/dispatch-pubkey` read from `refs/remotes/origin/HEAD` in the target repository — at its FULL symbolic target, which must itself be a remote-tracking `refs/remotes/…` ref (W3-02: `origin/HEAD` re-pointed at a local branch the worker moves is refused with a NOTE, never read) — else from `refs/remotes/origin/<ORCA_BASE>` when a base is named (a CI clone made by `actions/checkout` carries no `origin/HEAD`).
 3. `.orca/dispatch-pubkey` in the target repository's working tree — **advisory lane only.** With `ORCA_PROVENANCE` set the gate refuses to read a key from the tree the graded worker writes: a PR could swap the pin for its own key and self-sign the record. The same rule applies when invoking `verify.py` directly on a sound lane: pass `.orca/dispatch-pubkey@<reviewed ref>` or an absolute off-worker path, never the bare working-tree file.
 
 **Operational setup when enabling signed dispatch and signed verifier transcripts:**

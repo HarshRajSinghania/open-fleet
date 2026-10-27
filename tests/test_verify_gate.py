@@ -489,6 +489,49 @@ class VerifyGateDispatchPinDiscovery(GateCase):
         self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
         self.assertIn("signature verified", r.stdout + r.stderr)
 
+    def test_an_origin_head_pointing_at_a_local_branch_never_names_the_key(self):
+        # W3-02 (2026-10-27 security audit, P1): `symbolic-ref --short refs/remotes/origin/HEAD`
+        # prints the TARGET's short name, so a worker that re-points origin/HEAD at its own LOCAL
+        # branch had the gate read `.orca/dispatch-pubkey@workerbranch` — a key it committed
+        # there — and its self-signed record verified, exit 0, on a lane claiming soundness.
+        (coordinator, worker) = self.use_repo(pin_blob=True, remote_head=True)
+        _git(self.repo, "checkout", "-q", "-b", "workerbranch")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "my key")
+        os.remove(self.repo / ".orca" / "dispatch-pubkey")  # only a ref read can supply it now
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/workerbranch")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        r = self._run_discovered(src, rec)
+        self.assertNotIn("signature verified", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("refs/heads/workerbranch", r.stderr,
+                      "the gate must say which origin/HEAD target it refused")
+        # The same repo, origin/HEAD back on the remote-tracking ref: the coordinator's key is
+        # found there under its FULL name and its record verifies — the discovery still works.
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        rec, _pub = self.sign(self.digest(src), "report-only", key=coordinator)
+        r = self._run_discovered(src, rec)
+        self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("signature verified", r.stdout + r.stderr)
+
+    def test_the_discovered_key_ref_is_the_full_remote_tracking_name(self):
+        # W3-02: a short name (`origin/main`) resolves through gitrevisions' lookup order, where a
+        # local tag or branch named `origin/main` comes first; the full name cannot be shadowed.
+        (pinned, _spare) = self.use_repo(pin_blob=True, remote_head=True)
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=pinned)
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_PROVENANCE": "dispatch",
+               "ORCA_DISPATCH_RECORD": rec}
+        r = subprocess.run(["sh", "-x", str(self.repo / "runtime" / "scripts" / "verify-gate.sh"),
+                            "--event", "task"], capture_output=True, text=True, cwd=self.repo, env=env)
+        self.assertIn("PUBKEY=.orca/dispatch-pubkey@refs/remotes/origin/main\n", r.stderr)
+
     def test_worktree_fallback_is_refused_on_a_lane_claiming_soundness(self):
         # 2026-10-26 review: a CI-shaped clone has no refs/remotes/origin/HEAD, so the blob read
         # missed and the gate fell through to the WORKING TREE — the PR's own checkout, where a

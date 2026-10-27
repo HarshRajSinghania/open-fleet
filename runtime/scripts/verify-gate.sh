@@ -135,11 +135,21 @@ PROVENANCE=$(_pick OPEN_FLEET_PROVENANCE "${OPEN_FLEET_PROVENANCE:-}" ORCA_PROVE
 # now also read at refs/remotes/origin/<BASE> when a base is named, and on a lane claiming
 # soundness (ORCA_PROVENANCE set) the working-tree pin is never used: with no reviewed blob the
 # key stays undiscovered, which verify.py reads as half-configured and refuses.
+# W3-02 (2026-10-27 audit, P1): the ref is origin/HEAD's FULL target, and only a remote-tracking
+# one counts. `symbolic-ref --short` printed the target's short form, so a worker that pointed
+# origin/HEAD at its own LOCAL branch had the gate read `.orca/dispatch-pubkey@<that branch>` — a
+# key it committed — and its self-signed record verified. A short name is also shadowable by a
+# local tag or branch of the same spelling; the full refs/remotes/… name is not.
 if [ -z "$PUBKEY" ] && [ -n "$GIT_BIN" ]; then
   TOP="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$TOP" ]; then
-    DEF_REF="$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/HEAD)"
-    if "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
+    DEF_REF="$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || echo refs/remotes/origin/HEAD)"
+    case "$DEF_REF" in
+      refs/remotes/?*) : ;;
+      *) echo "verify-gate: NOTE — refs/remotes/origin/HEAD points at '$DEF_REF', which is not a remote-tracking ref; no key is read there (a local branch is the graded worker's to move)." >&2
+         DEF_REF="" ;;
+    esac
+    if [ -n "$DEF_REF" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$DEF_REF"
     elif [ -n "$BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "refs/remotes/origin/$BASE:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@refs/remotes/origin/$BASE"

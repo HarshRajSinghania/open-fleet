@@ -36,7 +36,9 @@ broker's ledger is written beside the receipt, out of the arm's reach, and summa
 
 What the arm's container gets: the image's non-root user, --rm, a pids/memory/CPU limit, no
 capability, no-new-privileges, no privileged flag, no host namespace, and the broker's network
-alone; a clean export of the checkout's HEAD, read-only (the launcher refuses a dirty tree, and
+alone -- which includes the broker's route out, so the arm's own connections reach any host
+unmetered: the broker caps model calls, it is no egress control (W5-15); a clean export of the
+checkout's HEAD, read-only (the launcher refuses a dirty tree, and
 nothing the container writes reaches the checkout, its .git or its ignored files); one read-write
 results directory, so the arm's own ledger and evidence outlive the container; and the
 attestation, read-only. The broker's container gets the same user, hardening and export, limits
@@ -45,7 +47,10 @@ from the leftover check to the receipt. A wall-clock limit ends it: the launcher
 both containers, then verifies with `docker ps -a --filter label=LABEL=<nonce>` that neither
 exists. A teardown step that fails or times out is recorded, never raised, so the receipt,
 written outside every mount, is always written. The container's output is saved through a
-redactor to a 0600 file: no byte of the token reaches the disk.
+redactor to a 0600 file: no byte of the token reaches the disk. The image must carry the committed
+Dockerfile's digest label, unless --allow-foreign-image names the exception, which the receipt
+records (W5-13); every path that goes into a --mount, derived staging paths included, passes one
+rule: no comma, quote or line break (W5-14).
 
 The limit, honestly: this guards against accidents on the host, never against an operator who
 deliberately fakes a container (as root: a /.dockerenv, an attestation, a hostname). The
@@ -277,6 +282,18 @@ def broker_user():
     return f"{uid}:{gid}"
 
 
+def mount(src, dst, readonly=False):
+    """One `--mount` value, or Refused. Docker reads it as comma-separated CSV, where a quote opens a
+    quoted field, so a source path holding a comma, a quote or a line break would be read as other
+    keys: one rule for every path that goes into a mount, the caller's and the derived ones alike
+    (2026-10-27 audit, W5-14)."""
+    text = str(src)
+    if any(c in text for c in ',"\n\r'):
+        raise Refused(f"{text} holds a comma, a quote or a line break, which a docker --mount cannot carry "
+                      "(for a staging path, point TMPDIR at a directory without one)")
+    return f"type=bind,src={text},dst={dst}" + (",readonly" if readonly else "")
+
+
 def hardened(nonce, role, limits, user=USER):
     """What both containers share: a non-root user, --rm, limits, no capability, no privilege."""
     mem = str(limits["memory"])
@@ -290,9 +307,9 @@ def broker_argv(image_id, nonce, export, token_file, ledger_dir, cap_usd, timeou
     carries the harness hostname, which the arm's container inherits with its network namespace."""
     return [*hardened(nonce, "broker", BROKER_LIMITS, broker_user()), "--hostname", containment.HARNESS_HOSTNAME + nonce,
             "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
-            "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
-            "--mount", f"type=bind,src={token_file},dst={SECRET},readonly",
-            "--mount", f"type=bind,src={ledger_dir},dst={LEDGER_IN}",
+            "--mount", mount(export, REPO_IN, readonly=True),
+            "--mount", mount(token_file, SECRET, readonly=True),
+            "--mount", mount(ledger_dir, LEDGER_IN),
             "--workdir", LEDGER_IN, image_id,
             "timeout", "--kill-after=30", str(int(timeout) + 2 * BACKSTOP_S),
             "python3", "-I", f"{REPO_IN}/{BROKER_SCRIPT}", "--token-file", SECRET,
@@ -302,14 +319,15 @@ def broker_argv(image_id, nonce, export, token_file, ledger_dir, cap_usd, timeou
 def arm_argv(image_id, nonce, arm, broker_id, cmd, export, results, attestation, limits, settings=None):
     """`docker create` for the arm: the broker's network namespace and nothing else of it, and no
     credential: its environment is the image's and PATH alone. No privileged flag, no host
-    namespace, no capability, no device."""
+    namespace, no capability, no device. The shared namespace is not an egress control: it carries
+    the broker's own route out, so the arm reaches the network directly (W5-15, live_broker.py)."""
     return [*hardened(nonce, "arm", limits), "--label", f"org.open-fleet.arm={arm}",
             "--network", f"container:{broker_id}",
             "--env", f"PATH={CONTAINER_PATH}",
-            "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
-            "--mount", f"type=bind,src={results},dst={RESULTS_IN}",
-            "--mount", f"type=bind,src={attestation},dst={containment.ATTESTATION},readonly",
-            *(["--mount", f"type=bind,src={settings},dst={CLAUDE_SETTINGS},readonly"] if settings else []),
+            "--mount", mount(export, REPO_IN, readonly=True),
+            "--mount", mount(results, RESULTS_IN),
+            "--mount", mount(attestation, containment.ATTESTATION, readonly=True),
+            *(["--mount", mount(settings, CLAUDE_SETTINGS, readonly=True)] if settings else []),
             "--workdir", RESULTS_IN, image_id, *cmd]
 
 
@@ -469,18 +487,28 @@ def run(args):
         if inside(path, repo) or inside(repo, path):
             raise Refused(f"{what} {path} overlaps the checkout {repo}")
     for what, path in (("--results", results), ("--receipts", receipts), ("--token-file", token_file)):
-        if "," in str(path):
-            raise Refused(f"{what} {path} holds a comma, which a docker --mount cannot carry")
+        try:
+            mount(path, "/")
+        except Refused as err:
+            raise Refused(f"{what} {err}") from None
     if inside(receipts, results) or inside(results, receipts):
         raise Refused(f"--receipts {receipts} overlaps --results {results}: the container writes to the "
                       "results, and the receipt must be out of its reach")
-    for what, mount in (("--results", results), ("the checkout", repo)):  # the arm sees both (Codex at 8585b35789)
-        if inside(Path(os.path.realpath(token_file)), mount) or inside(token_file, mount):
-            raise Refused(f"--token-file {token_file} is inside {what} {mount}, which the arm's container mounts: "
+    for what, mounted in (("--results", results), ("the checkout", repo)):  # the arm sees both (Codex at 8585b35789)
+        if inside(Path(os.path.realpath(token_file)), mounted) or inside(token_file, mounted):
+            raise Refused(f"--token-file {token_file} is inside {what} {mounted}, which the arm's container mounts: "
                           "keep the token outside both")
     token = read_token(token_file)  # its value only to check the file and to redact the output
     commit = pinned_commit(repo)
     image = image_facts(args.image)
+    # The receipt names where the image came from; that fact gates the launch, not just the record
+    # (2026-10-27 audit, W5-13). An image built elsewhere runs only when the operator names it.
+    image["foreign_image_allowed"] = bool(args.allow_foreign_image)
+    if not image["from_committed_dockerfile"] and not args.allow_foreign_image:
+        raise Refused(f"the image {args.image} ({image['id']}) was not built from the committed Dockerfile "
+                      f"(its {DOCKERFILE_LABEL} label is {image['dockerfile_sha256']!r}, the committed one "
+                      f"{image['committed_dockerfile_sha256']!r}): run `live_container.py build`, or pass "
+                      "--allow-foreign-image to run it anyway, which the receipt records")
     with launch_lock(args.lock):
         if leftovers():
             raise Refused(f"a harness container already exists (docker ps -a --filter label={LABEL}): one arm runs "
@@ -520,12 +548,14 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
                "log": str(log_path), "token_redactions": 0}
     ids, refused, redactor, attempted = [], None, None, False
     try:
-        export = staging / "repo"
+        export, attestation = staging / "repo", staging / "attestation.json"
+        # Every derived mount source passes the same rule as the caller's, before anything is made.
+        for derived in (export, attestation, staging / "claude.json", ledger_dir):
+            mount(derived, "/")
         export_checkout(repo, commit, export)
         for need in (script, f"{WRAPPER_DIR}/claude", BROKER_SCRIPT):
             if not (export / need).is_file():
                 raise Refused(f"{need} is not in commit {commit[:12]}")
-        attestation = staging / "attestation.json"
         # host_sha256: the host machine's name, hashed, so a run inside names the machine it ran on,
         # not the container, whose name changes with every launch (#604's machine identity).
         doc = {"schema": containment.ATTESTATION_SCHEMA, "nonce": nonce, "commit": commit, "arm": args.arm,
@@ -651,6 +681,9 @@ def parser():
                    help=f"the subscription token, mode 0600 (default {TOKEN_FILE})")
     r.add_argument("--receipts", default=RECEIPTS, help=f"where the receipt goes (default {RECEIPTS})")
     r.add_argument("--image", default=IMAGE)
+    r.add_argument("--allow-foreign-image", action="store_true", dest="allow_foreign_image",
+                   help="run an image whose label does not name the committed Dockerfile's digest "
+                        "(recorded in the receipt as image.foreign_image_allowed)")
     r.add_argument("--lock", default=LOCK, help=argparse.SUPPRESS)
     r.add_argument("--pids-limit", type=int, default=LIMITS["pids"], dest="pids_limit")
     r.add_argument("--memory", default=LIMITS["memory"])

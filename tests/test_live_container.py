@@ -590,6 +590,35 @@ class RefusalsCreateNothing(Harness):
                 self.assertIn("--cap-usd", err)
         self.assertEqual(self.calls(), [])
 
+    def test_an_image_not_built_from_the_committed_dockerfile_is_refused_unless_named(self):
+        # 2026-10-27 audit, W5-13: `from_committed_dockerfile` was recorded and never gated on.
+        for labels in ({}, {lc.DOCKERFILE_LABEL: "0" * 64}):
+            with self.subTest(labels=labels):
+                self.scenario({"image": {"Id": IMAGE_ID, "RepoDigests": [], "Config": {"Labels": labels}}})
+                rc, err = self.launch()
+                self.assertEqual(rc, 2, err)
+                self.assertIn("committed Dockerfile", err)
+                self.assertEqual(self.creates(), [])
+        rc, err = self.launch("--allow-foreign-image")
+        self.assertEqual(rc, 0, err)
+        image = self.receipt()["image"]
+        self.assertIs(image["from_committed_dockerfile"], False)
+        self.assertIs(image["foreign_image_allowed"], True, "the opt-in is not on the record")
+
+    def test_a_staging_path_docker_would_split_is_refused_before_anything_is_created(self):
+        # W5-14: --results/--receipts/--token-file were comma-checked, the derived staging paths
+        # (the export, the attestation, the settings) were not, and they go into a --mount too.
+        for name in ("tmp,with-comma", 'tmp"quote'):
+            with self.subTest(name=name):
+                staging = self.tmp / name
+                staging.mkdir()
+                with mock.patch.object(tempfile, "tempdir", str(staging)):
+                    rc, err = self.launch("--per-call-usd", "1")
+                self.assertEqual(rc, 2, err)
+                self.assertIn("--mount", err)
+                self.assertEqual(self.creates(), [])
+                self.assertEqual(list(staging.iterdir()), [], "the staging directory outlived the refusal")
+
     def test_results_or_receipts_the_container_could_reach_are_refused(self):
         for results, receipts in ((self.repo / "out", self.receipts), (self.results, self.results / "receipts")):
             with self.subTest(results=results, receipts=receipts):
@@ -1129,6 +1158,100 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         resp = conn.getresponse()
         self.assertEqual((resp.status, json.loads(resp.read())), (200, {"ok": True, "cap_usd": 7.0}))
         conn.close()
+
+    # 2026-10-27 security audit, wave 5: W5-16 (a silent client parks a thread forever), W5-17
+    # (count_tokens is unmetered and unbounded) and W5-18 (a fault skips the settle, and its
+    # traceback goes to a log nobody keeps: the broker runs --log-driver none).
+
+    def test_a_client_that_never_sends_is_cut_off_and_idle_connections_are_bounded(self):
+        with mock.patch.object(lb, "HANDLER_TIMEOUT_S", 1.5, create=True), \
+                mock.patch.object(lb, "MAX_CONNECTIONS", 2, create=True):
+            self.broker()
+        idle = []
+        for _ in range(3):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            self.addCleanup(sock.close)
+            idle.append(sock)
+        # The connection past the bound is closed at once, never parked beside the others.
+        idle[2].settimeout(1.0)
+        try:
+            self.assertEqual(idle[2].recv(1), b"", "a connection past the bound was parked")
+        except TimeoutError:
+            self.fail("a connection past the bound was parked")
+        # And a connection that sends nothing is closed after the handler timeout.
+        idle[0].settimeout(5)
+        started = time.monotonic()
+        try:
+            self.assertEqual(idle[0].recv(1), b"")
+        except TimeoutError:
+            self.fail("a silent connection held its thread past the handler timeout")
+        self.assertLess(time.monotonic() - started, 4)
+        status, _data = self.post(path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})
+        self.assertEqual(status, 200, "the broker stopped answering once idle connections were cut")
+
+    def test_count_tokens_is_bounded_and_recorded(self):
+        with mock.patch.object(lb, "FREE_CALLS_MAX", 3, create=True), \
+                mock.patch.object(lb, "FREE_RECORD_EVERY", 2, create=True):
+            self.broker()
+            statuses = []
+            for _ in range(4):
+                self.api.replies.append((200, "application/json", b'{"input_tokens": 12}'))
+                statuses.append(self.post(path="/v1/messages/count_tokens",
+                                          doc={"model": "claude-haiku-5-5", "messages": []})[0])
+        self.assertEqual(statuses, [200, 200, 200, 403])
+        self.assertEqual(len(self.api.requests), 3, "a call past the free-call bound reached the API")
+        events = self.events()
+        self.assertIn({"event": "free", "calls": 2}, [{k: e[k] for k in ("event", "calls") if k in e}
+                                                     for e in events])
+        refusal = events[-1]
+        self.assertEqual(refusal["event"], "refuse")
+        self.assertIn("count_tokens", refusal["why"])
+
+    def test_a_usage_report_settled_cannot_price_still_settles_and_is_recorded(self):
+        self.broker()
+        answer = json.dumps({"id": "msg_1", "content": [], "usage": {
+            "input_tokens": 10, "output_tokens": 10, "inference_geo": "global",
+            "iterations": [{"input_tokens": "not-a-number"}]}}).encode()
+        self.api.replies.append((200, "application/json", answer))
+        status, _data = self.post(doc=self.body(stream=False))
+        self.assertEqual(status, 200)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and "settle" not in [e["event"] for e in self.events()]:
+            time.sleep(0.05)
+        events = self.events()
+        start = next(e for e in events if e["event"] == "start")
+        settles = [e for e in events if e["event"] == "settle"]
+        self.assertEqual(len(settles), 1, "the call's reservation was never settled")
+        self.assertEqual(settles[0]["cost_usd"], start["reserved_usd"], "an unpriceable call settles its reservation")
+        faults = [e for e in events if e["event"] == "fault"]
+        self.assertEqual([f["error"] for f in faults], ["ValueError"])
+        self.assertNotIn(self.token, self.ledger_path.read_text(encoding="utf-8"))
+
+    def test_a_handler_fault_is_recorded_in_the_ledger_not_lost(self):
+        self.broker()
+        with mock.patch.object(lb, "terms", side_effect=RuntimeError(f"boom {self.token}")):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request("POST", "/v1/messages", body=json.dumps(self.body()).encode(),
+                         headers={"Content-Type": "application/json"})
+            with contextlib.suppress(http.client.HTTPException, OSError):
+                conn.getresponse().read()
+            conn.close()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and "fault" not in [e["event"] for e in self.events()]:
+                time.sleep(0.05)
+        faults = [e for e in self.events() if e["event"] == "fault"]
+        self.assertEqual(len(faults), 1, "the fault left no record anyone keeps")
+        self.assertEqual(faults[0]["error"], "RuntimeError")
+        self.assertTrue(faults[0]["frames"], "the fault names no frame")
+        self.assertNotIn(self.token, self.ledger_path.read_text(encoding="utf-8"))
+        self.assertNotIn("boom", self.ledger_path.read_text(encoding="utf-8"), "a fault records no message text")
+
+    def test_a_body_whose_fields_have_the_wrong_type_is_refused_not_crashed_on(self):
+        self.broker()
+        for extra in ({"context_management": "x"}, {"inference_geo": ["us"]}):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.post(doc=self.body(**extra))[0], 400)
+        self.assertEqual(self.api.requests, [])
 
 
 # ---------------------------------------------------------------------------- the arm's `claude`

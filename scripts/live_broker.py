@@ -8,7 +8,21 @@ broker at 127.0.0.1:PORT, never its files, its processes or its environment. The
 (scripts/live_container_bin/claude) sends every model call here with a placeholder credential. The
 broker forwards POST /v1/messages and /v1/messages/count_tokens to the API with the token in its
 place and refuses every other request. So no process of the arm can read the token, and no model
-call it makes, through claude or around it, escapes the cap.
+call it makes, through claude or around it, escapes the cap: a paid call needs the token.
+
+What this is NOT is an egress control (2026-10-27 audit, W5-15). Sharing the namespace shares its
+interfaces, the route out included, so any process of the arm can open its own connection to any
+host without passing through the broker, and nothing here sees, caps or records it. The broker
+refuses requests made TO it; it does not stand between the arm and the network.
+
+Every connection has a socket timeout (HANDLER_TIMEOUT_S) and a body deadline, and at most
+MAX_CONNECTIONS are served at once, so a client that connects and sends nothing cannot park the
+threads the arm's model calls need (W5-16). count_tokens is free but bounded: FREE_CALLS_MAX
+calls and FREE_BYTES_MAX body bytes per broker, a "free" tally every FREE_RECORD_EVERY calls and
+the tally on every later event, and a refusal past the bound (W5-17). A fault anywhere in a
+request is recorded in the ledger as a "fault" event (the exception type and the frames, never a
+message, a request or the token), and a call's settle always runs, settling the whole
+reservation when its usage cannot be priced (W5-18): the container keeps no log.
 
 The cap is a reservation ledger. A call starts only when the settled spend, the reservations of
 the calls still in flight and its own reservation fit under --cap-usd. Its reservation is its
@@ -41,6 +55,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -80,6 +95,11 @@ FIELDS = {"model", "messages", "system", "max_tokens", "stream", "tools", "tool_
 FRAMING_TOKENS = 4096
 MAX_BODY = 64 << 20
 UPSTREAM_TIMEOUT_S = 900
+HANDLER_TIMEOUT_S = 60  # each read or write on a client connection (W5-16)
+BODY_DEADLINE_S = 120  # the whole request body, however slowly it trickles
+MAX_CONNECTIONS = 32  # served at once: the broker's --pids-limit is 64
+FREE_CALLS_MAX, FREE_BYTES_MAX = 5000, 2 << 30  # count_tokens per broker (W5-17)
+FREE_RECORD_EVERY = 100  # a "free" tally event every this many count_tokens calls
 PRICED_PATH, FREE_PATH = "/v1/messages", "/v1/messages/count_tokens"
 DATED_RE = re.compile(r"-\d{8}$")
 # What the client sent that never reaches the API: its credential, and hop-by-hop headers.
@@ -186,6 +206,8 @@ def terms(doc):
         kind = tool.get("type") if isinstance(tool, dict) else "malformed"
         if kind not in (None, "custom"):
             return f"a {kind} tool is not the client's own: it is billed beyond the request's tokens", 1.0, 0
+    if not isinstance(doc.get("context_management") or {}, dict):
+        return "context_management is not an object", 1.0, 0
     for edit in (doc.get("context_management") or {}).get("edits") or []:
         kind = edit.get("type") if isinstance(edit, dict) else "malformed"
         if not (isinstance(kind, str) and kind.startswith("clear_")):
@@ -195,7 +217,7 @@ def terms(doc):
     if doc.get("speed") not in (None, "standard", "fast"):
         return f"speed {doc['speed']!r} is not priced", 1.0, 0
     geo = doc.get("inference_geo")
-    if geo is not None and geo not in GEO:
+    if geo is not None and (not isinstance(geo, str) or geo not in GEO):
         return f"inference geography {geo!r} is not priced", 1.0, 0
     found = {"images": 0}
     if why := content_problem([doc.get("system"), doc.get("messages")], found):
@@ -229,6 +251,7 @@ class Ledger:
 
     def __init__(self, path, cap_usd):
         self.cap, self.settled, self.inflight, self.n = cap_usd, 0.0, {}, 0
+        self.free_calls = self.free_bytes = 0
         self.lock = threading.Lock()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         self.fh = os.fdopen(fd, "a", encoding="utf-8")
@@ -237,9 +260,32 @@ class Ledger:
                     "framing_tokens": FRAMING_TOKENS, "pid": os.getpid()})
 
     def write(self, entry):
-        self.fh.write(json.dumps({"at": now(), **entry}, sort_keys=True) + "\n")
+        tally = {"free_calls": self.free_calls, "free_bytes": self.free_bytes} if self.free_calls else {}
+        self.fh.write(json.dumps({"at": now(), **entry, **tally}, sort_keys=True) + "\n")
         self.fh.flush()
         os.fsync(self.fh.fileno())
+
+    def free(self, nbytes):
+        """True when one more count_tokens call of `nbytes` fits the free-call bound (W5-17): free
+        is not unbounded, and what was used is on the record."""
+        with self.lock:
+            if self.free_calls + 1 > FREE_CALLS_MAX or self.free_bytes + nbytes > FREE_BYTES_MAX:
+                self.write({"event": "refuse", "model": None,
+                            "why": f"the count_tokens bound ({FREE_CALLS_MAX} calls, {FREE_BYTES_MAX} bytes)"})
+                return False
+            self.free_calls += 1
+            self.free_bytes += nbytes
+            if self.free_calls % FREE_RECORD_EVERY == 0:
+                self.write({"event": "free", "calls": self.free_calls, "bytes": self.free_bytes})
+            return True
+
+    def fault(self, where, err):
+        """A fault, recorded where it is kept: the exception's type and frames, never its message
+        (which may quote a request), a request, a response or the token (W5-18)."""
+        frames = [f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}"
+                  for f in traceback.extract_tb(err.__traceback__)][-12:] if err is not None else []
+        with self.lock:
+            self.write({"event": "fault", "where": where, "error": type(err).__name__, "frames": frames})
 
     def reserve(self, model, usd):
         """A call id when the call fits under the cap with every call in flight, else None."""
@@ -311,8 +357,12 @@ class Broker(BaseHTTPRequestHandler):
             return self.fail(411, "invalid_request_error", "a request needs a Content-Length")
         if not 0 <= length <= MAX_BODY:
             return self.fail(413, "invalid_request_error", f"a body over {MAX_BODY} bytes")
-        body = self.rfile.read(length)
+        body = self.read_body(length)
+        if body is None:
+            return self.fail(408, "invalid_request_error", f"the body did not arrive within {BODY_DEADLINE_S:g} s")
         if path == FREE_PATH:
+            if not self.ledger.free(len(body)):
+                return self.fail(403, "permission_error", "the count_tokens bound would be passed")
             return self.relay(body, None, None, False)
         try:
             doc = json.loads(body)
@@ -327,6 +377,23 @@ class Broker(BaseHTTPRequestHandler):
         if call is None:
             return self.fail(403, "permission_error", f"the spend cap (${self.ledger.cap:g}) would be passed")
         self.relay(body, call, model, doc.get("speed") == "fast")
+
+    def read_body(self, length):
+        """The request's `length` body bytes, or None when they do not all arrive by the deadline:
+        the socket timeout bounds each read, this bounds the trickle (W5-16)."""
+        chunks, left, deadline = [], length, time.monotonic() + BODY_DEADLINE_S
+        while left:
+            if time.monotonic() > deadline:
+                return None
+            try:
+                chunk = self.rfile.read1(min(left, 1 << 20))
+            except OSError:  # the handler's socket timeout
+                return None
+            if not chunk:
+                return None
+            chunks.append(chunk)
+            left -= len(chunk)
+        return b"".join(chunks)
 
     def relay(self, body, call, model, fast):
         """Forward to the API and relay the answer as it arrives; settle the call's usage."""
@@ -394,8 +461,15 @@ class Broker(BaseHTTPRequestHandler):
             if conn is not None:
                 conn.close()
             if call is not None:
-                self.ledger.settle(call, settled(usage, model, settle_mult(usage, fast)) if complete else None, status, usage,
-                                  complete)
+                # Priced inside its own guard, so a usage report of a shape the broker cannot price
+                # still settles (its whole reservation) and is recorded, never skipped (W5-18).
+                usd = None
+                if complete:
+                    try:
+                        usd = settled(usage, model, settle_mult(usage, fast))
+                    except Exception as err:  # any type surprise in the report: settle the reservation
+                        self.ledger.fault("settle", err)
+                self.ledger.settle(call, usd, status, usage, complete)
 
 
 def read_token(path):
@@ -411,12 +485,41 @@ def read_token(path):
     return token
 
 
+class BrokerServer(ThreadingHTTPServer):
+    """At most `slots` connections served at once (one past it is closed unanswered), and a fault
+    in any of them recorded in the ledger rather than printed to a log nobody keeps (W5-16, W5-18)."""
+
+    daemon_threads = True
+
+    def __init__(self, address, handler, ledger, slots):
+        self.ledger, self.slots = ledger, threading.BoundedSemaphore(slots)
+        super().__init__(address, handler)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+    def handle_error(self, request, client_address):
+        self.ledger.fault("handler", sys.exc_info()[1])
+
+
 def serve(token, ledger_path, cap_usd, port=PORT, upstream=UPSTREAM, host="127.0.0.1"):
     """A started server (its own thread) and its ledger; the caller owns shutdown."""
     handler = type("BoundBroker", (Broker,), {"token": token, "ledger": Ledger(ledger_path, cap_usd),
-                                              "upstream": upstream})
-    server = ThreadingHTTPServer((host, port), handler)
-    server.daemon_threads = True
+                                              "upstream": upstream, "timeout": HANDLER_TIMEOUT_S})
+    server = BrokerServer((host, port), handler, handler.ledger, MAX_CONNECTIONS)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, handler.ledger
 

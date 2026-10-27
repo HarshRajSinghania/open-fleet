@@ -281,6 +281,63 @@ class TheConfiguredCommandIsOneExecutable(unittest.TestCase):
             self.m.resolve(env, "Linux")
 
 
+class OneResolverForTheOrcaBinary(unittest.TestCase):
+    """W4-15/W2-03 re-attack: a THIRD resolver, runtime/providers/orca.py:resolve_orca_binary
+    (behind `orca_cli.py <domain>` on Orca, preflight, install.sh and `auto`), had neither the
+    validation nor the precedence (ORCA_CLI_COMMAND before OPEN_FLEET_CLI_COMMAND), so it reproduced
+    W2-03 exactly, and under OPEN_FLEET_RUNTIME=auto the registry said posix while orca_cli.resolve()
+    named an Orca binary that was not there. The shape check also let C1 and format characters
+    through (`orca\\x9b`, `orca\\u202e`). One resolution now serves all of them."""
+
+    PINNED, OLDER = "/opt/pinned/orca", "/opt/older/orca"
+
+    def setUp(self):
+        self.m = _load()
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(sys.path.remove, str(ROOT))
+        from runtime import providers
+        self.providers = providers
+
+    def test_the_provider_resolver_takes_the_same_precedence(self):
+        for env, want in (({"OPEN_FLEET_CLI_COMMAND": self.PINNED, "ORCA_CLI_COMMAND": self.OLDER}, self.PINNED),
+                          ({"OPEN_FLEET_CLI_COMMAND": self.PINNED}, self.PINNED),
+                          ({"ORCA_CLI_COMMAND": self.OLDER}, self.OLDER),
+                          ({"ORCA_DEV_REPO_ROOT": "/src/orca"}, "orca-dev"),
+                          ({}, "orca-ide")):
+            with self.subTest(env=env):
+                self.assertEqual(self.providers.resolve_orca_binary(env, "Linux"), want)
+                self.assertEqual(self.m.resolve(env, "Linux"), want)
+
+    def test_the_provider_resolver_applies_the_same_validation(self):
+        for value in ("python3 /tmp/orca.py", "-x", "bin/orca"):
+            with self.subTest(value=value):
+                with self.assertRaises(self.providers.ProviderError) as ctx:
+                    self.providers.resolve_orca_binary({"ORCA_CLI_COMMAND": value}, "Linux")
+                self.assertEqual(ctx.exception.code, "invalid_cli_command")
+                self.assertIn("(it must name one executable, without arguments)", ctx.exception.message)
+
+    def test_c1_format_and_separator_characters_are_refused(self):
+        for value in ("orca\x9b", "orca\u202e", "orca\u200bx", "/opt/orca\u2028x", "orca-real\x85",
+                      "/opt/o\u202erca"):
+            with self.subTest(value=value):
+                self.assertIsNotNone(self.m.cli_command_problem(value, "ORCA_CLI_COMMAND"))
+                with self.assertRaises(self.m.CliCommandError):
+                    self.m.resolve({"ORCA_CLI_COMMAND": value}, "Linux")
+
+    def test_auto_and_the_resolver_agree_on_which_runtime_answers(self):
+        env = {"OPEN_FLEET_RUNTIME": "auto", "ORCA_CLI_COMMAND": "/nonexistent/orca", "PATH": ""}
+        self.assertEqual(self.providers.active_provider_name(env), "posix")
+        self.assertEqual(self.m.resolve(env, "Linux"), str(RESOLVER.resolve()),
+                         "auto chose posix, so the CLI that answers must be this module's shim")
+        with tempfile.TemporaryDirectory() as tmp:
+            orca = Path(tmp) / "orca-real"
+            orca.write_text("#!/bin/sh\nexit 0\n")
+            orca.chmod(0o755)
+            env = {"OPEN_FLEET_RUNTIME": "auto", "ORCA_CLI_COMMAND": str(orca), "PATH": tmp}
+            self.assertEqual(self.providers.active_provider_name(env), "orca")
+            self.assertEqual(self.m.resolve(env, "Linux"), str(orca))
+
+
 class NoScriptNamesTheExecutable(unittest.TestCase):
     """The contract: the executable is a policy decision made once, in orca_cli.py."""
 

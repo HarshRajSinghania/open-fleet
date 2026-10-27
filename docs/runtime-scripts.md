@@ -1600,7 +1600,7 @@ or refused input · 3 not the owner (fenced, lease held, unknown token).
 ## `orca_cli.py`
 
 Resolves the Orca CLI command name once, for every script that talks to Orca. Source
-`runtime/scripts/orca_cli.py:1-51`; behavior pinned by `tests/test_orca_cli.py`, which also
+`runtime/scripts/orca_cli.py:1-53`; behavior pinned by `tests/test_orca_cli.py`, which also
 fails on any script under `runtime/scripts/` that spells the executable itself.
 
 Usage: `orca_cli.py [--path | --version | <domain> ARGS…]`; library `from orca_cli import resolve, run_json`.
@@ -1625,9 +1625,13 @@ A configured command must name ONE executable — a bare name or an absolute pat
 (`python3 /tmp/orca.py`), an option-shaped value, a cwd-relative path or a control character is
 refused by name, "(it must name one executable, without arguments)", and `run_json` also refuses
 a configured name that is not on PATH with that message instead of an errno. The precedence
-lives in `configured_command` and the rule in `cli_command_problem`, and `upstream_probe.py`'s
-`capture` resolver reads its override through both, so the override it runs is the one every
-fleet call runs (W4-15/W2-03). It differs on purpose, and only, where `capture` must reach the
+lives in `configured_command` and the rule in `cli_command_problem` (which also refuses C1,
+bidi/format and separator characters), and every resolver goes through them: `resolve_orca`, to
+which `runtime/providers/orca.py`'s `resolve_orca_binary` (the Orca provider, `auto`,
+`preflight.py`, `install.sh`) delegates, raising `invalid_cli_command`, and `upstream_probe.py`'s
+`capture` resolver, so the override it runs is the one every fleet call runs (W4-15/W2-03).
+Under `OPEN_FLEET_RUNTIME=auto` the registry decides whether Orca answers, so `resolve` never
+names an Orca binary `active_provider_name` rejected. It differs on purpose, and only, where `capture` must reach the
 real Orca CLI: the override must also be on PATH, an `ORCA_DEV_REPO_ROOT` without `orca-dev` on
 PATH falls through to the platform default, and `OPEN_FLEET_RUNTIME` is ignored (this module's
 non-Orca shim is not Orca).

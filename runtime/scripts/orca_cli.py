@@ -8,8 +8,9 @@ in stablyai/orca:
   1. `OPEN_FLEET_CLI_COMMAND`, else `ORCA_CLI_COMMAND`, when set. Orca exports the latter inside
      the sessions it manages (structured worker sessions, managed WSL sessions), and the test
      suite points it at a stub. It must name ONE executable — a bare name or an absolute path,
-     never a command line, an option or a cwd-relative path — or resolution refuses by name
-     (`cli_command_problem`, the one policy upstream_probe.resolve_cli applies too).
+     never a command line, an option, a cwd-relative path or an invisible character — or
+     resolution refuses by name. One policy for every resolver: runtime/providers/orca.py's
+     resolve_orca_binary delegates to resolve_orca here, upstream_probe reads the same override.
   2. `orca-dev` when `ORCA_DEV_REPO_ROOT` is set — a dev checkout's launcher.
   3. `orca-ide` on Linux, WSL included. Orca's Linux executable, `.deb` and `.rpm` are all
      `orca-ide` by construction (`src/main/cli/bundled-cli-launcher-path.ts`
@@ -20,7 +21,8 @@ in stablyai/orca:
 
 Resolution never consults PATH: the name is a policy decision, and a missing executable is
 reported by the caller (`run_json` names a configured command that is not on PATH, `--path`
-below any), never silently swapped for another build.
+below any), never silently swapped for another build. Under OPEN_FLEET_RUNTIME=auto the registry
+(active_provider_name) decides whether Orca answers at all, so the two never disagree.
 
 Usage:
   python3 orca_cli.py            # print the resolved command name
@@ -66,6 +68,7 @@ import os
 import platform
 import shutil
 import subprocess
+import unicodedata
 
 from pathlib import Path
 
@@ -124,18 +127,25 @@ class CliCommandError(ValueError):
     """A configured CLI command (OPEN_FLEET_CLI_COMMAND / ORCA_CLI_COMMAND) that is not one executable."""
 
 
+# Unicode categories a command name must never hold: controls (C0 and C1), format characters
+# (bidi overrides, zero-width), line/paragraph separators, surrogates, private use, unassigned.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn"})
+
+
 def cli_command_problem(value, var, which=None):
     """Why `value`, read from the env var `var`, cannot be the CLI command; None when it can.
 
     ONE policy for every resolver (upstream_probe.resolve_cli calls this too, W4-15/W2-03): the
     value becomes argv[0] of every fleet call, so it names one executable — a bare name found
     on PATH, or an absolute path — never a command line (`python3 /tmp/orca.py` died as an
-    opaque errno), an option (`-x`), a path relative to whatever cwd the caller has, or a control
-    character. `which` (shutil.which) adds the on-PATH check; without it only the shape is
-    judged, because resolve() never consults PATH. The value is shown repr()-quoted.
+    opaque errno), an option (`-x`), a path relative to whatever cwd the caller has, or a
+    control, format or separator character (C0, C1, bidi and other Cf, line/paragraph separators,
+    surrogates, private or unassigned code points). `which` (shutil.which) adds the on-PATH check;
+    without it only the shape is judged, because resolve() never consults PATH. The value is
+    shown repr()-quoted.
     """
-    if any(ord(c) < 32 or ord(c) == 127 for c in value):
-        why = "holds a control character"
+    if any(unicodedata.category(c) in _INVISIBLE_CATEGORIES for c in value):
+        why = "holds a control, format or separator character"
     elif value.startswith("-"):
         why = "is option-shaped"
     elif not os.path.isabs(value) and any(c.isspace() for c in value):
@@ -152,20 +162,21 @@ def cli_command_problem(value, var, which=None):
 def configured_command(env):
     """(var, value) of the CLI-command override in force, or ("", "") when none is set:
     OPEN_FLEET_CLI_COMMAND, else ORCA_CLI_COMMAND (a blank value is unset). The one precedence
-    for every resolver; upstream_probe.resolve_cli reads the override through this too."""
+    for every resolver: resolve_orca (which runtime/providers/orca.py's resolve_orca_binary
+    delegates to) and upstream_probe.resolve_cli read the override through this too."""
     for var in ("OPEN_FLEET_CLI_COMMAND", "ORCA_CLI_COMMAND"):
-        value = (env.get(var) or "").strip()
+        value = (env.get(var) or "").strip(" \t\r\n\v\f")  # ASCII only: a C1 NEL or NBSP is judged, not trimmed
         if value:
             return var, value
     return "", ""
 
 
-def resolve(env=None, system=None) -> str:
-    """The command name to execute, per the order in the module docstring.
-
-    `env` and `system` are injectable for tests; production callers pass nothing. A configured
-    command that is not one executable raises CliCommandError (cli_command_problem).
-    """
+def resolve_orca(env=None, system=None) -> str:
+    """The ORCA CLI itself, never this module's shim: the validated override, else orca-dev under
+    ORCA_DEV_REPO_ROOT, else the platform's name. The one resolution of the Orca binary;
+    runtime/providers/orca.py:resolve_orca_binary (the Orca provider, `auto`, preflight,
+    install.sh) delegates here. A configured command that is not one executable raises
+    CliCommandError (cli_command_problem)."""
     env = os.environ if env is None else env
     var, configured = configured_command(env)
     if configured:
@@ -173,14 +184,32 @@ def resolve(env=None, system=None) -> str:
         if problem:
             raise CliCommandError(problem)
         return configured
-    if _active_non_orca_runtime(env):
-        return str(Path(__file__).resolve())
     if (env.get("ORCA_DEV_REPO_ROOT") or "").strip():
         return DEV_COMMAND
     system = platform.system() if system is None else system
     if system == "Linux":
         return LINUX_COMMAND
     return DEFAULT_COMMAND
+
+
+def resolve(env=None, system=None) -> str:
+    """The command name to execute, per the order in the module docstring.
+
+    `env` and `system` are injectable for tests; production callers pass nothing. On Orca it is
+    resolve_orca. Under OPEN_FLEET_RUNTIME=auto the registry decides (active_provider_name: the
+    Orca binary only when it is on PATH), so this never names an Orca binary the registry
+    rejected; under an explicit non-Orca runtime a configured override still wins (a test stub,
+    an operator's wrapper), else this module's own shim answers.
+    """
+    env = os.environ if env is None else env
+    runtime = _active_non_orca_runtime(env)
+    if runtime == "auto":
+        if _load_providers().active_provider_name(env, system) == "orca":
+            return resolve_orca(env, system)
+        return str(Path(__file__).resolve())
+    if runtime and not configured_command(env)[1]:
+        return str(Path(__file__).resolve())
+    return resolve_orca(env, system)
 
 
 def run_json(argv, *, timeout, error, nonzero="strict"):

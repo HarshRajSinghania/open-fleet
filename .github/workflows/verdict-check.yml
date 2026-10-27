@@ -11,9 +11,11 @@
 # runs scripts/verdict_check.py against the PR: it passes iff a trusted review
 # (APPROVED or COMMENTED, by OWNER / MEMBER / COLLABORATOR: the state proves
 # nothing, since any account can approve on a public repository) carries
-# "VERDICT: GO" with reviewed_sha == head, and the PR changes no CI grader path
-# (.github/workflows/, .github/actions/, .github/ci-tools.lock) unless the owner
-# opened it (2026-10-27 security audit, W6-01). The PR author's own GO counts
+# "VERDICT: GO" with reviewed_sha == head, no later trusted NO-GO binds the head,
+# and the PR changes no CI grader path (the workflows, actions, tool lock, gate
+# scripts, root modules; scripts/verdict_check.py lists them) unless the owner
+# opened it from a branch of this repository (2026-10-27 security audit, W6-01;
+# PR #718 re-attack). The PR author's own GO counts
 # only through one of those tiers (W6-06). A GO is a SHA binding, not
 # independent review: required approvals stay branch protection's.
 #

@@ -36,13 +36,17 @@ merge ref, so the PR supplies the YAML that decides what the required `gates`,
 `guard` and `pinned-demo` contexts run — a fork PR could empty those jobs and
 get three green contexts that checked nothing. This check, run from the default
 branch, therefore also refuses any PR that changes a GRADER path (added,
-modified, removed or renamed from or to one) unless the repository owner wrote
-it: the files GitHub or the runner read to choose which commands a required job
-executes, before any repository code runs — ``.github/workflows/`` and
-``.github/actions/`` (job and step definitions), and ``.github/ci-tools.lock``
-(which build of each CI tool those jobs install and execute). A files list
-GitHub may have cut short (3000 files at most) or a head that moves while it is
-read fails closed. The trusted status workflow runs the checker from the default branch
+modified, removed or renamed from or to one) unless the repository owner opened
+it from a branch of this repository: ``.github/workflows/``,
+``.github/actions/`` and ``.github/ci-tools.lock``; the scripts a required job
+runs by path (GATE_SCRIPTS); and a root module file or a new top-level
+directory, which a job running ``-m coverage`` from the root would import. The
+changed paths are read for the exact head (compare API); a list the API may
+have cut short (300 files) or a head that moves while it is read fails closed.
+CI still runs the PR's own code everywhere else (its tests, what the gate
+scripts import), so for a PR the owner did not open the merge control is the
+trusted GO at the exact head: the reviewer's attestation that they read the
+diff, which no check here can verify. The trusted status workflow runs the checker from the default branch
 (verdict-gate.yml); its activation remains pending in #594 (docs/ops.md). Approval policy beyond that (how many, from whom, conversations
 resolved) stays enforced by branch protection itself; this check adds SHA
 binding, not a second approval rule. Dismissed and change-requested reviews
@@ -94,14 +98,34 @@ TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 STATUS_CONTEXT = "verdict-gate"
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
-# The CI grader (W6-01, module docstring): what GitHub or the runner reads to choose which
-# commands a required job executes, before any repository code runs. Only the owner's PR may
-# change it; docs/ops.md#merge-gate says why the line is drawn here.
+# The CI grader (W6-01, module docstring). Only the owner's PR from a branch of this repository
+# may change it; docs/ops.md#merge-gate says why the line is drawn here.
+# 1. What GitHub or the runner reads to choose which commands a required job executes, before
+#    any repository code runs: the workflows, local actions, and the hashed tool lock.
 GRADER_DIRS = (".github/workflows/", ".github/actions/")
 GRADER_FILES = (".github/ci-tools.lock",)
-# GitHub's PR files list stops at 3000 entries; a list that long may be missing the one that
+# 2. The scripts a required job names on a run: line (gates and its needs, pinned-demo; guard runs
+#    the base branch's floor_guard.py): each IS a gate, and a one-file rewrite of it greens that
+#    gate (PR #718 re-attack). tests/test_verdict_check.py holds this list to the workflows.
+GATE_SCRIPTS = (
+    "bench/vf-bench/gate.py", "bench/vf-bench/heldout.py", "bench/vf-bench/replay.py",
+    "evals/demo/negative-control/run.sh",
+    "runtime/scripts/decisions.py", "runtime/scripts/proof_status.py",
+    "runtime/scripts/run_report.py",
+    "scripts/bundle.py", "scripts/changelog.py", "scripts/check_trailers.py", "scripts/eval.py",
+    "scripts/gen-badges.py", "scripts/shard-tests.py", "scripts/validate.py",
+)
+# 3. Anything at the root a job could import instead of a tool: scripts/shard-tests.py runs
+#    `python -m coverage` and `-m unittest` from the root, which is on sys.path there. A root
+#    module file, or a top-level directory this repository does not have (the test holds the list
+#    to the tree), is the grader.
+TOP_LEVEL_DIRS = frozenset({".claude-plugin", ".github", "bench", "changelog.d", "docs", "evals",
+                            "hooks", "playbooks", "runtime", "scripts", "skills", "tests"})
+ROOT_MODULE_SUFFIXES = (".py", ".pyc", ".pyd", ".so", ".pth")
+# The compare API lists at most 300 changed files; a list that long may be missing the one that
 # matters.
-FILES_LIST_CAP = 3000
+FILES_LIST_CAP = 300
+SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
 def _author_trusted(review, pr_author):
@@ -272,9 +296,26 @@ def grader_paths(files):
             continue
         for key in ("filename", "previous_filename"):
             path = entry.get(key)
-            if isinstance(path, str) and (path in GRADER_FILES or path.startswith(GRADER_DIRS)):
+            if isinstance(path, str) and path and _is_grader(path):
                 hits.add(path)
     return sorted(hits)
+
+
+def _is_grader(path):
+    if path in GRADER_FILES or path in GATE_SCRIPTS or path.startswith(GRADER_DIRS):
+        return True
+    top, slash, _rest = path.partition("/")
+    if not slash:
+        return path.endswith(ROOT_MODULE_SUFFIXES)
+    return top not in TOP_LEVEL_DIRS
+
+
+def _same_repo(pr):
+    """The PR's head branch lives in the base repository: a fork keeps push access to its own
+    branch whoever opened the PR, so only a head here is the opener's alone."""
+    head = ((pr.get("head") or {}).get("repo") or {}).get("full_name") or ""
+    base = ((pr.get("base") or {}).get("repo") or {}).get("full_name") or ""
+    return bool(head) and head.lower() == base.lower()
 
 
 def _is_owner(pr, repo):
@@ -288,32 +329,43 @@ def _is_owner(pr, repo):
 def grader_refusal(pr_number, repo, head_sha):
     """(grader paths, refusal reason or None) for the PR at ``head_sha`` (W6-01).
 
-    Reads the PR's files list, then the PR again: the second read names the head the list
-    described, so a push between the two reads fails closed rather than pairing one head's
-    verdict with another head's files. A list GitHub may have cut short fails closed too.
+    Re-reads the PR (its head must still be ``head_sha``), then reads what that exact commit
+    changes with the compare API, base...head_sha: the PR files list names no commit, so a head
+    flipped M -> benign -> M between the gate's reads passed it (PR #718 re-attack). The owner's
+    PR from a branch of this repository may change the grader; any other PR may not. A list the
+    API may have cut short fails closed, and so does a PR whose base cannot be named.
     """
-    files = _gh_api(f"pulls/{pr_number}/files?per_page=100", repo, paginate=True)
-    if not isinstance(files, list):
-        files = []
     pr = _gh_api(f"pulls/{pr_number}", repo)
     if isinstance(pr, list):
         pr = pr[0] if pr else {}
     if not isinstance(pr, dict):
         pr = {}
-    paths = grader_paths(files)
     now = (pr.get("head") or {}).get("sha", "")
     if not head_sha or now.lower() != head_sha.lower():
-        return paths, (f"head moved to {now[:12] or 'nothing'} while it was read; "
-                       "re-run the gate on the new head")
+        return [], (f"head moved to {now[:12] or 'nothing'} while it was read; "
+                    "re-run the gate on the new head")
+    base = pr.get("base") or {}
+    base_name = base.get("ref") if SAFE_REF_RE.match(base.get("ref") or "") \
+        and ".." not in base.get("ref") else base.get("sha")
+    if not base_name or not FULL_SHA_RE.match(head_sha) \
+            or (base_name == base.get("sha") and not FULL_SHA_RE.match(base_name)):
+        return [], "cannot name the PR's base, so what this head changes cannot be read"
+    comparison = _gh_api(f"compare/{base_name}...{head_sha}", repo)
+    files = comparison.get("files") if isinstance(comparison, dict) else None
+    if not isinstance(files, list):
+        files = []
+    paths = grader_paths(files)
+    if _is_owner(pr, repo) and _same_repo(pr):
+        return paths, None
     changed = pr.get("changed_files")
     if len(files) >= FILES_LIST_CAP or (isinstance(changed, int) and len(files) < changed):
         return paths, (f"the files list may be cut short ({len(files)} listed of "
                        f"{changed if isinstance(changed, int) else '?'} changed), so a grader "
                        "change could hide")
-    if paths and not _is_owner(pr, repo):
+    if paths:
         more = f" +{len(paths) - 1} more" if len(paths) > 1 else ""
-        return paths, (f"changes the CI grader ({paths[0]}{more}); only the owner's PR may — "
-                       "this PR's checks ran its own copy")
+        return paths, (f"changes the CI grader ({paths[0]}{more}); only the owner's own-branch "
+                       "PR may — this PR's checks ran its own copy")
     return paths, None
 
 
@@ -348,7 +400,12 @@ def post_status(repo, sha, state, description, context=STATUS_CONTEXT):
     server, run_id = os.environ.get("GITHUB_SERVER_URL"), os.environ.get("GITHUB_RUN_ID")
     if server and run_id:
         cmd += ["-f", f"target_url={server}/{repo}/actions/runs/{run_id}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # The status carries the gate's identity (verdict-gate.yml: the app's token); every read
+    # above used GH_TOKEN, the job's own token, which holds the Contents: read compare needs.
+    env = dict(os.environ)
+    if os.environ.get("GH_STATUS_TOKEN"):
+        env["GH_TOKEN"] = os.environ["GH_STATUS_TOKEN"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"{GH_API} statuses/{sha} failed: {proc.stderr.strip()}")
 

@@ -76,10 +76,17 @@ COLLABORATOR. The review state alone proves nothing, because on a public reposit
 can submit an APPROVED review (PR #718 review). The latest trusted verdict at the head decides:
 a later CHANGES_REQUESTED or `VERDICT: NO-GO` from such an account at that head vetoes an
 earlier GO, and a later GO clears it. And the PR changes no grader path unless the owner opened
-it (below). It does not prove that anyone
-read the diff: with one human maintainer, the owner's GO on their own PR is the normal case.
-Being the PR's author is no trust tier, so a fork author's GO on their own PR never counts
-(2026-10-27 security audit, W6-06).
+it from a branch of this repository (below). Being the PR's author is no trust tier, so a fork
+author's GO on their own PR never counts (2026-10-27 security audit, W6-06).
+
+**CI runs the PR's code; the GO is the control.** Every required job runs code from the PR's own
+tree: its tests, and whatever the gate scripts import. Code that runs inside a check can make
+that check pass, so a green `gates`, `guard` or `pinned-demo` is not evidence about a PR the
+owner did not write. For such a PR the merge control is the trusted GO bound to the exact head,
+and that GO is the reviewer's attestation that they read the diff at that head. No check here can
+verify the attestation, and with one human maintainer the owner's GO on their own PR is the
+normal case. The rule below narrows the cheap ways to green a check; it does not make CI a
+reviewer.
 
 **A PR cannot change its own grader (W6-01).** `gates`, `guard` and `pinned-demo` come from
 `pull_request` runs, which GitHub loads from the PR's merge ref, so the PR's own YAML decides
@@ -87,26 +94,38 @@ what those contexts run. A fork PR that empties the jobs (`steps: [{run: echo ok
 three green with every real gate skipped, and branch protection matches them by name only.
 `verdict-gate` is the one required context whose code comes from `main`, so `main`'s
 `scripts/verdict_check.py` also posts `verdict-gate` failure, whatever GO the PR has, when the PR
-adds, edits, removes or renames a grader path, unless the repository owner opened it (the PR's
-`author_association` is `OWNER`, or its author is the owner's login). The grader is what GitHub
-or the runner reads to choose which commands a required job executes, before any repository code
-runs:
+adds, edits, removes or renames a grader path. The one exception is the repository owner's PR
+from a branch of this repository: the PR's `author_association` is `OWNER` (or its author is the
+owner's login) and its head repository is this repository. An owner-opened PR whose head is a
+fork's branch gets no exemption, because the fork keeps push access to that branch. The grader:
 - `.github/workflows/`: every job, step, `needs:` and `if:` of the three build contexts, and
   `verdict-check.yml`, which wakes this gate.
 - `.github/actions/`: a local action a workflow can `uses: ./.github/actions/…` (none today).
 - `.github/ci-tools.lock`: which build of coverage, ruff and agentskills those jobs install and
   run. A PR could lock a package it published itself.
+- The scripts a required job names on a `run:` line, each of which is a gate (PR #718 re-attack:
+  a `shard-tests.py` that ran nothing, a `gate.py` that exited 0 and a `run.sh` that printed the
+  pinned transcript each kept their check green): `scripts/shard-tests.py`, `validate.py`,
+  `check_trailers.py`, `changelog.py`, `gen-badges.py`, `eval.py`, `bundle.py`,
+  `runtime/scripts/decisions.py`, `proof_status.py`, `run_report.py`, `bench/vf-bench/gate.py`,
+  `replay.py`, `heldout.py` and `evals/demo/negative-control/run.sh` (`GATE_SCRIPTS` in the
+  script; `tests/test_verdict_check.py` holds the list to the workflows). `guard` runs the base
+  branch's `floor_guard.py`, which no PR can edit.
+- A module file at the root (`*.py`, `*.pyc`, `*.pyd`, `*.so`, `*.pth`) or a top-level directory
+  this repository does not have: `shard-tests.py` runs `python -m coverage` and `-m unittest`
+  from the root, so a root `coverage/` or `unittest.py` would run instead of the locked tool.
 
-Repository code the jobs run (`scripts/`, `tests/`, `bench/`) is not on the list. It is the code
-under review, and it reaches a check only through an unchanged workflow step, beside the suite,
-ruff, the secret scan and the base-sourced floor guard. The bar's own settings (`.coveragerc`,
-`ruff.toml`, `.gitleaksignore`, `.gitleaks.toml`, the routing floor, the vf-bench pins) are the
-floor guard's frozen surface, which `guard` checks with the base branch's `floor_guard.py`. The
-gate reads the PR's files list with its own token (Pull requests: read). A list GitHub may have
-cut short (it stops at 3000 files), or a head that moves while it is read, fails closed. An
-outside contributor's workflow change lands when the owner re-opens it from their own branch.
-The rule binds only once it is on `main`: the gate runs `main`'s copy of the script, so the PR
-that adds it is still graded by the copy it replaces.
+What the gate scripts import, and the tests, are not on the list: a PR could not change any code
+otherwise. They are what the GO above has to cover. The bar's own settings (`.coveragerc`,
+`ruff.toml`, `.gitleaksignore`, `.gitleaks.toml`, the routing floor, the
+vf-bench pins) are the floor guard's frozen surface, which `guard` checks with the base branch's
+`floor_guard.py`. The gate reads what the PR's exact head changes with the compare API (base
+branch `...` head SHA), so a head flipped between its reads cannot pass. Those reads use the
+gate job's own `GITHUB_TOKEN` (Contents and Pull requests read); the app's token posts the
+status. A list the API may have cut short (300 files), or a head that moves while it is read,
+fails closed. An outside contributor's grader change lands when the owner re-opens it from a
+branch of this repository. The rule binds only once it is on `main`: the gate runs `main`'s copy
+of the script, so the PR that adds it is still graded by the copy it replaces.
 
 Activated on 2026-10-24 (#594):
 - **The app:** `open-fleet-verdict-gate` (app 5451539) was created from a manifest with Commit

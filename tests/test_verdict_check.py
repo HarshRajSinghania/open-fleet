@@ -534,7 +534,8 @@ class AForkAuthorCannotGoTheirOwnPr(unittest.TestCase):
                     self.assertFalse(verdict_at_tip([approved], HEAD, pr_author=pr_author))
 
     def test_the_gate_reports_an_untrusted_approval_as_untrusted(self):
-        pr = {"number": 7, "head": {"sha": HEAD}, "user": {"login": "coord"},
+        pr = {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "o/r"}},
+              "base": {"ref": "main", "repo": {"full_name": "o/r"}}, "user": {"login": "coord"},
               "author_association": "OWNER", "changed_files": 0}
         approved = review(go_body(HEAD), state="APPROVED", login="outsider", association="NONE")
 
@@ -553,7 +554,8 @@ class AForkAuthorCannotGoTheirOwnPr(unittest.TestCase):
         self.assertTrue(verdict_at_tip([mine], HEAD, pr_author="ravidsrk"))
 
     def test_the_gate_reports_a_self_go_from_a_fork_as_untrusted(self):
-        pr = {"number": 7, "head": {"sha": HEAD}, "user": {"login": "forker"},
+        pr = {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "forker/r"}},
+              "base": {"ref": "main", "repo": {"full_name": "o/r"}}, "user": {"login": "forker"},
               "author_association": "CONTRIBUTOR", "changed_files": 0}
         mine = review(go_body(HEAD), state="COMMENTED", login="forker", association="CONTRIBUTOR")
 
@@ -638,17 +640,24 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
     grader unless the repository owner wrote it."""
 
     OWNER_GO = review(go_body(HEAD), state="COMMENTED", login="o", association="OWNER")
+    BASE = "c" * 40
 
-    def _pr(self, login="forker", association="CONTRIBUTOR", changed=None, head=HEAD):
-        pr = {"number": 7, "head": {"sha": head}, "user": {"login": login},
-              "author_association": association}
+    def _pr(self, login="forker", association="CONTRIBUTOR", changed=None, head=HEAD,
+            head_repo="o/r"):
+        # A fork's PR still has its head in this repository's network; the head repo names it.
+        pr = {"number": 7, "head": {"sha": head, "repo": {"full_name": head_repo}},
+              "base": {"ref": "main", "sha": self.BASE, "repo": {"full_name": "o/r"}},
+              "user": {"login": login}, "author_association": association}
         if changed is not None:
             pr["changed_files"] = changed
         return pr
 
-    def _run(self, files, pr=None, pr_after=None, post=True, reviews=None):
+    def _run(self, files, pr=None, pr_after=None, post=True, reviews=None, listed=None):
+        """`files` is what the compare API says the exact head changed; `listed` is what the
+        PR's (SHA-less) files list says, which the gate must not read."""
         pr = pr or self._pr(changed=len(files))
         seen = {"pulls/7": 0}
+        self.compared = []
         posted = []
 
         def fake_api(path, repo, paginate=False):
@@ -659,9 +668,11 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
             if path == "pulls/7/reviews":
                 self.assertTrue(paginate)
                 return [self.OWNER_GO] if reviews is None else reviews
+            if path.startswith("compare/"):
+                self.compared.append(path)
+                return {"files": files}
             if path.startswith("pulls/7/files"):
-                self.assertTrue(paginate, "the files list is paginated")
-                return files
+                return files if listed is None else listed
             self.fail(f"unexpected API path {path}")
 
         def fake_run(cmd, **_kw):
@@ -734,14 +745,99 @@ class APrCannotChangeItsOwnGrader(unittest.TestCase):
         self.assertEqual(posted[0]["state"], "success", out)
 
     def test_a_files_list_that_may_be_truncated_is_refused(self):
-        # GitHub lists at most 3000 files; a grader change past the cut must not hide.
+        # The compare API lists at most 300 files; a grader change past the cut must not hide.
         few = self._files("scripts/x.py")
         _code, posted, out = self._run(few, pr=self._pr(changed=2))
         self.assertEqual(posted[0]["state"], "failure", out)
         self.assertIn("files", posted[0]["description"])
-        many = self._files(*(f"docs/f{i}.md" for i in range(3000)))
+        many = self._files(*(f"docs/f{i}.md" for i in range(300)))
         _code, posted, out = self._run(many, pr=self._pr())
         self.assertEqual(posted[0]["state"], "failure", out)
+
+    def test_the_grader_read_is_bound_to_the_exact_head(self):
+        # PR #718 re-attack: the PR files list carries no SHA, so a head flipped
+        # M -> benign -> M across the gate's reads passed. The changed paths are read for the
+        # exact head the status is posted on (compare base...head.sha), never the list.
+        _code, posted, out = self._run(self._files(".github/workflows/validate.yml"),
+                                       listed=self._files("docs/benign.md"))
+        self.assertEqual(posted[0]["state"], "failure", out)
+        self.assertEqual(self.compared, [f"compare/main...{HEAD}"])
+
+    def test_an_owner_pr_from_a_fork_branch_gets_no_exemption(self):
+        # The fork keeps push access to its branch, so the owner's name on the PR does not make
+        # its head the owner's. The exemption needs the head in this repository.
+        files = self._files(".github/workflows/validate.yml")
+        for head_repo in ("forker/r", None):
+            with self.subTest(head_repo=head_repo):
+                pr = self._pr(login="o", association="OWNER", changed=1, head_repo=head_repo)
+                _code, posted, out = self._run(files, pr=pr)
+                self.assertEqual(posted[0]["state"], "failure", out)
+
+    def test_the_gate_scripts_are_the_grader_too(self):
+        # PR #718 re-attack: every required job runs PR code, so a one-file rewrite of the script
+        # a gate runs (shard-tests.py running nothing, gate.py exiting 0, run.sh printing the
+        # pinned transcript) made the gate green. A non-owner PR may not change those scripts.
+        for path in verdict_check.GATE_SCRIPTS:
+            with self.subTest(path=path):
+                _code, posted, out = self._run(self._files(path))
+                self.assertEqual(posted[0]["state"], "failure", out)
+        for path in ("scripts/shard-tests.py", "bench/vf-bench/gate.py",
+                     "evals/demo/negative-control/run.sh"):
+            self.assertIn(path, verdict_check.GATE_SCRIPTS)
+
+    def test_a_new_top_level_module_is_the_grader_too(self):
+        # Jobs run `python3 -m coverage` / `-m unittest` from the checkout root (shard-tests.py),
+        # so a root `coverage/` or `unittest.py` would run instead of the locked tool.
+        for path in ("pip/__init__.py", "coverage/__init__.py", "unittest.py", "json.py",
+                     "sitecustomize.py", "evil.pth", "x.so", "newdir/readme.md"):
+            with self.subTest(path=path):
+                _code, posted, out = self._run(self._files(path))
+                self.assertEqual(posted[0]["state"], "failure", out)
+        for path in ("README.md", "docs/x.md", "tests/test_new.py", ".gitignore"):
+            with self.subTest(path=path):
+                _code, posted, out = self._run(self._files(path))
+                self.assertEqual(posted[0]["state"], "success", out)
+
+    def test_the_top_level_list_is_this_repositorys(self):
+        listed = subprocess.run(["git", "-C", str(_ROOT), "ls-tree", "-d", "--name-only", "HEAD"],
+                                capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(sorted(verdict_check.TOP_LEVEL_DIRS), sorted(listed))
+
+    def test_the_gate_scripts_list_holds_what_the_required_jobs_run(self):
+        # Every script a required job (gates and its needs, pinned-demo) names on a run: line.
+        # guard runs the base branch's floor_guard.py, which no PR can edit.
+        named = set()
+        for workflow, jobs in (("validate.yml", ("tests", "floor", "checks", "gates", "vfbench",
+                                                 "vfbench_replay")),
+                               ("negative-control.yml", ("pinned-demo",))):
+            data = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+            section = "\n" + data.split("\njobs:\n", 1)[1]
+            for job in jobs:
+                body = section.split(f"\n  {job}:\n", 1)[1]
+                body = re.split(r"\n  [A-Za-z0-9_-]+:\n", body, maxsplit=1)[0]
+                named |= set(re.findall(r"(?:python3|sh|bash)\s+(?:-\S+\s+)*"
+                                        r"((?:scripts|runtime|bench|evals)/[\w./-]+\.(?:py|sh))",
+                                        body))
+        self.assertTrue(named)
+        self.assertEqual(sorted(named - set(verdict_check.GATE_SCRIPTS)), [])
+        self.assertEqual(sorted(set(verdict_check.GATE_SCRIPTS) - named), [],
+                         "a listed gate script no required job runs any more")
+
+    def test_reads_use_the_jobs_token_and_the_status_the_apps(self):
+        # The compare API needs Contents: read, which the gate's app does not hold; the job's
+        # own GITHUB_TOKEN (contents: read) reads, and only the status uses the app identity.
+        gate = (_ROOT / ".github" / "workflows" / "verdict-gate.yml").read_text(encoding="utf-8")
+        job = gate.split("\n  gate:\n", 1)[1]
+        self.assertIn("          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n", job)
+        self.assertIn("          GH_STATUS_TOKEN: ${{ steps.app.outputs.token || "
+                      "secrets.GITHUB_TOKEN }}\n", job)
+        sent = []
+        with mock.patch.dict(os.environ, {"GH_STATUS_TOKEN": "app-token", "GH_TOKEN": "job"}), \
+                mock.patch.object(verdict_check.subprocess, "run",
+                                  side_effect=lambda cmd, **kw: sent.append(kw.get("env")) or
+                                  subprocess.CompletedProcess(cmd, 0, "", "")):
+            verdict_check.post_status("o/r", HEAD, "success", "ok")
+        self.assertEqual(sent[0]["GH_TOKEN"], "app-token")
 
     def test_a_head_that_moves_during_the_evaluation_is_refused(self):
         moved = self._pr(changed=1, head=OTHER)

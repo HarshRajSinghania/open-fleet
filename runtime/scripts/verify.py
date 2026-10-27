@@ -901,6 +901,12 @@ class _Authority:
                                  "whose final target is remote-tracking (what the coordinator's own "
                                  "fetch wrote): path@refs/remotes/… or path@<commit id>; "
                                  "fail-closed (W3-03)")
+        if pinned:
+            # Said in every verdict, not only the docs (PR #719 re-attack): in the worker's own
+            # clone `git update-ref refs/remotes/origin/main <its commit>` succeeds, and a commit id
+            # names whatever the caller chose.
+            where += (" — trustworthy only where the worker cannot write refs (the coordinator's "
+                      "own fetch, a CI checkout); in the worker's own clone this lane is advisory")
         return where, read, None
 
     @classmethod

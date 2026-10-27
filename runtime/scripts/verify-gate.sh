@@ -246,7 +246,9 @@ fi
 case "$PROVENANCE" in
   ci|mcp|sdk|dispatch) : ;;  # off-worker context sets the env AND the key — sound; record is auditable
   *) echo "verify-gate: NOTE — native in-session hook is ADVISORY: the worker controls ORCA_* (incl." \
-          "ORCA_PROVENANCE and any dispatch key), so nothing here is a soundness boundary. A signed" \
+          "ORCA_PROVENANCE and any dispatch key) and every ref in its clone — refs/remotes/* too, so" \
+          "a remote-tracking or commit key pin is trustworthy only where the worker cannot write" \
+          "refs (the coordinator's own fetch, a CI checkout) — so nothing here is a soundness boundary. A signed" \
           "ORCA_DISPATCH_RECORD is verified, but is a boundary only OFF-WORKER — CI/MCP/SDK or an" \
           "auditor re-running verify.py with the coordinator's real key — docs/verify-gate.md#trust-boundary." >&2 ;;
 esac

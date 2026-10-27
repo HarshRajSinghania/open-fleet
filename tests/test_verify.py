@@ -6702,6 +6702,17 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         self.assertIn("working-tree file .orca/dispatch-pubkey", out[0])
         self.assertIn("the graded worker can write it", out[0])
 
+    def test_a_pinned_key_note_says_where_the_pin_is_trustworthy(self):
+        # PR #719 re-attack: `git update-ref refs/remotes/origin/main <own commit>` succeeds in a
+        # worker's own clone, and a commit id names whatever the caller chose — the verdict must
+        # say the pin is trustworthy only where the worker cannot write refs.
+        for ref in ("refs/remotes/origin/main", self.pinned):
+            with self.subTest(ref=ref):
+                out = self._check(f".orca/dispatch-pubkey@{ref}")
+                self.assertTrue(out and out[0].startswith("NOTE:"), out)
+                self.assertIn("trustworthy only where the worker cannot write refs", out[0])
+                self.assertIn("in the worker's own clone this lane is advisory", out[0])
+
     def _worker_branch_key(self):
         """The worker's own key and a record it signed, committed on a LOCAL branch."""
         worker = bytes(range(50, 82))

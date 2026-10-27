@@ -441,6 +441,17 @@ class VerifyGateSignedDispatch(GateCase):
                      dispatch_record=rec, dispatch_pubkey=pub)   # no provenance → native path
         self.assertIn("ADVISORY", r.stderr)
 
+    def test_the_advisory_note_says_a_ref_pin_is_only_as_good_as_who_writes_refs(self):
+        # PR #719 re-attack: in a worker's own clone `git update-ref refs/remotes/origin/main`
+        # succeeds, so the native lane's NOTE must say a remote-tracking or commit pin is
+        # trustworthy only where the worker cannot write refs.
+        src = self.src(["AC-1"])
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        r = self.gate(m, src, self.digest(src), unit_class="report-only", event="task")
+        self.assertIn("ADVISORY", r.stderr)
+        self.assertIn("refs/remotes/* too", r.stderr)
+        self.assertIn("trustworthy only where the worker cannot write", r.stderr)
+
     def test_worker_set_env_pubkey_honored_with_advisory_note(self):
         # #164: the gate reads ORCA_DISPATCH_PUBKEY unconditionally — a WORKER-SET env key is honored
         # (ORCA_PROVENANCE gates only the NOTE, never the key source). If the env key were ignored the

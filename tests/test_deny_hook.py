@@ -3010,7 +3010,7 @@ class TestReadOnlyTierWriteFloor(HookBase):
 
     def test_read_only_shell_still_runs_under_readonly(self):
         for command in ("git diff", "git log --oneline -5", "cat README.md", "ls -la",
-                        "grep -r TODO .", "make 2>&1 | tail", "echo hello"):
+                        "grep -rn needle .", "make 2>&1 | tail", "echo hello"):
             with self.subTest(command=command):
                 r = self._fire(event("Bash", command=command))
                 self.assertEqual(r.stdout.strip(), "", command)

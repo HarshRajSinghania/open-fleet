@@ -1576,6 +1576,31 @@ class SignedTranscriptRequired(SignedKeyFixture):
         errors = self._check()
         self.assertTrue(any("mutation-class" in e and "report-only" in e for e in errors), errors)
 
+    def test_a_change_that_drops_its_own_mission_from_the_mutation_policy_is_judged_by_the_base(self):
+        # W3-05 (2026-10-27 security audit, P2): the mutation-unit list was read at the GRADED
+        # revision — the PR's own commit — so a PR that deleted its mission from
+        # `**Mutation units** (...)` in the commit it is graded on was judged as report-only, shed
+        # the negative control, and the refusal above evaporated. The policy is now read where the
+        # key is read (key_rev): the grading base for a pin off its ancestry.
+        policy = self.repo / "runtime" / "evidence-manifest.md"
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text("- **Mutation units** (demo-it, ship-it) — need a negative control.\n",
+                          encoding="utf-8")
+        self._on_main()
+        self._land(pubkey=True, msg="the policy and the key on main")
+        _git(self.repo, "checkout", "-q", "-b", "the-pr")
+        policy.write_text("- **Mutation units** (ship-it) — need a negative control.\n",
+                          encoding="utf-8")
+        self._commit(pubkey=True, transcript=self._envelope(
+            self._verdict(args={"unit_class": "report-only", "lighting": "lit"})))
+        body = (f"    python3 runtime/scripts/verify.py --manifest {self.manifest} "
+                "--unit-class report-only --lighting lit\n    exit 0\n")
+        self._write(header_extra=f" transcript={self.TRANSCRIPT}", body=body)
+        self.assertNotIn("demo-it", run_report._read_at_rev(self.rev, "runtime/evidence-manifest.md",
+                                                            self.repo))  # the PR really dropped it
+        errors = self._check()
+        self.assertTrue(any("mutation-class" in e and "report-only" in e for e in errors), errors)
+
     # --- WHERE the key is read: the pin on the base's ancestry, the base off it -----------------
 
     def test_a_report_pinned_before_the_key_landed_keeps_the_unsigned_path(self):
@@ -1898,6 +1923,139 @@ class TranscriptBindsTheVerifierToolchain(SignedKeyFixture):
         self._sign_report()
         errors = self._check()
         self.assertTrue(any("ed25519.py" in e and "transcript" in e for e in errors), errors)
+
+
+class ASoundLaneReadsTheKeyAndPolicyAtATrustedBase(SignedKeyFixture):
+    """PR #719 review, the grading_base residual: the key and the W3-05 mutation-unit policy are
+    read at key_rev's commit, whose tip came from grading_base — origin/HEAD followed BLINDLY,
+    then local main/master, then HEAD. A worker that moves local main onto its own PR (in a clone
+    with no remote-tracking refs), or points origin/HEAD at it, makes its pin an ancestor of the
+    "base", so the policy is read at the pin it wrote: it drops its own mission from
+    `**Mutation units**`, signs nothing new, and a report-only verdict on a mutation mission binds.
+    On a lane claiming soundness (ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set) the tip is now
+    trusted_base: a commit id or a ref whose final target is remote-tracking, origin/HEAD's
+    target checked, never a local branch or HEAD; none is could-not-run (exit 2). The advisory
+    lane keeps grading_base. Driven through the real entry point: the fixture's own copy of
+    run_report.py, run as a program."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.copy(ROOT / "runtime" / "scripts" / "run_report.py",
+                    self.repo / "runtime" / "scripts" / "run_report.py")
+
+    def _scenario(self):
+        """The reviewed policy and key on main, the coordinator's remote-tracking refs, and a PR
+        that drops its own mission and carries a signed report-only verdict and inventory."""
+        self.policy = self.repo / "runtime" / "evidence-manifest.md"
+        self.policy.parent.mkdir(parents=True, exist_ok=True)
+        self.policy.write_text("- **Mutation units** (demo-it, ship-it) — need a negative control.\n",
+                               encoding="utf-8")
+        self._on_main()
+        self.reviewed = self._land(pubkey=True, msg="the policy and the key on main")
+        # The coordinator's clone: what its fetch of the reviewed default branch wrote.
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", self.reviewed)
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        # The PR drops its own mission from the policy and is judged report-only.
+        _git(self.repo, "checkout", "-q", "-b", "the-pr")
+        self.policy.write_text("- **Mutation units** (ship-it) — need a negative control.\n",
+                               encoding="utf-8")
+        self._report_only_at_head()
+
+    def _report_only_at_head(self):
+        self._land(pubkey=False, transcript=self._envelope(
+            self._verdict(args={"unit_class": "report-only", "lighting": "lit"})))
+        self.rev = _git(self.repo, "rev-parse", "HEAD")
+        body = (f"    python3 runtime/scripts/verify.py --manifest {self.manifest} "
+                "--unit-class report-only --lighting lit\n    exit 0\n")
+        self._write(header_extra=f" transcript={self.TRANSCRIPT}", body=body)
+        self._sign_report()
+
+    def run_report(self, *extra, sound=True):
+        import os
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        if sound:
+            env["ORCA_PROVENANCE"] = "ci"
+        return subprocess.run(
+            [sys.executable, str(self.repo / "runtime" / "scripts" / "run_report.py"),
+             str(self.path.relative_to(self.repo)), "--mission", "demo-it", "--tier", "self-run",
+             *extra],
+            cwd=str(self.repo), capture_output=True, text=True, env=env, timeout=300)
+
+    def test_an_honest_clone_judges_the_pr_by_the_reviewed_policy_on_both_lanes(self):
+        self._scenario()
+        for sound in (False, True):
+            with self.subTest(sound=sound):
+                r = self.run_report(sound=sound)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("mutation-class", r.stdout)
+
+    def test_a_worker_moved_local_main_is_no_base_on_a_sound_lane(self):
+        # No remote-tracking ref at all, and local main moved onto the PR: grading_base reads
+        # main, the pin is its ancestor, and the policy the PR wrote judges the PR.
+        self._scenario()
+        _git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        _git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        _git(self.repo, "branch", "-f", "main", self.rev)
+        r = self.run_report()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ORCA_PROVENANCE=ci", r.stderr)
+        self.assertIn("remote-tracking", r.stderr)
+        self.assertNotIn("bound demo-it", r.stdout)
+
+    def test_a_worker_retargeted_origin_head_is_not_followed_on_a_sound_lane(self):
+        self._scenario()
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/the-pr")
+        r = self.run_report()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("mutation-class", r.stdout)
+        self.assertNotIn("bound demo-it", r.stdout)
+
+    def test_a_named_base_must_be_a_commit_id_or_remote_tracking_on_a_sound_lane(self):
+        self._scenario()
+        _git(self.repo, "branch", "-f", "main", self.rev)
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/sly", "refs/heads/main")
+        for base in ("main", "refs/heads/main", "origin/main", "HEAD", "refs/remotes/origin/sly"):
+            with self.subTest(base=base):
+                r = self.run_report("--base", base)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn("bound demo-it", r.stdout)
+        for base in ("refs/remotes/origin/main", self.reviewed):
+            with self.subTest(base=base):
+                r = self.run_report("--base", base)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("mutation-class", r.stdout)
+
+    def test_the_policy_read_itself_never_lands_on_the_worker_s_commit(self):
+        # The library read (validate.py, bind_check.py and certification.py call into this
+        # module): with no pin it reads at the trusted base, and when no trusted base exists it
+        # reads nothing rather than the graded revision.
+        from unittest import mock
+        self._scenario()
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/the-pr")
+        with mock.patch.dict("os.environ", {"ORCA_PROVENANCE": "ci"}):
+            self.assertIn("demo-it", run_report._mutation_missions(self.repo))
+            self.assertIn("demo-it", run_report._mutation_missions(self.repo, self.rev))
+            _git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+            _git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+            self.assertIsNone(run_report._mutation_missions(self.repo, self.rev))
+            errors = run_report.check_report(self.path, "demo-it", "self-run", root=self.repo)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("could-not-run", errors[0])
+
+    def test_a_report_the_reviewed_policy_allows_binds_on_a_sound_lane(self):
+        # No false rejection: once the reviewed base itself lists demo-it as report-only, the
+        # same verdict binds through the trusted base.
+        self._scenario()
+        _git(self.repo, "checkout", "-q", "main")
+        self.policy.write_text("- **Mutation units** (ship-it) — need a negative control.\n",
+                               encoding="utf-8")
+        self.reviewed = self._land(pubkey=False, msg="a reviewed policy change")
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", self.reviewed)
+        _git(self.repo, "checkout", "-q", "-b", "the-honest-pr")
+        self._report_only_at_head()
+        r = self.run_report()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("bound demo-it", r.stdout)
 
 
 class ASelfPinnedKeyNeverChoosesItsJudge(RunReportBinding):

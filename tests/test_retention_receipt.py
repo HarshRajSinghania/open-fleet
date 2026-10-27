@@ -346,6 +346,14 @@ class ReceiptCase(unittest.TestCase):
         self.manifest(note="rewritten after the inventory was signed")  # same unit and head_sha
         return TRUSTED
 
+    def s_manifest_bytes_pinned_under_another_path(self):
+        """W3-04: a genuine, signed inventory that pins this manifest's exact BYTES — but as a
+        copy at another path. Digest equality alone bound it; the path story is wrong."""
+        self.write("run/copy-of-manifest.json", (self.repo / "run/manifest.json").read_bytes())
+        self.report(pins=("run/copy-of-manifest.json", "run/evidence.txt"))
+        self.receipt()
+        return TRUSTED
+
 
 class Accepted(ReceiptCase):
     """A complete, valid receipt binds — offline — and the verdict says what was not verified."""
@@ -358,6 +366,8 @@ class Accepted(ReceiptCase):
                        "NOT verified", "exists or is included in any transparency log",
                        "retention period", "legal or regulatory determination"):
             self.assertIn(phrase, out[0])
+        # W3-04: an auditor can see WHICH entry the receipt claims to cover.
+        self.assertIn("as its entry run/manifest.json", out[0])
 
     def test_the_coordinator_key_alone_claims_the_binding(self):
         # The run-close lifecycle: a graded manifest is final before its inventory is signed and
@@ -524,6 +534,10 @@ class Rejections(ReceiptCase):
     def test_a_manifest_edited_after_close_is_refused(self):
         self.refused("s_manifest_edited_after_close", "does not pin this manifest's exact bytes")
 
+    def test_the_manifests_bytes_pinned_under_another_path_are_refused(self):
+        self.refused("s_manifest_bytes_pinned_under_another_path",
+                     "run/copy-of-manifest.json", "not under this manifest's own path", "W3-04")
+
     # the v1 shape
     def test_every_off_shape_record_is_refused(self):
         def drop(field):
@@ -556,6 +570,55 @@ class Rejections(ReceiptCase):
     def test_a_supplied_key_refuses_a_manifest_naming_no_receipt(self):
         self.write("run/manifest.json", json.dumps({"unit": UNIT, "head_sha": HEAD_SHA}))
         self.assertRefused(self.check(), "no retention receipt path is named")
+
+
+class SoundLaneTrustKey(ReceiptCase):
+    """W3-03 (2026-10-27 security audit, P2): `--retention-pubkey keys/trusted.pub` (a bare path)
+    is a file in the graded worker's tree. On a lane claiming soundness the trust key is read only
+    at a commit id or a ref whose final target is remote-tracking (what the coordinator's fetch
+    wrote); the advisory lane keeps the read and the NOTE says which."""
+
+    def _pin(self):
+        subprocess.run(["git", "add", TRUSTED], check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "pin"],
+                       check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+
+    def test_a_bare_path_trust_key_is_refused_on_a_lane_claiming_soundness(self):
+        verify._Authority.lane = "provenance=ci"
+        self.assertRefused(self.check(TRUSTED), "working-tree file", "W3-03")
+
+    def test_the_enforcement_lane_refuses_a_bare_path_trust_key_too(self):
+        # PR #719 review round 2 (P1): one predicate for every lane claiming soundness.
+        verify._Authority.lane = "enforcement (signed dispatch record + pubkey)"
+        self.assertRefused(self.check(TRUSTED), "working-tree file", "W3-03")
+
+    def test_a_trust_key_at_a_local_name_is_refused_on_a_lane_claiming_soundness(self):
+        self._pin()
+        verify._Authority.lane = "provenance=ci"
+        self.assertRefused(self.check(f"{TRUSTED}@HEAD"), "local name the graded worker can move")
+
+    def test_a_remote_tracking_trust_key_binds_and_the_note_names_it(self):
+        self._pin()
+        verify._Authority.lane = "provenance=ci"
+        out = self.check(f"{TRUSTED}@refs/remotes/origin/main")
+        self.assertBound(out)
+        self.assertIn("remote-tracking ref refs/remotes/origin/main", out[0])
+
+    def test_the_advisory_lane_reads_a_working_tree_key_and_says_so(self):
+        out = self.check(TRUSTED)
+        self.assertBound(out)
+        self.assertIn(f"working-tree file {TRUSTED}", out[0])
+
+    def test_a_remote_tracking_name_symbolic_to_a_local_branch_is_refused(self):
+        # PR #719 review (P1): spelling-only — refs/remotes/<x> as a symbolic ref to a local branch
+        # carrying another key was read as remote-tracking.
+        self._pin()
+        subprocess.run(["git", "branch", "local-key"], check=True)
+        subprocess.run(["git", "symbolic-ref", "refs/remotes/worker/key", "refs/heads/local-key"],
+                       check=True)
+        verify._Authority.lane = "provenance=ci"
+        self.assertRefused(self.check(f"{TRUSTED}@refs/remotes/worker/key"), "refs/heads/local-key")
 
 
 class LegacyProvenance(ReceiptCase):
@@ -681,6 +744,7 @@ UNSIGNED_INVENTORY = INVENTORY_SIGNATURE + [(
 MANIFEST_PIN = [("verify.py",
                  "    if mine is None or all(pinned != mine for _idx, _path, pinned, _shape in entries):\n",
                  "    if False:\n")]
+MANIFEST_PATH = [("verify.py", "    if pinned_at and not named:\n", "    if False:\n")]
 DOC_READ_FAILS_CLOSED = [("verify.py",
                           '        return [f"retention receipt {receipt}: {err}; fail-closed (#608)"]\n',
                           "        return []\n")]
@@ -714,6 +778,8 @@ GUARDS = (
     ("s_replay_of_another_runs_chain", "another run's receipt",
      UNIT_BINDING + REVISION_BINDING + MANIFEST_PIN),
     ("s_manifest_edited_after_close", "does not pin this manifest's exact bytes", MANIFEST_PIN),
+    ("s_manifest_bytes_pinned_under_another_path", "not under this manifest's own path",
+     MANIFEST_PATH),
 )
 
 

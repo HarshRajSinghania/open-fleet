@@ -77,13 +77,23 @@ every read that fails or hangs after that posts a failure saying which. Fork PRs
 number on the ``workflow_run`` event; ``--head-sha`` finds the one open PR at
 that head.
 """
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
 
 import argparse
 import json
 import os
 import re
 import subprocess
-import sys
 
 VERDICT_RE = re.compile(r"^VERDICT:\s*GO\s*$", re.MULTILINE)
 # Every VERDICT line, whatever it says: a review counts only when all of them read exactly GO.

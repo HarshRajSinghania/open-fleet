@@ -661,7 +661,7 @@ class TheInventoryHasNoSilentOmissions(unittest.TestCase):
     STATUSES = ("trap", "unsupported", "deferred")
     # Guards that live outside a check_* function but refuse on their own.
     HELPERS = {"verify", "execute_negative_control", "review_ok", "_resolve", "_read_artifact",
-               "_Authority.authority_leg", "_Authority.review_leg"}
+               "_Authority.authority_leg", "_Authority.review_leg", "_Authority.key_source"}
 
     def _rows(self):
         readme = (ROOT / "bench" / "vf-bench" / "README.md").read_text(encoding="utf-8")

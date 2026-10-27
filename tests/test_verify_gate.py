@@ -197,6 +197,13 @@ class GateCase(unittest.TestCase):
     def sign(self, digest, unit_class, **kw):
         return _sign(self.repo, digest, unit_class, **kw)
 
+    def pinned(self, rel):
+        """`rel` committed and named AT that commit — the form a lane claiming soundness reads a
+        key in (W3-03): a bare path is the graded worker's own working tree."""
+        _git(self.repo, "add", rel)
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", f"pin {rel}")
+        return f"{rel}@{_git_out(self.repo, 'rev-parse', 'HEAD')}"
+
     def manifest(self, source, ids_declared, ids_addressed):
         return _manifest(self.repo, source, ids_declared, ids_addressed)
 
@@ -410,7 +417,7 @@ class VerifyGateSignedDispatch(GateCase):
         m = self.manifest(src, ["AC-1"], ["AC-1"])   # _manifest's unit is "review-it"
         rec, pub = self.sign(self.digest(src), "report-only")
         r = self.gate(m, src, self.digest(src), unit_class="report-only", event="task",
-                     provenance="dispatch", dispatch_record=rec, dispatch_pubkey=pub)
+                     provenance="dispatch", dispatch_record=rec, dispatch_pubkey=self.pinned(pub))  # W3-03
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("signature verified", r.stdout + r.stderr)
         self.assertNotIn("ADVISORY", r.stderr)
@@ -420,7 +427,7 @@ class VerifyGateSignedDispatch(GateCase):
         m = self.manifest(src, ["AC-1"], ["AC-1"])
         rec, pub = self.sign(self.digest(src), "mutation")   # coordinator signed 'mutation'
         r = self.gate(m, src, self.digest(src), unit_class="report-only", event="task",  # worker downgraded
-                     provenance="dispatch", dispatch_record=rec, dispatch_pubkey=pub)
+                     provenance="dispatch", dispatch_record=rec, dispatch_pubkey=self.pinned(pub))  # W3-03
         self.assertEqual(r.returncode, 2)
         self.assertIn("substitution", r.stderr)
 
@@ -433,6 +440,17 @@ class VerifyGateSignedDispatch(GateCase):
         r = self.gate(m, src, self.digest(src), unit_class="report-only", event="task",
                      dispatch_record=rec, dispatch_pubkey=pub)   # no provenance → native path
         self.assertIn("ADVISORY", r.stderr)
+
+    def test_the_advisory_note_says_a_ref_pin_is_only_as_good_as_who_writes_refs(self):
+        # PR #719 re-attack: in a worker's own clone `git update-ref refs/remotes/origin/main`
+        # succeeds, so the native lane's NOTE must say a remote-tracking or commit pin is
+        # trustworthy only where the worker cannot write refs.
+        src = self.src(["AC-1"])
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        r = self.gate(m, src, self.digest(src), unit_class="report-only", event="task")
+        self.assertIn("ADVISORY", r.stderr)
+        self.assertIn("refs/remotes/* too", r.stderr)
+        self.assertIn("trustworthy only where the worker cannot write", r.stderr)
 
     def test_worker_set_env_pubkey_honored_with_advisory_note(self):
         # #164: the gate reads ORCA_DISPATCH_PUBKEY unconditionally — a WORKER-SET env key is honored
@@ -489,6 +507,133 @@ class VerifyGateDispatchPinDiscovery(GateCase):
         self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
         self.assertIn("signature verified", r.stdout + r.stderr)
 
+    def test_an_origin_head_pointing_at_a_local_branch_never_names_the_key(self):
+        # W3-02 (2026-10-27 security audit, P1): `symbolic-ref --short refs/remotes/origin/HEAD`
+        # prints the TARGET's short name, so a worker that re-points origin/HEAD at its own LOCAL
+        # branch had the gate read `.orca/dispatch-pubkey@workerbranch` — a key it committed
+        # there — and its self-signed record verified, exit 0, on a lane claiming soundness.
+        (coordinator, worker) = self.use_repo(pin_blob=True, remote_head=True)
+        _git(self.repo, "checkout", "-q", "-b", "workerbranch")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "my key")
+        os.remove(self.repo / ".orca" / "dispatch-pubkey")  # only a ref read can supply it now
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/workerbranch")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        r = self._run_discovered(src, rec)
+        self.assertNotIn("signature verified", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("refs/heads/workerbranch", r.stderr,
+                      "the gate must say which origin/HEAD target it refused")
+        # The same repo, origin/HEAD back on the remote-tracking ref: the coordinator's key is
+        # found there under its FULL name and its record verifies — the discovery still works.
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        rec, _pub = self.sign(self.digest(src), "report-only", key=coordinator)
+        r = self._run_discovered(src, rec)
+        self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("signature verified", r.stdout + r.stderr)
+
+    def test_the_discovered_key_ref_is_the_full_remote_tracking_name(self):
+        # W3-02: a short name (`origin/main`) resolves through gitrevisions' lookup order, where a
+        # local tag or branch named `origin/main` comes first; the full name cannot be shadowed.
+        (pinned, _spare) = self.use_repo(pin_blob=True, remote_head=True)
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=pinned)
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_PROVENANCE": "dispatch",
+               "ORCA_DISPATCH_RECORD": rec}
+        r = subprocess.run(["sh", "-x", str(self.repo / "runtime" / "scripts" / "verify-gate.sh"),
+                            "--event", "task"], capture_output=True, text=True, cwd=self.repo, env=env)
+        self.assertIn("PUBKEY=.orca/dispatch-pubkey@refs/remotes/origin/main\n", r.stderr)
+
+    def test_a_base_ref_that_is_a_symbolic_ref_to_a_local_branch_is_never_read(self):
+        # PR #719 review (P1): refs/remotes/origin/<BASE> was trusted by SPELLING — made a
+        # symbolic ref to the worker's local branch (which carries the worker's key), the gate
+        # handed it to verify.py as a reviewed blob. Its final target must be remote-tracking.
+        (_coordinator, worker) = self.use_repo(pin_blob=True, remote_head=False)
+        _git(self.repo, "checkout", "-q", "-b", "workerbranch")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "my key")
+        os.remove(self.repo / ".orca" / "dispatch-pubkey")
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/integration", "refs/heads/workerbranch")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": _require_system_tools("git", "python3"), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_PROVENANCE": "dispatch",
+               "ORCA_DISPATCH_RECORD": rec, "ORCA_BASE": "integration"}
+        r = subprocess.run(["sh", "-x", str(self.repo / "runtime" / "scripts" / "verify-gate.sh"),
+                            "--event", "task"], capture_output=True, text=True, cwd=self.repo,
+                           env=env)
+        self.assertNotIn("PUBKEY=.orca/dispatch-pubkey@", r.stderr)
+        self.assertIn("refs/heads/workerbranch", r.stderr)
+        self.assertNotIn("signature verified", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 2, r.stderr[-600:])
+
+    def test_a_bare_path_env_key_is_refused_on_a_lane_claiming_soundness(self):
+        # W3-03: ORCA_DISPATCH_PUBKEY=.orca/dispatch-pubkey (a bare path) is the graded worker's
+        # working tree; on a sound lane verify.py refuses it rather than verify against it.
+        self.use_repo(remote_head=False)
+        src = self.src(["AC-1"])
+        rec, pub = self.sign(self.digest(src), "report-only")
+        r = self._run_discovered(src, rec, dispatch_pubkey=pub)
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertNotIn("signature verified", r.stdout + r.stderr)
+        self.assertIn("W3-03", r.stderr)
+
+    def _ci_shaped(self):
+        """A fresh actions/checkout tree: the base commit pins the coordinator's key, the PR head
+        swaps the pin for the worker's, and there is no origin/HEAD and no origin/<base>."""
+        (coordinator, worker) = self.use_repo(pin_blob=True, remote_head=False)
+        base = _git_out(self.repo, "rev-parse", "HEAD")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "PR head")
+        event = self.repo.parent / f"event-{next(_SRC_SEQ)}.json"
+        event.write_text(json.dumps({"pull_request": {"base": {"sha": base, "ref": "main"}}}),
+                         encoding="utf-8")
+        self.addCleanup(event.unlink)
+        return coordinator, worker, base, event
+
+    def _run_ci(self, src, rec, event, trace=False):
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": _require_system_tools("git", "python3"), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_PROVENANCE": "ci",
+               "ORCA_DISPATCH_RECORD": rec, "GITHUB_ACTIONS": "true",
+               "GITHUB_EVENT_PATH": str(event)}
+        argv = (["sh", "-x"] if trace else ["sh"]) + [
+            str(self.repo / "runtime" / "scripts" / "verify-gate.sh"), "--event", "task"]
+        return subprocess.run(argv, capture_output=True, text=True, cwd=self.repo, env=env)
+
+    def test_a_ci_checkout_reads_the_key_at_the_pull_requests_base_commit(self):
+        # W3-08 (2026-10-27 security audit, P2): a fresh CI checkout has neither origin/HEAD nor
+        # origin/<base>, and the working-tree pin is refused on a sound lane, so EVERY signed
+        # dispatch blocked as half-configured — the sound setup could not pass. The runner's own
+        # event payload names the PR's base commit: the key is read there, at an immutable commit
+        # id the PR cannot move, and never from the PR's tree (which here carries the worker's).
+        coordinator, worker, base, event = self._ci_shaped()
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=coordinator)
+        r = self._run_ci(src, rec, event, trace=True)
+        self.assertIn(f"PUBKEY=.orca/dispatch-pubkey@{base}\n", r.stderr)
+        r = self._run_ci(src, rec, event)
+        self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("signature verified", r.stdout + r.stderr)
+        # ...and the PR's own key, the one in its tree, still verifies nothing.
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        r = self._run_ci(src, rec, event)
+        self.assertEqual(r.returncode, 2, f"stdout={r.stdout} stderr={r.stderr}")
+        self.assertIn("signature INVALID", r.stderr)
+
     def test_worktree_fallback_is_refused_on_a_lane_claiming_soundness(self):
         # 2026-10-26 review: a CI-shaped clone has no refs/remotes/origin/HEAD, so the blob read
         # missed and the gate fell through to the WORKING TREE — the PR's own checkout, where a
@@ -544,6 +689,7 @@ class VerifyGateDispatchPinDiscovery(GateCase):
         src = self.src(["AC-1"])
         rec_env, pub_env = self.sign(self.digest(src), "report-only", key=env_key)
         rec_pin, _pub_pin = self.sign(self.digest(src), "report-only", key=pinned)
+        pub_env = self.pinned(pub_env)  # W3-03: the sound lane reads an env key at a commit too
         r = self._run_discovered(src, rec_env, dispatch_pubkey=pub_env)
         self.assertEqual(r.returncode, 0, f"stdout={r.stdout} stderr={r.stderr}")
         self.assertIn("signature verified", r.stdout + r.stderr)
@@ -892,3 +1038,33 @@ class TheGateBoundsTheVerifierItself(GateCase):
                     for hook in matcher["hooks"]:
                         self.assertGreater(hook["timeout"], default, name)
                         self.assertGreater(hook["timeout"], 600, "the host default fails open")
+
+
+class TheGateRunsTheVerifierIsolated(GateCase):
+    """W3-01 (2026-10-27 security audit, P0): the gate ran `python3 $HERE/verify.py`, so $HERE —
+    the graded worktree's runtime/scripts — sat at sys.path[0] ahead of the stdlib, and a committed
+    json.py there was the verifier's `json`. verify.py now drops that entry itself
+    (tests/test_verify.py SiblingNamedLikeTheStdlibNeverLoads); the gate ALSO runs it under -I, so
+    PYTHON* env and the user site stay out of the verdict too. Asserted from inside the verifier
+    the gate starts — the flags it really ran under — and with a planted json.py beside it."""
+
+    def test_the_verifier_runs_under_isolated_mode_and_a_planted_json_never_loads(self):
+        scripts = Path(tempfile.mkdtemp(prefix="iso-gate-")) / "runtime" / "scripts"
+        scripts.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, scripts.parent.parent, True)
+        shutil.copy(GATE, scripts / "verify-gate.sh")
+        (scripts / "verify.py").write_text(
+            "import sys\nimport json\n"
+            "print('isolated', sys.flags.isolated, 'json-from', json.__file__)\n",
+            encoding="utf-8")
+        (scripts / "json.py").write_text("raise SystemExit('PLANTED json loaded')\n",
+                                         encoding="utf-8")
+        m = Path(self.repo) / "m.json"
+        m.write_text("{}", encoding="utf-8")
+        env = {"PATH": os.environ.get("PATH", ""), "ORCA_MANIFEST": str(m)}
+        r = subprocess.run(["sh", str(scripts / "verify-gate.sh"), "--event", "task"],
+                           capture_output=True, text=True, cwd=self.repo, env=env, timeout=60)
+        self.assertNotIn("PLANTED", r.stdout + r.stderr)
+        self.assertIn("isolated 1", r.stdout, r.stderr)
+        self.assertNotIn(str(scripts), r.stdout.split("json-from", 1)[-1])
+        self.assertEqual(r.returncode, 0, r.stderr)

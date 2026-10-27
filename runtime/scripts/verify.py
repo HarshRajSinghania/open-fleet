@@ -53,7 +53,17 @@ Usage:
     # transcript that is not written (unwritable path; a seed asked to sign an absence) is
     # exit 1 on a green verdict — a RED keeps its 2.
 """
-from __future__ import annotations
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
 
 import argparse
 import base64
@@ -70,7 +80,6 @@ import shlex
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -178,9 +187,10 @@ def infer_repo():
 
 class _EvidenceManifest(dict):
     """One verification's immutable evidence snapshot; never supplied by manifest JSON."""
-    def __init__(self, data, raw):
+    def __init__(self, data, raw, path=None):
         super().__init__(data)
         self.raw = raw
+        self.path = path  # where these bytes were read (W3-04: a receipt binds a PATH, not a digest)
         self.artifact_bytes = {}
 
 
@@ -192,7 +202,7 @@ def load_manifest(path):
         return None, f"unreadable/invalid manifest: {err}"
     if not isinstance(obj, dict):
         return None, f"manifest must be a JSON object, got {type(obj).__name__}"
-    return _EvidenceManifest(obj, raw), None
+    return _EvidenceManifest(obj, raw, path), None
 
 
 def _toplevel():
@@ -728,7 +738,7 @@ class _Authority:
     user-writable dir that is not a standard system bin dir, it is one the graded worker could
     have replaced, and the review leg is ADVISORY-ONLY — on a lane that claims soundness (the
     ci|mcp|sdk|dispatch provenance classes, or an enforcement-mode run with a signed dispatch
-    record + pubkey) it FAILS CLOSED; on the native advisory lane the verdict records it.
+    record + a PINNED pubkey) it FAILS CLOSED; on the native advisory lane the verdict records it.
     The review REPOSITORY is the same story (C1): inferred from `origin` — a remote the worker
     (and every sibling worktree) can rewrite — it is advisory; a sound lane requires --repo.
     Resolution happens EXACTLY ONCE: main() pins at startup; a library caller that never ran
@@ -798,7 +808,11 @@ class _Authority:
     def pin_gitleaks(cls):
         """gitleaks is pinned and classed the same way (h409 R2). It can only ADD a redaction hit
         on top of the built-in floor — a replaced one yields at worst a fatal, never a false
-        GREEN — so a worker-writable one is still consulted, and its custody is recorded."""
+        GREEN — so a worker-writable one is still consulted on the advisory lane, and its custody
+        is recorded. On any lane claiming soundness (a provenance lane, or the enforcement lane a
+        signed dispatch record and pubkey open — the predicate authority_leg applies to git) it is
+        not run at all (W3-10): the coordinator's verifier does not execute a binary the graded
+        worker could have replaced."""
         found = shutil.which("gitleaks")
         cls.gitleaks = os.path.abspath(found) if found else None
         cls.gitleaks_custody = cls.classify(cls.gitleaks) if found else "absent"
@@ -833,6 +847,69 @@ class _Authority:
         inferred = infer_repo()
         cls.repo_source = "inferred" if inferred else None
         return inferred
+
+    @classmethod
+    def key_source(cls, source, what):
+        """(where, the source to READ, pinned, refusal or None) for trust material named `path`
+        or `path@ref` (W3-03).
+
+        A bare path is read from the WORKING TREE — the graded worker's to write — and `path@main`,
+        `@HEAD` or any other local name is a ref the same worker can move (W3-02's class). Both
+        were accepted on a lane claiming soundness with a NOTE that said only "the supplied key",
+        so the rule "pass path@<reviewed ref>" lived in prose. On ANY lane claiming soundness —
+        `cls.lane`, the one predicate git, gh and gitleaks custody also answer to — a trust key is
+        now read only at a commit id or a remote-tracking ref; elsewhere the read stands and
+        `where` says which kind it was, so the verdict and the transcript tell them apart. A
+        dispatch record with an unpinned key does not open the enforcement lane at all (main()).
+
+        The class is decided by what the ref RESOLVES to, never by its spelling (PR #719 review):
+        a `refs/remotes/…` name may be a symbolic ref to a local branch. The ref is followed
+        through any symbolic chain to its final target ONCE, that target must itself be
+        remote-tracking, it is resolved to a commit ONCE, and the bytes are read at that commit —
+        nothing re-resolves the name afterwards.
+
+        What a remote-tracking ref guarantees, precisely: it is what the clone's last fetch wrote.
+        On a lane claiming soundness the coordinator (or the CI runner) owns that clone, so the
+        graded change did not write it. On a worker's own machine `git update-ref refs/remotes/…`
+        works like any other ref write, which is why the in-session lane stays advisory."""
+        path, sep, ref = (source or "").partition("@")
+        sound = bool(cls.lane)  # PR #719 review round 2: provenance AND enforcement lanes
+        if not (sep and ref):
+            where = f"the working-tree file {path} (the graded worker can write it)"
+            read, pinned = source, False
+        elif ref.startswith("-"):
+            return f"{path} at {ref!r}", source, False, None  # read_source refuses it
+        else:
+            target = ref
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref):
+                code, out = _git(["symbolic-ref", "-q", ref])
+                target = out if code == 0 and out else ref  # the FINAL target of a symbolic chain
+            code, commit = _git(["rev-parse", "--verify", "-q", f"{target}^{{commit}}"])
+            if code != 0 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+                # Off a sound lane the read itself reports the missing ref; on one, a name that
+                # names no commit is refused here (a tree id, say, is no commit to anchor on).
+                where, read, pinned = f"{path} at {ref!r}, which names no commit", source, False
+            elif target == ref and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref):
+                where, read, pinned = f"{path} at commit {commit[:12]}", f"{path}@{commit}", True
+            else:
+                via = f" (a symbolic ref to {target})" if target != ref else ""
+                read, pinned = f"{path}@{commit}", target.startswith("refs/remotes/")
+                where = (f"{path} at remote-tracking ref {ref}{via} = commit {commit[:12]}"
+                         if pinned else f"{path} at {ref!r}{via} = commit {commit[:12]}, a "
+                         "local name the graded worker can move")
+        if not pinned and sound:
+            return where, read, False, (f"{what} {source!r} is {where} — a lane claiming soundness "
+                                 f"({cls.lane}) reads trust material only at a commit id or a ref "
+                                 "whose final target is remote-tracking (what the coordinator's own "
+                                 "fetch wrote): path@refs/remotes/… or path@<commit id>; "
+                                 "fail-closed (W3-03)")
+        if pinned:
+            # Said in every verdict, not only the docs (PR #719 re-attack): in the worker's own
+            # clone `git update-ref refs/remotes/origin/main <its commit>` succeeds, and a commit id
+            # names whatever the caller chose.
+            where += (" — trustworthy only where the worker cannot write refs (the coordinator's "
+                      "own fetch, a CI checkout); in the worker's own clone this lane is advisory")
+        return where, read, pinned, None
 
     @classmethod
     def ensure(cls, explicit_repo=None):
@@ -1068,7 +1145,13 @@ class _Authority:
                         "its commit, tree and ancestry facts from a binary the graded worker could "
                         "have replaced; fail-closed (h409 R2)"]
             lines.append(f"NOTE: authority: advisory ({where})")
-        if cls.gitleaks_custody == "worker-writable":
+        if cls.gitleaks_custody == "worker-writable" and cls.lane:
+            # W3-10: on a sound lane a binary the graded worker could have replaced is not RUN by
+            # the coordinator's verifier at all — its "clean" is not additive evidence there.
+            lines.append(f"NOTE: redaction: gitleaks at {cls.gitleaks} is worker-writable — on a "
+                         f"lane claiming soundness ({cls.lane}) it is NOT run; only the built-in "
+                         "floor scanned the evidence (W3-10)")
+        elif cls.gitleaks_custody == "worker-writable":
             lines.append(f"NOTE: redaction: gitleaks at {cls.gitleaks} is worker-writable — it can "
                          "only add hits above the built-in floor, so it is consulted and recorded (h409 R2)")
         return lines
@@ -2714,6 +2797,8 @@ def _gitleaks_scan(path):
         _Authority.pin_gitleaks()
     if _Authority.gitleaks is None:
         return None
+    if _Authority.gitleaks_custody != "system" and _Authority.lane:
+        return None  # W3-10: never run a worker-replaceable scanner on a sound lane; the floor runs
     # cwd is the evidence copy's directory, never the unit checkout: gitleaks
     # otherwise inherits the process cwd (the worker/test repo) and can write
     # under .git/objects while tests tear that tree down (#340).
@@ -2789,7 +2874,7 @@ def check_ancestry(m, base):
     A coordinator that NAMES a base asked for this fact. On the advisory native lane a missing
     origin/<base> is still a NOTE (pre-merge, offline, a clone that never fetched). On a lane
     claiming soundness (_Authority.lane: --provenance ci|mcp|sdk|dispatch, or a signed dispatch
-    record + pubkey) it is FATAL, as every other authority leg is there: the ref lives in the
+    record + a pinned pubkey) it is FATAL, as every other authority leg is there: the ref lives in the
     clone the worker controls, and deleting it must not turn a requested ancestry proof into a
     skipped one (review P2)."""
     if not base:
@@ -2940,7 +3025,7 @@ def check_retention_receipt(m, pubkey_ref=None):
 
     The binding is CLAIMED by the manifest (`provenance.retention_receipt`, the schema id) or by the
     coordinator handing over trust material (--retention-pubkey: a path or path@ref, normally the
-    coordinator's .orca/dispatch-pubkey read at a ref the worker cannot move). Neither: [] — legacy
+    coordinator's .orca/dispatch-pubkey at refs/remotes/origin/main in its OWN clone). Neither: [] — legacy
     provenance keeps its documented presence-only check, and a run that never uploaded owes no
     receipt. A manifest claim with no key supplied fails closed: a key inside a receipt never
     establishes trust, so without the supplied one there is nothing to verify it against.
@@ -2977,7 +3062,10 @@ def check_retention_receipt(m, pubkey_ref=None):
         return [f"provenance claims the {claim} retention binding, but no trust material was supplied "
                 "(--retention-pubkey) — a key inside a receipt never establishes trust, so there is "
                 "nothing to verify it against; fail-closed (#608)"]
-    pub_text, err = read_source(pubkey_ref)
+    key_where, key_read, _pinned, refused = _Authority.key_source(pubkey_ref, "--retention-pubkey")
+    if refused:
+        return [refused]
+    pub_text, err = read_source(key_read)  # the commit key_source resolved, once
     try:
         pub = b"" if err else bytes.fromhex(pub_text.decode("utf-8").strip())
     except (UnicodeDecodeError, ValueError) as exc:
@@ -3031,11 +3119,33 @@ def check_retention_receipt(m, pubkey_ref=None):
         return [f"retention receipt {receipt} refused: {record['inventory']} does not pin this "
                 f"manifest's exact bytes (sha256 {mine}) — the receipt covers some other record of "
                 "this unit (#608)"]
-    return [f"NOTE: retention receipt {receipt} verified OFFLINE against the supplied key (#608): "
+    # W3-04: equal digests let a byte-copy of this manifest at ANOTHER path stand in for it, and
+    # the receipt's path story went unchecked. An entry binds only when it resolves — as
+    # inventory.py check resolves it: repo root first, then the inventory's own directory — to
+    # the very file this manifest was read from; the NOTE names that entry.
+    here = getattr(m, "path", None)
+    doc_path, top = _resolve(record["inventory"])[0], _evidence_toplevel()
+
+    def same_file(entry):
+        found = inv.resolve(entry, doc_path, Path(top) if top else None) if doc_path else None
+        try:
+            return found is not None and here is not None and found.resolve() == Path(here).resolve()
+        except OSError:
+            return False
+
+    pinned_at = [path for _idx, path, pinned, _shape in entries if pinned == mine]
+    named = [path for path in pinned_at if same_file(path)]
+    if pinned_at and not named:
+        return [f"retention receipt {receipt} refused: {record['inventory']} pins this manifest's "
+                f"bytes only as {pinned_at}, not under this manifest's own path {here!r} — a "
+                "byte-copy stands in for the record the receipt claims to cover (W3-04, #608)"]
+    return [f"NOTE: retention receipt {receipt} verified OFFLINE against the supplied key — "
+            f"{key_where} (W3-03) — (#608): "
             f"signed by {record['signer']} over the {inv.RECEIPT_SCHEMA} payload, binding unit "
             f"{record['unit']!r} at source revision {record['source_revision'][:12]} to inventory "
             f"digest {digest[:12]}… of {record['inventory']}, whose entries carry the same key's "
-            "signature and pin this manifest's bytes. NOT verified: that log entry "
+            f"signature and pin this manifest's bytes as its entry {named[0] if named else None} "
+            "(W3-04). NOT verified: that log entry "
             f"{record['entry_uuid'][:16]}… (index {record['log_index']}) exists or is included in "
             "any transparency log (a live lookup run out of band), any retention period or storage, "
             "that the listed files still hash to the inventory (inventory.py check / run_report.py), "
@@ -3113,7 +3223,19 @@ class _Transcript:
         return cls.signer().canonical_transcript(record)
 
     @classmethod
-    def build(cls, args, exit_code, fatal, notes, raw=None):
+    def hash_files(cls):
+        """{toolchain file: sha256 hex, or None when it cannot be read} — the verifier's bytes."""
+        here = Path(__file__).resolve().parent
+        files = {}
+        for name in cls.TOOLCHAIN:
+            try:
+                files[name] = hashlib.sha256((here / name).read_bytes()).hexdigest()
+            except OSError:
+                files[name] = None  # an absent sibling signs an absence; run_report refuses it
+        return files
+
+    @classmethod
+    def build(cls, args, exit_code, fatal, notes, raw=None, files=None):
         """The verdict object: what was judged (manifest path AND bytes, the unit it names), with
         what (the full argument tuple — unset flags included, so an omitted authority is visibly
         omitted), what was found (the printed lists, verbatim), the exit code, the toolchain, when.
@@ -3131,13 +3253,10 @@ class _Transcript:
             except (ValueError, AttributeError):
                 unit = None
         _, git_version, _ = _run([_Authority.git_bin(), "--version"], env=_Authority.git_env())
-        here = Path(__file__).resolve().parent
-        files = {}
-        for name in cls.TOOLCHAIN:
-            try:
-                files[name] = hashlib.sha256((here / name).read_bytes()).hexdigest()
-            except OSError:
-                files[name] = None  # an absent sibling signs an absence; run_report refuses it
+        # W3-11: `files` is the toolchain as hashed BEFORE verify() ran — the bytes that judged.
+        # Hashed here, after the executed control had run worker code, a mid-run rewrite of a
+        # sibling was recorded as if it were the verifier.
+        files = cls.hash_files() if files is None else files
         return {
             "unit": unit,
             "manifest": args.manifest,
@@ -3235,6 +3354,12 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
     if bool(record_ref) != bool(pubkey_ref):
         missing = "--dispatch-record" if pubkey_ref else "--dispatch-pubkey"
         return [f"dispatch provenance half-configured (missing {missing}) — cannot verify; fail-closed (#135)"]
+    # W3-03: the KEY's location is what makes the signature mean anything; the record's is named
+    # (it is authenticated by that signature, so where it is read from cannot raise its trust).
+    key_where, key_read, key_pinned, refused = _Authority.key_source(pubkey_ref, "--dispatch-pubkey")
+    if refused:
+        return [refused]
+    record_where = _Authority.key_source(record_ref, "--dispatch-record")[0]
     try:
         ed = _load_ed25519()
     except Exception as exc:
@@ -3247,7 +3372,7 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
     rec_text, err = read_source(record_ref)
     if err:
         return [f"dispatch record unreadable ({record_ref}): {err}"]
-    pub_text, err = read_source(pubkey_ref)
+    pub_text, err = read_source(key_read)  # the commit key_source resolved, once
     if err:
         return [f"dispatch pubkey unreadable ({pubkey_ref}): {err}"]
     try:
@@ -3316,8 +3441,12 @@ def check_dispatch_provenance(m, contract_digest, unit_class, lighting, record_r
     if signed_base is not None and signed_base != m.get("base_sha"):
         return [f"dispatch substitution: the manifest's base_sha={m.get('base_sha')!r} but the "
                 f"coordinator signed {signed_base!r} — the control's pre-fix content was swapped"]
+    advisory = ("" if key_pinned else
+                " — ADVISORY: a key the graded worker can swap opens no enforcement lane; the "
+                "signature is checked, with no soundness claim (PR #719 review)")
     return ["NOTE: dispatch record signature verified against the supplied key (#135) — a soundness "
-            "boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor)"]
+            "boundary only if that key is trusted (off-worker: CI/MCP/SDK or an auditor); key: "
+            f"{key_where}; record: {record_where} (W3-03){advisory}"]
 
 
 def check_class_downgrade(m, unit_class, record_ref, pubkey_ref):
@@ -3506,7 +3635,7 @@ def main(argv=None):
     ap.add_argument("--contract-digest", default=None, help="AUTHORITATIVE sha256 of the frozen contract")
     ap.add_argument("--repo", default=None,
                     help="owner/name for the review lookup. REQUIRED on a lane claiming soundness "
-                         "(--provenance ci|mcp|sdk|dispatch, or a signed dispatch record + pubkey); "
+                         "(--provenance ci|mcp|sdk|dispatch, or a signed dispatch record + a pinned pubkey); "
                          "elsewhere inferred from origin and recorded as ADVISORY — origin is a "
                          "remote the worker can rewrite (h409 F-2)")
     ap.add_argument("--provenance", default=None,
@@ -3548,7 +3677,10 @@ def main(argv=None):
                          "execute-nc — makes the native hook path sound (#135)")
     ap.add_argument("--dispatch-pubkey", default=None,
                     help="repo-pinned coordinator public key (path or path@ref) that verifies "
-                         "--dispatch-record; a committed pubkey is one the worker cannot swap")
+                         "--dispatch-record; a committed pubkey is one the worker cannot swap. "
+                         "On a --provenance lane only path@<commit id>, or path@<ref> whose final "
+                         "target is remote-tracking, is read — at the one commit it resolves to; "
+                         "a bare path is the worker's working tree (W3-03)")
     ap.add_argument("--git-dir", default=None,
                     help="run the git/SHA legs (commit existence, ancestry, trees, path@ref "
                          "reads, negative-control worktrees) against the clone at this directory "
@@ -3569,8 +3701,9 @@ def main(argv=None):
                          "its artifacts[] sha256 pin, read from the evidence root")
     ap.add_argument("--retention-pubkey", default=None, metavar="PATH[@REF]",
                     help="the COORDINATOR's trust key for the provenance retention receipt (#608): "
-                         "a path or path@ref, normally .orca/dispatch-pubkey at a ref the worker "
-                         "cannot move. Supplied, provenance.retention must name a v1 receipt that "
+                         "a path or path@ref, normally .orca/dispatch-pubkey@refs/remotes/origin/main "
+                         "in the coordinator's own clone (on a sound lane only path@<commit id> or a ref whose "
+                         "final target is remote-tracking, read at one commit, W3-03). Supplied, provenance.retention must name a v1 receipt that "
                          "verifies OFFLINE under THIS key and binds its signed inventory and this "
                          "manifest — a key inside the receipt is never trusted. Absent, a manifest "
                          "that claims the binding (provenance.retention_receipt) fails closed and "
@@ -3623,20 +3756,37 @@ def main(argv=None):
     _is_oracle_path.discovery.clear()  # the same: test discovery is read before the control
     # h409 F-1: the review authority is pinned HERE, before any check runs and long before the
     # executed negative control runs worker code — never looked up lazily after it.
-    repo = _Authority.resolve(args.provenance,
-                              bool(args.dispatch_record and args.dispatch_pubkey), args.repo)
+    # PR #719 review round 2: a record + key opens the ENFORCEMENT lane (sound, like a provenance
+    # lane) only when the key is pinned — a commit id or a ref whose final target is
+    # remote-tracking. With a working-tree or local-ref key the worker could have swapped, the run
+    # stays on the advisory lane: the signature is still checked, and nothing claims soundness.
+    # The documented in-session flows (verify-gate's working-tree pin, an env key) keep working.
+    enforcement = bool(args.dispatch_record and args.dispatch_pubkey) and \
+        _Authority.key_source(args.dispatch_pubkey, "--dispatch-pubkey")[2]
+    repo = _Authority.resolve(args.provenance, enforcement, args.repo)
+    # W3-11: the toolchain is hashed BEFORE verify() — before the executed control runs worker
+    # code — and again after; a sibling that changed in between is not the verifier that judged.
+    toolchain = _Transcript.hash_files()
     judged = {}
     out, load_err = verify(args.manifest, args.contract_source, args.contract_digest,
                            repo, args.base, args.symbol, args.execute_nc,
                            args.unit_class, args.no_gh, args.lighting,
                            args.dispatch_record, args.dispatch_pubkey, args.nc_command,
                            lane=args.lane, judged=judged, retention_pubkey=args.retention_pubkey)
+    drift = sorted(name for name, sha in _Transcript.hash_files().items() if sha != toolchain[name])
+    drifted = ([f"toolchain changed during this run: {drift} no longer hash as they did when the "
+                "verifier started — worker code (the executed control) ran in between, so the "
+                "verdict was not reached by the verifier a transcript would name; fail-closed "
+                "(W3-11)"] if drift else [])
     if load_err:
         print(f"FAIL: {load_err}", file=sys.stderr)
+        for f in drifted:
+            print(f"FAIL: {f}", file=sys.stderr)
         print("verify: evidence manifest malformed/unreadable — unit is NOT done", file=sys.stderr)
-        fatal, notes, code = [load_err], [], 2
+        fatal, notes, code = [load_err, *drifted], [], 2
     else:
         fatal, notes = out
+        fatal = [*fatal, *drifted]
         for n in notes:
             print(n)
         if fatal:
@@ -3648,7 +3798,7 @@ def main(argv=None):
             print("verify: OK — all required checks passed")
             code = 0
     if args.transcript_out is not None:
-        record = _Transcript.build(args, code, fatal, notes, raw=judged.get("raw"))
+        record = _Transcript.build(args, code, fatal, notes, raw=judged.get("raw"), files=toolchain)
         written = _Transcript.write(args.transcript_out, record, seed)
         if not written and code == 0:
             # A requested-and-missing artifact is fail-closed (#281/#386, round-1 R-3): the verdict

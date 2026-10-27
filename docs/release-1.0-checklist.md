@@ -48,11 +48,16 @@ G1–G4 are typed records in the run's
 [gate-batch store](runs/2026-09-14-clean-sweep-tracker/gate-batch.json) (#419);
 the [`.md`](runs/2026-09-14-clean-sweep-tracker/gate-batch.md) beside it is the
 rendered view, so the gate reads the store through its own CLI, never a grep
-over prose. The gate is that nothing is owed:
+over prose. The human grant key and the set of gates are read at
+`refs/remotes/origin/main`, not from the tree being released: a gate main carries
+that the release tree dropped, renamed or re-worded is owed; main must carry the
+store, and a `.md` main carries must still be here and pass `render --check`. The
+gate is that nothing is owed:
 
 ```bash
-python3 runtime/scripts/gate-batch.py --run 2026-09-14-clean-sweep-tracker list --status owed
+python3 runtime/scripts/gate-batch.py --run 2026-09-14-clean-sweep-tracker list --status owed --pin-ref refs/remotes/origin/main
 # no output: nothing owed. `list` without --status shows the record — G1 answered, G2 answered, G3 waived, G4 overtaken
+python3 runtime/scripts/gate-batch.py --run 2026-09-14-clean-sweep-tracker render --check
 gh issue view 408 --json state -q .state    # CLOSED (runway settled)
 gh issue view 386 --json state -q .state    # CLOSED (signing decision recorded and implemented)
 gh pr view 406 --json state -q .state       # MERGED (docs re-check)

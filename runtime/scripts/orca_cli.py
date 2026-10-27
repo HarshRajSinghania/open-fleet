@@ -44,14 +44,23 @@ Exit: 0 printed · 1 (`--path`) the resolved command is not on PATH, or a `<doma
 failed (its error envelope is still printed on stdout) · 2 usage, or an unknown
 OPEN_FLEET_RUNTIME (else legacy ORCA_FLEET_RUNTIME) value, checked first whatever the arguments.
 """
-from __future__ import annotations
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
 
 import json
 import os
 import platform
 import shutil
 import subprocess
-import sys
 
 from pathlib import Path
 
@@ -93,9 +102,14 @@ def _validate_runtime(env=None):
 
 
 def _load_providers():
-    root = str(Path(__file__).resolve().parent.parent.parent)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    # W3-01 (PR #719 re-attack): the repo ROOT never goes on sys.path — there, a root-level file
+    # named like a stdlib module (`typing.py`, `traceback.py`) answered imports the package makes
+    # while it loads. The `runtime` package is registered by path: a module whose __path__ is a
+    # plain list naming this repository's runtime/, so only `runtime.*` resolves there.
+    if "runtime" not in sys.modules:
+        package = type(sys)("runtime")  # a plain module object; nothing imported to make it
+        package.__path__ = [str(Path(__file__).resolve().parent.parent.parent / "runtime")]
+        sys.modules["runtime"] = package
     from runtime import providers
     return providers
 

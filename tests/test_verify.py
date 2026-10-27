@@ -6546,3 +6546,345 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
                 {"unit": "u1", "base_sha": self.poison}, "sha256:" + "a" * 64, "mutation",
                 None, "rec.json", "pub")
             self.assertTrue(bad and "pre-fix content was swapped" in bad[0], bad)
+
+
+class SiblingNamedLikeTheStdlibNeverLoads(unittest.TestCase):
+    """W3-01 (2026-10-27 security audit, P0): `python3 runtime/scripts/verify.py` puts
+    runtime/scripts at sys.path[0], AHEAD of the stdlib, so a committed sibling `json.py` was the
+    `json` the verifier parsed the manifest with — and the toolchain hash binds first-party files
+    only, so nothing recorded it. The audit's PoC: a stale review (RED, exit 2) turned GREEN (exit
+    0) by a json.py that rewrote one field inside `loads`, with a transcript binding the untouched
+    bytes. Run WITHOUT -I on purpose: the guard must hold when the caller forgets it.
+
+    The seam: the verifier's own interpreter start-up, with the audit's two plants beside a copy
+    of the toolchain. It catches a verdict reached through a substituted stdlib module; it does not
+    cover a plant on a caller-chosen PYTHONPATH (the caller's own environment)."""
+
+    # The plants proxy the REAL stdlib module (from the directory `os` came from — os is imported
+    # at start-up, before sys.path[0] exists) and record that they ran.
+    JSON_PLANT = (
+        "import importlib.util as _u, os as _o, sys as _s\n"
+        "_std = _o.path.dirname(_o.__file__)\n"
+        "_spec = _u.spec_from_file_location('json', _o.path.join(_std, 'json', '__init__.py'),\n"
+        "                                   submodule_search_locations=[_o.path.join(_std, 'json')])\n"
+        "_m = _u.module_from_spec(_spec); _s.modules['json'] = _m; _spec.loader.exec_module(_m)\n"
+        "open(_o.path.join(_o.path.dirname(__file__), 'PLANT-json'), 'w').close()\n"
+        "_loads = _m.loads\n"
+        "def _forged(s, *a, **k):\n"
+        "    d = _loads(s, *a, **k)\n"
+        "    if isinstance(d, dict) and isinstance(d.get('pr'), dict) and 'head_sha' in d:\n"
+        "        d['pr']['reviewed_sha'] = d['head_sha']\n"
+        "    return d\n"
+        "_m.loads = _forged\n"
+    )
+    HASHLIB_PLANT = (
+        "import importlib.util as _u, os as _o, sys as _s\n"
+        "_spec = _u.spec_from_file_location('hashlib', _o.path.join(_o.path.dirname(_o.__file__),\n"
+        "                                                           'hashlib.py'))\n"
+        "_m = _u.module_from_spec(_spec); _s.modules['hashlib'] = _m; _spec.loader.exec_module(_m)\n"
+        "open(_o.path.join(_o.path.dirname(__file__), 'PLANT-hashlib'), 'w').close()\n"
+    )
+
+    def setUp(self):
+        td = _temp_repo()
+        self.addCleanup(td.cleanup)
+        tmp = Path(td.name).resolve()
+        self.rs = tmp / "rs"
+        self.rs.mkdir()
+        for name in verify._Transcript.TOOLCHAIN:
+            shutil.copy2(ROOT / "runtime" / "scripts" / name, self.rs / name)
+        self.repo = tmp / "repo"
+        self.repo.mkdir()
+
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True,
+                                  text=True).stdout.strip()
+
+        git("init", "-q", "-b", "main")
+        (self.repo / "contract.md").write_text("- AC-1: x\n", encoding="utf-8")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+        self.base = git("rev-parse", "HEAD")
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "r.md").write_text("# report\n", encoding="utf-8")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "head")
+        head = git("rev-parse", "HEAD")
+        self.digest = "sha256:" + hashlib.sha256(b"- AC-1: x\n").hexdigest()
+        # The stale-review invariant: the review is pinned to base while head moved on.
+        self.manifest_bytes = json.dumps({
+            "unit": "u", "base_sha": self.base, "head_sha": head,
+            "criteria": [{"id": "AC-1", "addressed": True}],
+            "contract": {"digest": self.digest, "criterion_ids": ["AC-1"]},
+            "pr": {"reviewed_sha": self.base}}).encode("utf-8")
+        (self.repo / "manifest.json").write_bytes(self.manifest_bytes)
+
+    def _run(self):
+        argv = [sys.executable, str(self.rs / "verify.py"), "--manifest", "manifest.json",
+                "--contract-source", f"contract.md@{self.base}", "--contract-digest", self.digest,
+                "--unit-class", "report-only", "--transcript-out", "t.json"]
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("PYTHON", "ORCA_", "OPEN_FLEET_"))}
+        return subprocess.run(argv, cwd=self.repo, capture_output=True, text=True, env=env,
+                              timeout=120)
+
+    def test_the_stale_review_stays_red_with_json_and_hashlib_planted_beside_the_verifier(self):
+        control = self._run()
+        self.assertEqual(control.returncode, 2, control.stdout + control.stderr)
+        self.assertIn("stale review", control.stderr)
+        (self.rs / "json.py").write_text(self.JSON_PLANT, encoding="utf-8")
+        (self.rs / "hashlib.py").write_text(self.HASHLIB_PLANT, encoding="utf-8")
+        planted = self._run()
+        loaded = sorted(p.name for p in self.rs.glob("PLANT-*"))
+        self.assertEqual(loaded, [], "a sibling named like a stdlib module loaded into the "
+                                     f"verifier: {loaded}")
+        self.assertEqual(planted.returncode, 2,
+                         f"a planted sibling changed the verdict: {planted.stdout}{planted.stderr}")
+        self.assertIn("stale review", planted.stderr)
+        record = json.loads((self.repo / "t.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["exit"], 2)
+        self.assertEqual(record["manifest_sha256"],
+                         hashlib.sha256(self.manifest_bytes).hexdigest())
+
+
+class SoundLaneTrustKeysAreRefPinned(RepoCase):
+    """W3-03 (2026-10-27 security audit, P2): `--dispatch-pubkey .orca/dispatch-pubkey` (a bare
+    path) reads the WORKING TREE — the graded worker's to write — and was accepted on a lane
+    claiming soundness, with a NOTE indistinguishable from a ref-pinned key's. The rule ("pass
+    path@<reviewed ref>") lived only in prose. On a provenance lane a trust key is now read only
+    at a commit id or a ref whose final target is remote-tracking (resolved once) — and every NOTE names
+    where the key came from. The advisory lane keeps its working-tree read, said in so many words."""
+
+    SEED = bytes(range(1, 33))
+
+    def setUp(self):
+        super().setUp()
+        record = {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation"}
+        self.write(".orca/dispatch-record.json",
+                   json.dumps(verify._Transcript.signer().envelope(self.SEED, record)))
+        self.write(".orca/dispatch-pubkey",
+                   verify._load_ed25519().publickey(self.SEED).hex() + "\n")
+        self.pinned = self.commit("pin the coordinator key")
+        self.git("update-ref", "refs/remotes/origin/main", self.pinned)
+
+    def _check(self, pubkey_ref, lane="provenance=ci"):
+        verify._Authority.lane = lane
+        return verify.check_dispatch_provenance({"unit": "u"}, "sha256:a", "mutation", None,
+                                                ".orca/dispatch-record.json", pubkey_ref)
+
+    def test_a_bare_path_key_is_refused_on_a_lane_claiming_soundness(self):
+        out = self._check(".orca/dispatch-pubkey")
+        self.assertEqual(len(out), 1, out)
+        self.assertFalse(out[0].startswith("NOTE:"), out)
+        self.assertIn("working-tree file", out[0])
+        self.assertIn("W3-03", out[0])
+
+    def test_a_key_at_a_local_name_is_refused_on_a_lane_claiming_soundness(self):
+        for ref in ("main", "HEAD", "refs/heads/main"):
+            with self.subTest(ref=ref):
+                out = self._check(f".orca/dispatch-pubkey@{ref}")
+                self.assertEqual(len(out), 1, out)
+                self.assertFalse(out[0].startswith("NOTE:"), out)
+                self.assertIn("local name the graded worker can move", out[0])
+
+    def test_a_key_at_a_remote_tracking_ref_or_a_commit_id_verifies_and_says_where(self):
+        for ref, where in (("refs/remotes/origin/main", "remote-tracking ref refs/remotes/origin/main"),
+                           (self.pinned, f"commit {self.pinned[:12]}")):
+            with self.subTest(ref=ref):
+                out = self._check(f".orca/dispatch-pubkey@{ref}")
+                self.assertTrue(out and all(line.startswith("NOTE:") for line in out), out)
+                self.assertIn("signature verified", out[0])
+                self.assertIn(where, out[0])
+
+    def test_the_advisory_lane_still_reads_a_working_tree_key_and_says_so(self):
+        out = self._check(".orca/dispatch-pubkey", lane=None)
+        self.assertTrue(out and all(line.startswith("NOTE:") for line in out), out)
+        self.assertIn("working-tree file .orca/dispatch-pubkey", out[0])
+        self.assertIn("the graded worker can write it", out[0])
+
+    ENFORCEMENT = "enforcement (signed dispatch record + pubkey)"
+
+    def test_the_enforcement_lane_refuses_a_worker_writable_key_too(self):
+        # PR #719 review round 2 (P1): the restriction keyed on `provenance=` only, while the
+        # enforcement lane is sound for every other authority check. One rule: no lane claiming
+        # soundness accepts a worker-writable key.
+        for ref in (".orca/dispatch-pubkey", ".orca/dispatch-pubkey@main"):
+            with self.subTest(ref=ref):
+                out = self._check(ref, lane=self.ENFORCEMENT)
+                self.assertEqual(len(out), 1, out)
+                self.assertFalse(out[0].startswith("NOTE:"), out)
+                self.assertIn("W3-03", out[0])
+        out = self._check(f".orca/dispatch-pubkey@{self.pinned}", lane=self.ENFORCEMENT)
+        self.assertTrue(out and out[0].startswith("NOTE:"), out)
+
+    def _main_lane(self, pubkey):
+        self.write("m.json", json.dumps({"unit": "u"}))
+        buf, errbuf = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(errbuf):
+            verify.main(["--manifest", "m.json", "--unit-class", "mutation",  # what the record signs
+                         "--dispatch-record", ".orca/dispatch-record.json",
+                         "--dispatch-pubkey", pubkey])
+        return verify._Authority.lane, buf.getvalue() + errbuf.getvalue()
+
+    def test_a_record_with_a_working_tree_key_opens_no_enforcement_lane(self):
+        # The documented native flow (verify-gate's working-tree pin, an in-session env key)
+        # keeps working — the signature is still checked — but a key the worker can swap no
+        # longer makes the run claim soundness, and the verdict says so.
+        lane, out = self._main_lane(".orca/dispatch-pubkey")
+        self.assertIsNone(lane, out)
+        self.assertIn("signature verified", out)
+        self.assertIn("no soundness claim", out)
+
+    def test_a_record_with_a_pinned_key_still_opens_the_enforcement_lane(self):
+        lane, out = self._main_lane(f".orca/dispatch-pubkey@{self.pinned}")
+        self.assertEqual(lane, self.ENFORCEMENT, out)
+        self.assertIn("signature verified", out)
+
+    def test_a_pinned_key_note_says_where_the_pin_is_trustworthy(self):
+        # PR #719 re-attack: `git update-ref refs/remotes/origin/main <own commit>` succeeds in a
+        # worker's own clone, and a commit id names whatever the caller chose — the verdict must
+        # say the pin is trustworthy only where the worker cannot write refs.
+        for ref in ("refs/remotes/origin/main", self.pinned):
+            with self.subTest(ref=ref):
+                out = self._check(f".orca/dispatch-pubkey@{ref}")
+                self.assertTrue(out and out[0].startswith("NOTE:"), out)
+                self.assertIn("trustworthy only where the worker cannot write refs", out[0])
+                self.assertIn("in the worker's own clone this lane is advisory", out[0])
+
+    def _worker_branch_key(self):
+        """The worker's own key and a record it signed, committed on a LOCAL branch."""
+        worker = bytes(range(50, 82))
+        self.git("checkout", "-q", "-b", "workerbranch")
+        record = {"manifest_id": "u", "contract_digest": "sha256:a", "unit_class": "mutation"}
+        self.write(".orca/dispatch-record.json",
+                   json.dumps(verify._Transcript.signer().envelope(worker, record)))
+        self.write(".orca/dispatch-pubkey", verify._load_ed25519().publickey(worker).hex() + "\n")
+        return self.commit("the worker's own key")
+
+    def test_a_remote_tracking_name_that_is_a_symbolic_ref_to_a_local_branch_is_refused(self):
+        # PR #719 review (P1): the check was SPELLING-only. refs/remotes/worker/key made a
+        # symbolic ref to refs/heads/workerbranch passed as "remote-tracking", read_source followed
+        # it, and the worker's self-signed record verified on a lane claiming soundness.
+        self._worker_branch_key()
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/workerbranch")
+        out = self._check(".orca/dispatch-pubkey@refs/remotes/worker/key")
+        self.assertEqual(len(out), 1, out)
+        self.assertFalse(out[0].startswith("NOTE:"), out)
+        self.assertIn("refs/heads/workerbranch", out[0])
+        self.assertNotIn("signature verified", out[0])
+
+    def test_a_symbolic_ref_whose_final_target_is_remote_tracking_is_read_at_one_commit(self):
+        # refs/remotes/origin/HEAD -> refs/remotes/origin/main is the ordinary shape; it is
+        # resolved ONCE and the key is read at that commit, never at the name a second time.
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        with mock.patch.object(verify, "read_source", wraps=verify.read_source) as spy:
+            out = self._check(".orca/dispatch-pubkey@refs/remotes/origin/HEAD")
+        self.assertTrue(out and all(line.startswith("NOTE:") for line in out), out)
+        self.assertIn("refs/remotes/origin/main", out[0])
+        self.assertIn(f"commit {self.pinned[:12]}", out[0])
+        keys = [c.args[0] for c in spy.call_args_list if "dispatch-pubkey" in c.args[0]]
+        self.assertEqual(keys, [f".orca/dispatch-pubkey@{self.pinned}"], spy.call_args_list)
+
+
+class SoundLaneNeverRunsAWorkerWritableGitleaks(RepoCase):
+    """W3-10 (2026-10-27 security audit, P3): a worker-writable gitleaks was consulted on every
+    lane — on a sound one too, where it is a binary the graded worker could have replaced, run by
+    the coordinator's verifier, and its "clean" was framed as additive. On a lane claiming
+    soundness it is now not run at all, and the NOTE says only the built-in floor scanned."""
+
+    def _pinned(self, custody, lane):
+        verify._Authority.git_bin()
+        verify._Authority.gitleaks, verify._Authority.gitleaks_custody = "/x/gitleaks", custody
+        verify._Authority.lane = lane
+
+    def test_a_worker_writable_gitleaks_is_never_run_on_a_lane_claiming_soundness(self):
+        self._pinned("worker-writable", "provenance=ci")
+        with mock.patch.object(verify, "_run", return_value=(0, "", "")) as run:
+            self.assertIsNone(verify._gitleaks_scan(self.repo / "f.txt"))
+        self.assertEqual([c for c in run.call_args_list if c.args[0][0] == "/x/gitleaks"], [])
+        notes = verify._Authority.authority_leg()
+        self.assertTrue(any(n.startswith("NOTE: redaction:") and "NOT run" in n
+                            and "only the built-in floor" in n for n in notes), notes)
+
+    def test_the_enforcement_lane_is_sound_for_gitleaks_too(self):
+        # PR #719 review (P2): a signed dispatch record + pubkey (no --provenance) is a lane the
+        # other authority checks already treat as claiming soundness (a worker-writable git fails
+        # it closed); the gitleaks rule must use the same predicate.
+        self._pinned("worker-writable", "enforcement (signed dispatch record + pubkey)")
+        with mock.patch.object(verify, "_run", return_value=(0, "", "")) as run:
+            self.assertIsNone(verify._gitleaks_scan(self.repo / "f.txt"))
+        self.assertEqual([c for c in run.call_args_list if c.args[0][0] == "/x/gitleaks"], [])
+        notes = verify._Authority.authority_leg()
+        self.assertTrue(any("NOT run" in n and "only the built-in floor" in n for n in notes), notes)
+
+    def test_the_built_in_floor_still_refuses_on_that_lane(self):
+        self._pinned("worker-writable", "provenance=ci")
+        art = self.artifact("token ghp_" + "Z" * 30 + "\n")
+        with mock.patch.object(verify, "_run", return_value=(0, "", "")):
+            errs = verify.check_redaction({"artifacts": [self.pin(art)]}, None)
+        self.assertTrue(errs and "github-token" in errs[0], errs)
+
+    def test_a_system_gitleaks_and_the_advisory_lane_still_consult_it(self):
+        for custody, lane in (("system", "provenance=ci"), ("worker-writable", None)):
+            with self.subTest(custody=custody, lane=lane):
+                self._pinned(custody, lane)
+                with mock.patch.object(verify, "_run", return_value=(0, "", "")) as run:
+                    self.assertIs(verify._gitleaks_scan(self.repo / "f.txt"), False)
+                self.assertEqual(run.call_args[0][0][0], "/x/gitleaks")
+
+
+class TheToolchainIsHashedBeforeTheControlRuns(unittest.TestCase):
+    """W3-11 (2026-10-27 security audit, P3): the transcript's toolchain hashes were taken AFTER
+    verify() returned — after the executed control ran worker code — while every check had run
+    with the modules loaded BEFORE it. A mid-run rewrite of a sibling was recorded as if it were
+    the verifier, and never detected. The toolchain is now hashed before verify() and again
+    after; any difference is a FAIL, and the transcript records the bytes that actually ran.
+
+    The seam: verify() itself is stubbed to do what an executed control can — write a sibling of
+    the verifier — so the test needs no control fixture; the toolchain is a temp copy."""
+
+    def setUp(self):
+        td = _temp_repo()
+        self.addCleanup(td.cleanup)
+        self.tmp = Path(td.name).resolve()
+        self.rs = self.tmp / "rs"
+        self.rs.mkdir()
+        for name in verify._Transcript.TOOLCHAIN:
+            shutil.copy2(ROOT / "runtime" / "scripts" / name, self.rs / name)
+        spec = importlib.util.spec_from_file_location("verify_w311", self.rs / "verify.py")
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+        self.mod._Authority.reset()
+        self.manifest = self.tmp / "m.json"
+        self.manifest.write_text('{"unit": "u"}', encoding="utf-8")
+        self.original = hashlib.sha256((self.rs / "diff_scope.py").read_bytes()).hexdigest()
+
+    def _main(self, rewrite):
+        def fake_verify(*_a, judged=None, **_k):
+            if rewrite:
+                with open(self.rs / "diff_scope.py", "a", encoding="utf-8") as fh:
+                    fh.write("\n# rewritten by the executed control\n")
+            if judged is not None:
+                judged["raw"] = self.manifest.read_bytes()
+            return ([], ["NOTE: stubbed"]), None
+        out = self.tmp / "t.json"
+        buf, errbuf = io.StringIO(), io.StringIO()
+        with mock.patch.object(self.mod, "verify", side_effect=fake_verify), \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(errbuf):
+            rc = self.mod.main(["--manifest", str(self.manifest), "--unit-class", "report-only",
+                                "--transcript-out", str(out)])
+        return rc, errbuf.getvalue(), json.loads(out.read_text(encoding="utf-8"))
+
+    def test_a_sibling_rewritten_during_the_run_is_a_fail(self):
+        rc, err, record = self._main(rewrite=True)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("diff_scope.py", err)
+        self.assertIn("W3-11", err)
+        self.assertEqual(record["exit"], 2)
+        self.assertEqual(record["toolchain"]["files"]["diff_scope.py"], self.original,
+                         "the transcript must record the bytes that RAN, not the rewrite")
+
+    def test_an_untouched_toolchain_is_unchanged_behaviour(self):
+        rc, err, record = self._main(rewrite=False)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(record["toolchain"]["files"]["diff_scope.py"], self.original)

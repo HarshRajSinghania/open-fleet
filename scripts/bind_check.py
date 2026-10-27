@@ -15,11 +15,22 @@ contributor learns the bar from the bot, not from a review round.
 Exit 0: every candidate binds (or nothing to check). 1: at least one
 failure. 2: could not run (unresolvable base, no skills/).
 """
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
+
 import argparse
 import importlib.util
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent

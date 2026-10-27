@@ -63,6 +63,15 @@ landed keeps the unsigned path unchanged — the grandfather lane, and the ONLY 
 it. A pin OFF that ancestry — a branch forked from any pre-key commit, a dangling commit
 — is judged against the key at the grading base: fresh artifacts on such a fork prove
 nothing about the key, so "its own artifacts must exist there" was never a defence.
+The mutation-class mission list (evidence-manifest.md §3, which decides whether a signed
+verdict on a lesser class proves anything and whether WIP-curve rows are owed) is read at that
+same commit, never at the graded change's own revision or the working tree: a change that drops
+its own mission from the list is still judged by the list it was dispatched under (W3-05).
+On a lane claiming soundness (``ORCA_PROVENANCE``/``OPEN_FLEET_PROVENANCE`` set) that base is
+``trusted_base``: a commit id or a ref whose final target is remote-tracking — origin/HEAD only
+when it points at one — never local main/master or HEAD, which the graded change can move onto
+itself; with none, the run is could-not-run (exit 2), never a pass. The advisory lane keeps the
+fallback chain above.
 
 What this does NOT do, said plainly: it does not re-run `verify.py` and re-derive
 the verdict. Without a committed key the ledger above is still written ON the
@@ -83,6 +92,18 @@ Exit codes
     1  at least one report does not
     2  could not run (no skills/, unreadable input)
 """
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
+
 import argparse
 import base64
 import hashlib
@@ -94,7 +115,6 @@ import shlex
 import shutil
 
 import subprocess
-import sys
 from pathlib import Path
 
 # h409 hygiene: one git resolution rule across the toolchain —
@@ -566,6 +586,80 @@ def grading_base(root, base=None):
     return None
 
 
+# --- PR #719 review: the base a lane claiming soundness trusts ---------------------------------
+# grading_base follows origin/HEAD BLINDLY (a symbolic ref the clone's owner can point at a local
+# branch) and falls back to local main/master and HEAD. key_rev reads the key, and W3-05 the
+# mutation-unit policy, at the pin whenever the pin is an ANCESTOR of that tip — so a worker that
+# moved local main onto its own PR, or pointed origin/HEAD at it, had both read at the commit it
+# wrote: drop your mission from `**Mutation units**` and a report-only verdict binds. On a lane
+# claiming soundness every trust-bearing read uses trusted_base instead; the advisory lane keeps
+# grading_base and its local-branch fallback, unchanged.
+PROVENANCE_VARS = ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
+TRUSTED_BASES = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main",
+                 "refs/remotes/origin/master")
+_COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def sound_lane():
+    """`VAR=value` for the first provenance variable set (a lane claiming soundness), or None."""
+    return next((f"{var}={os.environ[var]}" for var in PROVENANCE_VARS
+                 if (os.environ.get(var) or "").strip()), None)
+
+
+def _git_line(root, *args):
+    proc = subprocess.run(_git_cmd(*args), cwd=str(root), stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, text=True)
+    return proc.returncode, proc.stdout.strip()
+
+
+def trusted_base(root, base=None):
+    """(commit, where) the key and the mutation-unit policy are read against on a lane claiming
+    soundness, or (None, why). `base`, when named, must be a commit id or a ref whose FINAL target
+    (any symbolic chain followed) is remote-tracking — the predicate gate-batch.py --pin-ref and
+    verify.py's trust keys answer to. Unnamed: refs/remotes/origin/HEAD when its target is itself
+    remote-tracking (one that points at a local branch is skipped, as verify-gate.sh skips it),
+    then refs/remotes/origin/main, then …/master. Never a local branch, a tag, a short name or
+    HEAD. Remote-tracking means what this clone's fetch wrote: sound in the coordinator's clone or
+    a CI checkout, advisory in a worker's own, where every ref is the worker's to write."""
+    skipped = []
+    for name in ((base,) if base else TRUSTED_BASES):
+        if name.startswith("-"):
+            return None, f"--base {name!r} is an option, not a ref"
+        target = name
+        if not (base and _COMMIT_ID.fullmatch(name)):
+            code, out = _git_line(root, "symbolic-ref", "-q", name)
+            target = out if code == 0 and out else name
+            if not target.startswith("refs/remotes/"):
+                via = f" (a symbolic ref to {target})" if target != name else ""
+                if base:
+                    return None, (f"--base {name!r}{via} is neither a commit id nor a ref whose "
+                                  "final target is remote-tracking (refs/remotes/…)")
+                skipped.append(f"{name} points at {target}, not a remote-tracking ref")
+                continue
+        code, commit = _git_line(root, "rev-parse", "--verify", "-q", f"{target}^{{commit}}")
+        if code == 0 and _COMMIT_ID.fullmatch(commit):
+            via = f" -> {target}" if target != name else ""
+            return commit, f"{name}{via} = {commit[:12]}"
+        if base:
+            return None, f"--base {name!r} names no commit here"
+    why = "no remote-tracking base resolves (tried " + ", ".join(TRUSTED_BASES) + ")"
+    return None, why + (f"; {'; '.join(skipped)}" if skipped else "")
+
+
+def sound_lane_refusal(root, base=None):
+    """None when no lane claims soundness or a trusted base resolves; else the could-not-run
+    reason. A sound lane never reads the key or the policy where the graded change can move it."""
+    lane = sound_lane()
+    if not lane:
+        return None
+    tip, why = trusted_base(root, base)
+    if tip is not None:
+        return None
+    return (f"{lane} claims a sound lane, but {why}: the key and the mutation-unit policy are read "
+            "there only at a commit id or a ref whose final target is remote-tracking, never a "
+            "local branch or HEAD — could-not-run, never a pass")
+
+
 def commit_object(rev, root):
     """The full id of the one commit OBJECT `rev` abbreviates, or None.
 
@@ -600,7 +694,16 @@ def is_ancestor(rev, base, root):
 
 def key_rev(rev, root, base=None):
     """(commit the enforcement switch is read at, why). The pin when it sits on the grading base's
-    ancestry — that is the grandfather lane's one door; the grading base when it does not."""
+    ancestry — that is the grandfather lane's one door; the grading base when it does not. On a
+    lane claiming soundness the grading base is trusted_base, and none is a refusal."""
+    if sound_lane():
+        tip, where = trusted_base(root, base)
+        if tip is None:
+            return None, sound_lane_refusal(root, base)
+        if is_ancestor(rev, tip, root):
+            return rev, f"the pin, an ancestor of the trusted base {where}"
+        return tip, (f"the trusted base {where} — the pin {rev[:12]} is not an ancestor of it, so "
+                     "the key is read where the pin cannot choose")
     tip = grading_base(root, base)
     if tip is None:
         return None, "no grading base resolves (tried " + ", ".join(GRADING_BASES) + ")"
@@ -771,7 +874,7 @@ def signed_transcript(fields, rev, run_dir, root, base=None, text=""):
                 problems.append(f"its signed argument tuple ({summary or 'every flag unset'}) matches no "
                                 f"verify.py invocation the body shows — the verdict was reached under "
                                 "a policy the report does not claim")
-        mutation = _mutation_missions(root, rev)
+        mutation = _mutation_missions(root, rev, base)
         if mutation and fields["mission"] in mutation and signed.get("unit_class") != "mutation":
             problems.append(f"it was judged as unit_class={signed.get('unit_class')!r}, but "
                             f"{fields['mission']} is a mutation-class mission (evidence-manifest.md "
@@ -804,20 +907,28 @@ def signed_transcript(fields, rev, run_dir, root, base=None, text=""):
     return []
 
 
-def _mutation_missions(root, rev=None):
+def _mutation_missions(root, rev=None, base=None):
     """The mutation-class mission set from evidence-manifest.md §3 — the one place the class list
-    lives, so this check and the done-floor never enumerate different sets. Read at the report's
-    pinned revision first (the policy in force for the run), then the working tree. None means the
-    policy exists at neither — the repo predates the protocol, and the obligation is unscoped
-    rather than violated."""
-    for text in (_read_at_rev(rev, "runtime/evidence-manifest.md", root) if rev else None,
-                 _read_worktree(root)):
-        if text is None:
-            continue
-        m = re.search(r"\*\*Mutation units\*\* \(([^)]*)\)", text)
-        if m:
-            return {name.strip() for name in m.group(1).split(",")}
-    return None
+    lives, so this check and the done-floor never enumerate different sets. None means the policy
+    is absent where it is read — the repo predates the protocol, and the obligation is unscoped
+    rather than violated.
+
+    WHERE it is read is the point (W3-05, 2026-10-27 audit). It used to be the report's pinned
+    revision — the graded change's own commit — and then the working tree, both written by the
+    graded party: a PR that dropped its mission from the list in the commit it is graded on was
+    judged as report-only and shed every mutation obligation. It is now read exactly where the
+    enforcement key is (key_rev): at the pin when the pin sits on the grading base's ancestry —
+    a reviewed, merged policy — and at the grading base itself when it does not. With no pin, the
+    grading base. The graded revision is the fallback only where key_rev refuses outright, and
+    that refusal already fails the report — and on a lane claiming soundness there is no
+    fallback: the base is trusted_base (never a local branch or HEAD), and none reads nothing."""
+    if rev:
+        at = key_rev(rev, root, base)[0] or (None if sound_lane() else rev)
+    else:
+        at = trusted_base(root, base)[0] if sound_lane() else grading_base(root, base)
+    text = _read_at_rev(at, "runtime/evidence-manifest.md", root) if at else None
+    m = re.search(r"\*\*Mutation units\*\* \(([^)]*)\)", text) if text is not None else None
+    return {name.strip() for name in m.group(1).split(",")} if m else None
 
 
 def _read_at_rev(rev, path_text, root):
@@ -832,13 +943,6 @@ def _read_at_rev(rev, path_text, root):
     try:
         return proc.stdout.decode("utf-8")
     except UnicodeDecodeError:
-        return None
-
-
-def _read_worktree(root):
-    try:
-        return (Path(root) / "runtime" / "evidence-manifest.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
         return None
 
 
@@ -982,8 +1086,8 @@ def _wip_cell_ok(key, value):
     return bool(pattern.fullmatch(value))
 
 
-def _wip_curve_errors(text, mission, root, report_path, rev=None):
-    missions = _mutation_missions(root, rev)
+def _wip_curve_errors(text, mission, root, report_path, rev=None, base=None):
+    missions = _mutation_missions(root, rev, base)
     if missions is None:
         return []  # the protocol exists at neither the pinned rev nor the worktree — unscoped
     if mission not in missions:
@@ -1038,8 +1142,12 @@ def _wip_curve_errors(text, mission, root, report_path, rev=None):
 
 def check_report(report_path, mission, tier, root=None, base=None):
     """Errors that stop `mission` claiming `tier` on this report. [] means bound. `base` names the
-    grading base (default: the default branch's tip, see grading_base)."""
+    grading base (default: the default branch's tip, see grading_base; on a lane claiming
+    soundness, trusted_base — and with none, the report is refused before anything is read)."""
     root = root or ROOT
+    refusal = sound_lane_refusal(root, base)
+    if refusal:
+        return [f"{report_path}: {refusal}"]
     report = Path(report_path)
     if not report.is_absolute():
         report = root / report
@@ -1138,7 +1246,7 @@ def check_report(report_path, mission, tier, root=None, base=None):
     for problem in signed_transcript(fields, rev, run_dir, root, base, text):
         errors.append(f"{report_path}: {problem}")
 
-    errors.extend(_wip_curve_errors(text, mission, root, report_path, rev=rev))
+    errors.extend(_wip_curve_errors(text, mission, root, report_path, rev=rev, base=base))
 
     try:
         _report, lines, entries = inventory.load(report)
@@ -1256,7 +1364,11 @@ def main(argv=None):
     parser.add_argument("--tier", help="tier claimed (with `report`)")
     parser.add_argument("--base", default=None, metavar="REV",
                         help="the grading base the unsigned lane is proven against (default: "
-                             "origin/HEAD, then origin/main, origin/master, main, master, HEAD)")
+                             "origin/HEAD, then origin/main, origin/master, main, master, HEAD). "
+                             "On a lane claiming soundness (ORCA_PROVENANCE set) only a commit id "
+                             "or a ref whose final target is remote-tracking; the default is then "
+                             "refs/remotes/origin/HEAD (if it points at a remote-tracking ref), "
+                             "…/main, …/master, and none is could-not-run (exit 2)")
     args = parser.parse_args(argv)
 
     if args.report:
@@ -1269,6 +1381,10 @@ def main(argv=None):
             return 2
         claims = _missions(ROOT)
 
+    refusal = sound_lane_refusal(ROOT, args.base)
+    if refusal:
+        print(f"run_report.py: {refusal}", file=sys.stderr)
+        return 2
     failed = False
     seen = {}
     for mission, tier, evidence in claims:

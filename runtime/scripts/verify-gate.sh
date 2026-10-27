@@ -135,14 +135,56 @@ PROVENANCE=$(_pick OPEN_FLEET_PROVENANCE "${OPEN_FLEET_PROVENANCE:-}" ORCA_PROVE
 # now also read at refs/remotes/origin/<BASE> when a base is named, and on a lane claiming
 # soundness (ORCA_PROVENANCE set) the working-tree pin is never used: with no reviewed blob the
 # key stays undiscovered, which verify.py reads as half-configured and refuses.
+# W3-02 (2026-10-27 audit, P1): the ref is origin/HEAD's FULL target, and only a remote-tracking
+# one counts. `symbolic-ref --short` printed the target's short form, so a worker that pointed
+# origin/HEAD at its own LOCAL branch had the gate read `.orca/dispatch-pubkey@<that branch>` — a
+# key it committed — and its self-signed record verified. A short name is also shadowable by a
+# local tag or branch of the same spelling; the full refs/remotes/… name is not.
+# W3-08: a fresh actions/checkout tree carries neither origin/HEAD nor origin/<BASE>, so with the
+# working tree refused every sound CI run blocked as half-configured. Two ref-backed sources exist
+# there: refs/remotes/origin/$GITHUB_BASE_REF when the step fetched the base, and the PR's base
+# COMMIT from the runner's own event payload — an object id, which nothing can move. (The commit
+# must be present: fetch-depth 0, or `git fetch origin <base sha>`; absent, nothing is read.)
+_gh_pr_base() {
+  [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -n "$PY_BIN" ] && [ -f "${GITHUB_EVENT_PATH:-}" ] || return 1
+  _sha=$("$PY_BIN" -I -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["base"]["sha"])
+except Exception:
+    pass' "$GITHUB_EVENT_PATH" 2>/dev/null) || return 1
+  case "$_sha" in ""|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#_sha}" -eq 40 ] || [ "${#_sha}" -eq 64 ] || return 1
+  printf '%s' "$_sha"
+}
+# _remote_target REF — REF followed through any symbolic chain to its FINAL target, printed only
+# when that target is itself remote-tracking. A refs/remotes/… NAME proves nothing: it can be a
+# symbolic ref to a local branch the worker moves (PR #719 review). verify.py resolves what it is
+# handed again, once, to the commit it reads the key at. Remote-tracking means "what this clone's
+# fetch wrote" — the coordinator's or the CI runner's on a sound lane; on a worker's own machine
+# any ref is the worker's to write, which is why that lane stays advisory.
+_remote_target() {
+  _t=$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet "$1" 2>/dev/null) || _t=$1
+  case "$_t" in
+    refs/remotes/?*) printf '%s' "$_t" ;;
+    *) echo "verify-gate: NOTE — $1 points at '$_t', which is not a remote-tracking ref; no key is read there (a local branch is the graded worker's to move)." >&2
+       return 1 ;;
+  esac
+}
+KEY_BASE="$BASE"
+[ -n "$KEY_BASE" ] || [ "${GITHUB_ACTIONS:-}" != "true" ] || KEY_BASE="${GITHUB_BASE_REF:-}"
 if [ -z "$PUBKEY" ] && [ -n "$GIT_BIN" ]; then
   TOP="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$TOP" ]; then
-    DEF_REF="$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/HEAD)"
-    if "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
+    PR_BASE="$(_gh_pr_base || true)"
+    DEF_REF="$(_remote_target refs/remotes/origin/HEAD || true)"
+    BASE_REF=""
+    [ -z "$KEY_BASE" ] || BASE_REF="$(_remote_target "refs/remotes/origin/$KEY_BASE" || true)"
+    if [ -n "$DEF_REF" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$DEF_REF"
-    elif [ -n "$BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "refs/remotes/origin/$BASE:.orca/dispatch-pubkey" 2>/dev/null; then
-      PUBKEY=".orca/dispatch-pubkey@refs/remotes/origin/$BASE"
+    elif [ -n "$BASE_REF" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$BASE_REF:.orca/dispatch-pubkey" 2>/dev/null; then
+      PUBKEY=".orca/dispatch-pubkey@$BASE_REF"
+    elif [ -n "$PR_BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$PR_BASE:.orca/dispatch-pubkey" 2>/dev/null; then
+      PUBKEY=".orca/dispatch-pubkey@$PR_BASE"
     elif [ -f "$TOP/.orca/dispatch-pubkey" ]; then
       if [ -n "$PROVENANCE" ]; then
         echo "verify-gate: NOTE — .orca/dispatch-pubkey exists only in the working tree, which the graded worker writes; a lane claiming soundness (ORCA_PROVENANCE=$PROVENANCE) does not read a key from there. Pin it on the default or base branch, or inject ORCA_DISPATCH_PUBKEY off-worker." >&2
@@ -204,7 +246,9 @@ fi
 case "$PROVENANCE" in
   ci|mcp|sdk|dispatch) : ;;  # off-worker context sets the env AND the key — sound; record is auditable
   *) echo "verify-gate: NOTE — native in-session hook is ADVISORY: the worker controls ORCA_* (incl." \
-          "ORCA_PROVENANCE and any dispatch key), so nothing here is a soundness boundary. A signed" \
+          "ORCA_PROVENANCE and any dispatch key) and every ref in its clone — refs/remotes/* too, so" \
+          "a remote-tracking or commit key pin is trustworthy only where the worker cannot write" \
+          "refs (the coordinator's own fetch, a CI checkout) — so nothing here is a soundness boundary. A signed" \
           "ORCA_DISPATCH_RECORD is verified, but is a boundary only OFF-WORKER — CI/MCP/SDK or an" \
           "auditor re-running verify.py with the coordinator's real key — docs/verify-gate.md#trust-boundary." >&2 ;;
 esac
@@ -221,7 +265,11 @@ fi
 # (up to 3 × 600 s) when the host gave up let the turn end: fail-OPEN. The gate therefore bounds
 # the verifier itself, below the host's limit (hooks/hooks.json and the snippet set 2400 s): at
 # the deadline the verifier is stopped and the gate BLOCKS (2026-10-26 review).
-"$PY_BIN" "$HERE/verify.py" "$@" &
+# -I (W3-01): without it the interpreter puts $HERE at sys.path[0], ahead of the stdlib, and a
+# committed runtime/scripts/json.py became the verifier's `json` — a RED verdict turned GREEN,
+# bound by no toolchain hash. verify.py drops that entry itself too; -I also keeps PYTHON* env
+# and the user site out of the verdict.
+"$PY_BIN" -I "$HERE/verify.py" "$@" &
 _vpid=$!
 _waited=0
 while kill -0 "$_vpid" 2>/dev/null; do

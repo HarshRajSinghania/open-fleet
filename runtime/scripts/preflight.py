@@ -62,7 +62,17 @@ the timeout error suggests --offline for intentionally offline hosts.
 Wire it in at Phase 0 of the run (SKILL.md) and inside the integrator preamble before the
 first `gh pr create` so a mid-run drift is caught, not tolerated.
 """
-from __future__ import annotations
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
 
 import argparse
 import importlib.util
@@ -70,7 +80,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -285,10 +294,18 @@ def _active_runtime(explicit: str | None) -> str | None:
 
 
 def _load_providers():
-    """runtime/providers — the SAME registry and resolver dispatch uses (orca_cli.py)."""
-    root = str(Path(__file__).resolve().parents[2])
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    """runtime/providers — the SAME registry and resolver dispatch uses (orca_cli.py).
+
+    W3-01 (PR #719 re-attack): the repo ROOT never goes on sys.path. Put there, it let a
+    root-level file named like a stdlib module (`__future__.py`, `typing.py`, `sqlite3.py`)
+    answer an import the package makes while it loads — through `--mode readonly`, which
+    review-it runs over a graded tree. The `runtime` package is registered by path instead: a
+    module whose __path__ is a plain list naming this repository's runtime/, so `runtime.*`
+    resolves there and nothing else is searched for in the root."""
+    if "runtime" not in sys.modules:
+        package = type(sys)("runtime")  # a plain module object; nothing imported to make it
+        package.__path__ = [str(Path(__file__).resolve().parents[2] / "runtime")]
+        sys.modules["runtime"] = package
     from runtime import providers
     return providers
 

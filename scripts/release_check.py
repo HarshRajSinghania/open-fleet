@@ -44,6 +44,18 @@ Stdlib only. Subprocesses take argv lists, never shell text; the checkout's
 Python tools run under this interpreter (sys.executable), so an empty PATH
 cannot swap it for another.
 """
+import sys
+
+# W3-01: `python3 <dir>/<script>.py` puts <dir> at sys.path[0], AHEAD of the stdlib, so a committed
+# sibling named like a stdlib module (json.py, hashlib.py) would BE that module here, and no
+# toolchain hash binds it. Drop that entry before any other import (`from __future__` imports too,
+# which is why this file has none); `os` is read from sys.modules, loaded at start-up, never
+# imported. `python3 -I` does the same from outside; this holds when a caller forgets it.
+if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sys.path
+        and ("os" not in sys.modules or sys.modules["os"].path.realpath(sys.path[0])
+             == sys.modules["os"].path.dirname(sys.modules["os"].path.realpath(__file__)))):
+    del sys.path[0]
+
 import argparse
 import json
 import os
@@ -51,7 +63,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 import traceback
 from pathlib import Path
 
@@ -422,21 +433,67 @@ def gate0(ctx):
 
 def check_gate_batch_owed(ctx):
     """The store is gate-batch.json (#419), read through its own CLI — never a
-    grep over the rendered .md, which is a view of the store, not the store."""
+    grep over the rendered .md, which is a view of the store, not the store.
+
+    W3-06 / PR #719 review: whether an answer is a human's is decided by the human
+    grant key, and the key is read at refs/remotes/origin/main — resolved once,
+    through any symbolic chain, to a commit — never from the tree being released,
+    where a deleted pin turned typed answers back on. That ref is what this clone's
+    fetch of the reviewed default branch wrote, and a key lands there only by a
+    reviewed one-way grant; the release HEAD is the thing being judged. No such
+    commit here is a FAIL: a missing key cannot be told from a deleted one.
+
+    PR #719 review round 3: the SET of gates is read at that same commit. gate-batch.py
+    --pin-ref lists every gate the anchored batch carries that the release tree's lacks or
+    altered as owed, so `"gates": []` and a re-rendered view no longer pass; a store the anchor
+    does not carry has no trusted set to hold the release to, and a view the anchor carries
+    must still be here and agree (render --check). Each is a FAIL."""
     name = "gate1/gate-batch-owed"
     tool = "runtime/scripts/gate-batch.py"
-    label = f"gate-batch.py --run {GATE_BATCH_RUN} list --status owed"
-    r = ctx.py(tool, "--run", GATE_BATCH_RUN, "list", "--status", "owed")
+    store = f"docs/runs/{GATE_BATCH_RUN}/gate-batch.json"
+    view_md = f"docs/runs/{GATE_BATCH_RUN}/gate-batch.md"
+    anchor = "refs/remotes/origin/main"
+    target = ctx.run(["git", "symbolic-ref", "-q", anchor], memo=False)
+    ref = target.stdout.strip() if target.ok and target.stdout.strip() else anchor
+    commit = ctx.run(["git", "rev-parse", "--verify", "-q", f"{ref}^{{commit}}"], memo=False)
+    pin = commit.stdout.strip() if commit.ok else ""
+    if not (ref.startswith("refs/remotes/") and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", pin)):
+        return (name, FAIL, f"the human grant key is read at {anchor}, which names no "
+                            "remote-tracking commit in this checkout (fetch origin): a key read "
+                            "from the tree being released could be one it deleted (W3-06)")
+    label = f"gate-batch.py --run {GATE_BATCH_RUN} --pin-ref {pin[:12]} list --status owed"
+    r = ctx.py(tool, "--run", GATE_BATCH_RUN, "--pin-ref", pin, "list", "--status", "owed")
     if r.missing:
         return (name, FAIL, r.stderr)
     if r.timeout:
         return (name, FAIL, f"{label}: {r.stderr}")
     if not r.ok:
         return (name, FAIL, f"{label}: exit {r.returncode}: {tail(r.stderr)}")
+    carried = ctx.run(["git", "ls-tree", "--name-only", "--full-tree", pin, "--", store,
+                       view_md], memo=False)
+    if not carried.ok:
+        return (name, FAIL, f"cannot list {store} at {anchor} ({pin[:12]}): "
+                            f"{tail(carried.stderr)}")
+    carried = set(carried.stdout.splitlines())
+    if store not in carried:
+        return (name, FAIL, f"{anchor} ({pin[:12]}) carries no {store}: the set of owed gates "
+                            "is read there, and a store only the release tree carries could "
+                            "owe nothing (PR #719 review)")
+    if view_md in carried and ctx.read(view_md) is None:
+        return (name, FAIL, f"{view_md} is at {anchor} ({pin[:12]}) but not in the release tree: "
+                            "the store re-renders it on every mutation, so it is deleted, not "
+                            "stale (PR #719 review)")
+    # W3-06: the human-readable view must say what the store says — a .md edited to disagree
+    # used to be caught by tests only. (No .md here or at the anchor: no view to disagree.)
+    if ctx.read(view_md) is not None:
+        view = ctx.py(tool, "--run", GATE_BATCH_RUN, "render", "--check")
+        if not view.ok:
+            return (name, FAIL, f"gate-batch.py --run {GATE_BATCH_RUN} render --check: the .md "
+                                f"view disagrees with the store: {tail(view.stderr)}")
     owed = [m.group(1) for m in (OWED_LINE.match(ln) for ln in r.stdout.splitlines()) if m]
     if owed:
         return (name, FAIL, f"{len(owed)} owed gate(s) in {GATE_BATCH_RUN}: {', '.join(owed)}")
-    listing = ctx.py(tool, "--run", GATE_BATCH_RUN, "list")
+    listing = ctx.py(tool, "--run", GATE_BATCH_RUN, "--pin-ref", pin, "list")
     states = [f"{m.group(1)} {m.group(2)}"
               for m in (LIST_LINE.match(ln) for ln in listing.stdout.splitlines()) if m]
     detail = f"no owed gates in {GATE_BATCH_RUN}"

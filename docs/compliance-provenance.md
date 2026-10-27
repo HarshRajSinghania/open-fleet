@@ -61,7 +61,13 @@ disk. It makes no network call: it records identifiers the upload already return
 **When the binding is claimed.** The manifest claims it with
 `"retention_receipt": "open-fleet/retention-receipt/v1"` in `provenance`, or the coordinator
 claims it by passing `verify.py --retention-pubkey <key>` — normally
-`.orca/dispatch-pubkey@origin/main`, a ref the worker cannot move. A run's graded manifest is
+`.orca/dispatch-pubkey@refs/remotes/origin/main`, the FULL remote-tracking name (a short
+`origin/main` is a local name a tag or branch can shadow, and a lane claiming soundness refuses
+it), followed through any symbolic ref and read at the one commit it resolves to. That ref is
+trustworthy only where the worker cannot write refs — the coordinator's own fetch or a CI
+checkout; in a worker's own clone `git update-ref refs/remotes/…` succeeds, so there the check is
+advisory ([the verify gate](verify-gate.md#signed-dispatch--what-it-binds-and-where-the-key-comes-from-135)).
+A run's graded manifest is
 final before its inventory is signed and before the receipt exists, so the usual path is the
 second one: the manifest names the receipt's path, and the post-close audit re-run supplies the
 key.
@@ -86,8 +92,12 @@ every link holds:
 5. The receipt's `inventory_sha256` is that signed digest. This refuses a receipt replayed
    against another inventory.
 6. That inventory pins this manifest's exact bytes. This refuses a manifest edited after close.
+7. It pins them **under this manifest's own path**: the matching entry must resolve (repo root
+   first, then the inventory's directory, as `inventory.py check` resolves it) to the file the
+   verifier read. A byte-copy at another path is refused (2026-10-27 audit, W3-04).
 
-The verdict NOTE names the signer, the unit, the revision and the digest that were bound.
+The verdict NOTE names the signer, the unit, the revision, the digest that were bound, the
+inventory entry that pinned the manifest, and where the trust key was read (W3-03).
 
 **What it does not verify.** Each of these needs separate evidence, and the NOTE says so:
 

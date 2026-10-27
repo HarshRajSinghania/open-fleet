@@ -319,7 +319,7 @@ Exits: 0 ok · 1 validation failure · 2 could-not-run or usage.
 ## `deny-hook.sh`
 
 PreToolUse guard for read-write workers (Bash, Edit, Write). Reads the hook event JSON
-on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-200`;
+on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-204`;
 behavior pinned by `tests/test_deny_hook.py`, `tests/test_deny_hook_multi_harness.py` and the
 differential corpus `tests/test_deny_hook_conformance.py` (#598, below).
 
@@ -398,7 +398,12 @@ Interpreter code is read as a command only for the literals it hands to an exec-
 When `OPEN_FLEET_UNIT_WORKTREE` (or its legacy alias `ORCA_UNIT_WORKTREE`, read only when the
 former is unset) is set, writes outside it deny — Edit/Write `file_path`,
 NotebookEdit `notebook_path`, and absolute-path Bash redirects and `tee` destinations —
-resolved through the full symlink chain. The self-guard denies, with or without a worktree, a
+resolved through the full symlink chain. A relative redirect or `tee` target after a `cd`/`pushd`
+the line names is judged where that cd may land (W1-04): `cd /etc && echo x > crontab` is a write
+to `/etc/crontab`, a cd that may not have run (`a || cd x; …`) counts both directories, a subshell
+restores the cwd, and a cd the text cannot place (`$VAR`, `-`, a glob, a substitution, a `CDPATH`
+lookup) denies the relative write after it. A relative target with no cd before it on the line is
+still not judged: the hook is not told the worker's cwd. The self-guard denies, with or without a worktree, a
 write, redirect, `tee`, `rm`/`mv`/`cp`/`ln`/`install`/`rsync`, `sed -i`/`perl -i`, `truncate`,
 `dd of=`, `sort -o`, `ed`/`ex`/`vim`, `curl -o`/`wget -O`, or `chmod`/`chown`/`chgrp` (bar an
 additive chmod mode) aimed at a hook config (`.claude/settings*.json` or another harness's

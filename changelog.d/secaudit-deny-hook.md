@@ -1,9 +1,11 @@
 - **The deny hook's write boundary, interpreter table and self-guard close a batch of 2026-10-27
-  security-audit findings, and the `ro` tier gains a real write floor** (W1-01..03, W1-05..08,
+  security-audit findings, and the `ro` tier gains a real write floor** (W1-01..08,
   W4-03, W4-05, W4-06, W4-09). A leading `~`/`$HOME` is expanded on every write-boundary path, so `echo > ~/.bashrc`
   and a `Write` of `~/.bashrc` are judged where the shell writes, not silently allowed (W1-01); an
   unquoted `$IFS`/`${IFS}` separator is field-split so each candidate head is judged with its
-  arguments (W1-02); the inline-interpreter class is closed beyond python/node — the awk family,
+  arguments (W1-02); a relative write target after a `cd` the line names is judged where that cd
+  lands, so `cd /etc && echo x > crontab` denies, and a cd the hook cannot place denies the
+  relative write after it (W1-04); the inline-interpreter class is closed beyond python/node — the awk family,
   lua/luajit/julia/Rscript `-e`, deno `eval`, a busybox applet, and sqlite3 `.shell`/`.system` and
   sed `e` are read for the shell they launch, awk collects EVERY program source so a benign `-f`
   file never hides a refused `-e` and an unreadable `-f`/`-E` program file fails closed, and an

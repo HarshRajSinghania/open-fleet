@@ -1329,15 +1329,31 @@ class TestBashWritesAreBounded(HookBase):
                     r = self._fire_bash(command)
                     self.assertEqual(r.stdout.strip(), "", command)
 
-    def test_a_relative_target_is_not_judged_and_says_so(self):
-        # The hook is not handed the worker's cwd and the segment before may have
-        # been a `cd`, so a relative target is outside what this can read. The
-        # header has to say that rather than implying full coverage.
-        r = self._fire_bash("cd /etc && echo pwned > passwd-copy")
-        self.assertEqual(r.stdout.strip(), "")
+    def test_a_relative_target_after_a_cd_is_judged_and_says_so(self):
+        # W1-04 (2026-10-27 audit): this test pinned `cd /etc && echo pwned > passwd-copy` as
+        # ALLOWED -- the boundary skipped every relative target, although the self-guard already
+        # followed a cd. A relative target after a cd the line names is judged where that cd
+        # lands; one with no cd before it is still unread, and the header says which is which.
+        self._deny("cd /etc && echo pwned > passwd-copy")
         text = HOOK.read_text(encoding="utf-8")
-        self.assertIn("ABSOLUTE targets only", text)
-        self.assertIn("every relative path", text)
+        self.assertIn("a relative target after a cd the line names", text)
+        self.assertIn("a relative path with no cd before it on the line", text)
+
+    def test_a_cd_moves_every_relative_write_after_it(self):
+        # One input per shape: a subshell, a ; join, a tee, a relative cd that climbs out, a cd
+        # that may not have run (||), a program fed to a shell after the cd, and a cd the text
+        # cannot place (denied: where it lands cannot be read).
+        for command in ("(cd /etc && echo x > crontab)", f"cd {self.outside}; echo x | tee landed",
+                        f"cd {self.wt} && cd .. && echo x > f", f"true || cd {self.outside}; echo x > f",
+                        f"cd {self.outside} && echo 'echo x > f' | sh", 'cd "$X" && echo x > f'):
+            with self.subTest(command=command):
+                self._deny(command)
+        # Controls: a cd that stays inside, a subshell that restores the cwd, an && chain that
+        # lands back inside, and a relative target with no cd before it.
+        for command in ("cd sub && echo x > new.txt", f"(cd {self.outside} && cat secret); echo x > o.txt",
+                        f"cd {self.outside} && cd {self.wt} && echo x > f", "echo x > rel.txt"):
+            with self.subTest(command=command):
+                self.assertEqual(self._fire_bash(command).stdout.strip(), "", command)
 
     def _fire_home(self, payload, home, cwd):
         return self.fire(payload, env_extra={"ORCA_UNIT_WORKTREE": str(self.wt), "HOME": str(home)},

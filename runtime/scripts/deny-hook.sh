@@ -130,11 +130,15 @@
 # expands; a shell word expands only when the lead is UNQUOTED, as bash does -- a
 # quoted `'~/x'` (or single-quoted `'$HOME/x'`) stays the literal relative path (W1-01).
 #
+# A relative target after a cd/pushd the line names is judged against the directory
+# that cd lands in (W1-04): `cd /etc && echo x > crontab` writes /etc/crontab. A cd
+# the text cannot place ($VAR, -, a glob, a substitution, a CDPATH lookup) makes a
+# relative write after it a DENY under a boundary, not a guess.
 # What the Bash half does NOT cover, and says so at the block itself: a relative
-# target (the hook is not told the worker's cwd, and the segment before it may
-# have been a `cd`, so judging one would be guessing), a `cp`/`mv`/`dd of=`
-# destination, a path built from a variable, and an interpreter writing through
-# its own API. The disposable sandbox is the boundary for those. The process's
+# target with no cd before it on the line (the hook is not told the worker's cwd,
+# which an earlier command may have moved, so judging one would be guessing), a
+# `cp`/`mv`/`dd of=` destination, a path built from a variable, and an interpreter
+# writing through its own API. The disposable sandbox is the boundary for those. The process's
 # own standard streams and /dev/null are allowed by name — not by a /dev/ prefix,
 # which would waive `> /dev/sda` along with them.
 #
@@ -227,7 +231,9 @@ Environment:
   OPEN_FLEET_UNIT_WORKTREE  when set, a write outside this directory is denied:
                       the Edit/Write/MultiEdit file_path or NotebookEdit
                       notebook_path, and a Bash redirect or tee destination
-                      naming an absolute path. ORCA_UNIT_WORKTREE is its legacy
+                      naming an absolute path, or a relative one after a cd
+                      the line names (a cd it cannot place denies the relative
+                      write after it). ORCA_UNIT_WORKTREE is its legacy
                       alias, read only when OPEN_FLEET_UNIT_WORKTREE is unset
                       or empty.
   OPEN_FLEET_HOOK_READONLY (or ORCA_HOOK_READONLY)  ro-tier write floor: every
@@ -4411,9 +4417,73 @@ def _code_guard_targets(code, depth=0):
 # and every tee operand, a leading ~/$HOME expanded QUOTE-AWARE (W1-01; Codex g1 P2 -- a quoted
 # ~ is left literal, as bash does). Read off the segment text so the raw (pre-unquote) word is
 # available to decide the expansion.
-for _wj, _wseg in _split(_judged):
-    for _wu, _wraw in _write_targets(_wseg):
-        record("W", _sh_home_path(_wu, _wraw))
+# A cd or pushd the line names moves every relative target after it (W1-04): `cd /etc && echo
+# x > crontab` writes /etc/crontab, and was never judged. The cwd is tracked as the SET of
+# directories a segment may run in: a segment joined by && to a cd runs only where that cd
+# landed, any other join (;, ||, |, a newline) may follow its failure too, so it may run in
+# either; a subshell restores the set, popd may return to any directory the line has held, and a
+# substitution or fed program (a later part) may run in any of them. A relative cd from where
+# the line starts resolves against the cwd of this hook, as the self-guard resolves it. A cd the
+# text cannot place ($VAR, -, a glob, a substitution, a CDPATH lookup) is "?", and a relative
+# target from "?" is a U record: the boundary denies it, since where it lands cannot be read. A
+# relative target with no cd before it stays unjudged (header).
+_W_BASE = os.getcwd()
+_W_CDPATH = bool(os.environ.get("CDPATH")) or "CDPATH" in raw_command
+
+
+def _cd_lands(cd, base):
+    """Where `cd cd` from base lands: a normalized absolute path, or "?" when unreadable."""
+    if cd == "?" or base == "?" or _SUB_MARK in cd:
+        return "?"
+    cd = _home_path(cd)
+    if cd.startswith("/"):
+        return os.path.normpath(cd)
+    if _W_CDPATH and cd.split("/", 1)[0] not in (".", ".."):
+        return "?"   # bash looks a relative name up in CDPATH first
+    return os.path.normpath(os.path.join(base or _W_BASE, cd))
+
+
+_wseen = {None}   # None: the directory the line starts in
+for _wk, _wpart in enumerate(_parts):
+    # (_wok, _wany): where the next segment may run if the last one succeeded / either way.
+    _wok = _wany = {None} if _wk == 0 else set(_wseen)
+    _wstack = []
+    try:
+        _wsegs = _split(_wpart)
+    except ValueError:
+        record("U", "?")   # a part this reader cannot split: no relative write in it is placeable
+        continue
+    for _wj, _wseg in _wsegs:
+        _wstate = set(_wok if _wj == "&&" else _wany)
+        _wargs = _tokenize(_wseg)[0]
+        if _wargs and _wargs[0].startswith("(") and not _wargs[0].startswith("(("):
+            _wstack.append(set(_wstate))
+        _wcd, _wws = _cd_target(_wargs), _command_words(_wargs)
+        _wnew = None
+        if _wws and _wws[0] == "popd":
+            _wnew = set(_wseen)
+        elif _wcd is not None:
+            _wnew = {_cd_lands(_wcd, _wb) for _wb in _wstate}
+        if _wnew is not None:
+            _wseen |= _wnew
+            # a redirect on the cd segment itself opens where that segment started
+            _wok, _wany = _wnew, _wstate | _wnew
+        else:
+            _wok = _wany = _wstate
+        for _wu, _wraw in _write_targets(_wseg):
+            _wp = _sh_home_path(_wu, _wraw)
+            if _wp.startswith("/"):
+                record("W", _wp)
+                continue
+            for _wb in sorted(_wstate, key=str):
+                if _wb is None:
+                    record("W", _wp)   # relative to an unknown cwd: the sh side skips it
+                elif _wb == "?":
+                    record("U", _wp)
+                else:
+                    record("W", os.path.join(_wb, _wp))
+        if _wargs and _wargs[-1].endswith(")") and not _wargs[-1].endswith("))") and _wstack:
+            _wok = _wany = _wstack.pop()
 
 
 _guard_hits = []
@@ -5798,14 +5868,19 @@ fi
 # destination are the two file writes in a shell line that can be read off the
 # text without knowing what the command does, so those are the two this covers.
 #
-# ABSOLUTE targets only. A relative target resolves against a working directory
-# this hook cannot know — the host does not hand it the worker's cwd, and the
-# segment before it may have been a `cd` — so judging one would be guessing, and
-# a boundary that guesses at half its cases is worse than one that says what it
-# covers. Deliberately NOT covered: `cp`/`mv`/`install` destinations, `dd of=`,
-# an interpreter writing through its own API, a path built from a variable, and
-# every relative path. The disposable sandbox is the boundary for those; this is
-# defense in depth, the same advisory status the rest of this hook carries.
+# Absolute targets, and a relative target after a cd the line names (W1-04): the
+# payload reader composes it with every directory that cd may land in, so `cd /etc
+# && echo x > crontab` is a write to /etc/crontab, and sends a U record when the cd
+# cannot be placed ($VAR, -, a glob, a substitution, a CDPATH lookup) -- denied,
+# since where it lands cannot be read. A relative target with no cd before it
+# resolves against a working directory this hook cannot know — the host does not
+# hand it the worker's cwd, which an earlier command may have moved — so judging
+# one would be guessing, and a boundary that guesses at half its cases is worse
+# than one that says what it covers. Deliberately NOT covered: `cp`/`mv`/`install`
+# destinations, `dd of=`, an interpreter writing through its own API, a path built
+# from a variable, and a relative path with no cd before it on the line. The
+# disposable sandbox is the boundary for those; this is defense in depth, the same
+# advisory status the rest of this hook carries.
 if [ -n "${UNIT_WORKTREE:-}" ]; then
   BOUND=$(cd "$UNIT_WORKTREE" 2>/dev/null && pwd -P) || BOUND=""
   if [ -z "$BOUND" ]; then
@@ -5826,7 +5901,7 @@ if [ -n "${UNIT_WORKTREE:-}" ]; then
     resolve_target "$_t"
     [ -n "$RESOLVED" ] || return 0
     case "$RESOLVED/" in "$BOUND"/*) return 0 ;; esac
-    decide deny "deny-hook: this worker may only write inside its own worktree. A shell redirect or tee destination names an absolute path outside the unit boundary."
+    decide deny "deny-hook: this worker may only write inside its own worktree. A shell redirect or tee destination names a path outside the unit boundary (an absolute path, or a relative one after a cd the line names)."
     exit 0
   }
 
@@ -5868,6 +5943,8 @@ if [ -n "${UNIT_WORKTREE:-}" ]; then
              # write shape this boundary exists to catch (#351).
              case "$(strip_prefix "${_RECORD#C }")" in tee|tee\ *|sudo\ tee|sudo\ tee\ *) _TEE=1 ;; esac ;;
       'W '*) bounded_write "${_RECORD#W }" ;;
+      'U '*) decide deny "deny-hook: this worker may only write inside its own worktree, and a relative write target here follows a cd this hook cannot place (\$VAR, -, a glob, a substitution, CDPATH), so where it lands cannot be checked. Name the directory literally or write to an absolute path (W1-04)."
+             exit 0 ;;
       'A '*) if [ "$_TEE" -eq 1 ]; then bounded_write "${_RECORD#A }"; fi ;;
     esac
   done <<EOF

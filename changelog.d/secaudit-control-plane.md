@@ -18,7 +18,11 @@
   list where it reads the key, not at the graded commit (W3-05); once `.orca/human-grant-pubkey`
   is pinned a gate-batch answer needs the human's signature or it stays owed, a sound lane must
   name `--pin-ref`, and the release gate reads the key at `refs/remotes/origin/main` and runs
-  `render --check` (W3-06). A worker-writable `gitleaks` is not run on any lane claiming soundness
+  `render --check` (W3-06). `gate-batch.py --pin-ref` takes only a commit id or a remote-tracking
+  ref and reads the set of gates at the same commit as the key: a gate the anchor carries that the
+  batch dropped, renamed or re-worded is listed owed, so `"gates": []` no longer passes the release
+  gate, which also fails when main carries no store or carries a view the release deleted.
+  A worker-writable `gitleaks` is not run on any lane claiming soundness
   (W3-10), and a toolchain file that changes while the verifier runs fails the run (W3-11). Two
   items wait on a human: tightening `decisions.py --pin-ref` (W3-07) changes two existing
   assertions and needs a one-way floor-guard waiver first, and committing the dispatch pubkey that

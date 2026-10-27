@@ -1002,22 +1002,38 @@ behavior pinned by `tests/test_gate_batch.py`.
 
 Usage: `gate-batch.py [--run DIR | --file PATH] <subcommand> ...`
 
-Subcommands: `init`, `add`, `answer`, `waive`, `overtake`, `list`, `stale`, `show`, `render`.
+Subcommands: `init`, `add`, `answer`, `waive`, `overtake`, `list`, `stale`, `show`, `render`,
+`sign-answer`.
 
 Flags: `--run` (run directory under docs/runs) or `--file` (explicit batch path, for
-tests and scratch). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,
+tests and scratch); `--pin-ref REF` (read the human grant key at that git ref through
+`decisions.py --pin-ref`; pass one the checked change cannot move — a remote-tracking ref or a
+commit id). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,
 `--resolved`, `--resolved-file`, `--force-init-over-md`; `add` takes `--id`, `--title`,
 `--question`, `--question-file`, `--asked`, `--related`, `--blocking`; `answer` takes a
 gate id plus `--answer`, `--source human:<name>` (who answered; required), `--date`; `waive`
 takes a gate id plus `--reason`, `--source human:<name>` (required), `--date`;
 `overtake` takes a gate id plus `--note`, `--source` (optional), `--date`; `list` takes `--status`,
 `--blocking`; `stale` takes `--days` (default 7), `--today`; `show` takes a gate id;
-`render` takes `--out`, `--check`.
+`render` takes `--out`, `--check`; `answer`, `waive` and `overtake` also take `--grant-sig`;
+`sign-answer` takes a gate id plus `--status`, `--answer`, `--source`, `--date`, `--key <seed>`.
 
 Gates move `owed` to exactly one of `answered`, `waived`, `overtaken` — re-transitioning
 is an error. Gate ids look like `G1`. `stale` reports gates owed N or more days (`--days`,
-default 7) and never notifies; `render --check` verifies the view matches the store. `related`/`blocking` are
+default 7) and never notifies; `render --check` verifies the view matches the store, and the
+release gate (`scripts/release_check.py` gate 1) runs it whenever the `.md` exists. `related`/`blocking` are
 store-only and never render.
+
+Who closed a gate (W3-06, 2026-10-27 audit): `source` is shape-checked only and the store is
+plain JSON, so a typed `"status": "answered", "source": "human:<anyone>"` used to satisfy the
+close predicate. Once the human grant key `decisions.py` reads is pinned
+(`.orca/human-grant-pubkey`), `answer`/`waive`/`overtake` require `--grant-sig` — the human's
+signature from `sign-answer`, made where the seed lives, over the run id, gate id, title,
+question, asked date, status, text, recorded date and source — and `list`/`stale` read any
+terminal gate whose signature does not verify as **owed** (`[owed]`, with the recorded status
+named). On a lane claiming soundness (`ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` set) `--pin-ref`
+is required and, with no key pinned, no answer verifies. With no key and no sound lane — this
+repository today, which commits no key (W3-09) — behaviour is unchanged.
 
 Exits: 0 ok (stale/list report exit 0 either way) · 1 `render --check` drift (the view
 differs from the store) · 2 usage or store error.

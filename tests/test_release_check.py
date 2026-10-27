@@ -308,6 +308,21 @@ class GatesFailOnAFixtureThatViolatesThem(unittest.TestCase):
             self.assertEqual(status, rc.PASS, detail)
             self.assertIn("G1 answered", detail)
 
+    def test_a_view_that_disagrees_with_the_store_fails_gate_1(self):
+        # W3-06 (2026-10-27 security audit): `render --check` ran in tests only, so the
+        # human-readable gate-batch.md could silently disagree with the store it claims to show.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_fixture(tmp, owed=False)
+            store = root / "docs" / "runs" / rc.GATE_BATCH_RUN / "gate-batch.json"
+            (store.parent / "gate-batch.md").write_text("# every gate answered, trust me\n",
+                                                        encoding="utf-8")
+            _, status, detail = find(rc.gate1(ctx_for(root)), "gate1/gate-batch-owed")
+            self.assertEqual(status, rc.FAIL, detail)
+            self.assertIn("render --check", detail)
+            gb.refresh_view(store, gb.load_batch(store))
+            _, status, detail = find(rc.gate1(ctx_for(root)), "gate1/gate-batch-owed")
+            self.assertEqual(status, rc.PASS, detail)
+
     def test_a_missing_gate_batch_store_fails_not_skips(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, status, detail = find(rc.gate1(ctx_for(make_fixture(tmp, batch=False))),

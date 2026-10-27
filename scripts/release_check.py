@@ -433,6 +433,13 @@ def check_gate_batch_owed(ctx):
         return (name, FAIL, f"{label}: {r.stderr}")
     if not r.ok:
         return (name, FAIL, f"{label}: exit {r.returncode}: {tail(r.stderr)}")
+    # W3-06: the human-readable view must say what the store says — a .md edited to disagree
+    # used to be caught by tests only. (No .md beside the store: no view to disagree.)
+    if ctx.read(f"docs/runs/{GATE_BATCH_RUN}/gate-batch.md") is not None:
+        view = ctx.py(tool, "--run", GATE_BATCH_RUN, "render", "--check")
+        if not view.ok:
+            return (name, FAIL, f"gate-batch.py --run {GATE_BATCH_RUN} render --check: the .md "
+                                f"view disagrees with the store: {tail(view.stderr)}")
     owed = [m.group(1) for m in (OWED_LINE.match(ln) for ln in r.stdout.splitlines()) if m]
     if owed:
         return (name, FAIL, f"{len(owed)} owed gate(s) in {GATE_BATCH_RUN}: {', '.join(owed)}")

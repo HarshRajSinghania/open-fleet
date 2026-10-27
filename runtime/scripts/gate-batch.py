@@ -38,6 +38,7 @@ if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sy
 
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -66,11 +67,99 @@ REQUIRED_BATCH_KEYS = ("schema", "run_id", "run_title", "intro", "gates",
 REQUIRED_GATE_KEYS = ("id", "title", "question", "asked", "status", "answer",
                       "answered", "related", "blocking")
 # Keys a gate MAY carry: `source` (human:<name>) arrived 2026-10-26; earlier records lack it.
-OPTIONAL_GATE_KEYS = ("source",)
+# `grant_sig` (W3-06): the human's Ed25519 signature over the terminal record (answer_payload).
+OPTIONAL_GATE_KEYS = ("source", "grant_sig")
+GRANT_SIG_RE = re.compile(r"^[0-9a-f]{128}$")
+# A caller that sets one of these claims a sound (off-worker) lane, as for verify-gate.sh.
+PROVENANCE_VARS = ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
+ANSWER_DOMAIN = "open-fleet gate-batch answer v1\n"
 
 
 class GateError(Exception):
     """A usage or store error: the CLI prints it and exits 2."""
+
+
+# --- W3-06: who closed a gate --------------------------------------------------------------
+# The store is a plain JSON file and `source` is only shape-checked, so `"status": "answered",
+# "source": "human:<anyone>"` is a record any worker can type — and the run-close predicate
+# (`list --status owed --blocking <unit>`, the release gate's own check) read such a gate as
+# answered by a human (2026-10-27 security audit, W3-06). Once the human grant key decisions.py
+# reads is pinned (.orca/human-grant-pubkey), a terminal gate counts only with a signature that
+# verifies over the run, the gate, its status, text, date and source; one that does not is OWED.
+# On a lane claiming soundness, no pinned key means no answer verifies. No key and no sound lane:
+# the behaviour before W3-06, unchanged.
+
+def _decisions():
+    """decisions.py, loaded by path: it owns the human grant key (where the pin is read, the
+    --pin-ref anchor, the sound-lane rule) and the Ed25519 module it verifies with. None when
+    it is not beside this script."""
+    path = Path(__file__).resolve().parent / "decisions.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("decisions_for_gate_batch", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def sound_lane():
+    """`VAR=value` for the first provenance variable set, or None (the advisory lane)."""
+    return next((f"{var}={os.environ[var]}" for var in PROVENANCE_VARS
+                 if (os.environ.get(var) or "").strip()), None)
+
+
+def trust_key(batch_path, pin_ref=None):
+    """The pinned human grant key for this batch's repository (32 bytes), or None — read as
+    decisions.py reads it (the repository root's pin, or the pin at --pin-ref). On a lane claiming
+    soundness --pin-ref is required: without it the key would come from the working tree the
+    checked change writes, where a swapped or DELETED pin turns every typed answer back on."""
+    lane = sound_lane()
+    if lane and not pin_ref:
+        raise GateError(f"{lane} claims a sound lane, but no --pin-ref names where the human "
+                        "grant key is read; the working tree's pin is the checked change's to "
+                        "swap or delete (W3-06)")
+    dec = _decisions()
+    if dec is None:
+        root = next((p for p in Path(batch_path).resolve().parents if (p / ".git").exists()),
+                    Path(__file__).resolve().parent.parent.parent)
+        if pin_ref or sound_lane() or (root / ".orca" / "human-grant-pubkey").exists():
+            raise GateError("decisions.py, which reads and verifies the human grant key, is not "
+                            "beside this script — a human answer cannot be told from a typed "
+                            "one; fail-closed (W3-06)")
+        return None
+    try:
+        return dec.grant_pubkey(batch_path, pin_ref)
+    except dec.DecisionsError as err:
+        raise GateError(str(err)) from err
+
+
+def answer_payload(data, gate):
+    """The bytes a human signs to close `gate`: domain tag + one JSON array of every field that
+    says what was decided, by whom, when, in which run — so the signature moves with nothing."""
+    fields = [data["run_id"], gate["id"], gate["title"], gate["question"], gate["asked"],
+              gate["status"], gate["answer"], gate["answered"], gate.get("source")]
+    return (ANSWER_DOMAIN + json.dumps(fields, ensure_ascii=False,
+                                       separators=(",", ":"))).encode("utf-8")
+
+
+def answer_verified(data, gate, pub):
+    """True when `gate` carries a grant_sig that verifies under `pub` over answer_payload."""
+    sig = gate.get("grant_sig")
+    dec = _decisions() if pub is not None else None
+    if dec is None or not (isinstance(sig, str) and GRANT_SIG_RE.match(sig)):
+        return False
+    try:
+        return bool(dec._ed25519().checkvalid(bytes.fromhex(sig), answer_payload(data, gate), pub))
+    except Exception:  # a malformed signature verifies nothing
+        return False
+
+
+def effective_status(data, gate, pub=None, sound=False):
+    """The status the close predicate reads: a terminal gate the trust rule cannot verify is
+    OWED. With no key and no sound lane, the recorded status stands."""
+    if gate["status"] == "owed" or (pub is None and not sound):
+        return gate["status"]
+    return gate["status"] if answer_verified(data, gate, pub) else "owed"
 
 
 def repo_root():
@@ -137,6 +226,11 @@ def validate_gate(gate):
         raise GateError(f"gate {gate['id']}: source must be human:<name>, got {source!r}")
     if gate["status"] == "owed" and source is not None:
         raise GateError(f"gate {gate['id']} is owed but carries a source")
+    sig = gate.get("grant_sig")
+    if sig is not None and not (isinstance(sig, str) and GRANT_SIG_RE.match(sig)):
+        raise GateError(f"gate {gate['id']}: grant_sig must be 128 lowercase hex characters")
+    if gate["status"] == "owed" and sig is not None:
+        raise GateError(f"gate {gate['id']} is owed but carries a grant_sig")
 
 
 def validate_batch(data):
@@ -270,25 +364,27 @@ def transition(data, gid, status, text, answered=None, source=None):
     return gate
 
 
-def list_gates(data, status=None, blocking=None):
+def list_gates(data, status=None, blocking=None, pub=None, sound=False):
     """Gates by status and, optionally, by blocked ref. The close rule waits
     on list(status="owed", blocking=<unit>): every owed blocker whatever its
-    age — `stale` is only a reminder report and must never gate a close."""
+    age — `stale` is only a reminder report and must never gate a close.
+    Status is the EFFECTIVE one (W3-06): with a pinned key or on a sound lane
+    an unverified terminal gate is owed."""
     if status is not None and status not in STATUSES:
         raise GateError(f"status {status!r} is not one of "
                         f"{', '.join(STATUSES)}")
     return [g for g in data["gates"]
-            if (status is None or g["status"] == status)
+            if (status is None or effective_status(data, g, pub, sound) == status)
             and (blocking is None or blocking in g["blocking"])]
 
 
-def stale_gates(data, days, today=None):
+def stale_gates(data, days, today=None, pub=None, sound=False):
     if days < 1:
         raise GateError(f"--days must be >= 1, got {days}")
     today = today or today_utc()
     stale = []
     for gate in data["gates"]:
-        if gate["status"] != "owed":
+        if effective_status(data, gate, pub, sound) != "owed":
             continue
         age = (today - parse_date(gate["asked"], "asked")).days
         if age >= days:
@@ -401,10 +497,14 @@ def _split_refs(values):
     return refs
 
 
-def _fmt_list(gate):
-    head = (f"{gate['id']} [{gate['status']}] asked {gate['asked']} "
+def _fmt_list(gate, shown=None):
+    shown = shown or gate["status"]
+    head = (f"{gate['id']} [{shown}] asked {gate['asked']} "
             f"\u00b7 {gate['title']}")
-    if gate["status"] != "owed":
+    if shown != gate["status"]:
+        head += (f" (recorded {gate['status']} {gate['answered']}, but not a verified human "
+                 "answer \u2014 W3-06)")
+    elif gate["status"] != "owed":
         head += f" \u2192 recorded {gate['answered']}"
     if gate["blocking"]:
         head += f" (blocking {', '.join(gate['blocking'])})"
@@ -441,6 +541,11 @@ def build_parser():
                         help="run directory under docs/runs/")
     target.add_argument("--file", metavar="PATH",
                         help="explicit batch JSON path (tests, scratch)")
+    parser.add_argument("--pin-ref", default=None, metavar="REF",
+                        help="read the human grant key (.orca/human-grant-pubkey) at this git "
+                             "ref through decisions.py --pin-ref — pass one the checked change "
+                             "cannot move (a remote-tracking ref or a commit id); required on a "
+                             "sound lane (ORCA_PROVENANCE set) — W3-06")
     # The same flags after the subcommand (SUPPRESS keeps main-parser
     # values unless re-given): `list --run x` and `--run x list` both work.
     store = argparse.ArgumentParser(add_help=False)
@@ -502,6 +607,9 @@ def build_parser():
                    help="who answered, as decisions.py records a grant (human:<name>)")
     p.add_argument("--date", default=None,
                    help="recorded date YYYY-MM-DD (default: today, UTC)")
+    p.add_argument("--grant-sig", default=None, metavar="HEX",
+                   help="the human's signature from sign-answer; required once "
+                        ".orca/human-grant-pubkey is pinned (W3-06)")
 
     p = subs.add_parser("waive", parents=[store],
                         help="record a waiver (owed -> waived)",
@@ -515,6 +623,9 @@ def build_parser():
                    help="who ruled it moot (human:<name>)")
     p.add_argument("--date", default=None,
                    help="recorded date YYYY-MM-DD (default: today, UTC)")
+    p.add_argument("--grant-sig", default=None, metavar="HEX",
+                   help="the human's signature from sign-answer; required once "
+                        ".orca/human-grant-pubkey is pinned (W3-06)")
 
     p = subs.add_parser("overtake", parents=[store],
                         help="record events answering first (owed -> overtaken)",
@@ -532,6 +643,32 @@ def build_parser():
                    help="who recorded the overtaking (optional: events, not a person, answered)")
     p.add_argument("--date", default=None,
                    help="recorded date YYYY-MM-DD (default: today, UTC)")
+    p.add_argument("--grant-sig", default=None, metavar="HEX",
+                   help="the human's signature from sign-answer; required once "
+                        ".orca/human-grant-pubkey is pinned — an overtaken blocker leaves the "
+                        "owed set too (W3-06)")
+
+    p = subs.add_parser("sign-answer", parents=[store],
+                        help="print the human's signature for one terminal record (W3-06)",
+                        description="Sign, with the human grant seed (decisions.py "
+                                    "grant-keygen), the exact record answer/waive/overtake "
+                                    "will write: run, gate, status, text, date and source. "
+                                    "Run it where the seed lives — never on a worker. Pass "
+                                    "the same --date to both.",
+                        epilog="example: gate-batch.py --run my-run sign-answer G1 "
+                               "--status answered --answer 'the vault holds the key' "
+                               "--source human:lia --date 2026-09-15 --key ~/.open-fleet/human-grant-key")
+    p.add_argument("gid", help="gate id, e.g. G1")
+    p.add_argument("--status", required=True, choices=list(TERMINAL),
+                   help="the terminal status the record will carry")
+    p.add_argument("--answer", default=None,
+                   help="the answer / waiver reason / overtake note, exactly as recorded")
+    p.add_argument("--source", default=None, metavar="human:<name>",
+                   help="who answered (required for answered and waived)")
+    p.add_argument("--date", default=None,
+                   help="recorded date YYYY-MM-DD (default: today, UTC)")
+    p.add_argument("--key", required=True, metavar="SEED",
+                   help="the human grant seed (decisions.py grant-keygen)")
 
     p = subs.add_parser("list", parents=[store],
                         help="list gates; warn on dangling manifest citations",
@@ -640,22 +777,58 @@ def main(argv=None):
             field = {"answer": "answer", "waive": "reason",
                      "overtake": "note"}[args.command]
             text = getattr(args, field)
+            pub = trust_key(path, args.pin_ref)
             gate = transition(data, args.gid, status, text,
                               answered=args.date, source=args.source)
+            if pub is None and args.grant_sig:
+                raise GateError("--grant-sig given but no human grant key is pinned "
+                                "(.orca/human-grant-pubkey): a signature nothing can verify "
+                                "fails closed (W3-06)")
+            if pub is not None:
+                if not args.grant_sig:
+                    raise GateError(f"a human grant key is pinned, so {status} {args.gid} needs "
+                                    "--grant-sig (gate-batch.py sign-answer, with the human's "
+                                    "seed): an unsigned answer is one anyone could have typed "
+                                    "(W3-06)")
+                gate["grant_sig"] = args.grant_sig.strip().lower()
+                if not answer_verified(data, gate, pub):
+                    raise GateError(f"--grant-sig does not verify for {args.gid} as it would be "
+                                    "recorded (run, gate, status, text, date and source are all "
+                                    "signed) — not the pinned human's answer (W3-06)")
             save_batch(path, data)
             refresh_view(path, data)
             print(f"{gate['id']} -> {status}")
             return 0
+        if args.command == "sign-answer":
+            dec = _decisions()
+            if dec is None:
+                raise GateError("decisions.py (the human grant key's owner) is not beside this "
+                                "script — nothing to sign with (W3-06)")
+            try:
+                seed = bytes.fromhex(Path(args.key).expanduser().read_text(
+                    encoding="utf-8").strip())
+            except (OSError, ValueError) as err:
+                raise GateError(f"--key {args.key} is not a readable hex seed: {err}")
+            if len(seed) != 32:
+                raise GateError(f"--key {args.key} is not a 32-byte seed")
+            trial = json.loads(json.dumps(data))  # sign the record transition() WOULD write
+            gate = transition(trial, args.gid, args.status, args.answer,
+                              answered=args.date, source=args.source)
+            ed = dec._ed25519()
+            print(ed.signature(answer_payload(trial, gate), seed, ed.publickey(seed)).hex())
+            return 0
         if args.command == "list":
-            for gate in list_gates(data, args.status, args.blocking):
-                print(_fmt_list(gate))
+            pub, sound = trust_key(path, args.pin_ref), bool(sound_lane())
+            for gate in list_gates(data, args.status, args.blocking, pub, sound):
+                print(_fmt_list(gate, effective_status(data, gate, pub, sound)))
             for warning in check_citations(data, path.parent):
                 print(warning, file=sys.stderr)
             return 0
         if args.command == "stale":
             today = parse_date(args.today, "--today") \
                 if args.today else None
-            for gate, age in stale_gates(data, args.days, today):
+            pub, sound = trust_key(path, args.pin_ref), bool(sound_lane())
+            for gate, age in stale_gates(data, args.days, today, pub, sound):
                 print(f"{gate['id']} owed {age} days "
                       f"(asked {gate['asked']}) \u00b7 {gate['title']}")
             return 0

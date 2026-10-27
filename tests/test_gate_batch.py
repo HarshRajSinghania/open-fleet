@@ -16,6 +16,7 @@ import importlib.util
 import io
 import json
 import re
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -27,6 +28,15 @@ _spec = importlib.util.spec_from_file_location(
     "gate_batch", ROOT / "runtime" / "scripts" / "gate-batch.py")
 gb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gb)
+
+
+def _ed25519():
+    """The vendored Ed25519 the human grant key signs with (decisions.py loads the same file)."""
+    spec = importlib.util.spec_from_file_location(
+        "ed25519_for_gate_batch", ROOT / "runtime" / "scripts" / "ed25519.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 RUN_DIR = ROOT / "docs" / "runs" / "2026-09-14-clean-sweep-tracker"
 REAL_JSON = RUN_DIR / "gate-batch.json"
@@ -696,6 +706,115 @@ class Disambiguation(unittest.TestCase):
         parser = gb.build_parser()
         blob = (parser.description or "") + (parser.epilog or "")
         self.assertIn("NOT", blob)
+
+
+class HumanAnswersAreSignedOnceAKeyIsPinned(unittest.TestCase):
+    """W3-06 (2026-10-27 security audit, P2): `source` was shape-checked only (`human:\\S+`) and
+    the store is plain JSON, so a worker could write `"status": "answered", "source": "human:x"`
+    (or run `answer --source human:anyone`) and the run-close predicate — `list --status owed
+    --blocking <unit>`, the release gate's own check — read the blocker as answered by a human.
+    Once `.orca/human-grant-pubkey` is pinned (decisions.py's human grant key), a terminal gate
+    counts only with a signature that verifies over the run, the gate, its status, text, date and
+    source; an unverifiable one is OWED. On a lane claiming soundness, no pinned key means no
+    answer verifies. With no key and no sound lane nothing changes (this repository today)."""
+
+    SEED = bytes(range(7, 39))
+    SCRIPT = ROOT / "runtime" / "scripts" / "gate-batch.py"
+
+    def setUp(self):
+        import subprocess
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = Path(self._td.name).resolve()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.tmp)], check=True)
+        self.ed = _ed25519()
+        self.pin = self.tmp / ".orca" / "human-grant-pubkey"
+        self.pin.parent.mkdir()
+        self.pin.write_text(self.ed.publickey(self.SEED).hex() + "\n", encoding="utf-8")
+        self.seed_path = Path(tempfile.mkdtemp()) / "human-seed"
+        self.addCleanup(lambda: self.seed_path.unlink(missing_ok=True))
+        self.seed_path.write_text(self.SEED.hex() + "\n", encoding="utf-8")
+        self.seed_path.chmod(0o600)
+        self.batch = self.tmp / "docs" / "runs" / "r" / "gate-batch.json"
+        data = gb.init_batch(self.batch, run_id="run_w306", run_title="w306")
+        add_owed(data, "G1", blocking=["#1"])
+        gb.save_batch(self.batch, data)
+
+    def cli(self, *args, env_extra=None):
+        import os
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        env.update(env_extra or {})
+        return subprocess.run([sys.executable, str(self.SCRIPT), "--file", str(self.batch), *args],
+                              capture_output=True, text=True, env=env)
+
+    def owed(self, **kw):
+        r = self.cli("list", "--status", "owed", "--blocking", "#1", **kw)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def type_an_answer(self):
+        data = json.loads(self.batch.read_text(encoding="utf-8"))
+        data["gates"][0].update(status="answered", answer="ship it", answered="2026-09-15",
+                                source="human:lia")
+        self.batch.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_an_answer_typed_into_the_store_is_still_owed(self):
+        self.type_an_answer()
+        self.assertIn("G1 [owed]", self.owed(), "a typed answer satisfied the close predicate")
+
+    def test_the_cli_refuses_an_unsigned_human_answer(self):
+        r = self.cli("answer", "G1", "--answer", "ship it", "--source", "human:lia",
+                     "--date", "2026-09-15")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("--grant-sig", r.stderr)
+        self.assertIn("G1 [owed]", self.owed())
+
+    def test_a_signed_answer_closes_the_gate_and_only_that_answer_verifies(self):
+        sign = self.cli("sign-answer", "G1", "--status", "answered", "--answer", "ship it",
+                        "--source", "human:lia", "--date", "2026-09-15",
+                        "--key", str(self.seed_path))
+        self.assertEqual(sign.returncode, 0, sign.stderr)
+        sig = sign.stdout.strip()
+        wrong = self.cli("answer", "G1", "--answer", "ship it NOW", "--source", "human:lia",
+                         "--date", "2026-09-15", "--grant-sig", sig)
+        self.assertEqual(wrong.returncode, 2, wrong.stdout)
+        self.assertIn("does not verify", wrong.stderr)
+        other = self.cli("answer", "G1", "--answer", "ship it", "--source", "human:mallory",
+                         "--date", "2026-09-15", "--grant-sig", sig)
+        self.assertEqual(other.returncode, 2, other.stdout)
+        ok = self.cli("answer", "G1", "--answer", "ship it", "--source", "human:lia",
+                      "--date", "2026-09-15", "--grant-sig", sig)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertNotIn("G1", self.owed())
+        # the signature travels with the record: copying it onto an edited answer revokes it
+        data = json.loads(self.batch.read_text(encoding="utf-8"))
+        data["gates"][0]["answer"] = "ship it, and also drop the review"
+        self.batch.write_text(json.dumps(data), encoding="utf-8")
+        self.assertIn("G1 [owed]", self.owed())
+
+    def test_an_overtaken_gate_needs_the_signature_too(self):
+        data = json.loads(self.batch.read_text(encoding="utf-8"))
+        data["gates"][0].update(status="overtaken", answered="2026-09-15")
+        self.batch.write_text(json.dumps(data), encoding="utf-8")
+        self.assertIn("G1 [owed]", self.owed())
+
+    def test_a_sound_lane_with_no_pinned_key_verifies_no_answer(self):
+        import subprocess
+        self.pin.unlink()
+        subprocess.run(["git", "-C", str(self.tmp), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+        base = subprocess.run(["git", "-C", str(self.tmp), "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        self.type_an_answer()
+        self.assertNotIn("G1", self.owed(), "no key, no sound lane: unchanged behaviour")
+        sound = {"ORCA_PROVENANCE": "ci"}
+        r = self.cli("list", "--status", "owed", env_extra=sound)
+        self.assertEqual(r.returncode, 2, r.stdout)  # no --pin-ref names the trust anchor
+        self.assertIn("--pin-ref", r.stderr)
+        r = self.cli("--pin-ref", base, "list", "--status", "owed", env_extra=sound)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("G1 [owed]", r.stdout)
 
 
 if __name__ == "__main__":

@@ -1438,18 +1438,19 @@ class AnUnreadableAttributesFileIsRefused(unittest.TestCase):
         for kind in ("fifo", "symlink", "directory", "oversized"):
             p, base = self._repo(kind)
             mb = floor_guard.merge_base(p.repo, base)
+            repo = p.repo
             for site, call, refusal in (
-                    ("custody", lambda: gitexec.custody(p.repo).__enter__(), gitexec.GitCustodyRefused),
-                    ("floor_guard", lambda: floor_guard.collect_diff(p.repo, mb), floor_guard.GuardError),
-                    ("diff_scope", lambda: diff_scope.changed_files(p.repo, base), diff_scope.ScopeError),
-                    ("hint_provenance", lambda: hint_provenance.LiveSource(str(p.repo)).changes_since(base),
+                    ("custody", lambda r=repo: gitexec.custody(r).__enter__(), gitexec.GitCustodyRefused),
+                    ("floor_guard", lambda r=repo, m=mb: floor_guard.collect_diff(r, m), floor_guard.GuardError),
+                    ("diff_scope", lambda r=repo, b=base: diff_scope.changed_files(r, b), diff_scope.ScopeError),
+                    ("hint_provenance", lambda r=repo, b=base: hint_provenance.LiveSource(str(r)).changes_since(b),
                      hint_provenance.ProvenanceError)):
                 with self.subTest(kind=kind, site=site):
                     done, got = _finishes(call)
                     self.assertTrue(done, f"{site} hung on a {kind} core.attributesFile")
                     self.assertIsInstance(got, refusal)
             with self.subTest(kind=kind, site="posix status"):
-                done, got = _finishes(lambda: posix._git(["status", "--porcelain"], cwd=p.repo))
+                done, got = _finishes(lambda r=repo: posix._git(["status", "--porcelain"], cwd=r))
                 self.assertTrue(done, f"posix status hung on a {kind} core.attributesFile")
                 self.assertEqual(got.returncode, 127, got)
                 self.assertIn("core.attributesFile", got.stderr)

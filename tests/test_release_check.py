@@ -524,6 +524,26 @@ class GateOneReadsTheHumanKeyAtTheAnchor(unittest.TestCase):
         self.assertEqual(status, rc.FAIL, detail)
         self.assertIn("refs/remotes/origin/main", detail)
 
+    def test_a_local_branch_spelled_as_the_absent_anchor_is_no_anchor(self):
+        # W3-07 class, Codex review (P1): with refs/remotes/origin/main ABSENT, symbolic-ref
+        # failed, the name kept its spelling, and rev-parse expanded it to the LOCAL branch
+        # refs/heads/refs/remotes/origin/main — here a commit that drops the pin and types the
+        # answer, so the key read "at the anchor" was none and the typed answer closed G1.
+        (self.root / ".orca" / "human-grant-pubkey").unlink()
+        self.answer(signed=False)
+        git = ["git", "-C", str(self.root)]
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                        "commit.gpgsign=false", "commit", "-q", "-m", "no pin, typed"], check=True)
+        subprocess.run([*git, "update-ref", "-d", "refs/remotes/origin/main"], check=True)
+        subprocess.run([*git, "update-ref", "refs/heads/refs/remotes/origin/main", "HEAD"],
+                       check=True)
+        for env in (None, {"ORCA_PROVENANCE": "ci"}):
+            with self.subTest(env=env):
+                _, status, detail = self.gate1(env)
+                self.assertEqual(status, rc.FAIL, detail)
+                self.assertIn("exactly that name", detail)
+
 
 class GateOneHoldsTheReleaseToTheAnchoredGateSet(unittest.TestCase):
     """PR #719 review round 3 (P1): a signature protects each ANSWER, but nothing authenticated

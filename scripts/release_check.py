@@ -453,14 +453,21 @@ def check_gate_batch_owed(ctx):
     store = f"docs/runs/{GATE_BATCH_RUN}/gate-batch.json"
     view_md = f"docs/runs/{GATE_BATCH_RUN}/gate-batch.md"
     anchor = "refs/remotes/origin/main"
-    target = ctx.run(["git", "symbolic-ref", "-q", anchor], memo=False)
-    ref = target.stdout.strip() if target.ok and target.stdout.strip() else anchor
-    commit = ctx.run(["git", "rev-parse", "--verify", "-q", f"{ref}^{{commit}}"], memo=False)
-    pin = commit.stdout.strip() if commit.ok else ""
-    if not (ref.startswith("refs/remotes/") and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", pin)):
+
+    def git(*args):
+        r = ctx.run(["git", *args], memo=False)
+        return r.returncode, r.stdout
+
+    # W3-07 class: the one exact-name rule (gitexec.remote_tracking_commit). With the anchor
+    # ABSENT, `rev-parse refs/remotes/origin/main` expanded it to a local branch
+    # refs/heads/refs/remotes/origin/main — one the release tree's author can write, carrying the
+    # key and the gate set it chose.
+    pin, _target, why = _gitexec().remote_tracking_commit(git, anchor)
+    if pin is None:
         return (name, FAIL, f"the human grant key is read at {anchor}, which names no "
-                            "remote-tracking commit in this checkout (fetch origin): a key read "
-                            "from the tree being released could be one it deleted (W3-06)")
+                            f"remote-tracking commit in this checkout (fetch origin) — {anchor} "
+                            f"{why}: a key read from the tree being released could be one it "
+                            "deleted (W3-06, W3-07)")
     label = f"gate-batch.py --run {GATE_BATCH_RUN} --pin-ref {pin[:12]} list --status owed"
     r = ctx.py(tool, "--run", GATE_BATCH_RUN, "--pin-ref", pin, "list", "--status", "owed")
     if r.missing:
@@ -535,6 +542,17 @@ def gate1(ctx):
 # ---------------------------------------------------------------------------
 # Gate 2 — flagships proven (epic DoD 2)
 # ---------------------------------------------------------------------------
+
+def _gitexec():
+    """runtime/scripts/gitexec.py, by path: the one exact-name rule a trust anchor answers to."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gitexec_for_release_check", Path(__file__).resolve().parent.parent / "runtime"
+        / "scripts" / "gitexec.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
 
 def _catalog_grammar():
     """The catalog's one frontmatter reader (runtime/scripts/_catalog_grammar.py), by path."""

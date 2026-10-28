@@ -2252,8 +2252,16 @@ data: `text`/`eol`/`working-tree-encoding` are built-in conversions a clean CRLF
 fingerprint as its tree, and a `filter=` it selects names a driver the custody never defines. The
 repository's data-only `core.*` settings (line endings and `safecrlf`, file modes, name folding,
 stat fields, sparse flags, `checkRoundtripEncoding`) ride as command-line pairs for the same
-reason; a repository-scope `core.excludesFile` or `core.attributesFile` does not (an untracked file
-only it hid counts and reads STALE). A checked-out submodule is never entered: `git add` would ask
+reason; a repository-scope `core.excludesFile` does not (an untracked file only it hid counts and
+reads STALE). A repository-scope `core.attributesFile` is attribute data too, and dropping it made
+a clean CRLF checkout it steers read STALE, so its CONTENT is carried: the path as git expands it
+(a relative one from the work tree top), read only as a regular file of at most 1 MiB, opened
+without following a final symlink and without blocking (by `python3 -I`, since sh cannot), into a
+file the custody's own `core.attributesFile` names — the same lowest precedence, below
+`.gitattributes` and `info/attributes`. A FIFO, device, directory, symlink or larger file is exit 1,
+never dropped; a missing file or empty value is no attributes, as for git; the global and system
+files stay off. The exit-3 `check-attr` runs in custody too, so no git here opens a file the worker
+names. A checked-out submodule is never entered: `git add` would ask
 whether it is dirty with a child git under the submodule's OWN config, and nothing turns that off,
 so every gitlink whose path is a directory is left out of `add -A` and refreshed with
 `update-index`, which reads the submodule's HEAD in-process (a moved submodule still changes the
@@ -2282,7 +2290,8 @@ config channels that outrank or blind the belt (`GIT_CONFIG_PARAMETERS`, `GIT_CO
 
 Exits: 0 prints the hash · 1 outside a git repo, no commits and no usable index, no absolute
 git on PATH, a repository the custody cannot stage (an unhonourable extension, a non-regular
-file where git reads one, a gitlink path holding a newline), or an exit-3 check that could not run · 3 a path staged differently from HEAD is filtered by a declared driver, reason on
+file where git reads one, a `core.attributesFile` that is not a regular file of at most 1 MiB, a
+gitlink path holding a newline), or an exit-3 check that could not run · 3 a path staged differently from HEAD is filtered by a declared driver, reason on
 stderr, nothing on stdout (callers fail closed on nonzero — never treat it as an empty fingerprint).
 
 > Why this and not `HEAD^{tree}`: committing identical content must not invalidate a

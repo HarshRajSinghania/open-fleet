@@ -11,8 +11,10 @@
   over the repository's objects and work tree, whose config defines no driver, so a filter a
   still-running worker adds after the driver listing neither runs nor chooses the fingerprint;
   a partial clone or a non-regular `info/exclude` is exit 1, and the staged objects no longer
-  land in the repository's store. The custody carries the repository's `info/attributes` and its
-  line-ending settings as data, so a clean CRLF checkout still fingerprints as its tree; a
+  land in the repository's store. The custody carries the repository's `info/attributes`, the
+  content of its own `core.attributesFile` (read only as a regular file of at most 1 MiB, never
+  opened blocking; anything else is exit 1) and its line-ending settings as data, so a clean CRLF
+  checkout still fingerprints as its tree; a
   checked-out submodule is never entered by a child git (gitlinks are refreshed with
   `update-index`, so a moved submodule still counts); and a failed exit-3 check is exit 1, not a
   printed tree.

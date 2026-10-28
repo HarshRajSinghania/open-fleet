@@ -2576,6 +2576,153 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
                     target.unlink()
 
 
+class TestTheFinalReadingDecides(unittest.TestCase):
+    """W4-04, Codex round 5 (two P1s). (1) A read of the spawn identity that failed WHILE a session
+    waited on an in-flight reservation cleared every profile and set identity_ok=0, but the ro
+    fail-safe ran only after the first read, so the child launched uncapped. The cap is now applied
+    from the final identity state. (2) `json.load` keeps the last of two equal keys, so
+    `"agentTerminalHandle": "term_live", "agentTerminalHandle": "term_dead"` registered only the
+    dead pane, and a complete scan finding no carrier for it released the reservation. The handle
+    extraction now reads every occurrence and keeps the reservation; every other reader of a runtime
+    response refuses an ambiguous document (duplicate key, NaN, a number that overflows)."""
+
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    _stub = TestSpawnWorkerV5Lanes._stub
+    tree = TestIdentitySurvivesAScrubbedEnvironment.tree
+    lane = TestIdentitySurvivesAScrubbedEnvironment.lane
+    scrubbed = TestIdentitySurvivesAScrubbedEnvironment.scrubbed
+    roots = TestIdentitySurvivesAScrubbedEnvironment.roots
+    assert_capped = TestIdentitySurvivesAScrubbedEnvironment.assert_capped
+    RW = TestIdentitySurvivesAScrubbedEnvironment.RW
+    DANGER = TestIdentitySurvivesAScrubbedEnvironment.DANGER
+    CHILD = TestIdentitySurvivesAScrubbedEnvironment.CHILD
+    LAUNCH = TestIdentitySurvivesAScrubbedEnvironment.LAUNCH
+    registry = TestUnknownIsNeverAbsent.registry
+    pending = TestUnknownIsNeverAbsent.pending
+    as_worker = TestTheCapReachesTheWorkerOnOrca.as_worker
+
+    def reserve(self, profile, launcher, pid):
+        """A launch reservation as spawn_worker.sh writes one (TestNoWorkerRunsBeforeItsCapExists)."""
+        d = self.registry() / ".pending"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "r.test").write_text(f"{profile} {launcher} {pid} {process_key(pid).split('.', 1)[1]}\n")
+        return d / "r.test"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._stub(self.tmp)
+
+    # --- (1) the cap is the final identity's ----------------------------------------------------
+
+    def shim(self, action):
+        """A python3 on PATH that runs `action` (sh) when the second `spawn_identity.py whoami` starts
+        — the first read in the reservation wait — and then runs the real interpreter."""
+        d = Path(self.tmp) / "shim"
+        d.mkdir(exist_ok=True)
+        count = d / "count"
+        py = d / "python3"
+        py.write_text("#!/bin/sh\n"
+                      'case "$*" in *spawn_identity.py\\ whoami*)\n'
+                      f'  n=$(cat {shlex.quote(str(count))} 2>/dev/null || echo 0); n=$((n + 1))\n'
+                      f'  echo "$n" > {shlex.quote(str(count))}\n'
+                      f'  if [ "$n" -eq 2 ]; then {action}; fi ;;\n'
+                      "esac\n"
+                      f'exec {shlex.quote(sys.executable)} "$@"\n')
+        py.chmod(0o755)
+        return d, count
+
+    def test_an_identity_read_that_fails_while_waiting_caps_at_ro(self):
+        pend = self.registry() / ".pending"
+        for name, extra in (("mid-wait, the reservation still in flight", ""),
+                            ("the last read, the reservation resolved by it", "rm -f {res}; ")):
+            with self.subTest(name):
+                reservation = self.reserve("ro", "term_coord", os.getpid())  # in flight: its launcher is alive
+                action = extra.format(res=shlex.quote(str(reservation))) + f"chmod 000 {shlex.quote(str(pend))}"
+                shim, count = self.shim(action)
+                count.unlink(missing_ok=True)
+                try:
+                    r = self.as_worker(self.tmp, "", {**self.RW, "RESERVATION_WAIT_SECS": "60",
+                                                      "PATH": f"{shim}:/usr/bin:/bin"})
+                finally:
+                    pend.chmod(0o700)
+                self.assertGreaterEqual(int(count.read_text()), 2, r.stderr)  # it did wait, and read again
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("spawn identity cannot be read", r.stderr)
+                self.assertIn("parent profile 'ro'", r.stderr)
+                self.assertNotIn("LAUNCH=", r.stdout)
+                reservation.unlink(missing_ok=True)
+
+    # --- (2) one unambiguous reading of every runtime response -----------------------------------
+
+    LIVE_DEAD = ('{"result": {"state": "ready", "agentTerminalHandle": "term_live", '
+                 '"agentTerminalHandle": "term_dead", "launch": {"effective": {"agent": "claude", '
+                 '"args": "--dangerously-skip-permissions"}}}}')
+
+    def test_a_duplicate_key_hides_no_handle(self):
+        # The Codex input, then the same shadowing nested in an effect and a worker object, and in
+        # terminal create's terminal object. Every handle is registered (the live pane's root is
+        # found), the reservation stays (the response reads two ways), and the pane is capped.
+        cases = (
+            ("top level", "receipt.json", self.LIVE_DEAD, self.RW, "rw"),
+            ("an effect", "receipt.json",
+             '{"result": {"state": "ready", "effects": [{"kind": "terminal", "role": "agent", '
+             '"id": "term_live", "id": "term_dead"}]}}', self.RW, "rw"),
+            ("a worker object", "receipt.json",
+             '{"result": {"state": "ready", "worker": {"terminal_handle": "term_live", '
+             '"terminal_handle": "term_dead"}}}', self.RW, "rw"),
+            ("terminal create", "terminal-create.json",
+             '{"result": {"terminal": {"handle": "term_live", "handle": "term_dead"}}}', {"PROFILE": "ro"}, "ro"))
+        for name, fname, text, env, profile in cases:
+            with self.subTest(name):
+                tmp = Path(tempfile.mkdtemp(dir=self.tmp))
+                self._stub(str(tmp))
+                (tmp / fname).write_text(text)
+                pty = self.tree()
+                pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_live"})
+                lane = {**self.lane(**env), "PATH": f"{tmp}:/usr/bin:/bin", "SP": str(tmp), "HOME": str(tmp)}
+                rc, out, err = self.tree().run(self.LAUNCH, lane)
+                self.assertNotEqual(rc, 0, out + err)  # an ambiguous response is never a clean start
+                reg = tmp / ".open-fleet" / "spawn-profiles"
+                self.assertEqual((reg / "term_live").read_text().strip(), profile, err)
+                self.assertIn(profile, [p for p, _h in (ln.split()[:2] for ln in (
+                    q.read_text() for q in (reg / ".roots").iterdir()))], err)
+                self.assertEqual(len([p for p in (reg / ".pending").iterdir() if p.name.startswith("r.")]), 1, err)
+                self.assertNotIn("dispatch", (tmp / "orca-calls.log").read_text())
+                child = {**self.scrubbed(**self.DANGER), "HOME": str(tmp), "SP": str(tmp)}
+                self.assert_capped(pty.run(self.CHILD, child, via="pane"), f"parent profile '{profile}'")
+
+    def test_no_reader_takes_one_reading_of_an_ambiguous_response(self):
+        # The verdict: an error hidden behind a later `"error": null` read as a clean READY start,
+        # and so did a receipt carrying NaN or a number that overflows. Each is now unparseable.
+        ready = json.dumps(self.READY_RECEIPT)
+        self.assertIn('"state": "ready"', ready)
+        for name, text in (
+                ("a shadowed error", '{"error": {"code": "runtime_error"}, "error": null, %s' % ready[1:]),
+                ("NaN", ready.replace('"state": "ready"', '"state": "ready", "timeoutMs": NaN', 1)),
+                ("an overflowing number", ready.replace('"state": "ready"', '"state": "ready", "timeoutMs": 1e999', 1))):
+            with self.subTest(name):
+                tmp = tempfile.mkdtemp(dir=self.tmp)
+                self._stub(tmp)
+                (Path(tmp) / "receipt.json").write_text(text)
+                r = subprocess.run(self.LAUNCH, env={**self.lane(**self.RW), "PATH": f"{tmp}:/usr/bin:/bin",
+                                                     "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0"},
+                                   capture_output=True, text=True)
+                # Read as READY these exited 0; unparseable, the start is unproven: 4, never respawn.
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                self.assertIn("SPAWN=OUTCOME_UNKNOWN", r.stderr)
+                self.assertIn("HANDLE=term_agent1", r.stdout, r.stderr)
+        # A task row whose status reads two ways is not dispatched.
+        tmp = tempfile.mkdtemp(dir=self.tmp)
+        self._stub(tmp)
+        (Path(tmp) / "task-list.json").write_text(
+            '{"result": {"tasks": [{"id": "task_test", "status": "pending", "status": "ready"}]}}')
+        r = subprocess.run(self.LAUNCH, env={**self.lane(**self.RW), "PATH": f"{tmp}:/usr/bin:/bin",
+                                             "SP": tmp, "HOME": tmp}, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("worker-start", (Path(tmp) / "orca-calls.log").read_text())
+
+
 class TestNonOrcaDanger(unittest.TestCase):
     """#585: off Orca, danger is decided by the runtime's own doctor — proven isolation AND
     prelaunch placement — instead of an unconditional refusal; everything short of that refuses."""

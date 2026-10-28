@@ -1389,7 +1389,9 @@ class GitexecCustody(unittest.TestCase):
             gd = Path(c.git_dir)
             cfg = (gd / "config").read_text(encoding="utf-8")
             self.assertNotIn("filter", cfg)
-            self.assertFalse((gd / "info" / "attributes").exists())
+            # info/attributes rides as data: the `filter=p` it selects names no driver here.
+            self.assertEqual((gd / "info" / "attributes").read_text(encoding="utf-8"),
+                             (p.repo / ".git" / "info" / "attributes").read_text(encoding="utf-8"))
             self.assertEqual(Path(c.work_tree).resolve(), p.repo.resolve())
             self.assertIn(b"objects", (gd / "objects" / "info" / "alternates").read_bytes())
             self.assertEqual(c.lead[:2], ["-C", str(p.repo)])

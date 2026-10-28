@@ -257,6 +257,7 @@ def _blank_pairs(listing):
 # exact name in one listing, and a commit id must resolve to itself.
 COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 REMOTE_TRACKING = "refs/remotes/"
+LOCAL_BRANCH = "refs/heads/"
 _SYMREF_HOPS = 5  # git's own limit on a symbolic-ref chain
 
 
@@ -290,12 +291,30 @@ def remote_tracking_commit(git, name):
         return None, name, ("is neither a commit id nor a full remote-tracking ref name "
                             "(refs/remotes/…): a local branch, tag, HEAD or short name is one the "
                             "checked change can move")
+    return _exact_ref_commit(git, name, REMOTE_TRACKING, "remote-tracking ref",
+                             "is not remote-tracking (a local branch the checked change can move)")
+
+
+def local_branch_commit(git, name):
+    """``(commit, target, None)`` for a full ``refs/heads/…`` branch that exists under exactly that
+    name (every symbolic hop a local branch too), else ``(None, target, why)``. The same exact-name
+    lookup as remote_tracking_commit, in the local namespace: never a tag, never a revision
+    suffix, never what git's ref-name expansion would substitute. A local branch is NOT a trust
+    anchor — the checked change can move it — so a caller that accepts one says so."""
+    if not name or not name.startswith(LOCAL_BRANCH):
+        return None, name, "is not a full local branch name (refs/heads/…)"
+    return _exact_ref_commit(git, name, LOCAL_BRANCH, "local branch", "is not a local branch")
+
+
+def _exact_ref_commit(git, name, namespace, kind, outside):
+    """The exact-name lookup both rules share: ``name`` (already under ``namespace``) must pass
+    check-ref-format and exist under exactly that name in one ``for-each-ref <namespace>``
+    listing; symbolic hops are followed in that listing and may not leave ``namespace``."""
     code, _ = git("check-ref-format", name)
     if code != 0:
         return None, name, ("is not a valid ref name: revision syntax (~1, ^, @{…}, :) names a "
                             "commit relative to a ref, not a ref")
-    code, out = git("for-each-ref", "--format=%(refname)%00%(symref)%00%(objectname)",
-                    REMOTE_TRACKING)
+    code, out = git("for-each-ref", "--format=%(refname)%00%(symref)%00%(objectname)", namespace)
     if code != 0:
         return None, name, "could not be looked up: git for-each-ref failed"
     listed = {}
@@ -307,15 +326,14 @@ def remote_tracking_commit(git, name):
     for _hop in range(_SYMREF_HOPS + 1):
         if target not in listed:
             via = f" (through the symbolic ref to {target})" if target != name else ""
-            return None, target, (f"names no remote-tracking ref that exists under exactly that "
-                                  f"name{via}: git's ref-name expansion (refs/heads/{target}, …) "
-                                  "is never followed")
+            return None, target, (f"names no {kind} that exists under exactly that name{via}: "
+                                  f"git's ref-name expansion (refs/heads/{target}, …) is never "
+                                  "followed")
         symref, oid = listed[target]
         if not symref:
             break
-        if not symref.startswith(REMOTE_TRACKING):
-            return None, symref, (f"is a symbolic ref to {symref}, which is not remote-tracking "
-                                  "(a local branch the checked change can move)")
+        if not symref.startswith(namespace):
+            return None, symref, f"is a symbolic ref to {symref}, which {outside}"
         target = symref
     else:
         return None, target, f"is a symbolic-ref chain longer than {_SYMREF_HOPS} hops"
@@ -324,3 +342,62 @@ def remote_tracking_commit(git, name):
     if code != 0 or not COMMIT_ID.fullmatch(commit):
         return None, target, f"reaches {target}, which points at no commit"
     return commit, target, None
+
+
+# --- A diff base by exact names (floor_guard.py, diff_scope.py; W3-07 class) -------------------
+# Both resolved a base with `rev-parse <base>^{commit}` and, unnamed, cut origin/HEAD's target to
+# the SHORT name `origin/<x>`: gitrevisions tries refs/tags/ and refs/heads/ before refs/remotes/,
+# so a tag or local branch spelled `origin/main` stood in for the remote-tracking branch — and the
+# base is where floor_guard reads its waivers and the human-grant pin. A symbolic origin/HEAD that
+# pointed at a local branch was used as-is.
+DEFAULT_BASES = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main",
+                 "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master")
+
+
+def _short(ref):
+    for prefix in (REMOTE_TRACKING, LOCAL_BRANCH):
+        if ref.startswith(prefix):
+            return ref[len(prefix):]
+    return ref
+
+
+def base_commit(git, base=None):
+    """``(commit, shown, local, None)`` for a diff base, or ``(None, shown, None, why)``.
+
+    Every name is looked up EXACTLY; nothing is handed to git to expand, and the caller diffs and
+    reads at ``commit``, never at the name. ``shown`` is the human label; ``local`` is True when
+    the base is a local branch — not a trust anchor (the checked change can move one), so the
+    caller says so.
+
+    Named: a commit id or a full ``refs/remotes/…`` ref goes through remote_tracking_commit; a
+    short name with a slash (``origin/main``) is the remote-tracking ref ``refs/remotes/<name>``
+    under that rule and nothing else (never a tag or local branch of that spelling); a full
+    ``refs/heads/…`` ref or a bare name (``main``) is that local branch under its exact name;
+    anything else — a tag, ``HEAD``, a revision suffix — is refused. Unnamed: DEFAULT_BASES in
+    order, origin/HEAD's target included, the remote-tracking ones under remote_tracking_commit
+    (one that points at a local branch is skipped), then the local main and master."""
+    if base:
+        if base.startswith("-"):
+            return None, base, None, "is an option, not a ref"
+        if COMMIT_ID.fullmatch(base.lower()) or base.startswith(REMOTE_TRACKING):
+            commit, _target, why = remote_tracking_commit(git, base)
+            return (commit, base, False, None) if commit else (None, base, None, why)
+        if base.startswith(LOCAL_BRANCH) or not (base.startswith("refs/") or "/" in base):
+            full = base if base.startswith(LOCAL_BRANCH) else LOCAL_BRANCH + base
+            commit, _target, why = local_branch_commit(git, full)
+            return (commit, base, True, None) if commit else (None, base, None, f"({full}) {why}")
+        if base.startswith("refs/"):
+            return None, base, None, ("is neither remote-tracking (refs/remotes/…) nor a local "
+                                      "branch (refs/heads/…): a tag or other ref is no base")
+        full = REMOTE_TRACKING + base
+        commit, _target, why = remote_tracking_commit(git, full)
+        return (commit, base, False, None) if commit else (None, base, None, f"({full}) {why}")
+    skipped = []
+    for name in DEFAULT_BASES:
+        local = name.startswith(LOCAL_BRANCH)
+        rule = local_branch_commit if local else remote_tracking_commit
+        commit, target, why = rule(git, name)
+        if commit is not None:
+            return commit, _short(target), local, None
+        skipped.append(f"{name} {why}")
+    return None, ", ".join(_short(n) for n in DEFAULT_BASES), None, "; ".join(skipped)

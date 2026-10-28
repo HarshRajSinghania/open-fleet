@@ -565,26 +565,29 @@ identify() {
   done
 }
 identify
-if [ "$identity_ok" = "0" ]; then
-  registered_profiles=(ro)
-  echo "SPAWN=NOTE task=${tname} this session's spawn identity cannot be read (no registry location, or a read it needs failed: its process ancestry, the spawn registry, or a /proc that is not this pid namespace's): the child is capped at ro rather than left uncapped (W4-04)" >&2
-elif [ "${#registered_profiles[@]}" -eq 0 ]; then
+if [ "$identity_ok" = "1" ] && [ "${#registered_profiles[@]}" -eq 0 ]; then
   _rwait="${RESERVATION_WAIT_SECS:-120}"
   case "$_rwait" in ""|*[!0-9]*) _rwait=120 ;; esac
   _rdeadline=$((SECONDS + _rwait))
-  while [ "${#registered_profiles[@]}" -eq 0 ] && [ "$reservations_in_flight" = "1" ] \
-        && [ "$SECONDS" -lt "$_rdeadline" ]; do
+  while [ "$identity_ok" = "1" ] && [ "${#registered_profiles[@]}" -eq 0 ] \
+        && [ "$reservations_in_flight" = "1" ] && [ "$SECONDS" -lt "$_rdeadline" ]; do
     sleep 0.2
     identify
   done
-  if [ "${#registered_profiles[@]}" -eq 0 ] && [ "${#open_reservations[@]}" -gt 0 ]; then
-    registered_profiles=("${open_profiles[@]}")
-    echo "SPAWN=NOTE task=${tname} this session has no spawn record, and ${#open_reservations[@]} launch(es) in the spawn registry have not recorded their worker (${open_reservations[*]}): it may be the worker one of them started, so the child is capped at the most restrictive reserved profile (W4-04). A reservation whose launcher is gone was kept because its worker may be live unrecorded; remove it once worker-list shows no such worker." >&2
-  elif [ "${#registered_profiles[@]}" -eq 0 ] && [ "$in_tree" = "yes" ] && [ "$anchored" = "no" ] \
-       && [ "${#live_profiles[@]}" -gt 0 ]; then
-    registered_profiles=("${live_profiles[@]}")
-    echo "SPAWN=NOTE task=${tname} this session runs inside a provider's process tree, nothing identifies it (no spawn record, no recorded worker root among its ancestors, no coordinator anchor), and ${#live_profiles[@]} capped worker(s) are live: it is capped at the most restrictive of them rather than read as a coordinator (W4-04)" >&2
-  fi
+fi
+# The cap is a property of the FINAL identity state, the last identify()'s, whichever iteration
+# that was (Codex round 5): a read that fails while waiting clears every array and sets
+# identity_ok=0, and capping only on the first read let such a session launch uncapped.
+if [ "$identity_ok" = "0" ]; then
+  registered_profiles=(ro)
+  echo "SPAWN=NOTE task=${tname} this session's spawn identity cannot be read (no registry location, or a read it needs failed: its process ancestry, the spawn registry, or a /proc that is not this pid namespace's): the child is capped at ro rather than left uncapped (W4-04)" >&2
+elif [ "${#registered_profiles[@]}" -eq 0 ] && [ "${#open_reservations[@]}" -gt 0 ]; then
+  registered_profiles=("${open_profiles[@]}")
+  echo "SPAWN=NOTE task=${tname} this session has no spawn record, and ${#open_reservations[@]} launch(es) in the spawn registry have not recorded their worker (${open_reservations[*]}): it may be the worker one of them started, so the child is capped at the most restrictive reserved profile (W4-04). A reservation whose launcher is gone was kept because its worker may be live unrecorded; remove it once worker-list shows no such worker." >&2
+elif [ "${#registered_profiles[@]}" -eq 0 ] && [ "$in_tree" = "yes" ] && [ "$anchored" = "no" ] \
+     && [ "${#live_profiles[@]}" -gt 0 ]; then
+  registered_profiles=("${live_profiles[@]}")
+  echo "SPAWN=NOTE task=${tname} this session runs inside a provider's process tree, nothing identifies it (no spawn record, no recorded worker root among its ancestors, no coordinator anchor), and ${#live_profiles[@]} capped worker(s) are live: it is capped at the most restrictive of them rather than read as a coordinator (W4-04)" >&2
 fi
 known_parent() {  # refuse, in this shell (never a subshell), a parent profile outside the keyset
   if [ "$(profile_rank "$1")" = "x" ]; then

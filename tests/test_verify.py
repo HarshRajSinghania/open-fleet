@@ -28,6 +28,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 _spec = importlib.util.spec_from_file_location("verify", ROOT / "runtime" / "scripts" / "verify.py")
 verify = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(verify)
@@ -1694,6 +1700,26 @@ class GitAuthorityChecks(unittest.TestCase):
         with self._inside_repo():
             self.assertEqual(verify.check_symbol_on_base(None, "main"), [])
             self.assertEqual(verify.check_symbol_on_base("orca_unit_symbol", None), [])
+
+    def test_symbol_is_never_read_on_a_local_branch_spelled_as_the_absent_remote(self):
+        # W3-07 class, Codex review: `git grep … refs/remotes/origin/main` with that ref ABSENT
+        # expanded the name to the local branch refs/heads/refs/remotes/origin/main — here a
+        # worker commit that adds the symbol — and the change read as "on base".
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        Path(self.repo, "planted.py").write_text("def planted_symbol():\n    pass\n",
+                                                 encoding="utf-8")
+        git("add", "planted.py")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "worker")
+        git("update-ref", "-d", "refs/remotes/origin/main")
+        git("update-ref", "refs/heads/refs/remotes/origin/main", "HEAD")
+        with self._inside_repo():
+            errs = verify.check_symbol_on_base("planted_symbol", "main")
+            self.assertTrue(any("not found on origin/main" in e for e in errs), errs)
+            errs = verify.check_symbol_on_base("planted_symbol", "main~0")
+            self.assertTrue(any("not found on origin/main~0" in e for e in errs), errs)
 
 
 class GitObjectRewriteChannelsAreClosed(RepoCase):
@@ -6547,6 +6573,110 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
                 None, "rec.json", "pub")
             self.assertTrue(bad and "pre-fix content was swapped" in bad[0], bad)
 
+    def _poison_spelled_as_the_absent_remote(self):
+        """W3-07 class, Codex review: refs/remotes/origin/main ABSENT, and a LOCAL branch spelled
+        refs/heads/refs/remotes/origin/main holding the poison — `rev-parse` and `merge-base`
+        expand the remote name to it."""
+        git = ["git", "-C", str(self.repo)]
+        subprocess.run([*git, "update-ref", "-d", "refs/remotes/origin/main"], check=True)
+        subprocess.run([*git, "update-ref", "refs/heads/refs/remotes/origin/main", self.poison],
+                       check=True)
+
+    def test_an_absent_remote_ref_is_not_answered_by_a_local_branch_of_its_spelling(self):
+        # The base-binding and ancestry pair on a sound lane: before, both passed the poison
+        # (it is an "ancestor" of the local branch); now the ref does not resolve, so the
+        # ancestry proof the lane asked for is fatal and base binding is left to it.
+        self._poison_spelled_as_the_absent_remote()
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            errs = verify.check_ancestry({"head_sha": self.poison}, "main")
+            self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+            self.assertIn("origin/main not found", errs[0])
+            self.assertIn("exactly that name", errs[0])
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, "main", True), [])
+
+    def test_a_local_bridge_inside_the_base_chain_is_not_the_base(self):
+        # Codex review round 2 (P1): refs/remotes/origin/main -> refs/heads/bridge ->
+        # refs/remotes/origin/side (a fetched branch holding the poison) read as remote-tracking
+        # all the way, so the poison was "on base" on a sound lane.
+        git = ["git", "-C", str(self.repo)]
+        subprocess.run([*git, "update-ref", "refs/remotes/origin/side", self.poison], check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/side"],
+                       check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/remotes/origin/main", "refs/heads/bridge"],
+                       check=True)
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            errs = verify.check_ancestry({"head_sha": self.poison}, "main")
+            self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+            self.assertIn("refs/heads/bridge", errs[0])
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, "main", True), [])
+            self.assertTrue(any("not found on origin/main" in e
+                                for e in verify.check_symbol_on_base("raise", "main")))
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_base(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # so a fetched `x<U+2028>refs/remotes/origin/main` at the poison replaced origin/main:
+        # an unmerged head and a worker-chosen base_sha both passed on a sound lane.
+        verify._Authority.lane = "provenance=ci"
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, self.poison)
+                try:
+                    with self._inside_repo():
+                        ancestry = verify.check_ancestry({"head_sha": self.poison}, "main")
+                        binding = verify.check_base_binding({"base_sha": self.poison}, "main", True)
+                finally:
+                    unplant()
+                self.assertTrue(ancestry and "not an ancestor" in ancestry[0], ancestry)
+                self.assertTrue(binding and "not an ancestor" in binding[0], binding)
+
+    def test_symbol_grep_names_the_resolved_commit_never_the_ref(self):
+        # Re-attack C(2): a mutant grepping the NAME instead of the commit survived. The grep
+        # must receive the commit the exact-name rule returned.
+        seen = []
+        real = verify._git
+
+        def spy(args, *a, **k):
+            seen.append(list(args))
+            return real(args, *a, **k)
+
+        with self._inside_repo(), mock.patch.object(verify, "_git", side_effect=spy):
+            self.assertEqual(verify.check_symbol_on_base("def f", "main"), [])
+        greps = [argv for argv in seen if argv[:1] == ["grep"]]
+        self.assertEqual(len(greps), 1, seen)
+        self.assertEqual(greps[0][-1], self.honest_base, greps)
+        self.assertFalse(any("origin/main" in tok for tok in greps[0]), greps)
+
+    def test_a_revision_suffix_on_the_base_is_not_a_base(self):
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            for base in ("main~0", "main^0", "main@{0}"):
+                with self.subTest(base=base):
+                    errs = verify.check_ancestry({"head_sha": self.honest_base}, base)
+                    self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+                    self.assertIn("not a valid ref name", errs[0])
+
+    def test_the_base_is_resolved_once_and_every_later_read_names_the_commit(self):
+        # merge-base used to re-resolve refs/remotes/origin/<base> (and expand it) after the
+        # existence check; it now receives the commit id the exact-name rule returned.
+        seen = []
+        real = verify._git
+
+        def spy(args, *a, **k):
+            seen.append(list(args))
+            return real(args, *a, **k)
+
+        with self._inside_repo(), mock.patch.object(verify, "_git", side_effect=spy):
+            self.assertEqual(verify.check_base_binding({"base_sha": self.honest_base}, "main",
+                                                       True), [])
+            self.assertEqual(verify.check_ancestry({"head_sha": self.honest_base}, "main"), [])
+        reads = [argv for argv in seen if argv[:1] == ["merge-base"]]
+        self.assertEqual(len(reads), 2, seen)
+        for argv in reads:
+            self.assertNotIn("refs/remotes/origin/main", argv)
+            self.assertEqual(argv[-1], self.honest_base, argv)
+
 
 class SiblingNamedLikeTheStdlibNeverLoads(unittest.TestCase):
     """W3-01 (2026-10-27 security audit, P0): `python3 runtime/scripts/verify.py` puts
@@ -6784,6 +6914,79 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         self.assertIn(f"commit {self.pinned[:12]}", out[0])
         keys = [c.args[0] for c in spy.call_args_list if "dispatch-pubkey" in c.args[0]]
         self.assertEqual(keys, [f".orca/dispatch-pubkey@{self.pinned}"], spy.call_args_list)
+
+    def assert_refused(self, ref, because):
+        out = self._check(f".orca/dispatch-pubkey@{ref}")
+        self.assertEqual(len(out), 1, out)
+        self.assertFalse(out[0].startswith("NOTE:"), out)
+        self.assertNotIn("signature verified", out[0])
+        self.assertIn("W3-03", out[0])
+        self.assertIn(because, out[0])
+
+    def test_a_local_branch_spelled_as_an_absent_remote_tracking_ref_is_refused(self):
+        # W3-07 class, Codex review (P1): with refs/remotes/worker/key ABSENT, symbolic-ref
+        # failed, the target kept the supplied spelling, and rev-parse expanded it to the local
+        # branch refs/heads/refs/remotes/worker/key — the worker's key — so its self-signed
+        # record verified on a lane claiming soundness. Same through origin/HEAD pointing at
+        # that absent spelling.
+        worker = self._worker_branch_key()
+        self.git("update-ref", "refs/heads/refs/remotes/worker/key", worker)
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/worker/key")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/origin/HEAD"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "exactly that name")
+
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_refused(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so
+        # refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/worker-pr (a fetched
+        # branch holding the worker's key) read as remote-tracking all the way and verified.
+        worker = self._worker_branch_key()
+        self.git("update-ref", "refs/remotes/origin/worker-pr", worker)
+        self.git("symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/worker-pr")
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/b", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/a", "refs/remotes/worker/b")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/worker/a"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "refs/heads/bridge")
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_key_ref(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # which git accepts in a refname, so a fetched `x<U+2028>refs/remotes/origin/main` at the
+        # worker's key replaced origin/main and its self-signed record verified.
+        worker = self._worker_branch_key()
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, worker)
+                try:
+                    out = self._check(".orca/dispatch-pubkey@refs/remotes/origin/main")
+                finally:
+                    unplant()
+                self.assertNotIn("signature verified", "\n".join(out))
+                self.assertNotIn(worker[:12], "\n".join(out))
+
+    def test_a_hex_named_branch_is_not_a_commit_id(self):
+        # 64 hex digits are no object id in a SHA-1 repository: rev-parse expands them as a ref.
+        worker = self._worker_branch_key()
+        hexname = "0f" * 32
+        self.git("update-ref", f"refs/heads/{hexname}", worker)
+        self.assert_refused(hexname, "names no commit object")
+
+    def test_a_revision_suffix_on_a_remote_tracking_ref_is_refused(self):
+        # A key rotation retired the worker's key: origin/main's parent (and the reflog entry
+        # before the rotation) still pins it, and every suffix passed the prefix check.
+        self._worker_branch_key()
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.write(".orca/dispatch-pubkey", verify._load_ed25519().publickey(self.SEED).hex() + "\n")
+        self.commit("rotate back to the coordinator key")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        for ref in ("refs/remotes/origin/main~1", "refs/remotes/origin/main^",
+                    "refs/remotes/origin/main@{1}"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "not a valid ref name")
+        # The exact name reads the current key, which did not sign the worker's record.
+        out = self._check(".orca/dispatch-pubkey@refs/remotes/origin/main")
+        self.assertNotIn("signature verified", "\n".join(out))
 
 
 class SoundLaneNeverRunsAWorkerWritableGitleaks(RepoCase):

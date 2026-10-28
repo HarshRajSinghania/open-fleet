@@ -30,6 +30,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 SCRIPTS = ROOT / "runtime" / "scripts"
 
 
@@ -953,6 +959,108 @@ class DriverQueryFailsClosed(unittest.TestCase):
                 self.assertNotIsInstance(err, evidence_run.WtreeUnverifiable)
                 self.assertIn("config", err)
                 self.assertEqual(p.fired(), set(), "wtree.sh ran a filter with no blanks")
+
+
+
+class TheAnchorRuleWalksEverySymbolicHop(unittest.TestCase):
+    """remote_tracking_commit (W3-07; Codex review round 2, P1): for-each-ref's %(symref) is a
+    symbolic chain's recursively resolved END, so a local bridge inside it was invisible. Each hop
+    is read with `symbolic-ref --no-recurse`; where that cannot run (git older than 2.39) a
+    symbolic name is refused, while a plain remote-tracking ref still resolves."""
+
+    def setUp(self):
+        self.repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        self.git_("init", "-q", "-b", "main")
+        self.git_("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+                  "-m", "c")
+        self.tip = self.git_("rev-parse", "HEAD")
+        self.git_("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.git_("update-ref", "refs/remotes/origin/retired", "HEAD")
+        self.git_("symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/retired")
+        self.git_("symbolic-ref", "refs/remotes/w/key", "refs/heads/bridge")
+        self.git_("symbolic-ref", "refs/remotes/w/hop", "refs/remotes/origin/main")
+
+    def git_(self, *args):
+        return subprocess.run(["git", "-C", str(self.repo), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def runner(self, no_recurse=True):
+        def run(*args):
+            if not no_recurse and "--no-recurse" in args:
+                return 129, ""  # git < 2.39: unknown option
+            r = subprocess.run(gitexec.argv("-C", str(self.repo), *args), capture_output=True,
+                               text=True, env=gitexec.env())
+            return r.returncode, r.stdout
+        return run
+
+    def test_a_local_bridge_is_refused_and_a_remote_only_chain_resolves(self):
+        commit, target, why = gitexec.remote_tracking_commit(self.runner(), "refs/remotes/w/key")
+        self.assertIsNone(commit, target)
+        self.assertIn("refs/heads/bridge", why)
+        commit, target, why = gitexec.remote_tracking_commit(self.runner(), "refs/remotes/w/hop")
+        self.assertEqual((commit, target, why), (self.tip, "refs/remotes/origin/main", None))
+
+    def test_without_no_recurse_a_symbolic_name_fails_closed_and_a_plain_ref_resolves(self):
+        old = self.runner(no_recurse=False)
+        for name in ("refs/remotes/w/key", "refs/remotes/w/hop"):
+            with self.subTest(name=name):
+                commit, _target, why = gitexec.remote_tracking_commit(old, name)
+                self.assertIsNone(commit)
+                self.assertIn("one hop at a time", why)
+        commit, _target, why = gitexec.remote_tracking_commit(old, "refs/remotes/origin/main")
+        self.assertEqual(commit, self.tip, why)
+
+
+class TheAnchorListingSplitsOnItsRecordTerminatorOnly(unittest.TestCase):
+    """remote_tracking_commit (independent re-attack, A): the for-each-ref listing was split with
+    str.splitlines(), which breaks on U+2028, U+2029 and U+0085 — characters git accepts in a
+    refname — and parsed into a last-wins dict, so a fetched branch `x<U+2028>refs/remotes/
+    origin/main` replaced origin/main. Records are NUL+LF-terminated and split on that only; a
+    malformed record or a refname seen twice refuses the listing."""
+
+    def setUp(self):
+        self.repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        git = ["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "init", "-q", "-b", "main"], check=True, capture_output=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "honest"], check=True)
+        self.honest = subprocess.run([*git, "rev-parse", "HEAD"], check=True,
+                                     capture_output=True, text=True).stdout.strip()
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "worker"], check=True)
+        self.worker = subprocess.run([*git, "rev-parse", "HEAD"], check=True,
+                                     capture_output=True, text=True).stdout.strip()
+        subprocess.run([*git, "update-ref", "refs/remotes/origin/main", self.honest], check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/remotes/origin/HEAD",
+                        "refs/remotes/origin/main"], check=True)
+
+    def run_(self, *args):
+        r = subprocess.run(gitexec.argv("-C", str(self.repo), *args), capture_output=True,
+                           env=gitexec.env())
+        return r.returncode, r.stdout.decode("utf-8", "surrogateescape")
+
+    def test_a_line_break_in_a_fetched_branch_name_never_replaces_the_real_ref(self):
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, self.worker)
+                try:
+                    for name in ("refs/remotes/origin/main", "refs/remotes/origin/HEAD"):
+                        commit, _target, why = gitexec.remote_tracking_commit(self.run_, name)
+                        self.assertEqual(commit, self.honest, why)
+                finally:
+                    unplant()
+
+    def test_a_refname_seen_twice_or_a_malformed_record_refuses_the_listing(self):
+        oid = "a" * 40
+        rec = f"refs/remotes/origin/main\0\0{oid}\0\n"
+        self.assertEqual(gitexec._ref_records(rec, "refs/remotes/")[0],
+                         {"refs/remotes/origin/main": ("", oid)})
+        for out in (rec + rec, rec + "refs/remotes/x\0\n", "refs/remotes/origin/main\0\0" + oid,
+                    rec.replace("\0\n", "\n")):
+            with self.subTest(out=out):
+                listed, why = gitexec._ref_records(out, "refs/remotes/")
+                self.assertIsNone(listed)
+                self.assertTrue(why)
 
 
 if __name__ == "__main__":

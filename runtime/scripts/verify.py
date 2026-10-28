@@ -2936,7 +2936,8 @@ def check_symbol_on_base(symbol, base):
         return []
     tip, why = _origin_base(base)
     if tip is None:
-        return [f"symbol '{symbol}' not found on origin/{base} ({why})"]
+        return [f"symbol '{symbol}' not found on origin/{base}: the base does not resolve by its "
+                f"exact name ({why})"]
     # timeout=20 is the LEGACY allowance, restored explicitly (#442 S2-R3). This leg used to
     # call _run, whose default is 20s; routing it through _git for the SHA root (#442) silently
     # halved the budget to _git's 10s default, and a grep that took 11s turned a symbol that IS

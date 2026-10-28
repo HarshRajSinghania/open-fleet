@@ -250,10 +250,14 @@ class RestTransport(unittest.TestCase):
                 return False
 
         big = json.dumps({'pad': 'x' * 4096}).encode()
+        response = Response(big)
         with patch.object(monitor, 'MAX_BODY', 1024, create=True), \
-                patch.object(monitor.urllib.request, 'urlopen', return_value=Response(big)), \
+                patch.object(monitor.urllib.request, 'urlopen', return_value=response), \
                 self.assertRaises(RuntimeError):
             monitor.rest_json('repos/x/y')
+        # Refused UNREAD: never more than the cap and the one byte that proves it is over (a body
+        # read whole and then measured raised the same RuntimeError, re-attack of 2d254d0f).
+        self.assertLessEqual(response.tell(), 1024 + 1, 'the body was read past the cap before it was refused')
 
     def test_repo_must_be_owner_slash_name_before_it_reaches_a_url(self):
         for repo in ('a/b?x=y', '../gists', 'a/b/c', 'a/..', '-a/b', 'a/b#c', 'a b/c', 'a/b%2F', 'a'):

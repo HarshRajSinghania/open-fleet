@@ -848,6 +848,25 @@ class _Authority:
         cls.repo_source = "inferred" if inferred else None
         return inferred
 
+    @staticmethod
+    def anchor_commit(name):
+        """gitexec.remote_tracking_commit (W3-07) run through this verifier's custody-classed git:
+        (commit, target, None) when `name` is a commit id naming that commit object or a full
+        refs/remotes/… ref that EXISTS under exactly that name (every symbolic hop
+        remote-tracking), else (None, target, why). The one exact-name rule every trust anchor
+        answers to — key_source's keys, and the refs/remotes/origin/<base> the ancestry,
+        base-binding and symbol legs resolve ONCE and then read only by the commit it returns
+        (with that ref absent, `rev-parse`/`merge-base`/`grep` expanded the name to a local
+        refs/heads/refs/remotes/… branch). A rule that does not load is no anchor, never a pass."""
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "gitexec_for_verify", Path(__file__).resolve().parent / "gitexec.py")
+            gitexec = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gitexec)
+            return gitexec.remote_tracking_commit(lambda *a: _git(list(a)), name)
+        except (OSError, ImportError, SyntaxError, AttributeError) as err:
+            return None, name, f"could not be classed (gitexec.py: {err})"
+
     @classmethod
     def key_source(cls, source, what):
         """(where, the source to READ, pinned, refusal or None) for trust material named `path`
@@ -885,7 +904,7 @@ class _Authority:
         elif ref.startswith("-"):
             return f"{path} at {ref!r}", source, False, None  # read_source refuses it
         else:
-            commit, target, why = _remote_tracking_commit(ref)
+            commit, target, why = cls.anchor_commit(ref)
             if commit is not None:
                 read, pinned = f"{path}@{commit}", True
                 via = f" (a symbolic ref to {target})" if target not in (ref, commit) else ""
@@ -2874,33 +2893,6 @@ def check_redaction(m, manifest_path):
     return errs
 
 
-def _remote_tracking_commit(name):
-    """gitexec.remote_tracking_commit (W3-07) run through this verifier's custody-classed git:
-    (commit, target, None) when `name` is a commit id naming that commit object or a full
-    refs/remotes/… ref that EXISTS under exactly that name (every symbolic hop remote-tracking),
-    else (None, target, why). The one exact-name rule every trust anchor answers to — key_source's
-    keys and the origin/<base> the ancestry, base-binding and symbol legs read. A rule that does
-    not load is no anchor, never a pass."""
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "gitexec_for_verify", Path(__file__).resolve().parent / "gitexec.py")
-        gitexec = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(gitexec)
-        return gitexec.remote_tracking_commit(lambda *a: _git(list(a)), name)
-    except (OSError, ImportError, SyntaxError, AttributeError) as err:
-        return None, name, f"could not be classed (gitexec.py: {err})"
-
-
-def _origin_base(base):
-    """(commit, None) for refs/remotes/origin/<base>, resolved ONCE under the exact-name rule, or
-    (None, why). W3-07 class: `rev-parse refs/remotes/origin/<base>` with that ref ABSENT expands
-    the name to a local branch refs/heads/refs/remotes/origin/<base> — the worker's to create —
-    and a <base> carrying a revision suffix (main~1) passed as well; the merge-base and grep that
-    followed re-resolved the name each time. Every later read names the commit this returns."""
-    commit, _target, why = _remote_tracking_commit(f"refs/remotes/origin/{base}")
-    return commit, (None if commit else f"refs/remotes/origin/{base} {why}")
-
-
 def check_ancestry(m, base):
     """7. head_sha is an ancestor of origin/<base> (post-merge).
 
@@ -2909,16 +2901,17 @@ def check_ancestry(m, base):
     claiming soundness (_Authority.lane: --provenance ci|mcp|sdk|dispatch, or a signed dispatch
     record + a pinned pubkey) it is FATAL, as every other authority leg is there: the ref lives in the
     clone the worker controls, and deleting it must not turn a requested ancestry proof into a
-    skipped one (review P2). The ref is resolved by its exact name, once (_origin_base, W3-07)."""
+    skipped one (review P2). The ref is resolved by its exact name, once (W3-07)."""
     if not base:
         return ["NOTE: --base not given — ancestry check skipped (pre-merge/offline)"]
     # The FULL ref name: gitrevisions resolves a short `origin/<base>` through refs/tags first, so
     # a tag (or local branch) named origin/<base> that a worker can push shadowed the
     # remote-tracking branch and put any commit "on base" (2026-10-26 review) — and the full name
     # is looked up EXACTLY, never expanded (W3-07).
-    shown = f"origin/{base}"
-    tip, why = _origin_base(base)
+    shown, ref = f"origin/{base}", f"refs/remotes/origin/{base}"
+    tip, _target, why = _Authority.anchor_commit(ref)  # once; every read below names `tip`
     if tip is None:
+        why = f"{ref} {why}"
         if _Authority.lane:
             return [f"ancestry: {shown} not found — a lane claiming soundness ({_Authority.lane}) "
                     "named --base and cannot skip the ancestry proof it asked for; fail-closed "
@@ -2931,13 +2924,14 @@ def check_ancestry(m, base):
 
 def check_symbol_on_base(symbol, base):
     """8. Best-effort: a unit symbol is greppable on origin/<base> (change is real on base),
-    read at the commit _origin_base resolves by exact name (W3-07)."""
+    read at the commit _Authority.anchor_commit resolves by exact name (W3-07)."""
     if not symbol or not base:
         return []
-    tip, why = _origin_base(base)
+    ref = f"refs/remotes/origin/{base}"
+    tip, _target, why = _Authority.anchor_commit(ref)  # once (W3-07); the grep names `tip`
     if tip is None:
         return [f"symbol '{symbol}' not found on origin/{base}: the base does not resolve by its "
-                f"exact name ({why})"]
+                f"exact name ({ref} {why})"]
     # timeout=20 is the LEGACY allowance, restored explicitly (#442 S2-R3). This leg used to
     # call _run, whose default is 20s; routing it through _git for the SHA root (#442) silently
     # halved the budget to _git's 10s default, and a grep that took 11s turned a symbol that IS
@@ -2960,7 +2954,7 @@ def check_base_binding(m, base, execute_nc):
     the worker could not have put there. Without --base the control's pre-fix content is unbound:
     a NOTE on the advisory native lane, fatal where a lane claims soundness and executes the
     control. A signed dispatch record may also pin base_sha outright (check_dispatch_provenance).
-    The ref is resolved by its exact name, once (_origin_base, W3-07): with it absent, a local
+    The ref is resolved by its exact name, once (_Authority.anchor_commit, W3-07): with it absent, a local
     refs/heads/refs/remotes/origin/<base> holding the poison used to answer for it."""
     base_sha = str(m.get("base_sha") or "")
     if not HEX40_RE.match(base_sha):
@@ -2974,7 +2968,7 @@ def check_base_binding(m, base, execute_nc):
             return ["NOTE: --base not given — base_sha, the content the executed control restores, "
                     "is bound to no branch (worker-chosen on this lane)"]
         return []
-    tip, _why = _origin_base(base)
+    tip, _target, _why = _Authority.anchor_commit(f"refs/remotes/origin/{base}")  # once (W3-07)
     if tip is None:
         return []  # check_ancestry reports the unresolved ref (a NOTE or fatal by lane)
     if _git(["merge-base", "--is-ancestor", base_sha, tip])[0] != 0:

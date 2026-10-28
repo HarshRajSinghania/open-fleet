@@ -594,7 +594,7 @@ appends a receipt before each merge it sends (#599), since the hook never sees t
 Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 
 Subcommands: `write` (verify, append, print the receipt's id), `verify`, `head` (verify, then
-print the head to anchor), `grants` (verify, then list the consents).
+print the head to anchor), `grants` (verify, with `verify`'s anchors, then list the consents).
 
 Flags: `--ledger` (default `$OPEN_FLEET_EGRESS_LEDGER`, legacy `$ORCA_EGRESS_LEDGER`, else
 `.orca/egress.jsonl` under the repository root — the nearest directory at or above the working
@@ -610,7 +610,9 @@ ever created. `write` takes
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
 else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger),
 `--expect-ancestor` (repeatable; close-to-close, appends tolerated) and `--require-receipts` (a
-close that expects receipts); `grants` takes `--json`.
+close that expects receipts); `grants` takes `--json` and the same `--expect-head` and
+`--expect-ancestor`, checked the same way (a rewrite since an anchor exits 3); without either it
+says `UNANCHORED` (on stdout, or on stderr beside `--json`), as `verify` does.
 Text fields are printable ASCII; `--consent` names a grant (letters, digits, `` ._:/#()@+,=-``,
 starting with a letter or digit).
 

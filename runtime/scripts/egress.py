@@ -61,8 +61,9 @@ Record (format v2: one canonical JSON object per line, mode 0600)::
   verifier would refuse is refused before the send, not discovered at close), appends, and
   fsyncs the file -- and on first creation its directory -- before printing the id.
 * **Consent is a field, not a vibe.** Every receipt names the standing grant
-  that authorizes the send; ``grants`` verifies the chain, then lists them so a human can see what
-  the fleet believes it is allowed to do.
+  that authorizes the send; ``grants`` verifies the chain, with ``verify``'s anchors, then lists
+  them so a human can see what the fleet believes it is allowed to do. Without an anchor it says
+  UNANCHORED: a receipt written since the last anchor can be rewritten consistently.
 
 Migration: a ledger written before v2 (no ``"v"`` key) still verifies while each such line is
 exactly what the v1 writer produced -- its keys, its canonical bytes, its types and its v1 ``id``
@@ -74,7 +75,7 @@ Subcommands
     write    verify, append one receipt, print its id (an anchor for that receipt)
     verify   recompute the whole chain, check any anchors
     head     verify, then print the chain head digest to anchor off the writer
-    grants   verify, then list the distinct consents, with sink/host and use counts
+    grants   verify (and any anchors), then list the distinct consents, with sink/host and use counts
 
 Exit codes
     0  ok (``verify``: the chain is intact, or holds no receipts and none were required)
@@ -645,15 +646,14 @@ def _tamper(path, broken, reason, count):
     return EXIT_FAIL_CLOSED
 
 
-def cmd_verify(args):
-    path, source = resolve_ledger(args.ledger)
-    exists, receipts, broken, reason, total = load_ledger(path)
-    if broken is not None:
-        return _tamper(path, broken, reason, total)
-    count = len(receipts)
+def _anchors_fail(args, path, exists, receipts):
+    """EXIT_FAIL_CLOSED, said, when an anchor `args` names (--expect-ancestor, --expect-head) does
+    not match the chain; None when every requested anchor holds (or none was requested). One check
+    for every command that answers from the chain: `verify` and `grants` (re-attack of 2d254d0f,
+    W5-04: `grants` took no anchor, so a consent rewritten since the last close printed with rc 0
+    while `verify --expect-ancestor` said TAMPER)."""
     head = sha256_hex(receipts[-1][1]) if receipts else ""
     shown = head or "(empty)"
-    where = f"{path} ({source})" if exists else f"{path} ({source}) — no ledger file there"
     # A receipt is named by its line's digest (what `head` printed) or by its id (what `write`
     # printed): both bind every byte of that one line, and through `prev` every line before it.
     known = {sha256_hex(raw) for _no, raw, _rec in receipts} | {rec["id"] for _no, _raw, rec in receipts}
@@ -681,6 +681,28 @@ def cmd_verify(args):
                   "catch that; only a head kept where the writer cannot reach it can (#312)",
                   file=sys.stderr)
             return EXIT_FAIL_CLOSED
+    return None
+
+
+UNANCHORED = ("UNANCHORED: edits are caught, a rewrite is not — anchor this head and each id `write` "
+              "printed off the writer, and pass them back as --expect-ancestor, or --expect-head for a "
+              "sealed ledger")
+
+
+def cmd_verify(args):
+    path, source = resolve_ledger(args.ledger)
+    exists, receipts, broken, reason, total = load_ledger(path)
+    if broken is not None:
+        return _tamper(path, broken, reason, total)
+    count = len(receipts)
+    head = sha256_hex(receipts[-1][1]) if receipts else ""
+    shown = head or "(empty)"
+    where = f"{path} ({source})" if exists else f"{path} ({source}) — no ledger file there"
+    failed = _anchors_fail(args, path, exists, receipts)
+    if failed is not None:
+        return failed
+    ancestors = getattr(args, "expect_ancestor", None)
+    expected = getattr(args, "expect_head", None)
     # No receipts is not an intact chain (W5-03): a close whose receipts were routed elsewhere, or
     # never written, finds none here. A close that expects receipts says so (--require-receipts)
     # and fails; a sealed empty head (--expect-head "(empty)") is an explicit none-expected.
@@ -700,10 +722,7 @@ def cmd_verify(args):
         _print(f"egress: chain intact, anchored receipt(s) present, {count} receipt(s) "
               f"in {where} — head {shown}")
         return EXIT_OK
-    _print(f"egress: chain intact, {count} receipt(s) in {where} — head {shown} "
-          "(UNANCHORED: edits are caught, a rewrite is not — anchor this head and each id `write` "
-          "printed off the writer, and pass them back as --expect-ancestor, or --expect-head for a "
-          "sealed ledger)")
+    _print(f"egress: chain intact, {count} receipt(s) in {where} — head {shown} ({UNANCHORED})")
     return EXIT_OK
 
 
@@ -724,11 +743,17 @@ def cmd_head(args):
 
 def cmd_grants(args):
     """The consents a VERIFIED chain records: a ledger `verify` calls tampered answers nothing about
-    what the fleet is allowed to do (W5-04)."""
+    what the fleet is allowed to do (W5-04). The anchors are `verify`'s, checked the same way: a
+    chain checked only against itself is said to be UNANCHORED (on stdout, or on stderr beside
+    --json), since every receipt written since the last anchor can be rewritten consistently."""
     path, _source = resolve_ledger(args.ledger)
-    _exists, receipts, broken, reason, total = load_ledger(path)
+    exists, receipts, broken, reason, total = load_ledger(path)
     if broken is not None:
         return _tamper(path, broken, reason, total)
+    failed = _anchors_fail(args, path, exists, receipts)
+    if failed is not None:
+        return failed
+    anchored = getattr(args, "expect_ancestor", None) is not None or getattr(args, "expect_head", None) is not None
     grants = {}
     for _lineno, _raw, record in receipts:
         key = record["consent"]
@@ -750,6 +775,9 @@ def cmd_grants(args):
         for row in rows:
             _print(f"{row['consent']}  uses={row['uses']}  sinks={','.join(row['sinks'])}  "
                   f"hosts={','.join(row['hosts'])}")
+    if not anchored:
+        _print(f"egress: these consents come from a chain checked only against itself ({UNANCHORED})",
+               file=sys.stderr if args.json else sys.stdout)
     return EXIT_OK
 
 
@@ -787,16 +815,7 @@ def build_parser():
 
     v = sub.add_parser("verify", help="recompute the hash chain")
     v.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
-    v.add_argument("--expect-head", default=None, dest="expect_head", metavar="SHA256",
-                   help="the head digest (or last receipt id) last recorded OFF this writer; the "
-                        "ledger must END exactly there. Without any anchor the chain is only checked "
-                        "against itself, which a wholesale rewrite satisfies (#312)")
-    v.add_argument("--expect-ancestor", default=None, action="append", dest="expect_ancestor",
-                   metavar="SHA256",
-                   help="a head digest recorded OFF this writer at an earlier close, or a receipt id "
-                        "`write` printed; that line must still be IN the chain, byte for byte. "
-                        "Repeatable. Receipts appended since are expected — this is the "
-                        "close-to-close form (#561)")
+    _anchor_arguments(v)
     v.add_argument("--require-receipts", action="store_true", dest="require_receipts",
                    help="a close that expects receipts: no ledger, or an empty one, exits 4, never 0 "
                         "(W5-03). Without it no receipts exits 0 and says NO RECEIPTS. An anchor "
@@ -804,9 +823,24 @@ def build_parser():
 
     sub.add_parser("head", help="verify, then print the chain head to anchor off the writer")
 
-    g = sub.add_parser("grants", help="verify, then list the standing consents the ledger records")
+    g = sub.add_parser("grants", help="verify (with verify's anchors), then list the standing consents "
+                                      "the ledger records")
     g.add_argument("--json", action="store_true", help="emit JSON")
+    _anchor_arguments(g)
     return p
+
+
+def _anchor_arguments(p):
+    p.add_argument("--expect-head", default=None, dest="expect_head", metavar="SHA256",
+                   help="the head digest (or last receipt id) last recorded OFF this writer; the "
+                        "ledger must END exactly there. Without any anchor the chain is only checked "
+                        "against itself, which a wholesale rewrite satisfies (#312)")
+    p.add_argument("--expect-ancestor", default=None, action="append", dest="expect_ancestor",
+                   metavar="SHA256",
+                   help="a head digest recorded OFF this writer at an earlier close, or a receipt id "
+                        "`write` printed; that line must still be IN the chain, byte for byte. "
+                        "Repeatable. Receipts appended since are expected — this is the "
+                        "close-to-close form (#561)")
 
 
 def main(argv=None):

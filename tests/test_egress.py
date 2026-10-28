@@ -882,6 +882,46 @@ class TestGrantsAnswerOnlyForAVerifiedChain(EgressBase):
         self.assertEqual(self.run_egress("verify").returncode, 0)
 
 
+class TestGrantsAreAnchoredLikeVerify(EgressBase):
+    """Re-attack of 2d254d0f (W5-04): `grants` verified the chain but took no anchor and never said
+    UNANCHORED, so a consent rewritten since the last close, its id recomputed, printed with rc 0
+    while `verify --expect-ancestor <that receipt's id>` gave rc 3."""
+
+    def test_a_consent_rewritten_since_its_anchor_is_tamper_and_an_unanchored_answer_says_so(self):
+        self.write_one(consent="grant:pr-open")
+        close_head = self.run_egress("head").stdout.strip()
+        written = self.write_one(consent="grant:pr-open", sink="issue-close")
+        self.assertEqual(written.returncode, 0, written.stderr)
+        receipt_id = written.stdout.strip()
+        anchored = (("--expect-ancestor", close_head, "--expect-ancestor", receipt_id), ("--expect-head", receipt_id))
+        for anchors in anchored:
+            honest = self.run_egress("grants", *anchors)
+            self.assertEqual(honest.returncode, 0, honest.stderr)
+            self.assertIn("grant:pr-open", honest.stdout)
+            self.assertNotIn("UNANCHORED", honest.stdout + honest.stderr)
+        lines = self.lines()
+        record = json.loads(lines[-1])
+        record["consent"] = "grant:merge-anything"
+        record["id"] = egress.record_id(record)
+        lines[-1] = json.dumps(record, separators=(",", ":"))
+        self.ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.assertEqual(self.run_egress("verify").returncode, 0, "the rewrite is internally consistent")
+        self.assertEqual(self.run_egress("verify", "--expect-ancestor", receipt_id).returncode, 3)
+        for anchors in anchored:
+            for as_json in ((), ("--json",)):
+                with self.subTest(anchors=anchors, as_json=as_json):
+                    r = self.run_egress("grants", *as_json, *anchors)
+                    self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                    self.assertNotIn("merge-anything", r.stdout)
+                    self.assertIn("TAMPER", r.stderr)
+        for as_json, stream in (((), "stdout"), (("--json",), "stderr")):
+            with self.subTest(unanchored=as_json):
+                r = self.run_egress("grants", *as_json)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("UNANCHORED", getattr(r, stream), "an unanchored answer reads as a clean bill")
+        self.assertEqual(json.loads(self.run_egress("grants", "--json").stdout)[0]["consent"], "grant:merge-anything")
+
+
 class TestNothingPrintedIsATerminalCommand(EgressBase):
     """Re-attack of 82a2d00c (W5-04): v1-prefix lines were not held to the text rule, so a v1
     consent `grant\\x1b]0;PWNED\\x07\\x1b[31mRED` verified and `grants` printed the raw escapes to

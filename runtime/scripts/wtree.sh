@@ -103,7 +103,11 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
   GIT_EXEC_PATH GIT_TEMPLATE_DIR GIT_NAMESPACE
 GIT_NO_LAZY_FETCH=1
 GIT_ALLOW_PROTOCOL=file
-export GIT_NO_LAZY_FETCH GIT_ALLOW_PROTOCOL
+# GIT_ATTR_NOSYSTEM=1: the system attributes file ($(prefix)/etc/gitattributes, which a per-user
+# install leaves the worker's to write) is never opened (Codex, round 3); attributes come from the
+# work tree, the copied info/attributes and CUSTODY's own core.attributesFile only.
+GIT_ATTR_NOSYSTEM=1
+export GIT_NO_LAZY_FETCH GIT_ALLOW_PROTOCOL GIT_ATTR_NOSYSTEM
 GIT=$(command -v git 2>/dev/null) || GIT=
 case "$GIT" in
   /*) ;;
@@ -285,28 +289,34 @@ trap 'rm -rf "$CUSTODY"' EXIT INT TERM
 # FIFO's open would hang the gate), into a file CUSTODY's own core.attributesFile names — the same
 # lowest precedence, below .gitattributes and info/attributes. A FIFO, device, directory, symlink or
 # larger file is no fingerprint (exit 1), never silently dropped; a missing file or an empty value
-# is no attributes, as for git, still named so no other default is read. The global and system
-# files stay off (their value is never read). sh cannot open without blocking, so python3 -I does
-# that one read.
+# is no attributes, as for git. sh cannot open without blocking, so python3 -I does that one read,
+# and takes the path from git's NUL-terminated output in a file: a `$(...)` would strip a trailing
+# newline from it and read another file (Codex, round 3). CUSTODY's file is named ALWAYS, empty when
+# the repository names none, so git never opens its default user attributes file
+# ($XDG_CONFIG_HOME/git/attributes or ~/.config/git/attributes, the worker's to write on a one-uid
+# host — a FIFO there hung staging), and GIT_ATTR_NOSYSTEM=1 (above) keeps the system file shut.
+: >"$CUSTODY/attributes" || exit 1
 _rc=0
-_af=$("$GIT" -C "$TOP" config --type=path --get core.attributesFile 2>/dev/null) || _rc=$?
-if [ "$_rc" -eq 0 ]; then
-  if [ -z "$_af" ]; then
-    : >"$CUSTODY/attributes" || exit 1
-  else
-    case "$_af" in
-      /*) ;;
-      *) _af="$TOP/$_af" ;;
-    esac
-    PY=$(command -v python3 2>/dev/null) || PY=
-    case "$PY" in
-      /*) ;;
-      *) echo "wtree: $TOP names a core.attributesFile and no python3 resolves to read it safely; no fingerprint" >&2
-         exit 1 ;;
-    esac
-    if ! "$PY" -I -c '
+"$GIT" -C "$TOP" config --type=path -z --get core.attributesFile >"$CUSTODY/wtree-attributes-path" \
+  2>/dev/null || _rc=$?
+_aflen=$(wc -c <"$CUSTODY/wtree-attributes-path" | tr -d ' \t') || exit 1
+if [ "$_rc" -eq 0 ] && [ "$_aflen" -gt 1 ]; then
+  PY=$(command -v python3 2>/dev/null) || PY=
+  case "$PY" in
+    /*) ;;
+    *) echo "wtree: $TOP names a core.attributesFile and no python3 resolves to read it safely; no fingerprint" >&2
+       exit 1 ;;
+  esac
+  if ! "$PY" -I -c '
 import os, stat, sys
-src, dst, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+pathfile, top, dst, limit = sys.argv[1], os.fsencode(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+with open(pathfile, "rb") as fh:
+    raw = fh.read()
+if not raw.endswith(b"\0") or b"\0" in raw[:-1]:
+    sys.exit(1)
+src = raw[:-1]
+if not src.startswith(b"/"):
+    src = top + b"/" + src
 try:
     fd = os.open(src, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
 except FileNotFoundError:
@@ -324,17 +334,19 @@ else:
         sys.exit(1)
 with open(dst, "wb") as fh:
     fh.write(data)
-' "$_af" "$CUSTODY/attributes" 1048576 2>/dev/null; then
-      echo "wtree: $TOP's core.attributesFile ($_af) is not a regular file of at most 1 MiB; no fingerprint" >&2
-      exit 1
-    fi
+' "$CUSTODY/wtree-attributes-path" "$TOP" "$CUSTODY/attributes" 1048576 2>/dev/null; then
+    echo "wtree: $TOP's core.attributesFile is not a regular file of at most 1 MiB; no fingerprint" >&2
+    exit 1
   fi
-  set -- "$@" "GIT_CONFIG_KEY_$_n=core.attributesFile" "GIT_CONFIG_VALUE_$_n=$CUSTODY/attributes"
-  _n=$((_n + 1))
-elif [ "$_rc" -ne 1 ]; then
+elif [ "$_rc" -eq 0 ] && [ "$_aflen" -ne 1 ]; then
+  echo "wtree: $TOP's core.attributesFile listing is not one NUL-terminated value; no fingerprint" >&2
+  exit 1
+elif [ "$_rc" -ne 0 ] && [ "$_rc" -ne 1 ]; then
   echo "wtree: cannot read $TOP's core.attributesFile; no fingerprint" >&2
   exit 1
 fi
+set -- "$@" "GIT_CONFIG_KEY_$_n=core.attributesFile" "GIT_CONFIG_VALUE_$_n=$CUSTODY/attributes"
+_n=$((_n + 1))
 set -- "$@" "GIT_CONFIG_COUNT=$_n"
 # A regular file is copied (mtime kept); a missing one is skipped; anything else (a symlink, a
 # FIFO) where git would read one is refused, never followed.

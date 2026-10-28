@@ -2259,9 +2259,13 @@ a clean CRLF checkout it steers read STALE, so its CONTENT is carried: the path 
 without following a final symlink and without blocking (by `python3 -I`, since sh cannot), into a
 file the custody's own `core.attributesFile` names — the same lowest precedence, below
 `.gitattributes` and `info/attributes`. A FIFO, device, directory, symlink or larger file is exit 1,
-never dropped; a missing file or empty value is no attributes, as for git; the global and system
-files stay off. The exit-3 `check-attr` runs in custody too, so no git here opens a file the worker
-names. A checked-out submodule is never entered: `git add` would ask
+never dropped; a missing file or empty value is no attributes, as for git. The path reaches the
+reader from git's NUL-terminated output, never a `$(...)`, which stripped a trailing newline and
+read another file. The custody's own attributes file is named always — empty when the repository
+names none — so git never opens its default user attributes file (`$XDG_CONFIG_HOME/git/attributes`
+or `~/.config/git/attributes`, the worker's to write on a one-uid host, where a FIFO hung staging),
+and `GIT_ATTR_NOSYSTEM=1` keeps the system one shut. The exit-3 `check-attr` runs in custody too, so
+no git here opens a file the worker names. A checked-out submodule is never entered: `git add` would ask
 whether it is dirty with a child git under the submodule's OWN config, and nothing turns that off,
 so every gitlink whose path is a directory is left out of `add -A` and refreshed with
 `update-index`, which reads the submodule's HEAD in-process (a moved submodule still changes the

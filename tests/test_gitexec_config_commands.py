@@ -848,6 +848,11 @@ class WtreeKeepsLineEndingData(unittest.TestCase):
         if how == "info/attributes":
             (p.repo / ".git" / "info").mkdir(exist_ok=True)
             (p.repo / ".git" / "info" / "attributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+        elif how == "core.attributesFile ending in a newline":
+            # Codex (round 3): `$(...)` stripped the trailing newline and read `attrs` instead.
+            (p.dir / "attrs\n").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+            (p.dir / "attrs").write_text("*.txt -text\n", encoding="utf-8")
+            p._git("config", "core.attributesFile", str(p.dir) + "/attrs\n")
         elif how.startswith("core.attributesFile"):
             # Codex on this branch (P1, round 2): a repository-scope core.attributesFile, absolute
             # or relative to the work tree top (beside the repository, so nothing is untracked).
@@ -864,7 +869,7 @@ class WtreeKeepsLineEndingData(unittest.TestCase):
 
     def test_a_touched_clean_crlf_checkout_fingerprints_as_head(self):
         for how in ("info/attributes", "core.autocrlf", "core.attributesFile absolute",
-                    "core.attributesFile relative"):
+                    "core.attributesFile relative", "core.attributesFile ending in a newline"):
             with self.subTest(how=how):
                 p, head_tree = self._repo(how)
                 r = _wtree(p.repo)
@@ -918,6 +923,66 @@ class WtreeRefusesAnUnreadableAttributesFile(unittest.TestCase):
         r = _wtree(p.repo)
         self.assertEqual((r.returncode, r.stdout.strip()), (0, p._git("rev-parse", "HEAD^{tree}").stdout.strip()),
                          r.stderr)
+
+
+class WtreeOpensNoUserOrSystemAttributesFile(unittest.TestCase):
+    """Codex on this branch (round 3, P2): with no repository core.attributesFile, git opened its
+    default user attributes file ($XDG_CONFIG_HOME/git/attributes, else ~/.config/git/attributes;
+    the worker's to write on a one-uid host) and the system one, so a FIFO there hung the
+    fingerprint. CUSTODY's own attributes file is now named always, and GIT_ATTR_NOSYSTEM=1."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")  # `add -A` reads attributes
+        (p.repo / "b.txt").write_text("new\n", encoding="utf-8")
+        return p
+
+    def _run(self, p, env):
+        try:
+            return subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=env, capture_output=True,
+                                  text=True, stdin=subprocess.DEVNULL, timeout=30)
+        except subprocess.TimeoutExpired:
+            self.fail("wtree.sh hung opening a default attributes file")
+
+    def test_a_fifo_at_either_default_user_attributes_file_is_never_opened(self):
+        for where in ("XDG_CONFIG_HOME", "HOME"):
+            with self.subTest(where=where):
+                p = self._repo()
+                empty = p.dir / "empty-home"
+                empty.mkdir()
+                base = {k: v for k, v in _CLEAN_ENV.items() if k != "XDG_CONFIG_HOME"}
+                want = self._run(p, {**base, "HOME": str(empty)})
+                self.assertEqual(want.returncode, 0, want.stderr)
+                if where == "XDG_CONFIG_HOME":
+                    xdg = p.dir / "xdg"
+                    (xdg / "git").mkdir(parents=True)
+                    os.mkfifo(xdg / "git" / "attributes")
+                    env = {**base, "HOME": str(empty), "XDG_CONFIG_HOME": str(xdg)}
+                else:
+                    home = p.dir / "home"
+                    (home / ".config" / "git").mkdir(parents=True)
+                    os.mkfifo(home / ".config" / "git" / "attributes")
+                    env = {**base, "HOME": str(home)}
+                r = self._run(p, env)
+                self.assertEqual((r.returncode, r.stdout), (0, want.stdout), r.stderr)
+
+    def test_every_git_runs_with_system_attributes_off(self):
+        p = self._repo()
+        bindir = p.dir / "envbin"
+        bindir.mkdir()
+        log = p.dir / "attr-nosystem.log"
+        (bindir / "git").write_text(
+            '#!/bin/sh\necho "${GIT_ATTR_NOSYSTEM:-unset}" >> ' + _sh(log) + "\nexec " + _sh(_REAL_GIT) + ' "$@"\n',
+            encoding="utf-8")
+        (bindir / "git").chmod(0o755)
+        r = self._run(p, {**_CLEAN_ENV, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        seen = log.read_text(encoding="utf-8").split()
+        self.assertTrue(seen, "the wrapper never ran")
+        self.assertEqual(set(seen), {"1"}, "a git ran with the system attributes file live")
 
 
 class WtreeStartsNoChildGitInASubmodule(unittest.TestCase):

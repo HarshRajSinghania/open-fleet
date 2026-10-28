@@ -13,9 +13,15 @@
   no longer a linked worktree of the graded repository. The driver listing stays as a belt and
   keeps its fail-closed refusal. Every other git these tools run drops inherited repository
   selectors (`GIT_DIR`, `GIT_INDEX_FILE`, `GIT_EXEC_PATH`, ...) and carries the custody floor
-  (`GIT_NO_LAZY_FETCH=1`, `GIT_ALLOW_PROTOCOL=file`, no signature-verifying or submodule child),
+  (`GIT_NO_LAZY_FETCH=1`, `GIT_ALLOW_PROTOCOL=file`, no signature-verifying child),
   so a planted promisor remote cannot run a payload through a lazy fetch. A repository the custody
   cannot honour (a partial clone) or read safely (a symlinked `info/exclude`) is refused: exit 2
-  from floor_guard, `diff_failed` from diff_scope, a `ProvenanceError`, a blocked control. Also:
+  from floor_guard, `diff_failed` from diff_scope, a `ProvenanceError`, a blocked control. A
+  work-tree diff no longer starts a child git inside a checked-out submodule to ask whether it is
+  dirty (`--ignore-submodules=dirty`): that child ran under the submodule's own config, so a filter
+  planted there ran too. A moved submodule commit is still reported; uncommitted changes inside a
+  submodule no longer are. The custody also carries the repository's `info/attributes` and its
+  `core.safecrlf`/`core.checkRoundtripEncoding` as data, so a CRLF (`eol=crlf`) checkout no longer
+  reads as modified. Also:
   the `_external.py` runner docstring no longer claims `reset --hard` runs in custody (it is
   refused).

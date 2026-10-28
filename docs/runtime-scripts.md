@@ -1196,13 +1196,16 @@ a fresh temporary directory that no worker names: its own config (repository for
 format, `core.bare`, and no driver of any kind), HEAD at `head`, the repository's objects —
 `objects="alternate"` (default) through `objects/info/alternates`, read only, or `"shared"`, a
 symlink to the repository's store, so an object the custody call writes lands where a later git in
-the repository finds it — and regular-file copies of the common `info/exclude` and `shallow` and,
+the repository finds it — and regular-file copies of the common `info/exclude`, `info/attributes`
+(data: `text`/`eol`/`working-tree-encoding` steer how a work-tree file reads as a blob, and a
+`filter=`/`diff=`/`merge=` it selects names a driver the dir never defines) and `shallow` and,
 when `gitdir` names a per-worktree admin dir, its `index` (mtime kept), split-index
 `sharedindex.*` and `info/sparse-checkout`; a FIFO, symlink or other non-regular file at any of
 those paths is refused (`GitCustodyRefused`, an `OSError`), never followed. It is removed on exit.
 `custody(repo, run=, index=, objects=)` reads the repository's facts (`rev-parse`) and data-only
 `core.*` settings (`custody_settings`: `filemode`, `symlinks`, `ignorecase`, sparse flags,
-`autocrlf`, `eol`, `checkstat`, `trustctime` — never `core.excludesFile`), refuses an
+`autocrlf`, `eol`, `safecrlf`, `checkRoundtripEncoding`, `checkstat`, `trustctime` — never
+`core.excludesFile` or `core.attributesFile`), refuses an
 `extensions.*` the dir cannot honour (`partialClone` above all) and yields a `Custody` whose `lead`
 is `-C <repo> --git-dir <dir> --work-tree <top>` and whose `pairs` are those settings. A git run
 with that lead reads the repository's work tree, index and objects and no config the worker
@@ -1213,7 +1216,12 @@ is `env()` minus `SELECTOR_ENV` (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
 `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, ...) plus `CUSTODY_FLOOR` (`core.alternateRefsCommand`,
 submodule recursion, `log.showSignature` and every `gpg.*.program`, auto-maintenance) and
 `CUSTODY_ENV` (`GIT_ALLOW_PROTOCOL=file`, `GIT_NO_LAZY_FETCH=1`, so a planted promisor remote's
-`uploadpack`, credential helper or ssh command is never reached by a lazy fetch).
+`uploadpack`, credential helper or ssh command is never reached by a lazy fetch). Neither reaches
+into a checked-out submodule: a git comparing the work tree probes a submodule's dirtiness with a
+child git that runs under the submodule's OWN config, so every custody diff carries
+`NO_SUBMODULE_CHILD` (`--ignore-submodules=dirty`: a moved gitlink is still reported, read from the
+submodule's refs in-process; uncommitted changes inside it are not), and a caller that stages a
+work tree keeps its gitlinks out of `git add`, which has no such option (`wtree.sh`).
 Callers: the posix provider's `run_git` (`status`, `merge-tree`, `checkout_worktree`; see
 `docs/runtimes.md`, "`posix` git custody"), floor_guard's tracked and untracked diffs,
 diff_scope's working-tree diff and `--predict-merge` (`objects="shared"`, so the merged tree

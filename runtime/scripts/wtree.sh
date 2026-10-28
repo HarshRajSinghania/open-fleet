@@ -42,7 +42,8 @@
 # Exit 1 outside a git repo, or in a repo with no commits and no usable index — callers MUST treat
 # a non-zero exit as "no fingerprint" and fail closed, never as an empty one.
 # Exit 1 too when the repository cannot be staged in custody: an `extensions.*` the custody git dir
-# cannot honour (a partial clone above all), a non-regular `info/exclude`, `info/attributes`,
+# cannot honour (a partial clone above all), a common git dir whose path an alternates file cannot
+# name (a newline or `"` in it), a non-regular `info/exclude`, `info/attributes`,
 # `shallow`, shared index or `info/sparse-checkout` where git would read one, a repository-scope
 # `core.attributesFile` that is not a regular file of at most 1 MiB, or a gitlink path holding a
 # newline; and when the exit-3 check below cannot run (its diff-index or check-attr fails).
@@ -135,8 +136,38 @@ export GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2 GIT_CONFIG_KEY_3 GIT_CONFIG_VALUE_3
 # that never closes would block the fingerprint, and the gate behind it, forever (#629).
 exec </dev/null
 
+# Bytes, not text, from here on: paths and config keys are handled under LC_ALL=C (see below).
+LC_ALL=C
+export LC_ALL
+NL='
+'
+TAB=$(printf '\t')
+# Codex, round 5 (P1): `$(...)` strips EVERY trailing newline, so `TOP=$(git rev-parse
+# --show-toplevel)` for a repository at /tmp/repo<NL> named /tmp/repo, and the fingerprint printed
+# THAT repository's tree. exact_out runs a command and leaves its stdout in `_out` with only the ONE
+# newline git ends a value with removed and every other byte kept (a sentinel printed after the
+# output takes the strip); a command that fails, or output that does not end in that newline, is a
+# failure. Every path git hands this script (the toplevel, the git dir, the common dir, the index)
+# and every core.* value carried below is read this way. No other command substitution here can
+# lose a byte to the strip: `command -v` output must be absolute, so it ends in the command's name;
+# mktemp's ends in its random suffix; the rest are object ids, a format name, counts or messages.
+exact_out() {
+  _out=$("$@" 2>/dev/null && printf x) || return 1
+  _out=${_out%x}
+  case "$_out" in
+    *"$NL") _out=${_out%"$NL"} ;;
+    *) return 1 ;;
+  esac
+}
+
 TARGET="${1:-.}"
-TOP=$("$GIT" -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
+exact_out "$GIT" -C "$TARGET" rev-parse --show-toplevel || exit 1
+TOP=$_out
+# An empty TOP would make every `-C "$TOP"` below run in the caller's directory instead.
+case "$TOP" in
+  /*) ;;
+  *) exit 1 ;;
+esac
 
 # #629: `git add -A` below materialises worktree content, running a repo-config clean/smudge
 # filter a .gitattributes selects. The command comes only from a declared filter.<n>.* key, and
@@ -155,11 +186,6 @@ TOP=$("$GIT" -C "$TARGET" rev-parse --show-toplevel 2>/dev/null) || exit 1
 # content runs with those files off, so a driver they declare never runs, but its NAME is
 # collected with the repository's — DECLARED keeps every blanked filter name, one per line, for
 # the exit-3 check after staging, whichever scope (`--show-scope`) declared it.
-LC_ALL=C
-export LC_ALL
-NL='
-'
-TAB=$(printf '\t')
 DECLARED=
 # PR #649 review (PRRT_kwDOTWxN9c6vzAIE): an unreadable driver list must stop the fingerprint,
 # never run with nothing blanked. `$(git ... | tr ...)` reported tr's exit status and hid git's,
@@ -236,8 +262,15 @@ fi
 # name folding, stat fields, sparse flags) ride too, read here by `config --get`, so a checkout
 # still fingerprints as its committed tree. `core.excludesFile` is NOT carried: honouring a file
 # the worker names could hide an untracked file, so it counts (fails STALE) instead.
-_gitdir=$("$GIT" -C "$TOP" rev-parse --absolute-git-dir 2>/dev/null) || exit 1
-_common=$("$GIT" -C "$TOP" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 1
+# Both read byte-exact (exact_out, above): a stripped trailing newline named another directory.
+exact_out "$GIT" -C "$TOP" rev-parse --absolute-git-dir || exit 1
+_gitdir=$_out
+exact_out "$GIT" -C "$TOP" rev-parse --path-format=absolute --git-common-dir || exit 1
+_common=$_out
+case "$_gitdir" in
+  /*) ;;
+  *) echo "wtree: $TOP's git dir is not absolute; no fingerprint" >&2; exit 1 ;;
+esac
 _format=$("$GIT" -C "$TOP" rev-parse --show-object-format 2>/dev/null) || exit 1
 case "$_format" in
   sha1) _rfv=0 ;;
@@ -272,8 +305,8 @@ set +f
 IFS=$OLDIFS
 for _k in filemode symlinks ignorecase precomposeunicode protecthfs protectntfs sparsecheckout \
     sparsecheckoutcone autocrlf eol safecrlf checkroundtripencoding checkstat trustctime; do
-  _v=$("$GIT" -C "$TOP" config --get "core.$_k" 2>/dev/null) || continue
-  set -- "$@" "GIT_CONFIG_KEY_$_n=core.$_k" "GIT_CONFIG_VALUE_$_n=$_v"
+  exact_out "$GIT" -C "$TOP" config --get "core.$_k" || continue
+  set -- "$@" "GIT_CONFIG_KEY_$_n=core.$_k" "GIT_CONFIG_VALUE_$_n=$_out"
   _n=$((_n + 1))
 done
 _head=$("$GIT" -C "$TOP" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || _head=
@@ -392,7 +425,10 @@ done
 
 # Resolve the REAL index path BEFORE exporting GIT_INDEX_FILE: with the variable set,
 # `rev-parse --git-path index` returns the temp index itself and the stat-cache seed self-copies.
-REAL_INDEX=$("$GIT" -C "$TOP" rev-parse --git-path index 2>/dev/null || true)
+REAL_INDEX=
+if exact_out "$GIT" -C "$TOP" rev-parse --git-path index; then
+  REAL_INDEX=$_out
+fi
 case "$REAL_INDEX" in
   ""|/*) ;;
   *) REAL_INDEX="$TOP/$REAL_INDEX" ;;

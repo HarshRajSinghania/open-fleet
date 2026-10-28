@@ -156,6 +156,10 @@ except Exception:
   [ "${#_sha}" -eq 40 ] || [ "${#_sha}" -eq 64 ] || return 1
   printf '%s' "$_sha"
 }
+# _dgit — git in the target repo for key DISCOVERY, with replacement objects and grafts off (the
+# object-identity floor verify.py and gitexec.py read under): `git replace <reviewed> <other>`
+# made `cat-file -e <ref>:.orca/dispatch-pubkey` see a pin the reviewed commit does not carry.
+_dgit() { GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null "$GIT_BIN" -C "$TOP" "$@"; }
 # _remote_target REF — REF followed through any symbolic chain to its FINAL target, printed only
 # when every hop is a remote-tracking ref that EXISTS under exactly its name (W3-07: the rule
 # gitexec.remote_tracking_commit holds for decisions.py, gate-batch.py, run_report.py and
@@ -172,7 +176,7 @@ except Exception:
 # means "what this clone's fetch wrote" — the coordinator's or the CI runner's on a sound lane; on
 # a worker's own machine any ref is the worker's to write, which is why that lane stays advisory.
 _remote_target() {
-  _rt_refs=$("$GIT_BIN" -C "$TOP" for-each-ref --format='%(refname) %(symref)' refs/remotes/ 2>/dev/null) || _rt_refs=
+  _rt_refs=$(_dgit for-each-ref --format='%(refname) %(symref)' refs/remotes/ 2>/dev/null) || _rt_refs=
   _t=$1
   _rt_hops=0
   while :; do
@@ -197,7 +201,7 @@ _remote_target() {
     _rt_entry=${_rt_entry#=}
     [ -n "$_rt_entry" ] || break
     # Non-empty: $_t is symbolic. Its NEXT hop, not the chain's end the listing shows.
-    if ! _rt_entry=$("$GIT_BIN" -C "$TOP" symbolic-ref -q --no-recurse "$_t" 2>/dev/null) || [ -z "$_rt_entry" ]; then
+    if ! _rt_entry=$(_dgit symbolic-ref -q --no-recurse "$_t" 2>/dev/null) || [ -z "$_rt_entry" ]; then
       echo "verify-gate: NOTE — $1 reaches the symbolic ref '$_t', whose chain cannot be read one hop at a time here (symbolic-ref --no-recurse needs Git 2.39+); no key is read there." >&2
       return 1
     fi
@@ -219,11 +223,11 @@ if [ -z "$PUBKEY" ] && [ -n "$GIT_BIN" ]; then
     DEF_REF="$(_remote_target refs/remotes/origin/HEAD || true)"
     BASE_REF=""
     [ -z "$KEY_BASE" ] || BASE_REF="$(_remote_target "refs/remotes/origin/$KEY_BASE" || true)"
-    if [ -n "$DEF_REF" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
+    if [ -n "$DEF_REF" ] && _dgit cat-file -e "$DEF_REF:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$DEF_REF"
-    elif [ -n "$BASE_REF" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$BASE_REF:.orca/dispatch-pubkey" 2>/dev/null; then
+    elif [ -n "$BASE_REF" ] && _dgit cat-file -e "$BASE_REF:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$BASE_REF"
-    elif [ -n "$PR_BASE" ] && "$GIT_BIN" -C "$TOP" cat-file -e "$PR_BASE:.orca/dispatch-pubkey" 2>/dev/null; then
+    elif [ -n "$PR_BASE" ] && _dgit cat-file -e "$PR_BASE:.orca/dispatch-pubkey" 2>/dev/null; then
       PUBKEY=".orca/dispatch-pubkey@$PR_BASE"
     elif [ -f "$TOP/.orca/dispatch-pubkey" ]; then
       if [ -n "$PROVENANCE" ]; then

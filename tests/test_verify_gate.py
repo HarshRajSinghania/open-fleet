@@ -640,6 +640,27 @@ class VerifyGateDispatchPinDiscovery(GateCase):
                 self.assertNotIn("signature verified", r.stdout + r.stderr)
                 self.assertEqual(r.returncode, 2, r.stderr[-600:])
 
+    def test_a_replacement_object_never_makes_a_key_appear_at_the_ref(self):
+        # Independent re-attack (B), the gate's half: key discovery ran `cat-file -e
+        # <ref>:.orca/dispatch-pubkey` under the ambient env, so `git replace <origin/main's
+        # commit> <a commit carrying the worker's key>` made a pin appear that the reviewed
+        # commit does not carry. Discovery now runs with replace objects and grafts off.
+        (_unused, worker) = self.use_repo(remote_head=True)
+        reviewed = _git_out(self.repo, "rev-parse", "refs/remotes/origin/main")
+        _git(self.repo, "checkout", "-q", "-b", "workerbranch")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "my key")
+        os.remove(self.repo / ".orca" / "dispatch-pubkey")
+        _git(self.repo, "replace", reviewed, "workerbranch")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        r = self._traced_gate(rec, src)
+        self.assertNotIn("PUBKEY=.orca/dispatch-pubkey@", r.stderr)
+        self.assertNotIn("signature verified", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 2, r.stderr[-600:])
+
     def test_a_base_with_a_revision_suffix_is_no_key_ref(self):
         # A key rotation retired the worker's key: origin/main's parent still pins it, and
         # ORCA_BASE=main~1 made refs/remotes/origin/main~1, which passed the refs/remotes/ case.

@@ -100,7 +100,11 @@ The launcher starts both containers with these properties:
   120 s (a byte at a time extends neither), and at most 32 are served at once. When all 32 are
   taken, a new connection evicts the one that has waited longest for its own request to arrive,
   so connections trickling requests, however many a process reopens, never keep the arm's own
-  model calls out; a call already read in full keeps its slot. Every connection closed unanswered
+  model calls out; a call already read in full keeps its slot. Each request body is held once, and
+  all of them together at most 64 MiB (`BODY_BUDGET`, which with each body's JSON parse fits the
+  broker's 512m): a request takes its `Content-Length` from that budget before its body is read,
+  waits up to 30 s for room, and is otherwise answered 503 and counted as a `body-budget` refusal.
+  Every connection closed unanswered
   (evicted, past the bound, timed out, malformed, a body cut short) is counted as a `drop`. Drops
   and faults are counted per kind and written at most once a second per kind, with the running
   counts on every line and a `tally` line a second after the last one not written, so a client

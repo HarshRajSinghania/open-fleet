@@ -21,7 +21,10 @@ headers (REQUEST_DEADLINE_S, which a byte at a time never extends) and one for i
 connection, not a client that keeps opening them, so when every slot is taken a new connection
 evicts the one that has waited longest for its own request to arrive: a request still arriving
 holds its slot only until someone else needs it, and only calls already read in full (relayed to
-the API, or being refused) keep theirs. A connection past the bound with none to evict is closed
+the API, or being refused) keep theirs. A body is held once (one buffer of its Content-Length), and
+the bodies of every connection together at most BODY_BUDGET bytes: a request takes its length from
+that budget before its body is read, waits up to BODY_WAIT_S for room, and is otherwise refused
+(503, a "body-budget" refusal), so what the slots hold fits the broker's container memory. A connection past the bound with none to evict is closed
 unanswered. Every connection closed without an answer (evicted, past the bound, timed out,
 malformed, a body cut short, or closed before its request) is counted as a "drop" (W5-16).
 count_tokens is free but bounded: FREE_CALLS_MAX calls and FREE_BYTES_MAX body bytes per broker,
@@ -116,6 +119,14 @@ FIELDS = {"model", "messages", "system", "max_tokens", "stream", "tools", "tool_
           "inference_geo", "service_tier"}
 FRAMING_TOKENS = 4096
 MAX_BODY = 64 << 20
+# The request-body bytes every connection holds AT ONCE, together. MAX_CONNECTIONS x MAX_BODY (2 GiB)
+# never fit the broker's container (BROKER_LIMITS, 512m), and four concurrent 64 MiB bodies held
+# twice each took it to 506 MB (re-attack of 2d254d0f): a body is now held once, and a request
+# takes its Content-Length from this budget before its first body byte is read, waiting up to
+# BODY_WAIT_S for room, else it is refused (503) and counted. With its JSON parse (a few times its
+# bytes) and the interpreter, the budget fits the container's memory; MAX_BODY never exceeds it.
+BODY_BUDGET = 64 << 20
+BODY_WAIT_S = 30
 UPSTREAM_TIMEOUT_S = 900
 HANDLER_TIMEOUT_S = 60  # each read or write on a client connection (W5-16)
 REQUEST_DEADLINE_S = 30  # the request line and headers, in all: a byte at a time never extends it
@@ -486,8 +497,18 @@ class Broker(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
             return self.fail(411, "invalid_request_error", "a request needs a Content-Length")
-        if not 0 <= length <= MAX_BODY:
-            return self.fail(413, "invalid_request_error", f"a body over {MAX_BODY} bytes")
+        if not 0 <= length <= min(MAX_BODY, self.server.bodies.limit):
+            return self.fail(413, "invalid_request_error", f"a body over {min(MAX_BODY, self.server.bodies.limit)} bytes")
+        if not self.server.bodies.take(length, time.monotonic() + BODY_WAIT_S):
+            self.ledger.refuse("body-budget", f"{length} body bytes past the {self.server.bodies.limit} held at once")
+            return self.fail(503, "overloaded_error", "the broker holds as many request bodies as it can; retry")
+        try:
+            self.answer_post(path, length)
+        finally:
+            self.server.bodies.give(length)
+
+    def answer_post(self, path, length):
+        """do_POST once the body's bytes are taken from the budget (BODY_BUDGET)."""
         self.reader.deadline = time.monotonic() + BODY_DEADLINE_S
         body = self.read_body(length)
         if not self.server.request_read(self.connection):
@@ -519,28 +540,32 @@ class Broker(BaseHTTPRequestHandler):
 
     def read_body(self, length):
         """The request's `length` body bytes, or None when they do not all arrive by the deadline:
-        the socket timeout bounds each read, this bounds the trickle (W5-16)."""
-        chunks, left, deadline = [], length, time.monotonic() + BODY_DEADLINE_S
-        while left:
-            if time.monotonic() > deadline:
-                break
-            try:
-                chunk = self.rfile.read1(min(left, 1 << 20))
-            except TimeoutError:  # the body's deadline, or the per-read timeout: not a fault
-                break
-            except OSError as err:  # the client's connection failed
-                if not self.server.was_evicted(self.connection):
-                    self.ledger.fault("body", err)
-                return None
-            if not chunk:
-                break
-            chunks.append(chunk)
-            left -= len(chunk)
-        if left:
+        the socket timeout bounds each read, this bounds the trickle (W5-16). Read into ONE buffer
+        of exactly `length` bytes, never chunks joined after (which held each body twice)."""
+        body, got, deadline = bytearray(length), 0, time.monotonic() + BODY_DEADLINE_S
+        view = memoryview(body)
+        try:
+            while got < length:
+                if time.monotonic() > deadline:
+                    break
+                try:
+                    n = self.rfile.readinto1(view[got:got + (1 << 20)])
+                except TimeoutError:  # the body's deadline, or the per-read timeout: not a fault
+                    break
+                except OSError as err:  # the client's connection failed
+                    if not self.server.was_evicted(self.connection):
+                        self.ledger.fault("body", err)
+                    return None
+                if not n:
+                    break
+                got += n
+        finally:
+            view.release()
+        if got < length:
             if not self.server.was_evicted(self.connection):
                 self.ledger.drop("body did not arrive")
             return None
-        return b"".join(chunks)
+        return body
 
     def relay(self, body, call, model, fast):
         """Forward to the API and relay the answer as it arrives; settle the call's usage."""
@@ -634,6 +659,29 @@ def read_token(path):
     return token
 
 
+class _BodyBudget:
+    """BODY_BUDGET: the body bytes all connections hold at once. `take` waits for room until a
+    deadline (False then); `give` returns a request's bytes when it is answered."""
+
+    def __init__(self, limit):
+        self.limit, self.held, self.cond = limit, 0, threading.Condition()
+
+    def take(self, n, deadline):
+        with self.cond:
+            while self.held + n > self.limit:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self.cond.wait(left)
+            self.held += n
+            return True
+
+    def give(self, n):
+        with self.cond:
+            self.held -= n
+            self.cond.notify_all()
+
+
 class BrokerServer(ThreadingHTTPServer):
     """At most `slots` connections served at once, and a fault in any of them recorded in the
     ledger rather than printed to a log nobody keeps (W5-16, W5-18).
@@ -650,6 +698,7 @@ class BrokerServer(ThreadingHTTPServer):
 
     def __init__(self, address, handler, ledger, slots):
         self.ledger, self.slots = ledger, threading.BoundedSemaphore(slots)
+        self.bodies = _BodyBudget(BODY_BUDGET)
         self.reading, self.evicted, self.state = {}, set(), threading.Lock()
         super().__init__(address, handler)
 

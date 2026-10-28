@@ -37,6 +37,8 @@ import sys
 import tempfile
 import threading
 import time
+import tracemalloc
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1700,6 +1702,58 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
             with self.subTest(extra=extra):
                 self.assertEqual(self.post(doc=self.body(**extra))[0], 400)
         self.assertEqual(self.api.requests, [])
+
+    def test_a_body_is_held_once_not_twice(self):
+        # Re-attack of 2d254d0f: read_body kept every chunk and then joined them, so each body was
+        # held twice -- four concurrent 64 MiB bodies took the broker to 506 MB of its 512m.
+        n = 8 << 20
+        fake = types.SimpleNamespace(rfile=io.BufferedReader(io.BytesIO(b"x" * n)), connection=None, ledger=None,
+                                     server=types.SimpleNamespace(was_evicted=lambda _conn: False))
+        tracemalloc.start()
+        try:
+            body = lb.Broker.read_body(fake, n)
+            _now, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(len(body), n)
+        self.assertLess(peak, n + (n >> 2), f"reading a {n}-byte body peaked at {peak} bytes")
+
+    def test_the_bodies_held_at_once_fit_the_brokers_container(self):
+        # MAX_CONNECTIONS x MAX_BODY is 2 GiB; the broker's container has 512m. What every connection
+        # holds at once is BODY_BUDGET, which with its JSON parse (a few times its bytes) and the
+        # interpreter must fit that memory, and no single body may exceed it.
+        memory = lc.BROKER_LIMITS["memory"]
+        self.assertTrue(memory.endswith("m"), memory)
+        limit = int(memory[:-1]) << 20
+        self.assertLessEqual(lb.MAX_BODY, lb.BODY_BUDGET)
+        self.assertLessEqual(5 * lb.BODY_BUDGET + (64 << 20), limit)
+
+    def test_a_body_past_the_budget_held_at_once_waits_then_is_refused_and_counted(self):
+        for patch in (mock.patch.object(lb, "BODY_BUDGET", 4096), mock.patch.object(lb, "BODY_WAIT_S", 0.5)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        server = self.served_broker()
+        self.assertEqual(server.bodies.limit, 4096)
+        holder = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(holder.close)
+        holder.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                       b"Content-Length: 3000\r\n\r\n{")  # its body is still arriving: 3000 bytes held
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and server.bodies.held != 3000:
+            time.sleep(0.01)
+        self.assertEqual(server.bodies.held, 3000)
+        big = self.body(messages=[{"role": "user", "content": "y" * 1800}])
+        status, data = self.post(doc=big)
+        self.assertEqual(status, 503, data)
+        self.assertEqual(self.api.requests, [], "a body past the budget reached the API")
+        refused = [e for e in self.events() if e["event"] == "refuse"]
+        self.assertEqual([e["kind"] for e in refused], ["body-budget"])
+        holder.close()  # its body never arrives: its bytes go back to the budget
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and server.bodies.held:
+            time.sleep(0.01)
+        self.assertEqual(server.bodies.held, 0, "a request's bytes were never given back")
+        self.assertEqual(self.post(doc=big)[0], 200)
 
 
 # ---------------------------------------------------------------------------- the arm's `claude`

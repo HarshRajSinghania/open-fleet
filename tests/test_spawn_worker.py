@@ -7,9 +7,11 @@ orchestration side effect. The lane tests stub `orca` per subcommand and assert 
 receipt contracts against Orca v1.4.199 — the SHIPPED tag, not upstream HEAD. Standard
 library only.
 """
+import contextlib
 import importlib
 import importlib.util
 import copy
+import io
 import json
 import os
 import shlex
@@ -2133,7 +2135,18 @@ class TestIdentitySurvivesAScrubbedEnvironment(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         args = ["record-root", "--registry", self.tmp, "--handle", "term_none", "--profile", "ro", "--wait", "0"]
+        # The baseline is a host whose every process environment can be read: a /proc of one
+        # readable process. On a real host one unreadable process of this uid (another session's
+        # sandboxed command) makes "found nothing" unknown, 1 (TestUnknownIsNeverAbsent).
+        readable = Path(self.tmp) / "readable-proc"
+        (readable / "4321").mkdir(parents=True)
+        (readable / "4321" / "environ").write_bytes(b"PATH=/bin\0")
+        (readable / "self").symlink_to(str(os.getpid()))
+        baseline = mock.patch.object(mod, "PROC", readable)
+        baseline.start()
+        self.addCleanup(baseline.stop)
         self.assertEqual(mod.main(args), 3)
+        baseline.stop()
         failed = subprocess.CompletedProcess([], 1, "", "ps: illegal option -- E")
         with mock.patch.object(mod, "PROC", Path(self.tmp) / "no-proc"), \
                 mock.patch.object(mod.subprocess, "run", return_value=failed):
@@ -2156,6 +2169,372 @@ class TestIdentitySurvivesAScrubbedEnvironment(unittest.TestCase):
         self.assertEqual(self.roots(), [["rw", "term_agent1"]])
         self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.DANGER), via="pane"),
                            "exceeds parent profile 'rw'")
+
+
+HIDDEN_PANE = (
+    # A pane process that makes itself non-dumpable: its /proc/<pid>/environ then answers EACCES
+    # to its own uid, as a hardened or sandboxed process's does.
+    "import ctypes, sys\n"
+    "ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+    "sys.stdout.write('ready\\n'); sys.stdout.flush(); sys.stdin.read()\n")
+
+
+@contextlib.contextmanager
+def quiet():
+    """spawn_identity.main() run in-process prints its lines and errors: keep them off the run."""
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        yield
+
+
+class TestUnknownIsNeverAbsent(unittest.TestCase):
+    """W4-04, Codex round 4 (two P1s, one mistake: unknown treated as absent). (1) A response like
+    `{"error": {"code": "runtime_error"}, "result": {"state": "ready", "agentTerminalHandle":
+    "term_live"}}` left the receipt parser at its error-code branch before it read the handle, so
+    a live worker got no record and its reservation was dropped; terminal create's envelope did
+    the same, and a failure the receipt could not explain dropped the reservation too. Every
+    response is now read by ONE extraction (receipt_handles) before anything judges it, and every
+    printer takes its handle from there. (2) An environment the scan could not read (EACCES from
+    /proc/<pid>/environ), a host without /proc, a process that vanished mid-scan, an ancestor, a
+    registry directory or a reservation that could not be read each answered "no worker" or
+    "uncapped". Each is now UNKNOWN: registered or kept, or the caller capped at ro."""
+
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    _stub = TestSpawnWorkerV5Lanes._stub
+    tree = TestIdentitySurvivesAScrubbedEnvironment.tree
+    lane = TestIdentitySurvivesAScrubbedEnvironment.lane
+    scrubbed = TestIdentitySurvivesAScrubbedEnvironment.scrubbed
+    roots = TestIdentitySurvivesAScrubbedEnvironment.roots
+    assert_capped = TestIdentitySurvivesAScrubbedEnvironment.assert_capped
+    RW = TestIdentitySurvivesAScrubbedEnvironment.RW
+    DANGER = TestIdentitySurvivesAScrubbedEnvironment.DANGER
+    CHILD = TestIdentitySurvivesAScrubbedEnvironment.CHILD
+    LAUNCH = TestIdentitySurvivesAScrubbedEnvironment.LAUNCH
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._stub(self.tmp)
+
+    def registry(self):
+        return Path(self.tmp) / ".open-fleet" / "spawn-profiles"
+
+    def pending(self):
+        d = self.registry() / ".pending"
+        return sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) if d.is_dir() else []
+
+    def identity(self):
+        spec = importlib.util.spec_from_file_location("spawn_identity_unknown", IDENTITY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def hidden_pane(self, handle):
+        p = subprocess.Popen([sys.executable, "-c", HIDDEN_PANE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             text=True, env={"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": handle})
+        self.addCleanup(p.wait)
+        self.addCleanup(p.stdin.close)
+        self.assertEqual(p.stdout.readline().strip(), "ready")
+        # The premise, as the suite's chmod-based tests assume too: a non-root run, where a
+        # non-dumpable process's environment answers EACCES even to its own uid.
+        with self.assertRaises(PermissionError):
+            (Path("/proc") / str(p.pid) / "environ").read_bytes()
+        return p
+
+    def test_every_handle_a_worker_start_response_names_is_registered(self):
+        # (1) The Codex input, and the other shapes the runtimes emit, each with an error.
+        for i, (receipt, rc) in enumerate((
+                ({"error": {"code": "runtime_error"}, "result": {"state": "ready", "agentTerminalHandle": "term_live"}}, 1),
+                ({"error": {"code": "runtime_error", "data": {"agentTerminalHandle": "term_live"}}}, 1),
+                ({"error": {"code": "task_not_startable"},
+                  "result": {"effects": [{"kind": "terminal", "role": "agent", "id": "term_live"}]}}, 1),
+                ({"result": {"state": "failed", "worker": {"terminal_handle": "term_live"}}}, 0))):
+            with self.subTest(receipt=receipt):
+                tmp = Path(self.tmp) / f"case{i}"
+                tmp.mkdir()
+                self._stub(str(tmp), receipt=receipt, ws_rc=rc)
+                pty = self.tree()
+                pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_live"})
+                lane = {**self.lane(**self.RW), "PATH": f"{tmp}:/usr/bin:/bin", "SP": str(tmp), "HOME": str(tmp)}
+                rc_, out, err = self.tree().run(self.LAUNCH, lane)
+                self.assertNotEqual(rc_, 0, out + err)
+                record = tmp / ".open-fleet" / "spawn-profiles" / "term_live"
+                self.assertEqual(record.read_text().strip(), "rw", out + err)
+                # The printer reads the same extraction: the failure names the pane it leaves.
+                self.assertIn("HANDLE=term_live", out, err)
+                self.assertIn("names pane term_live", err)
+                # Recorded completely (handle and root), so the record replaced the reservation.
+                pending = tmp / ".open-fleet" / "spawn-profiles" / ".pending"
+                self.assertEqual([p.name for p in pending.iterdir() if p.name.startswith("r.")], [], err)
+                child = {**self.scrubbed(**self.DANGER), "HOME": str(tmp), "SP": str(tmp)}
+                self.assert_capped(pty.run(self.CHILD, child, via="pane"), "exceeds parent profile 'rw'")
+
+    def test_a_terminal_create_error_that_names_a_pane_registers_it(self):
+        (Path(self.tmp) / "terminal-create.json").write_text(json.dumps(
+            {"error": {"code": "runtime_error"}, "result": {"terminal": {"handle": "term_shell1"}}}))
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_shell1"})
+        rc, out, err = self.tree().run(self.LAUNCH, self.lane(PROFILE="ro"))
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertEqual((self.registry() / "term_shell1").read_text().strip(), "ro", out + err)
+        self.assertIn("names pane term_shell1", err)
+        self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.RW), via="pane"), "parent profile 'ro'")
+
+    def test_a_response_that_does_not_parse_whole_registers_what_it_names(self):
+        # Truncated, or a warning line before the document: the handle in it is still registered,
+        # and since the response may name more than was read, the reservation stays.
+        for lane, name, text, profile, want_rc in (
+                ("worker-start", "receipt.json",
+                 'warning: slow host\n{"result": {"state": "ready", "agentTerminalHandle": "term_live", '
+                 '"launch": {"effective": ', "rw", 4),
+                ("terminal create", "terminal-create.json",
+                 '{"result": {"terminal": {"handle": "term_live", "title": "t"', "ro", 1)):
+            with self.subTest(lane=lane):
+                tmp = Path(tempfile.mkdtemp(dir=self.tmp))
+                self._stub(str(tmp))
+                (tmp / name).write_text(text)
+                pty = self.tree()
+                pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_live"})
+                env = {**self.lane(**(self.RW if profile == "rw" else {"PROFILE": "ro"})),
+                       "PATH": f"{tmp}:/usr/bin:/bin", "SP": str(tmp), "HOME": str(tmp)}
+                rc, out, err = self.tree().run(self.LAUNCH, env)
+                self.assertEqual(rc, want_rc, out + err)
+                reg = tmp / ".open-fleet" / "spawn-profiles"
+                self.assertEqual((reg / "term_live").read_text().strip(), profile, err)
+                self.assertIn("did not parse whole", err)
+                self.assertEqual(len([p for p in (reg / ".pending").iterdir() if p.name.startswith("r.")]), 1, err)
+                child = {**self.scrubbed(**self.DANGER), "HOME": str(tmp), "SP": str(tmp)}
+                self.assert_capped(pty.run(self.CHILD, child, via="pane"), f"parent profile '{profile}'")
+
+    def test_a_handle_only_request_show_names_is_registered(self):
+        # The start response named no pane; the landed mutation's record does.
+        stub = Path(self.tmp) / "orca"
+        text = stub.read_text()
+        stub.write_text(text.replace('  *)                    printf',
+                                     f'  *request-show*)       cat "{self.tmp}/rq.json" ;;\n  *)                    printf', 1))
+        (Path(self.tmp) / "receipt.json").write_text(json.dumps({"result": {"state": "outcome_unknown"}}))
+        (Path(self.tmp) / "rq.json").write_text(json.dumps(
+            {"result": {"requestId": "req_1", "state": "completed",
+                        "outcome": {"result": {"agentTerminalHandle": "term_live"}}}}))
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_live"})
+        launch = [*self.LAUNCH[:2], "--retry-request", "req_1", *self.LAUNCH[2:]]
+        rc, out, err = self.tree().run(launch, self.lane(**self.RW))
+        self.assertEqual(rc, 4, out + err)
+        self.assertIn("request-show --request req_1", (Path(self.tmp) / "orca-calls.log").read_text())
+        self.assertEqual((self.registry() / "term_live").read_text().strip(), "rw", err)
+        self.assertEqual(self.pending(), [], err)
+        self.assert_capped(pty.run(self.CHILD, self.scrubbed(**self.DANGER), via="pane"), "exceeds parent profile 'rw'")
+
+    def test_a_failure_the_receipt_cannot_explain_keeps_the_reservation(self):
+        for receipt in ({"error": {"code": "runtime_error"}}, "not json"):
+            with self.subTest(receipt=receipt):
+                tmp = tempfile.mkdtemp(dir=self.tmp)
+                self._stub(tmp, receipt=receipt, ws_rc=1)
+                if receipt == "not json":
+                    (Path(tmp) / "receipt.json").write_text("not json")
+                r = subprocess.run(self.LAUNCH, env={**self.lane(**self.RW), "PATH": f"{tmp}:/usr/bin:/bin",
+                                                     "SP": tmp, "HOME": tmp}, capture_output=True, text=True)
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                pending = Path(tmp) / ".open-fleet" / "spawn-profiles" / ".pending"
+                self.assertTrue([p for p in pending.iterdir() if p.name.startswith("r.")], r.stderr)
+
+    def test_an_environment_read_error_is_unknown_not_no_process(self):
+        # (2) The Codex input, deterministically: the reader of the pane's /proc/<pid>/environ
+        # fails (EACCES, EIO). That was an empty environment, so a complete scan "found no
+        # process" (3) and spawn_worker.sh released the reservation. It is unknown (1) now.
+        mod = self.identity()
+        pid = self.tree().spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_eacces"})
+        real = mod._read_environ
+        args = ["record-root", "--registry", str(self.registry()), "--handle", "term_eacces", "--profile", "ro",
+                "--wait", "0", "--since", str(os.getpid())]  # this test started before the pane
+        for err in (PermissionError(13, "Permission denied"), OSError(5, "Input/output error")):
+            with self.subTest(err=err):
+                def reader(p, err=err):
+                    if p == pid:
+                        raise err
+                    return real(p)
+                with mock.patch.object(mod, "_read_environ", side_effect=reader), quiet():
+                    self.assertEqual(mod.main(args), 1)
+                self.assertEqual(self.roots(), [])
+        with quiet():  # readable, the same pane is found by a complete scan
+            self.assertEqual(mod.main(args), 0)
+        self.assertEqual(self.roots(), [["ro", "term_eacces"]])
+
+    def test_an_unreadable_pane_environment_is_unknown_not_absent(self):
+        # (2) The same with a real pane whose /proc/<pid>/environ answers EACCES (non-dumpable).
+        mod = self.identity()
+        before = os.getpid()  # this test started before the pane did
+        self.hidden_pane("term_hidden")
+        args = ["record-root", "--registry", str(self.registry()), "--handle", "term_hidden", "--profile", "ro",
+                "--wait", "0", "--since", str(before)]
+        with quiet():
+            self.assertEqual(mod.main(args), 1)
+        # A readable pane beside an unreadable process of this uid that started after the launch
+        # (on a busy host, another session's sandboxed command): the pane is FOUND, so its tree
+        # is recorded and verified (0). The unreadable process decides only "found nothing".
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_shell1"})
+        with quiet():
+            self.assertEqual(mod.main([*args[:4], "term_shell1", *args[5:]]), 0)
+        self.assertEqual(self.roots(), [["ro", "term_shell1"]])
+
+    def test_a_hostless_root_from_an_incomplete_scan_is_unverified(self):
+        # A carrier found with no parent to record as its host (reparented to init), by a scan
+        # that could not read everything: it may have escaped a pane whose own process could not
+        # be read, so it is recorded but unverified (2) and the reservation stays. With a host,
+        # or from a complete scan, it is verified (0).
+        mod = self.identity()
+        live = os.getpid()  # a real process to stand for the pty host
+        cases = ((1, False, 2), (1, True, 0), (live, False, 0))
+        for ppid, complete, want in cases:
+            with self.subTest(ppid=ppid, complete=complete):
+                real_stat = mod.stat
+
+                def fake_stat(pid, ppid=ppid):
+                    return (ppid, "77") if pid == 4242 else real_stat(pid)
+                with mock.patch.object(mod, "processes_with_handle", return_value=([4242], complete)), \
+                        mock.patch.object(mod, "stat", side_effect=fake_stat), quiet():
+                    self.assertEqual(mod.main(["record-root", "--registry", str(self.registry()), "--handle",
+                                               "term_esc", "--profile", "ro", "--wait", "0"]), want)
+                self.assertIn(["ro", "term_esc"], self.roots())
+
+    def test_without_proc_finding_nothing_is_never_no_process(self):
+        # (2) `ps -E` (the BSD/macOS fallback) omits an environment it may not read and says
+        # nothing, so not finding the handle there is never "no process" (3): it is unknown (1),
+        # and spawn_worker.sh keeps the reservation. A pane it does find is recorded.
+        mod = self.identity()
+        procs = {"4242": ("4000", "-zsh ORCA_TERMINAL_HANDLE=term_mac PATH=/bin"),
+                 "4000": ("1", "/Applications/Orca.app/pty-host"),
+                 "4343": ("1", "-zsh ORCA_TERMINAL_HANDLE=term_esc PATH=/bin")}
+
+        def ps(argv, **_kw):
+            if "-E" in argv:
+                return subprocess.CompletedProcess(argv, 0, "    1 /sbin/launchd\n" + "".join(
+                    f" {pid} {cmd}\n" for pid, (_pp, cmd) in procs.items()), "")
+            if argv[-1] in procs:
+                return subprocess.CompletedProcess(
+                    argv, 0, procs[argv[-1]][0] + "\n" if argv[2] == "ppid=" else "Mon Oct 26 10:00:00 2026\n", "")
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        args = ["record-root", "--registry", str(self.registry()), "--profile", "ro", "--wait", "0"]
+        with mock.patch.object(mod, "PROC", Path(self.tmp) / "no-proc"), \
+                mock.patch.object(mod.subprocess, "run", side_effect=ps), quiet():
+            self.assertEqual(mod.main([*args, "--handle", "term_none"]), 1)
+            self.assertEqual(self.roots(), [])
+            self.assertEqual(mod.main([*args, "--handle", "term_mac"]), 0)  # found, with its pty host
+            self.assertEqual(mod.main([*args, "--handle", "term_esc"]), 2)  # found, hostless: unverified
+        self.assertEqual(self.roots(), [["ro", "term_esc"], ["ro", "term_mac"]])
+
+    def test_a_launch_whose_pane_cannot_be_read_keeps_its_reservation(self):
+        # End to end: the pane terminal create starts is itself non-dumpable.
+        tmp = Path(self.tmp)
+        hidden = tmp / "hidden.py"
+        hidden.write_text("import ctypes, os, sys, time\n"
+                          "ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+                          "open(sys.argv[1] + '.tmp', 'w').write(str(os.getpid()))\n"
+                          "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+                          "time.sleep(120)\n")
+        ready = tmp / "hidden.pid"
+        self.addCleanup(lambda: ready.exists() and os.kill(int(ready.read_text()), 9))
+        stub = tmp / "orca"
+        marker = '*terminal\\ create*)   cat'
+        start = (f'env -i PATH=/usr/bin:/bin ORCA_TERMINAL_HANDLE=term_shell1 {sys.executable} {hidden} {ready}'
+                 f' </dev/null >/dev/null 2>&1 & while [ ! -s {ready} ]; do sleep 0.05; done; cat')
+        text = stub.read_text()
+        self.assertIn(marker, text)
+        stub.write_text(text.replace(marker, marker[:-3] + start, 1))
+        rc, out, err = self.tree().run(self.LAUNCH, self.lane(PROFILE="ro"))
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("UNVERIFIED", err)
+        self.assertEqual(len(self.pending()), 1, err)
+
+    def test_an_unreadable_process_older_than_the_launch_does_not_matter(self):
+        # A hardened process that predates the launch cannot be its pane: no false UNKNOWN.
+        self.hidden_pane("term_unrelated")
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_shell1"})
+        rc, out, err = self.tree().run(self.LAUNCH, self.lane(PROFILE="ro"))
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("UNVERIFIED", err)
+        self.assertEqual(self.pending(), [])
+
+    def test_processes_that_keep_vanishing_leave_the_scan_unknown(self):
+        mod = self.identity()
+        fake = Path(self.tmp) / "fake-proc"
+        fake.mkdir()
+        counter = iter(range(10_000, 20_000))
+
+        class Vanishing(type(fake)):
+            def iterdir(self):  # every listing names a pid that is gone by the time it is read
+                return iter([type(fake)(fake / str(next(counter)))])
+        with mock.patch.object(mod, "PROC", Vanishing(fake)):
+            found, complete = mod.processes_with_handle("term_x")
+        self.assertEqual(found, [])
+        self.assertFalse(complete)
+
+    def fake_proc(self, layout):
+        """A /proc of `{pid: (ppid, start, mode)}` stat files (mode 0 = unreadable), whose `self`
+        names this process, as a /proc of its own pid namespace does."""
+        root = Path(self.tmp) / "proc"
+        root.mkdir()
+        (root / "self").symlink_to(str(os.getpid()))
+        for pid, (ppid, start, mode) in layout.items():
+            (root / str(pid)).mkdir(parents=True)
+            f = root / str(pid) / "stat"
+            f.write_text(f"{pid} (x) S {ppid} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 {start}\n")
+            f.chmod(mode)
+            self.addCleanup(f.chmod, 0o600)
+        return root
+
+    def test_an_ancestor_or_a_root_that_cannot_be_read_is_unknown(self):
+        mod = self.identity()
+        reg = self.registry()
+        (reg / ".roots").mkdir(parents=True)
+        (reg / ".roots" / "300.9").write_text("ro term_r\n")
+        proc = self.fake_proc({100: (50, 7, 0o600), 50: (1, 5, 0), 300: (1, 9, 0)})
+        err = io.StringIO()
+        with mock.patch.object(mod, "PROC", proc):
+            # The caller's parent cannot be read: whoami fails, so spawn_worker.sh caps at ro.
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(mod.main(["whoami", "--registry", str(reg), "--pid", "100"]), 1)
+            self.assertIn("50/stat", err.getvalue())
+            # A root whose liveness cannot be read is kept, not pruned as dead.
+            self.assertEqual(mod.Registry(str(reg)).live_roots(), {"300.9": "ro"})
+        self.assertTrue((reg / ".roots" / "300.9").exists())
+
+    def test_a_proc_of_another_pid_namespace_answers_nothing(self):
+        # A sandbox that unshares pids but keeps the host's /proc: `--pid $$` there names some
+        # other process, whose ancestry would be read as this caller's. Unknown, so ro.
+        mod = self.identity()
+        err = io.StringIO()
+        with mock.patch.object(mod.os, "readlink", return_value="999999"), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(mod.main(["whoami", "--registry", str(self.registry()), "--pid", str(os.getpid())]), 1)
+            self.assertEqual(mod.main(["record-root", "--registry", str(self.registry()), "--handle", "term_x",
+                                       "--profile", "ro", "--wait", "0"]), 1)
+        self.assertIn("another pid namespace", err.getvalue())
+        with quiet():  # its own /proc: answered
+            self.assertEqual(mod.main(["whoami", "--registry", str(self.registry()), "--pid", str(os.getpid())]), 0)
+
+    def test_a_registry_entry_that_cannot_be_read_caps_the_caller(self):
+        reg = self.registry()
+        for name in (".roots", ".pending"):
+            with self.subTest(unreadable=name):
+                d = reg / name
+                d.mkdir(parents=True, exist_ok=True)
+                if name == ".pending":
+                    target = d / "r.1.x"
+                    target.write_text("ro - 1 0\n")
+                else:
+                    target = d
+                target.chmod(0)
+                try:
+                    r = TestTheCapReachesTheWorkerOnOrca.as_worker(self, self.tmp, "", {**self.RW, "RESERVATION_WAIT_SECS": "0"})
+                finally:
+                    target.chmod(0o700)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("parent profile 'ro'", r.stderr)
+                if name == ".pending":
+                    target.unlink()
 
 
 class TestNonOrcaDanger(unittest.TestCase):

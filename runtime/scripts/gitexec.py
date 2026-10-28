@@ -929,7 +929,18 @@ _GIT_SPACE_SETS = (b" \t\n\r", b" \t\n\r\x0b\x0c")
 _TRIMMABLE = b" \t\n\x0b\x0c\r"
 
 
-def _parse_config(data, space=_GIT_SPACE_SETS[0]):
+# How a git renders whitespace INSIDE an unquoted value (outside quotes, between non-space bytes):
+#   "space"    - each whitespace byte becomes one space (git 2.43's parse_value: a count of blanks
+#                emitted as ' ', so `A<TAB>B` reads `A B`);
+#   "verbatim" - kept byte for byte (git 2.55's parse_value appends the byte itself and only trims
+#                the trailing run, so `A<TAB>B` reads `A<TAB>B`; Codex/CI on PR #724);
+#   "collapse" - each run becomes one space (no git known to do this; checked all the same).
+# Leading whitespace is always dropped and trailing always trimmed; quoted whitespace is always
+# literal.
+_INNER_WHITESPACE = ("space", "verbatim", "collapse")
+
+
+def _parse_config(data, space=_GIT_SPACE_SETS[0], inner="space"):
     """``[(section, subsection, key, value)]`` of a git config file's bytes, parsed the way git's
     own parser (config.c git_parse_source) reads it, so a path read here is the path git opens
     (Codex on PR #724, round 6: a CRLF line ending left `\r` on a path a line split read). Section
@@ -939,16 +950,19 @@ def _parse_config(data, space=_GIT_SPACE_SETS[0]):
     is skipped and `\r\n` read as `\n`, as git does. Anything git would reject - a bad header, a bad
     escape, an unterminated quote - and any NUL byte raises
     _ConfigUnparseable. ``space`` is the whitespace set, used wherever git's parser calls isspace();
-    the places git tests for ' ' and '\t' alone (after a key name) test those alone here too. A NUL
-    byte raises too (git would silently truncate the value at it)."""
+    the places git tests for ' ' and '\t' alone (after a key name) test those alone here too.
+    ``inner`` is how whitespace inside an unquoted value reads (_INNER_WHITESPACE). A NUL byte
+    raises too (git would silently truncate the value at it)."""
+    if inner not in _INNER_WHITESPACE:
+        raise ValueError(f"_parse_config: inner={inner!r}")
     entries = []
     try:
-        return _parse_config_into(data, space, entries)
+        return _parse_config_into(data, space, entries, inner)
     except _ConfigUnparseable as exc:
         raise _ConfigUnparseable(str(exc), entries) from exc
 
 
-def _parse_config_into(data, space, entries):
+def _parse_config_into(data, space, entries, inner="space"):
     """_parse_config's body, appending to ``entries`` as it goes (so a failure keeps them)."""
     if b"\0" in data:
         raise _ConfigUnparseable("a NUL byte")
@@ -1033,13 +1047,13 @@ def _parse_config_into(data, space, entries):
             continue
         if c != b"=":
             raise _ConfigUnparseable(f"{c!r} after a key")
-        value, quote, blanks, in_comment = bytearray(), False, 0, False  # parse_value
+        value, quote, blanks, in_comment = bytearray(), False, bytearray(), False  # parse_value
         while True:
             c = nxt()
             if c is None or c == b"\n":
                 if quote:
                     raise _ConfigUnparseable("an unterminated quoted value")
-                break
+                break  # the trailing run in `blanks` is dropped: every git trims it
             if in_comment:
                 continue
             if not quote:
@@ -1048,10 +1062,12 @@ def _parse_config_into(data, space, entries):
                     continue
                 if c in space:
                     if value:
-                        blanks += 1
+                        blanks += c
                     continue
-            value += b" " * blanks
-            blanks = 0
+            if blanks:
+                value += (b" " * len(blanks) if inner == "space" else bytes(blanks) if inner == "verbatim"
+                          else b" ")
+                blanks = bytearray()
             if c == b"\\":
                 c = nxt()
                 if c == b"\n":
@@ -1070,12 +1086,12 @@ def _parse_config_into(data, space, entries):
 
 def _include_values(data):
     """Every include `path` value config ``data`` could hold, in every spelling: the config parsed
-    with each of _GIT_SPACE_SETS (a parse that fails adds what it read before failing), each value
-    then _spellings'd."""
+    with each of _GIT_SPACE_SETS and each of _INNER_WHITESPACE (a parse that fails adds what it read
+    before failing), each value then _spellings'd."""
     values = set()
-    for space in _GIT_SPACE_SETS:
+    for space, inner in ((sp, mode) for sp in _GIT_SPACE_SETS for mode in _INNER_WHITESPACE):
         try:
-            entries = _parse_config(data, space)
+            entries = _parse_config(data, space, inner)
         except _ConfigUnparseable as exc:
             entries = exc.entries  # what it read before the point it could not: best-effort
         values |= {value for section, _sub, key, value in entries

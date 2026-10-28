@@ -1794,6 +1794,44 @@ class TheIncludeCheckCoversWhatTheInstalledGitReads(unittest.TestCase):
             self.assertEqual([e[3] for e in newer], [b"/x/fifo", b"A B"])
             self.assertTrue({b"/x/fifo", b"/x/fifo" + b, b"A B"} <= gitexec._include_values(data))
 
+    def test_whitespace_inside_a_value_is_covered_however_a_git_renders_it(self):
+        # git 2.43 turns each unquoted whitespace byte inside a value into a space; git 2.55 keeps it
+        # (config.c parse_value appends the byte and trims only the trailing run). CI's 2.55 read
+        # `A<TAB>B` where the check examined only `A B` (PR #724). Every rendering is examined now.
+        for b in (b"\t", b"\r", b"\t\t", b" \t"):
+            data = b"[include]\n\tpath = A" + b + b"B \n"
+            self.assertEqual(gitexec._parse_config(data, inner="space")[0][3], b"A" + b" " * len(b) + b"B")
+            self.assertEqual(gitexec._parse_config(data, inner="verbatim")[0][3], b"A" + b + b"B")
+            self.assertEqual(gitexec._parse_config(data, inner="collapse")[0][3], b"A B")
+            self.assertTrue({b"A" + b" " * len(b) + b"B", b"A" + b + b"B", b"A B"} <= gitexec._include_values(data))
+
+    def test_a_fifo_named_with_inside_whitespace_is_refused_at_either_rendering(self):
+        # One FIFO at the name git 2.55 reads (`blo<TAB>cking`) or the one git 2.43 reads
+        # (`blo cking`): refused at once either way; where the installed git blocks on it (the
+        # positive control), floor_guard refuses at once too.
+        for fifo_name in ("blo\tcking", "blo cking"):
+            with self.subTest(fifo=repr(fifo_name)):
+                tmp = tempfile.mkdtemp()
+                self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
+                p = _Probe(tmp)
+                p.commit("a.txt", "line1\n")
+                os.mkfifo(p.dir / fifo_name)
+                with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                    fh.write(f"[include]\n\tpath = {p.dir}/blo\tcking\n")
+                try:
+                    subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=_CLEAN_ENV,
+                                   capture_output=True, stdin=subprocess.DEVNULL, timeout=3)
+                    git_blocks = False
+                except subprocess.TimeoutExpired:
+                    git_blocks = True
+                done, got = _finishes(lambda r=p.repo: gitexec.refuse_blocking_files(r), seconds=10)
+                self.assertTrue(done)
+                self.assertIsInstance(got, gitexec.GitCustodyRefused)
+                if git_blocks:
+                    done, got = _finishes(lambda r=p.repo: floor_guard.collect_diff(r, "HEAD"), seconds=10)
+                    self.assertTrue(done, "floor_guard blocked")
+                    self.assertIsInstance(got, floor_guard.GuardError)
+
     def test_a_trailing_whitespace_byte_is_refused_at_either_spelling(self):
         # Each scenario puts ONE FIFO at one of the two names a trailing \v, \f, \r or space could
         # mean: whichever a git reads, the check examines both and refuses at once; where the

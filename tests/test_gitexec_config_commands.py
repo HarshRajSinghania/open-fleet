@@ -1686,14 +1686,16 @@ class IncludeTargetsAreReadAsGitReadsThem(unittest.TestCase):
         with self.assertRaises(gitexec.GitCustodyRefused):
             gitexec.refuse_blocking_files(p.repo)
 
-    def test_a_config_git_cannot_read_exactly_is_refused_not_guessed(self):
-        for bad in ('[include]\n\tpath = "unterminated\n', "[include]\n\tpath = \\q\n", "[include\n"):
+    def test_a_config_the_check_cannot_parse_is_never_refused_on_doubt(self):
+        # Best-effort (coordinator, PR #724 round 8): no positive finding, no refusal. git itself
+        # rejects these, so nothing blocks either.
+        for bad in ('[include]\n\tpath = "unterminated\n', "[include]\n\tpath = \\q\n", "[include\n",
+                    "[include]\n\tpath = /x\0y\n"):
             with self.subTest(config=bad):
                 p = self._repo()
                 with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
                     fh.write(bad)
-                with self.assertRaises(gitexec.GitCustodyRefused):
-                    gitexec.refuse_blocking_files(p.repo)
+                gitexec.refuse_blocking_files(p.repo)
 
     def test_ordinary_configs_still_pass(self):
         p = self._repo()
@@ -1759,96 +1761,72 @@ def _parsed(data):
             for section, sub, key, value in entries]
 
 
-class TheIncludeParserMatchesTheInstalledGit(unittest.TestCase):
+class TheIncludeCheckCoversWhatTheInstalledGitReads(unittest.TestCase):
+    """The up-front include check is best-effort and never gates on parity with git (coordinator,
+    PR #724 round 8): it checks every spelling a git might read. This holds the installed git to
+    that: for every byte in every position, each include path git itself reads is among the
+    spellings the check examines (a NUL byte aside: git truncates at it and the check skips it,
+    so a FIFO named that way is left to the call's timeout)."""
 
-    def test_every_byte_in_every_position_reads_as_git_reads_it(self):
+    def test_every_byte_in_every_position_is_covered(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        mismatches = []
+        missed = []
         for where, template in _BYTE_TEMPLATES.items():
             for byte in range(256):
                 data = template(bytes([byte]))
-                git, ours = _git_list(tmp / "c", data), _parsed(data)
-                if git == ours:
+                git = _git_list(tmp / "c", data) or []
+                read = {value for key, value in git if value is not None
+                        and (key == b"include.path" or (key.startswith(b"includeif.") and key.endswith(b".path")))}
+                if b"\0" in data:
                     continue
-                # The one allowed difference: a NUL byte, which git silently truncates a value at,
-                # is refused here rather than mirrored.
-                if ours is None and b"\0" in data:
-                    continue
-                mismatches.append((where, f"{byte:#04x}", git, ours))
-        self.assertEqual(mismatches, [], "the include parser reads config differently from the installed git")
+                uncovered = read - gitexec._include_values(data)
+                if uncovered:
+                    missed.append((where, f"{byte:#04x}", sorted(uncovered)))
+        self.assertEqual(missed, [], "an include path git reads is not one the check examines")
 
-    def test_the_whitespace_set_is_the_installed_gits(self):
-        space = gitexec._git_config_space()
-        self.assertTrue(set(b" \t\n") <= set(space), space)
-        self.assertIs(gitexec._git_config_space(), space, "probed once, then cached")
-        for c in range(1, 256):
-            b = bytes([c])
-            if b in (b"\n", b'"', b"\\", b";", b"#"):
-                continue
-            with self.subTest(byte=f"{c:#04x}"):
-                git = _git_list(Path(tempfile.mkdtemp()) / "c", b"[p]\n\tk = " + b + b"A" + b + b"\n")
-                self.assertEqual(git == [(b"p.k", b"A")], b in space)
-
-    def test_a_git_that_counts_vertical_tab_and_form_feed_as_space_is_followed(self):
-        # What a newer git does (Codex, round 7): with \v and \f in the set, they are trimmed.
-        space = gitexec._git_config_space() + b"\x0b\x0c"
+    def test_a_git_that_counts_vertical_tab_and_form_feed_as_space_is_covered(self):
+        # What a newer git does (Codex, round 7): with \v and \f in its whitespace, it trims them and
+        # reads `A B` inside. Both readings are among the values the check examines.
         for b in (b"\x0b", b"\x0c"):
-            entries = gitexec._parse_config(b"[include]\n\tpath = /x/fifo" + b + b"\n" + b + b"[include]" + b +
-                                            b"path = A" + b + b"B\n", space=space)
-            self.assertEqual([e[3] for e in entries], [b"/x/fifo", b"A B"])
+            data = b"[include]\n\tpath = /x/fifo" + b + b"\n" + b + b"[include]" + b + b"path = A" + b + b"B\n"
+            newer = gitexec._parse_config(data, space=gitexec._GIT_SPACE_SETS[1])
+            self.assertEqual([e[3] for e in newer], [b"/x/fifo", b"A B"])
+            self.assertTrue({b"/x/fifo", b"/x/fifo" + b, b"A B"} <= gitexec._include_values(data))
 
-    def test_the_probe_follows_a_git_that_counts_vertical_tab_and_form_feed_as_space(self):
-        # A stand-in for a newer git: it reads every config file as the real one would read it with
-        # \v and \f turned into spaces. The probe learns that set; nothing is written by hand.
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        fake = tmp / "git"
-        fake.write_text("#!/bin/sh\n"
-                        'if [ "$1" = config ] && [ "$2" = -f ]; then\n'
-                        f'  LC_ALL=C tr "\\013\\014" "  " <"$3" >"$3.newgit" && exec {_sh(_REAL_GIT)} config -f "$3.newgit" "$4" "$5"\n'
-                        "fi\n"
-                        f'exec {_sh(_REAL_GIT)} "$@"\n', encoding="utf-8")
-        fake.chmod(0o755)
-        saved = gitexec._SPACE_PROBE
-        self.addCleanup(setattr, gitexec, "_SPACE_PROBE", saved)
-        gitexec._SPACE_PROBE = None
-        with mock.patch.object(gitexec, "GIT", str(fake)):
-            space = gitexec._git_config_space()
-        self.assertIn(b"\x0b", space)
-        self.assertIn(b"\x0c", space)
-        self.assertEqual(gitexec._parse_config(b"[include]\n\tpath = /x/fifo\x0c\n", space=space)[0][3], b"/x/fifo")
-
-    def test_a_vertical_tab_or_form_feed_names_the_fifo_git_opens(self):
-        # Each scenario puts ONE FIFO at one of the two names a trailing \v/\f could mean; the check
-        # must refuse exactly when git itself blocks on the file it opens (the positive control),
-        # whichever way the installed git reads the byte.
-        for b in ("\x0b", "\x0c"):
-            for fifo_at in ("stripped", "kept"):
-                with self.subTest(byte=repr(b), fifo_at=fifo_at):
-                    tmp = tempfile.mkdtemp()
-                    self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
-                    p = _Probe(tmp)
-                    p.commit("a.txt", "line1\n")
-                    name = "blocking" + (b if fifo_at == "kept" else "")
-                    os.mkfifo(p.dir / name)
-                    with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
-                        fh.write(f"[include]\n\tpath = {p.dir}/blocking{b}\n")
-                    try:
-                        subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=_CLEAN_ENV,
-                                       capture_output=True, stdin=subprocess.DEVNULL, timeout=3)
-                        git_blocks = False
-                    except subprocess.TimeoutExpired:
-                        git_blocks = True
-                    done, got = _finishes(lambda r=p.repo: gitexec.refuse_blocking_files(r), seconds=10)
-                    self.assertTrue(done)
-                    self.assertEqual(isinstance(got, gitexec.GitCustodyRefused), git_blocks,
-                                     f"git {'blocks' if git_blocks else 'does not block'} on the FIFO "
-                                     f"{'without' if fifo_at == 'stripped' else 'with'} the trailing {b!r}")
-                    if git_blocks:
-                        done, got = _finishes(lambda r=p.repo: floor_guard.collect_diff(r, "HEAD"), seconds=10)
-                        self.assertTrue(done, "floor_guard blocked")
-                        self.assertIsInstance(got, floor_guard.GuardError)
+    def test_a_trailing_whitespace_byte_is_refused_at_either_spelling(self):
+        # Each scenario puts ONE FIFO at one of the two names a trailing \v, \f, \r or space could
+        # mean: whichever a git reads, the check examines both and refuses at once; where the
+        # installed git blocks on it (the positive control), floor_guard refuses at once too.
+        # Unquoted, git keeps or trims the byte by its own whitespace set (\v and \f differ across
+        # versions; an unquoted trailing \r or space is always trimmed, so only quoted keeps those).
+        cases = [(b, q) for b in ("\x0b", "\x0c") for q in (False, True)] + [(b, True) for b in ("\r", " ")]
+        for (b, quoted), fifo_at in ((c, f) for c in cases for f in ("stripped", "kept")):
+            with self.subTest(byte=repr(b), quoted=quoted, fifo_at=fifo_at):
+                tmp = tempfile.mkdtemp()
+                self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
+                p = _Probe(tmp)
+                p.commit("a.txt", "line1\n")
+                name = "blocking" + (b if fifo_at == "kept" else "")
+                os.mkfifo(p.dir / name)
+                value = f"{p.dir}/blocking{b}"
+                with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                    fh.write(f'[include]\n\tpath = "{value}"\n' if quoted else f"[include]\n\tpath = {value}\n")
+                try:
+                    subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=_CLEAN_ENV,
+                                   capture_output=True, stdin=subprocess.DEVNULL, timeout=3)
+                    git_blocks = False
+                except subprocess.TimeoutExpired:
+                    git_blocks = True
+                done, got = _finishes(lambda r=p.repo: gitexec.refuse_blocking_files(r), seconds=10)
+                self.assertTrue(done)
+                self.assertIsInstance(got, gitexec.GitCustodyRefused,
+                                      f"the FIFO {'without' if fifo_at == 'stripped' else 'with'} "
+                                      f"the trailing {b!r} was missed")
+                if git_blocks:
+                    done, got = _finishes(lambda r=p.repo: floor_guard.collect_diff(r, "HEAD"), seconds=10)
+                    self.assertTrue(done, "floor_guard blocked")
+                    self.assertIsInstance(got, floor_guard.GuardError)
 
 
 class PredictMergeResolvesNamesExactly(unittest.TestCase):
@@ -1889,6 +1867,85 @@ class PredictMergeResolvesNamesExactly(unittest.TestCase):
             with self.subTest(ref=ref), self.assertRaises(diff_scope.ScopeError) as cm:
                 diff_scope.predict_merge(p.repo, "origin/main", ref)
             self.assertEqual(cm.exception.kind, "no_base")
+
+
+class TheUpFrontCheckIsBestEffort(unittest.TestCase):
+    """Coordinator, PR #724 round 8: the up-front check refuses ONLY on a positive finding, runs no
+    git (a learned-whitespace probe refused every ordinary repository on CI's newer git), and
+    checks every spelling of each name it derives - including a linked worktree's commondir, which
+    git trims (Codex round 8: `../..\r\n` read as `../..`)."""
+
+    def _linked(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        wt = p.dir / "wt"
+        self.assertEqual(p._git("worktree", "add", "-q", "--detach", str(wt)).returncode, 0)
+        admin = Path(p._git("rev-parse", "--absolute-git-dir", cwd=wt).stdout.strip())
+        return p, wt, admin
+
+    def _blocks(self, cwd):
+        try:
+            subprocess.run(["git", "-C", str(cwd), "rev-parse", "HEAD"], env=_CLEAN_ENV, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=3)
+        except subprocess.TimeoutExpired:
+            return True
+        return False
+
+    def test_a_crlf_commondir_and_a_fifo_common_config_are_refused_at_once(self):
+        p, wt, admin = self._linked()
+        (admin / "commondir").write_bytes(b"../..\r\n")
+        config = p.repo / ".git" / "config"
+        config.unlink()
+        os.mkfifo(config)
+        self.assertTrue(self._blocks(wt), "fixture: git does not open the common config through it")
+        done, got = _finishes(lambda: gitexec.refuse_blocking_files(wt), seconds=10)
+        self.assertTrue(done)
+        self.assertIsInstance(got, gitexec.GitCustodyRefused)
+        done, got = _finishes(lambda: floor_guard.collect_diff(wt, "HEAD"), seconds=10)
+        self.assertTrue(done, "floor_guard blocked")
+        self.assertIsInstance(got, floor_guard.GuardError)
+
+    def test_a_trailing_whitespace_commondir_is_refused_at_either_spelling(self):
+        for b in (b"\x0b", b"\x0c", b"\r", b" "):
+            for fifo_at in ("stripped", "kept"):
+                with self.subTest(byte=b, fifo_at=fifo_at):
+                    p, wt, admin = self._linked()
+                    common = p.repo / ".git"
+                    if fifo_at == "kept":  # a second common dir, under the untrimmed name
+                        common = admin.parent.parent.parent / (".git" + b.decode("latin-1"))
+                        common.mkdir()
+                        (admin / "commondir").write_bytes(os.fsencode(str(common)) + b"\n")
+                    else:
+                        (admin / "commondir").write_bytes(b"../.." + b + b"\n")
+                    (common / "config").unlink(missing_ok=True)
+                    os.mkfifo(common / "config")
+                    done, got = _finishes(lambda w=wt: gitexec.refuse_blocking_files(w), seconds=10)
+                    self.assertTrue(done)
+                    self.assertIsInstance(got, gitexec.GitCustodyRefused)
+
+    def test_an_ordinary_repository_is_never_refused_and_no_git_is_asked(self):
+        # The check runs no git at all, so no git version can make it refuse an ordinary repository
+        # (the CI regression at 4aecdc0e). Unusual but regular configs pass too.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        (p.dir / "inc").write_bytes(b"[core]\r\n\tquotePath = false\x0c\r\n")
+        with open(p.repo / ".git" / "config", "ab") as fh:
+            fh.write(b"[include]\r\n\tpath = " + os.fsencode(str(p.dir / "inc")) + b"\x0b\r\n"
+                     b"[alias]\n\tx = \"!echo \\\\\" ; a\"\n[include]\n\tpath = \"%(prefix)/etc/x\"\n")
+        real = subprocess.run
+
+        def no_git(argv, *a, **kw):
+            if isinstance(argv, (list, tuple)) and argv and os.path.basename(os.fsdecode(argv[0])) == "git":
+                raise AssertionError(f"the up-front check ran git: {argv}")
+            return real(argv, *a, **kw)
+        with mock.patch.object(subprocess, "run", no_git):
+            gitexec.refuse_blocking_files(p.repo)
+        with mock.patch.object(gitexec, "GIT", "/nonexistent/a-git-that-reads-config-differently"):
+            gitexec.refuse_blocking_files(p.repo)
 
 
 class CustodySetupTimeoutsAreEachToolsRefusal(unittest.TestCase):

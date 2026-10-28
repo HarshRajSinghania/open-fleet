@@ -874,86 +874,62 @@ def custody_excludes(run, cwd):
     return _carried_file(run, cwd, "core.excludesFile")
 
 
-def _read_regular_following(path, limit):
-    """Like _read_regular, but a symlink is followed (git follows one for an include): the file
-    opened is checked on its descriptor, so a FIFO or device the path resolves to still refuses
-    without blocking."""
+def _kind(path):
+    """"missing", "regular", "dir" or "other" (a FIFO, a device, a socket) for ``path``, symlinks
+    followed as git follows them - by stat, which never opens the file, so it never blocks."""
+    try:
+        mode = os.stat(path).st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return "missing"
+    except OSError:
+        return "missing"  # unreadable here: nothing positive to refuse on
+    if stat.S_ISREG(mode):
+        return "regular"
+    return "dir" if stat.S_ISDIR(mode) else "other"
+
+
+def _peek(path, limit):
+    """The bytes of regular file ``path``, read without blocking (O_NONBLOCK, the type checked on
+    the descriptor); None when it is missing, not regular, unreadable or larger than ``limit``."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    except (FileNotFoundError, NotADirectoryError):
-        return None  # git skips a missing include (ENOENT, ENOTDIR) too
-    except OSError as exc:
-        raise GitCustodyRefused(f"git custody: cannot read {path!r}: {exc}") from exc
-    st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode):
-        os.close(fd)
-        raise GitCustodyRefused(f"git custody: {path!r} is not a regular file, and git would block "
-                                "opening it")
+    except OSError:
+        return None
     with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            return None
         data = fh.read(limit + 1)
-    if len(data) > limit:
-        raise GitCustodyRefused(f"git custody: {path!r} is larger than {limit} bytes")
-    return data
+    return data if len(data) <= limit else None
+
+
+def _spellings(raw):
+    """``raw`` and every variant of it with bytes from _TRIMMABLE trimmed from either end (each
+    prefix and suffix of its leading and trailing runs, at most 16 each): whichever of these
+    bytes a git trims, the name it uses is one of them."""
+    lead = min(len(raw) - len(raw.lstrip(_TRIMMABLE)), 16)
+    trail = min(len(raw) - len(raw.rstrip(_TRIMMABLE)), 16)
+    return {raw[i:len(raw) - j] for i in range(lead + 1) for j in range(trail + 1) if i + j <= len(raw)}
 
 
 class _ConfigUnparseable(ValueError):
-    """A config file _parse_config cannot read exactly as git does: never a guess."""
+    """A config file _parse_config cannot read exactly as git does. ``entries`` holds what was
+    parsed before the point it could not read (a best-effort caller may still use those)."""
+
+    def __init__(self, why, entries=()):
+        super().__init__(why)
+        self.entries = list(entries)
 
 
-_SPACE_PROBE = None  # the installed git's config whitespace, probed once per process
+# Whitespace sets the config parser is run with: git 2.43's isspace() (space, tab, LF, CR) and a
+# newer git's, which also counts \v and \f (Codex on PR #724, round 7). No git is asked: the check
+# is best-effort and runs before any git, and a git that reads config yet another way only makes it
+# miss a file, never refuse one (refuse_blocking_files).
+_GIT_SPACE_SETS = (b" \t\n\r", b" \t\n\r\x0b\x0c")
+# The bytes a git might trim from either end of a path it reads (a value, a gitfile, commondir).
+_TRIMMABLE = b" \t\n\x0b\x0c\r"
 
 
-def _git_config_space():
-    """The bytes the INSTALLED git's config parser treats as whitespace (its isspace()), learned
-    from that git, once: which bytes git's ctype table counts as space is version-dependent (Codex
-    on PR #724, round 7: a newer git strips a trailing \v or \f from a value this host's 2.43
-    keeps), and a parser that disagrees checks a different file from the one git opens. One
-    `git config -f <probe> --list -z` over a probe file whose key kXX holds `<b>A<b>B<b>` for every
-    byte b that is not itself config syntax: git reads `A B` for a whitespace byte (trimmed at both
-    ends, a space inside) and the raw bytes otherwise. Run in a fresh temporary directory with
-    discovery stopped there, so no repository config is read. Anything else (git failing, an answer
-    neither shape) raises GitCustodyRefused: the parser never guesses."""
-    global _SPACE_PROBE
-    if _SPACE_PROBE is not None:
-        return _SPACE_PROBE
-    candidates = [c for c in range(1, 256) if bytes([c]) not in (b"\n", b'"', b"\\", b";", b"#")]
-    body = b"[p]\n" + b"".join(b"\tk%02x = " % c + bytes([c]) + b"A" + bytes([c]) + b"B" + bytes([c]) + b"\n"
-                               for c in candidates)
-    tmp = tempfile.mkdtemp(prefix="open-fleet-git-space-")
-    try:
-        probe = os.path.join(tmp, "probe")
-        with open(probe, "wb") as fh:
-            fh.write(body)
-        probe_env = env()
-        probe_env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(tmp)
-        try:
-            got = subprocess.run(argv("config", "-f", probe, "--list", "-z"), capture_output=True,
-                                 timeout=30, env=probe_env, cwd=tmp, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise GitCustodyRefused(f"git custody: cannot learn how git reads config: {exc}") from exc
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    if got.returncode != 0:
-        raise GitCustodyRefused("git custody: cannot learn how git reads config: "
-                                f"{os.fsdecode(got.stderr).strip()[:200]}")
-    values = {}
-    for record in got.stdout.split(b"\0")[:-1]:
-        key, _, value = record.partition(b"\n")
-        values[key] = value
-    space = bytearray(b"\n")  # a line end, which git's isspace() also counts
-    for c in candidates:
-        b = bytes([c])
-        value = values.get(b"p.k%02x" % c)
-        if value == b"A B":
-            space += b
-        elif value != b + b"A" + b + b"B" + b:
-            raise GitCustodyRefused(f"git custody: git reads config byte {c:#04x} in a way the "
-                                    "include check cannot mirror")
-    _SPACE_PROBE = bytes(space)
-    return _SPACE_PROBE
-
-
-def _parse_config(data, space=None):
+def _parse_config(data, space=_GIT_SPACE_SETS[0]):
     """``[(section, subsection, key, value)]`` of a git config file's bytes, parsed the way git's
     own parser (config.c git_parse_source) reads it, so a path read here is the path git opens
     (Codex on PR #724, round 6: a CRLF line ending left `\r` on a path a line split read). Section
@@ -962,11 +938,18 @@ def _parse_config(data, space=None):
     for the old `[section.sub]`; ``value`` is None for a key with no `=`. A UTF-8 BOM at the start
     is skipped and `\r\n` read as `\n`, as git does. Anything git would reject - a bad header, a bad
     escape, an unterminated quote - and any NUL byte raises
-    _ConfigUnparseable: the caller refuses rather than guesses. ``space`` is the whitespace set
-    (default: the installed git's, _git_config_space), used wherever git's parser calls isspace();
-    the two places git tests for ' ' and '\t' alone (after a key name) test those alone here too.
-    A NUL byte refuses (git would silently truncate the value at it)."""
-    space = _git_config_space() if space is None else space
+    _ConfigUnparseable. ``space`` is the whitespace set, used wherever git's parser calls isspace();
+    the places git tests for ' ' and '\t' alone (after a key name) test those alone here too. A NUL
+    byte raises too (git would silently truncate the value at it)."""
+    entries = []
+    try:
+        return _parse_config_into(data, space, entries)
+    except _ConfigUnparseable as exc:
+        raise _ConfigUnparseable(str(exc), entries) from exc
+
+
+def _parse_config_into(data, space, entries):
+    """_parse_config's body, appending to ``entries`` as it goes (so a failure keeps them)."""
     if b"\0" in data:
         raise _ConfigUnparseable("a NUL byte")
     if data.startswith(b"\xef\xbb\xbf"):
@@ -984,7 +967,7 @@ def _parse_config(data, space=None):
         return c
 
     # git reads a key before any section as one with an empty section name (never include.path).
-    entries, section, subsection, comment = [], b"", None, False
+    section, subsection, comment = b"", None, False
     while True:
         c = nxt()
         if c is None:
@@ -1085,104 +1068,135 @@ def _parse_config(data, space=None):
         entries.append((section, subsection, bytes(key), bytes(value)))
 
 
+def _include_values(data):
+    """Every include `path` value config ``data`` could hold, in every spelling: the config parsed
+    with each of _GIT_SPACE_SETS (a parse that fails adds what it read before failing), each value
+    then _spellings'd."""
+    values = set()
+    for space in _GIT_SPACE_SETS:
+        try:
+            entries = _parse_config(data, space)
+        except _ConfigUnparseable as exc:
+            entries = exc.entries  # what it read before the point it could not: best-effort
+        values |= {value for section, _sub, key, value in entries
+                   if section in (b"include", b"includeif") and key == b"path" and value is not None}
+    return {spelling for value in values for spelling in _spellings(value)}
+
+
 def _include_targets(cfg, data):
-    """The files an `[include]`/`[includeIf "<cond>"]` `path` in config file ``cfg`` (bytes
-    ``data``) names, expanded as git's interpolate_path expands them: `~/` and `~user/` from the
-    password database, a relative path from ``cfg``'s own directory. Conditions are NOT evaluated
-    (every target is checked: the check can only over-approximate). A value git could not expand
-    either (a missing value, an unknown user, a `%(prefix)/` this process cannot resolve) raises
-    _ConfigUnparseable."""
+    """Every file an `[include]`/`[includeIf "<cond>"]` `path` in config file ``cfg`` (bytes
+    ``data``) could name: the config parsed with each of _GIT_SPACE_SETS, every value in every
+    spelling (_spellings), expanded as git's interpolate_path does (`~/` and `~user/` from the
+    password database, a relative path from ``cfg``'s own directory). Conditions are not evaluated.
+    Best-effort: a parse that fails, or a value it cannot expand (an unknown user, `%(prefix)/`),
+    adds nothing - and refuses nothing."""
     import pwd
-    targets = []
-    for section, _sub, key, value in _parse_config(data):
-        if section not in (b"include", b"includeif") or key != b"path":
+    targets = set()
+    for spelling in _include_values(data):
+        path = os.fsdecode(spelling)
+        if not path or path.startswith("%(prefix)/"):
             continue
-        if value is None:
-            raise _ConfigUnparseable("an include path without a value")
-        path = os.fsdecode(value)
-        if path.startswith("%(prefix)/"):
-            raise _ConfigUnparseable("a %(prefix)/ include path")
         if path.startswith("~"):
             user, slash, rest = path[1:].partition("/")
             try:
                 home = os.path.expanduser("~") if not user else pwd.getpwnam(user).pw_dir
-            except KeyError as exc:
-                raise _ConfigUnparseable(f"an include path for unknown user {user!r}") from exc
+            except KeyError:
+                continue
             path = os.path.join(home, rest) if slash else home
         elif not os.path.isabs(path):
             path = os.path.join(os.path.dirname(cfg), path)
-        targets.append(path)
-    return targets
+        targets.add(path)
+    return sorted(targets)
 
 
-def _discover_git_dir(path):
-    """(git dir, common dir) of the repository ``path`` is in, found the way git discovers one -
-    without running git, which would open the very files refuse_blocking_files checks. None when
-    no repository is found."""
+def _relative_dirs(base, raw):
+    """The existing directories a git-dir pointer (a gitfile's `gitdir:` value, a `commondir`)
+    could name, in every spelling, a relative one from ``base``."""
+    out = []
+    for spelling in sorted(_spellings(raw)):
+        named = os.fsdecode(spelling)
+        if named:
+            full = named if os.path.isabs(named) else os.path.join(base, named)
+            if _kind(full) == "dir":
+                out.append(full)
+    return out
+
+
+def _discover_git_dirs(path):
+    """``[(git dir, [common dirs])]`` the repository ``path`` is in could have, found the way git
+    discovers one - without running git, which would open the very files refuse_blocking_files
+    checks - with every spelling of a gitfile or commondir pointer a git might trim it to (Codex
+    on PR #724, round 8: git trims a `../..\r\n` commondir to `../..`). Empty when no
+    repository is found. A gitfile that is not a regular file is no repository (git stats it and
+    never opens it)."""
     d = os.path.abspath(str(path))
     if not os.path.isdir(d):
         d = os.path.dirname(d)
     while True:
         dotgit = os.path.join(d, ".git")
-        gitdir = None
-        if os.path.isdir(dotgit):
-            gitdir = dotgit
-        elif os.path.lexists(dotgit):
-            got = _read_regular_following(dotgit, 4096)
-            if got and got.startswith(b"gitdir:"):
-                target = os.fsdecode(got[len(b"gitdir:"):].strip())
-                gitdir = os.path.join(d, target) if not os.path.isabs(target) else target
-        elif os.path.isfile(os.path.join(d, "HEAD")) and os.path.isdir(os.path.join(d, "objects")):
-            gitdir = d  # a bare repository, or a git dir named directly
-        if gitdir:
-            common = gitdir
-            raw = _read_regular_following(os.path.join(gitdir, "commondir"), 4096)
-            if raw:
-                named = os.fsdecode(raw.rstrip(b"\n"))
-                common = named if os.path.isabs(named) else os.path.join(gitdir, named)
-            return gitdir, common
+        gitdirs = []
+        kind = _kind(dotgit)
+        if kind == "dir":
+            gitdirs = [dotgit]
+        elif kind == "regular":
+            got = _peek(dotgit, 4096) or b""
+            if got.startswith(b"gitdir:"):
+                gitdirs = _relative_dirs(d, got[len(b"gitdir:"):])
+        elif kind == "missing" and _kind(os.path.join(d, "HEAD")) == "regular" \
+                and _kind(os.path.join(d, "objects")) == "dir":
+            gitdirs = [d]  # a bare repository, or a git dir named directly
+        if gitdirs or kind != "missing":
+            out = []
+            for gitdir in gitdirs:
+                commondir = os.path.join(gitdir, "commondir")
+                ckind = _kind(commondir)
+                if ckind == "other":  # git reads it with a plain open(): it would block
+                    raise GitCustodyRefused(f"git custody: {commondir!r} is not a regular file, and "
+                                            "git would block opening it")
+                raw = _peek(commondir, 4096) if ckind == "regular" else None
+                out.append((gitdir, _relative_dirs(gitdir, raw) if raw is not None else [gitdir]))
+            return out
         parent = os.path.dirname(d)
         if parent == d:
-            return None
+            return []
         d = parent
 
 
 def refuse_blocking_files(path):
-    """Refuse (GitCustodyRefused), BEFORE any git runs, a repository whose git would block opening
-    a file the worker controls (PR #724 re-attack): EVERY git call reads the repository's config
-    and follows its includes, and a commit walk reads `shallow`, so a FIFO (or device) there hung
-    the gate until its timeout. Checked without git and without blocking: the repository's config
-    files (`config`, `config.worktree`), each file an `[include]`/`[includeIf]` `path` in them names
-    (parsed as git parses config - CRLF, quotes, escapes, continuations, comments, case - and
-    followed recursively, conditions not evaluated, so the check can only over-approximate; a file
-    it cannot read exactly as git does refuses), and the common `shallow`. A missing file is fine, as for git; a non-regular one refuses. A FIFO a
-    worker swaps in AFTER this check, and the work tree's own `.gitignore`/`.gitattributes` (which
-    git opens itself, path by path), stay bounded by each call's timeout and then fail closed."""
-    found = _discover_git_dir(path)
-    if found is None:
-        return
-    gitdir, common = found
-    shallow = os.path.join(common, "shallow")
-    if os.path.lexists(shallow) and not stat.S_ISREG(os.lstat(shallow).st_mode):
-        raise GitCustodyRefused(f"git custody: {shallow!r} is not a regular file, and git would block "
-                                "opening it")
-    todo = [(os.path.join(common, "config"), 0), (os.path.join(gitdir, "config.worktree"), 0)]
-    seen = set()
+    """BEST-EFFORT, before any git runs: refuse (GitCustodyRefused) a repository in which git would
+    block opening a file the worker controls (PR #724 re-attack) - EVERY git call reads the
+    repository's config and follows its includes, and a commit walk reads `shallow`, so a FIFO (or
+    device) there hung the gate until its timeout. It refuses ONLY on a positive finding: a
+    `config`, `config.worktree`, `shallow`, `commondir` or include target that exists and is not a
+    regular file (or a pointer to one). It never runs git, never opens a file blocking, and never
+    refuses on doubt: config it cannot parse adds nothing, and every name it derives (a gitfile's
+    `gitdir:`, `commondir`, an include `path`) is checked in EVERY spelling a git might read it as -
+    raw, and with any of space, \t, \n, \v, \f, \r trimmed from either end - parsed with git
+    2.43's and a newer git's whitespace (Codex rounds 7 and 8: git versions trim differently, and
+    exact parity with each is not attempted). What it misses (a parse it cannot follow, a FIFO
+    swapped in after it, a work tree's own `.gitignore`/`.gitattributes`) is bounded by the git
+    call's own timeout, after which the call is refused: fail closed, and no repository-named
+    command ever runs either way."""
+    files = []
+    for gitdir, commons in _discover_git_dirs(path):
+        files.append(os.path.join(gitdir, "config.worktree"))
+        for common in commons:
+            files += [os.path.join(common, "config"), os.path.join(common, "shallow")]
+    todo, seen = [(f, 0) for f in files], set()
     while todo:
-        cfg, depth = todo.pop()
-        if cfg in seen:
+        target, depth = todo.pop()
+        if target in seen or depth > 10:  # git stops an include chain at 10
             continue
-        seen.add(cfg)
-        if depth > 10:  # git refuses an include chain deeper than 10
-            raise GitCustodyRefused(f"git custody: an include chain deeper than git allows, at {cfg!r}")
-        text = _read_regular_following(cfg, ATTRIBUTES_FILE_LIMIT)
-        if text is None:
+        seen.add(target)
+        kind = _kind(target)
+        if kind == "other":
+            raise GitCustodyRefused(f"git custody: {target!r} is not a regular file, and git would "
+                                    "block opening it")
+        if kind != "regular" or os.path.basename(target) == "shallow" and depth == 0:
             continue
-        try:
-            todo += [(target, depth + 1) for target in _include_targets(cfg, text)]
-        except _ConfigUnparseable as exc:
-            raise GitCustodyRefused(f"git custody: cannot read {cfg!r} exactly as git does ({exc}), "
-                                    "so its includes cannot be checked") from exc
+        data = _peek(target, ATTRIBUTES_FILE_LIMIT)
+        if data is not None:
+            todo += [(t, depth + 1) for t in _include_targets(target, data)]
 
 
 class Custody:

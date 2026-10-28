@@ -15,12 +15,13 @@
   as an intact chain: `verify --require-receipts`, the form the close runs, exits 4 on them. Pre-v2
   ledgers keep verifying in the exact v1 form, as a prefix, and the docs say how to recover a
   broken ledger ([runtime-scripts](../docs/runtime-scripts.md#egresspy)). `bundle.py`'s ownership
-  marker only names candidates: a listed file is overwritten, or deleted once stale, only when a
-  build record kept outside `--out` (in the clone's git directory) holds its exact bytes, when the
-  source repository committed them at the path the build copies it from, or when they are the
-  bytes the build writes anyway, so a forged marker with true digests deletes or overwrites
-  nothing, inside a mission directory too; otherwise an overwrite refuses and a stale file is left
-  in place and reported. Every check, delete and write walks `--out` from one directory handle
+  marker only names candidates: a listed file is deleted once stale only when a build record kept
+  outside `--out` (in the clone's git directory) holds its exact bytes, and overwritten only when
+  that record holds them, when they are the bytes the build writes anyway, or when they are a blob
+  committed in the checked-out commit's history (never another ref) at exactly the source path this
+  build copies that file from, so a forged marker with true digests deletes or overwrites nothing,
+  inside a mission directory or a user's own skill holding copies of catalog files too; otherwise
+  an overwrite refuses and a stale file is left in place and reported. Every check, delete and write walks `--out` from one directory handle
   without following a link, and each overwrite or delete is one atomic exchange or quarantine
   rename whose displaced file must be the exact file checked (inode and sha256) before it is
   destroyed, else it is put back and the build refuses; a marker naming anything a build does not write, carrying a malformed

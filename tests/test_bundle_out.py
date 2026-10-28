@@ -357,8 +357,8 @@ class ADigestInTheMarkerIsNoProof(unittest.TestCase):
     """Codex review of 82a2d00c (P1): a digest written into the marker proves nothing, because the
     marker sits in the tree it governs. A forger who can read a user's file under a generated name
     (`skills/<anything>/…`, `runtime/**`) lists it with its TRUE sha256, and the rebuild deleted it.
-    The authority to delete comes from outside --out: a stale file goes only when its exact bytes
-    are a blob the source repository committed at the path the build copies it from."""
+    The authority to delete comes from outside --out: a stale file goes only when the build record
+    holds its exact bytes (re-attack of 2d254d0f: committed bytes vouched for any `skills/<x>/` copy)."""
 
     built = AForgedMarkerDeletesNothing.built
     forge = AForgedMarkerDeletesNothing.forge
@@ -391,29 +391,120 @@ class ADigestInTheMarkerIsNoProof(unittest.TestCase):
             self.assertEqual((out / "README.md").read_bytes(), b"my own README\n")
 
     def test_a_retired_missions_committed_files_are_still_cleaned_up(self):
+        # Cleaned up on the build record's word, and only on it (re-attack of 2d254d0f, W5-10): a
+        # retired mission is in no source mapping of this build, so its copies of committed files
+        # are indistinguishable from a user's own skill holding the same bytes, and without a
+        # record they are left and reported (test_a_user_skills_copies_of_committed_files_survive).
+        for recorded in (True, False):
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
+                out = self.built(tmp)
+                retired = {"skills/retired-it/runtime/scripts/verify.py": committed_bytes("runtime/scripts/verify.py"),
+                           "skills/retired-it/evals/evals.json": committed_bytes("skills/ship-it/evals/evals.json"),
+                           "runtime/scripts/retired.py": committed_bytes("runtime/scripts/egress.py")}
+                generated = {"skills/retired-it/SKILL.md": b"a generated copy no commit holds\n"}
+                for rel, data in {**retired, **generated}.items():
+                    (out / rel).parent.mkdir(parents=True, exist_ok=True)
+                    (out / rel).write_bytes(data)
+                both = {**retired, **generated}
+                self.forge(out, list(both), {rel: hashlib.sha256(data).hexdigest() for rel, data in both.items()})
+                if recorded:
+                    remember(out, {"skills/retired-it/runtime/scripts/verify.py":
+                                   retired["skills/retired-it/runtime/scripts/verify.py"]})
+                code, err = run_main("--out", tmp)
+                self.assertEqual(code, 0, err)
+                if recorded:
+                    self.assertFalse((out / "skills/retired-it/runtime/scripts/verify.py").exists(),
+                                     "a retired mission's recorded copy was kept")
+                else:
+                    self.assertTrue((out / "skills/retired-it/runtime/scripts/verify.py").exists(),
+                                    "a stale file deleted on history alone, with no record vouching for it")
+                    self.assertIn("skills/retired-it/runtime/scripts/verify.py", err)
+                self.assertTrue((out / "skills/retired-it/evals/evals.json").exists(),
+                                "a file deleted on bytes committed at a different path")
+                self.assertTrue((out / "runtime/scripts/retired.py").exists(),
+                                "a root runtime file deleted on bytes committed at a different path")
+                self.assertEqual((out / "skills/retired-it/SKILL.md").read_bytes(),
+                                 generated["skills/retired-it/SKILL.md"])
+                self.assertIn("skills/retired-it/SKILL.md", err)
+
+    def test_a_user_skills_copies_of_committed_files_survive_a_forged_true_digest(self):
+        # Re-attack of 2d254d0f (W5-10): a user's own skill holding a copy of docs/install.md under
+        # references/ and of runtime/scripts/verify.py under runtime/scripts/, both listed with their
+        # true sha256s, were deleted with rc 0 and nothing said -- any `skills/<x>/references/<name>`
+        # was matched to any committed file of that basename, and `skills/<x>/runtime/**` to the
+        # repository's runtime, though no build of this checkout writes skills/my-notes at all.
         with tempfile.TemporaryDirectory() as tmp:
             out = self.built(tmp)
-            retired = {"skills/retired-it/runtime/scripts/verify.py": committed_bytes("runtime/scripts/verify.py"),
-                       "skills/retired-it/evals/evals.json": committed_bytes("skills/ship-it/evals/evals.json"),
-                       "runtime/scripts/retired.py": committed_bytes("runtime/scripts/egress.py")}
-            generated = {"skills/retired-it/SKILL.md": b"a generated copy no commit holds\n"}
-            for rel, data in {**retired, **generated}.items():
+            mine = {"skills/my-notes/references/install.md": committed_bytes("docs/install.md"),
+                    "skills/my-notes/runtime/scripts/verify.py": committed_bytes("runtime/scripts/verify.py"),
+                    "skills/ship-it/references/install.md": committed_bytes("docs/install.md")}
+            for rel, data in mine.items():
                 (out / rel).parent.mkdir(parents=True, exist_ok=True)
                 (out / rel).write_bytes(data)
-            both = {**retired, **generated}
-            self.forge(out, list(both), {rel: hashlib.sha256(data).hexdigest() for rel, data in both.items()})
+            self.forge(out, list(mine), {rel: hashlib.sha256(data).hexdigest() for rel, data in mine.items()})
             code, err = run_main("--out", tmp)
             self.assertEqual(code, 0, err)
-            # skills/retired-it/evals/evals.json is NOT a commit of that path: only the runtime copy
-            # (committed at runtime/scripts/verify.py, the path it is copied from) is provable.
-            self.assertFalse((out / "skills/retired-it/runtime/scripts/verify.py").exists(),
-                             "a retired mission's committed copy was kept")
-            self.assertTrue((out / "skills/retired-it/evals/evals.json").exists(),
-                            "a file deleted on bytes committed at a different path")
-            self.assertTrue((out / "runtime/scripts/retired.py").exists(),
-                            "a root runtime file deleted on bytes committed at a different path")
-            self.assertEqual((out / "skills/retired-it/SKILL.md").read_bytes(), generated["skills/retired-it/SKILL.md"])
-            self.assertIn("skills/retired-it/SKILL.md", err)
+            for rel, data in mine.items():
+                self.assertEqual((out / rel).read_bytes(), data, f"{rel} was deleted on committed bytes")
+                self.assertIn(rel, err, "a candidate left in place is not reported")
+
+    def test_an_overwrite_is_vouched_for_only_at_the_exact_source_this_build_copies(self):
+        # The history that vouches for a file the build overwrites is that of the one path this
+        # build copies it from: references/threat-model.md comes from runtime/threat-model.md, and
+        # docs/runs/…/threat-model.md (the same basename, committed) proves nothing about it.
+        rel = next(f"skills/{d.name}/references/threat-model.md" for d in sorted(bundle.SKILLS_DIR.iterdir())
+                   if (d / "SKILL.md").is_file() and "threat-model" in bundle.protocol_docs(
+                       (d / "SKILL.md").read_text(encoding="utf-8"), bundle.validate.known_protocol_names()))
+        elsewhere = committed_bytes("docs/runs/2026-10-27-security-audit/threat-model.md")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            bundle._record_path(out).unlink()
+            (out / rel).write_bytes(elsewhere)
+            self.forge(out, [], {rel: hashlib.sha256(elsewhere).hexdigest()})
+            before = snapshot(out)
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 2, err)
+            self.assertIn(rel, err)
+            self.assertEqual(snapshot(out), before, "a file overwritten on bytes committed at another path")
+        # An earlier commit of the exact source path does vouch: the rebuild after an upgrade.
+        rel = "skills/ship-it/runtime/scripts/verify.py"
+        older = subprocess.run(["git", "-C", str(ROOT), "log", "-2", "--format=%H", "--", "runtime/scripts/verify.py"],
+                               capture_output=True, text=True, check=True).stdout.split()[-1]
+        earlier = subprocess.run(["git", "-C", str(ROOT), "cat-file", "blob", f"{older}:runtime/scripts/verify.py"],
+                                 capture_output=True, check=True).stdout
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.built(tmp)
+            bundle._record_path(out).unlink()
+            (out / rel).write_bytes(earlier)
+            self.forge(out, [], {rel: hashlib.sha256(earlier).hexdigest()})
+            code, err = run_main("--out", tmp)
+            self.assertEqual(code, 0, err)
+            self.assertEqual((out / rel).read_bytes(), (ROOT / "runtime/scripts/verify.py").read_bytes())
+
+    def test_history_is_the_checked_out_commits_and_a_path_is_literal(self):
+        # `git log --all` let any ref vouch -- a branch a worker made in a shared clone -- and a
+        # pathspec was a glob. Only HEAD's history counts, at the literal path.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t.invalid",
+                                       *args], capture_output=True, text=True, check=True).stdout.strip()
+
+            git("init", "-q", "-b", "main")
+            (repo / "a.txt").write_bytes(b"on HEAD\n")
+            git("add", "a.txt")
+            git("commit", "-qm", "head")
+            git("checkout", "-qb", "side")
+            (repo / "a.txt").write_bytes(b"only on a side branch\n")
+            git("commit", "-qam", "side")
+            git("checkout", "-q", "main")
+            seen = bundle.committed_blobs(["a.txt"], repo=repo)
+            ids = {blob for data in (b"on HEAD\n",) for blob in bundle._blob_ids(data)}
+            self.assertTrue(ids & set(seen), "HEAD's own blob is not found")
+            side = bundle._blob_ids(b"only on a side branch\n")
+            self.assertFalse(side & set(seen), "a blob committed only on another ref vouched for bytes")
+            self.assertFalse(bundle.committed_blobs(["*.txt"], repo=repo), "a path was read as a glob")
 
     def test_without_git_provenance_nothing_stale_is_deleted_and_that_is_said(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -588,6 +679,32 @@ class NothingIsReResolvedAfterItsCheck(unittest.TestCase):
             self.assertEqual(code, 2, err)
             self.assertEqual(sorted(p.name for p in victim.iterdir()), ["SKILL.md"], "the build wrote outside --out")
             self.assertEqual((victim / "SKILL.md").read_text(encoding="utf-8"), "PRECIOUS user file outside --out\n")
+
+    def test_a_directory_swapped_after_the_checks_gets_no_new_file_outside(self):
+        # The test above swaps in a directory already holding the first name the build writes there
+        # (SKILL.md), so the exchange's own check refused it even with every lookup following links:
+        # with O_NOFOLLOW dropped from _Tree.dirs that mutant wrote 105 files outside --out and the
+        # suite stayed green (re-attack of 2d254d0f). Here nothing outside holds a name the build
+        # writes, so only the directory walk itself can stop a write landing there.
+        for swapped in ("skills/speed-it", "runtime"):
+            with self.subTest(swapped=swapped), tempfile.TemporaryDirectory() as tmp, \
+                    tempfile.TemporaryDirectory() as other:
+                out, victim = self.built(tmp), Path(other)
+                (victim / "keep.txt").write_text("a user's own file outside --out\n", encoding="utf-8")
+                real = bundle._claim
+
+                def claim_then_swap(*args, swapped=swapped, **kwargs):
+                    decided = real(*args, **kwargs)
+                    (out / swapped).rename(out / f"{swapped}.aside")
+                    (out / swapped).symlink_to(victim, target_is_directory=True)
+                    return decided
+
+                with mock.patch.object(bundle, "_claim", claim_then_swap):
+                    code, err = run_main("--out", tmp)
+                self.assertEqual(code, 2, err)
+                self.assertEqual(sorted(p.relative_to(victim).as_posix() for p in victim.rglob("*")), ["keep.txt"],
+                                 "the build wrote through a directory swapped for a symlink")
+                self.assertEqual((victim / "keep.txt").read_text(encoding="utf-8"), "a user's own file outside --out\n")
 
     def test_a_directory_swapped_after_the_checks_never_aims_a_delete_outside(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:

@@ -30,7 +30,7 @@ argv and environment plus overrides that switch off the remaining config-driven 
 Guards each event or stage runs through (production code, loaded by path, never copied):
 
     deny-hook.sh        every Write / Edit / Bash / DecisionsAppend event (PreToolUse)
-    decisions.py        DecisionsAppend (`append`), and the verifier's `--pin-ref main check`
+    decisions.py        DecisionsAppend (`append`), and the verifier's `--pin-ref <base sha> check`
     search_sessions.py  Recall: build_episodic_hint fences recalled cross-worker memory
     watchdog.py         the Failure Handover Packet between a failed attempt and its retry
     floor_guard.py      the verifier gate over the unit's diff against base
@@ -1169,8 +1169,10 @@ class Run:
                                  ["--repo", str(self.repo), "--base", "main", "--quiet"])
         if code != 0:
             reasons.append(f"floor_guard.py exit {code}: " + " ".join(err.split())[:200])
+        # The grant key's anchor is the base COMMIT this harness recorded, never the local `main`
+        # it moves itself (`_land` below) and the replayed unit could move too (W3-07).
         code, _out, err = _quiet(g.decisions.main, ["--file", str(self.path(DECISIONS_LOG)),
-                                                    "--pin-ref", "main", "check"])
+                                                    "--pin-ref", self.base_sha, "check"])
         if code != 0:
             reasons.append(f"decisions.py check exit {code}: " + " ".join(err.split())[:200])
         with _verifier_roots(g.verify, self.repo):

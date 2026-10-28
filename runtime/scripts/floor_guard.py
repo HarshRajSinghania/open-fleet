@@ -237,8 +237,6 @@ GUARD_SURFACE_KEYS = (
     ("bench/vf-bench/gate.py", re.compile(r"\bEXPECTED_CORPUS_SHA256\s*=")),
 )
 
-DEFAULT_BASES = ("origin/main", "origin/master", "main", "master")
-
 # Diff RENDERING pins, at command-line precedence over the guarded repo's own config
 # (2026-10-23 review, P2-4). A repo-local `diff.mnemonicPrefix` (c/ i/ w/), `diff.srcPrefix`/
 # `dstPrefix` or `diff.noprefix` relabels the a/ b/ that strip_prefix removes, so every path
@@ -277,19 +275,28 @@ def _text(raw):
     return raw.decode("utf-8", "replace")
 
 
-def git(repo, *args, blanks=()):
+def git(repo, *args, blanks=(), custody=None):
     """Run git with argv only. Returns stdout, or None when git exits non-zero. ``blanks`` are
-    gitexec.driver_blanks pairs, carried in the env so a driver name reaches git byte-exact."""
+    gitexec.driver_blanks pairs, carried in the env so a driver name reaches git byte-exact.
+    Every call runs under gitexec.custody_env (no lazy fetch, no transport but `file`, no
+    signature or submodule child, no inherited repository selector); ``custody`` (a
+    gitexec.Custody) runs it against the coordinator-built git dir instead of ``repo``'s own."""
+    lead = custody.lead if custody is not None else ["-C", str(repo)]
+    pairs = [*(custody.pairs if custody is not None else ()), *blanks]
     try:
+        # A config, include or `shallow` git would block opening is refused before git runs.
+        gitexec.refuse_blocking_files(repo)
         # No stdin (#629): an inherited, never-closed one would let a hook or filter block the guard.
         r = subprocess.run(
-            gitexec.argv("-C", str(repo), *args),
-            capture_output=True, timeout=60, env=gitexec.env(blanks=blanks),
+            gitexec.argv(*lead, *args),
+            capture_output=True, timeout=60, env=gitexec.custody_env(blanks=pairs),
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as err:
         raise GuardError(f"git {' '.join(args)} failed to run: {err}") from err
-    return _text(r.stdout) if r.returncode == 0 else None
+    # surrogateescape, not _text's "replace": two refnames that differ only in non-UTF-8 bytes
+    # (zz\xff, zz\xfe) must not decode alike, or the anchor listing refuses itself (W3-07).
+    return r.stdout.decode("utf-8", "surrogateescape") if r.returncode == 0 else None
 
 
 def repo_root(start):
@@ -300,21 +307,43 @@ def repo_root(start):
 
 
 def resolve_base(repo, base):
-    """Pick a base ref. An explicit --base that does not resolve is an error, not
-    a fallback: silently guarding against the wrong base is a false clean."""
-    if base:
-        if git(repo, "rev-parse", "--verify", "-q", base + "^{commit}") is None:
-            raise GuardError(f"base ref {base!r} is not resolvable (shallow clone or missing fetch)")
-        return base
-    head = git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
-    if head and head.strip():
-        candidate = head.strip().replace("refs/remotes/", "", 1)
-        if git(repo, "rev-parse", "--verify", "-q", candidate + "^{commit}") is not None:
-            return candidate
-    for candidate in DEFAULT_BASES:
-        if git(repo, "rev-parse", "--verify", "-q", candidate + "^{commit}") is not None:
-            return candidate
-    raise GuardError("no base ref could be resolved (tried origin/HEAD, origin/main, origin/master, main, master)")
+    """(commit, shown): the base resolved ONCE, by exact ref names only (gitexec.base_commit,
+    W3-07 class). The diff, the waivers and the human-grant pin are all read at `commit`, never at
+    the name. An explicit --base that does not resolve is an error, not a fallback: silently
+    guarding against the wrong base is a false clean.
+
+    `rev-parse <base>^{commit}` expanded the name — refs/tags/ and refs/heads/ come before
+    refs/remotes/ — so a tag or local branch spelled `origin/main` stood in for the remote-tracking
+    branch, and this base is where the waivers are read; an origin/HEAD pointed at a local branch
+    was used as-is. Now a remote-tracking name (`origin/main`, `refs/remotes/…`) or a commit id
+    goes through gitexec.remote_tracking_commit; a bare `main` is that local branch by its exact
+    name, and `HEAD` or an abbreviated commit id (an object id, never a ref of that spelling) is
+    the same advisory kind — refused on a lane claiming soundness (gitexec.sound_lane:
+    ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set, as decisions.py and run_report.py read it), and
+    said in a NOTE to be advisory elsewhere (the change can move a local name)."""
+    def run(*args):
+        out = git(repo, *args)
+        return (0, out) if out is not None else (1, "")
+
+    commit, shown, local, why = gitexec.base_commit(run, base)
+    if commit is None:
+        if base:
+            raise GuardError(f"base ref {base!r} is not resolvable by its exact name (shallow clone "
+                             f"or missing fetch?): {base!r} {why}")
+        raise GuardError(f"no base ref could be resolved (tried {shown}): {why}")
+    if local:
+        lane = gitexec.sound_lane()
+        if lane:
+            raise GuardError(f"{lane} claims a sound lane, but base {shown!r} is {local} "
+                             f"({commit[:12]}), not a remote-tracking ref or a full commit id: "
+                             "there the waivers and the human-grant pin are read only at one of "
+                             "those — --base origin/<branch> or a full commit id (W3-07)")
+        print(f"floor-guard: NOTE — base {shown!r} is {local} ({commit[:12]}), not a "
+              "remote-tracking ref or a full commit id: the change under check can move a local "
+              "name and nothing binds an abbreviation, so the waivers and the human-grant pin read "
+              "there are advisory; --base origin/<branch> (or a full commit id) reads them where "
+              "it cannot write", file=sys.stderr)
+    return commit, shown
 
 
 def merge_base(repo, base):
@@ -343,43 +372,62 @@ def collect_diff(repo, mb):
     """
     diff_options = ("--no-ext-diff", "--no-textconv", "--no-renames", "--text", "--no-color",
                     "--unified=0")
-    # A diff of the working tree runs a repo-config clean/smudge filter that a .gitattributes
-    # line selects — the exec channel --no-ext-diff/--no-textconv do NOT close (#629). Blank
-    # every filter/diff driver command the repo declares (the only place such a command lives)
-    # before any diff that touches a worktree file.
+    # A diff of the working tree runs a clean filter (and could run a textconv or diff driver)
+    # that a .gitattributes or $GIT_DIR/info/attributes line selects — the exec channel
+    # --no-ext-diff/--no-textconv do NOT close (#629). Listing the drivers the repo declares and
+    # blanking them is not enough: a worker adding a new one between that listing and the diff
+    # had it run (W4 custody sweep). So both diffs run in git custody (gitexec.custody): against a
+    # git dir the guard builds over the repo's objects and index, whose config declares no driver,
+    # with the repo's own work tree. A selected driver is undefined there, whenever it was added,
+    # and no child git is started inside a checked-out submodule (gitexec.NO_SUBMODULE_CHILD).
+    # The listing stays as a belt and keeps its fail-closed contract: an unreadable driver list is
+    # could-not-run, never "no drivers" (PR #649 review).
+    try:
+        gitexec.refuse_blocking_files(repo)
+    except OSError as err:
+        raise GuardError(f"git would block reading this repository: {err}") from err
     try:
         blanks = gitexec.driver_blanks(repo)
     except gitexec.DriverQueryFailed as err:
-        # An unreadable driver list is could-not-run, never "no drivers": diffing with nothing
-        # blanked would run every planted filter (PR #649 review).
         raise GuardError(f"cannot read the repository's driver config, so its filter commands "
                          f"cannot be neutralised: {err}") from err
-    tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, mb, "--", blanks=blanks)
-    if tracked is None:
-        raise GuardError("tracked/staged diff acquisition failed")
-    others = git(repo, "ls-files", "-z", "--others", "--exclude-standard")
-    if others is None:
-        raise GuardError("untracked file enumeration failed")
-    chunks = [tracked]
-    for name in others.split("\0"):
-        if not name:
-            continue
-        # --no-index exits 1 when the files differ; that is the normal case, so
-        # go through subprocess directly rather than git() (which returns None).
-        try:
-            r = subprocess.run(
-                gitexec.argv("-C", str(repo), *DIFF_RENDERING, "diff", "--no-index",
-                             *diff_options, "--", "/dev/null", name),
-                capture_output=True, timeout=60, env=gitexec.env(blanks=blanks),
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError) as err:
-            raise GuardError("untracked diff acquisition failed to run") from err
-        # Git also exits 1 for inaccessible input, with no acquired patch. A
-        # successful difference must have output; exit 0 may legitimately be empty.
-        if r.returncode not in (0, 1) or (r.returncode == 1 and not r.stdout):
-            raise GuardError(f"untracked diff acquisition failed (exit {r.returncode})")
-        chunks.append(_text(r.stdout))
+    try:
+        with gitexec.custody(repo) as custody:
+            # NO_SUBMODULE_CHILD: a checked-out submodule's dirtiness is never probed (that is a
+            # child git under the submodule's own config); a moved gitlink still shows.
+            tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, gitexec.NO_SUBMODULE_CHILD,
+                          mb, "--", blanks=blanks, custody=custody)
+            if tracked is None:
+                raise GuardError("tracked/staged diff acquisition failed")
+            # Lists names, reads no file content, but reads the ignore files: in custody, where the
+            # repository's own core.excludesFile is carried as data and no user default is opened.
+            others = git(repo, "ls-files", "-z", "--others", "--exclude-standard", custody=custody)
+            if others is None:
+                raise GuardError("untracked file enumeration failed")
+            chunks = [tracked]
+            for name in others.split("\0"):
+                if not name:
+                    continue
+                # --no-index exits 1 when the files differ; that is the normal case, so
+                # go through subprocess directly rather than git() (which returns None).
+                try:
+                    r = subprocess.run(
+                        custody.argv(*DIFF_RENDERING, "diff", "--no-index",
+                                     *diff_options, "--", "/dev/null", name),
+                        capture_output=True, timeout=60, env=custody.env(blanks=blanks),
+                        stdin=subprocess.DEVNULL,
+                    )
+                except (OSError, subprocess.SubprocessError) as err:
+                    raise GuardError("untracked diff acquisition failed to run") from err
+                # Git also exits 1 for inaccessible input, with no acquired patch. A
+                # successful difference must have output; exit 0 may legitimately be empty.
+                if r.returncode not in (0, 1) or (r.returncode == 1 and not r.stdout):
+                    raise GuardError(f"untracked diff acquisition failed (exit {r.returncode})")
+                chunks.append(_text(r.stdout))
+    except gitexec.GitCustodyRefused as err:
+        raise GuardError(f"cannot diff the working tree in git custody: {err}") from err
+    except (OSError, subprocess.SubprocessError) as err:
+        raise GuardError(f"git custody could not run: {err}") from err
     return "\n".join(chunks)
 
 
@@ -1031,7 +1079,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         repo = repo_root(args.repo)
-        base = resolve_base(repo, args.base)
+        base, shown = resolve_base(repo, args.base)  # a commit id; `shown` names it for people
         mb = merge_base(repo, base)
         added, removed = parse_diff(collect_diff(repo, mb))
         findings = scan(added, removed, args.constraints, repo)
@@ -1067,10 +1115,10 @@ def main(argv=None):
     for f in live:
         print(f"  [{f['rule']}] {f['path']}:{f['line']} ({f['detail']})", file=sys.stderr)
         for raw, why in refused_waivers(f, waivers, _decisions, grant_pub):
-            print(f"      waiver at {base} not honoured — {why}:\n        {raw.strip()[:200]}",
+            print(f"      waiver at {shown} not honoured — {why}:\n        {raw.strip()[:200]}",
                   file=sys.stderr)
     print(
-        f"\nEach lowers the bar. Fix the code, or land a waiver on {base} FIRST: a DECISIONS "
+        f"\nEach lowers the bar. Fix the code, or land a waiver on {shown} FIRST: a DECISIONS "
         "record whose id is `floor-waiver:<rule>:<path>` (or `:<dir>/**`), class `one-way`, "
         "answer `allow`, appended with `decisions.py append --source human:<name>` (plus "
         "`--grant-sig` when .orca/human-grant-pubkey is pinned). Waivers are read at the base "

@@ -1679,7 +1679,7 @@ class TestParentProfileNarrowing(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --dangerously-skip-permissions"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_SANDBOX_PROFILE": "rw",
                    "OPEN_FLEET_PARENT_PROFILE": "danger"}
@@ -1795,7 +1795,7 @@ class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
 
     def as_worker(self, tmp, handle, env_extra, args=("task_child", "current", "child", "claude", "high")):
         """spawn_worker.sh run FROM the pane `handle` (its ORCA_TERMINAL_HANDLE), to the print hook."""
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": handle, **env_extra}
         return subprocess.run(["bash", str(SPAWN), *args], env=env, capture_output=True, text=True)
 
@@ -1912,7 +1912,7 @@ class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --permission-mode plan"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro", "OPEN_FLEET_WORKER_ID": "w1"}
             p = subprocess.run(["bash", str(SPAWN), "task_x", "path:/tmp/of-wt", "t", "claude"],
                                env=env, capture_output=True, text=True)
@@ -1937,7 +1937,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
 
     def _run(self, tmp, args, env_extra=None):
         """The lane harness, with HOME=tmp unless env_extra says otherwise (None unsets it)."""
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1", **(env_extra or {})}
         return subprocess.run(["bash", str(SPAWN), *args], env={k: v for k, v in env.items() if v is not None},
                               capture_output=True, text=True)
@@ -1975,7 +1975,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
         (rc, stdout, stderr) reader for child i."""
         lines = ["#!/bin/sh", before]
         for i, env in enumerate(children):
-            child = {"PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+            child = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "ORCA_CLI_COMMAND": "orca",
                      "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": handle, **env}
             out = shlex.quote(f"{tmp}/nested{i}")
             lines.append("env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in child.items())
@@ -2083,7 +2083,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
         # ro, the record that replaces it says rw, and the child is judged against rw.
         with tempfile.TemporaryDirectory() as tmp:
             reservation = self.reserve(tmp, "ro", "term_coord", os.getpid())
-            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+            env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                    "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": "term_new",
                    "RESERVATION_WAIT_SECS": "60", **self.DANGER}
             p = subprocess.Popen(["bash", str(SPAWN), "task_child", "current", "child", "claude", "high"],
@@ -2186,12 +2186,12 @@ class TestIdentitySurvivesAScrubbedEnvironment(unittest.TestCase):
 
     def lane(self, **extra):
         """A coordinator's launch environment (the stubbed runtime)."""
-        return {"PATH": f"{self.tmp}:/usr/bin:/bin", "SP": self.tmp, "HOME": self.tmp,
+        return {**UNVERIFIED_OK, "PATH": f"{self.tmp}:/usr/bin:/bin", "SP": self.tmp, "HOME": self.tmp,
                 "ORCA_CLI_COMMAND": "orca", "SETTLE_SECS": "0", "SUBMIT_SECS": "1", **extra}
 
     def scrubbed(self, **extra):
         """What survives a harness that drops ORCA_*: no pane handle, no profile, no worker id."""
-        return {"PATH": "/usr/bin:/bin", "HOME": self.tmp, "SP": self.tmp, "SW_PRINT_LAUNCH": "1",
+        return {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "HOME": self.tmp, "SP": self.tmp, "SW_PRINT_LAUNCH": "1",
                 "OPEN_FLEET_CLI_COMMAND": "orca", **extra}
 
     def roots(self):
@@ -2343,6 +2343,18 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
     assert_capped = TestIdentitySurvivesAScrubbedEnvironment.assert_capped
     RW = TestIdentitySurvivesAScrubbedEnvironment.RW
     DANGER = TestIdentitySurvivesAScrubbedEnvironment.DANGER
+
+    def armed(self, **extra):
+        """A launch through a VERIFIED deny-hook arming (W4-06): its own worktree and a registration
+        bounding it, so stderr carries no arming warning and an UNVERIFIED there is the scan's."""
+        wt = Path(self.tmp) / "armed-wt"
+        wt.mkdir(exist_ok=True)
+        settings = Path(self.tmp) / "armed-settings.json"
+        settings.write_text(subprocess.run(["sh", str(HOOK), "--settings", str(wt)], capture_output=True,
+                                           text=True, check=True).stdout)
+        env = {k: v for k, v in self.lane(**extra).items() if k not in UNVERIFIED_OK}
+        env["ORCA_DENY_HOOK_SETTINGS"] = str(settings)
+        return ["bash", str(SPAWN), "task_test", f"path:{wt}", "t"], env
     CHILD = TestIdentitySurvivesAScrubbedEnvironment.CHILD
     LAUNCH = TestIdentitySurvivesAScrubbedEnvironment.LAUNCH
 
@@ -2578,7 +2590,7 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
         text = stub.read_text()
         self.assertIn(marker, text)
         stub.write_text(text.replace(marker, marker[:-3] + start, 1))
-        rc, out, err = self.tree().run(self.LAUNCH, self.lane(PROFILE="ro"))
+        rc, out, err = self.tree().run(*self.armed(PROFILE="ro"))
         self.assertEqual(rc, 0, out + err)
         self.assertIn("UNVERIFIED", err)
         self.assertEqual(len(self.pending()), 1, err)
@@ -2588,7 +2600,7 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
         self.hidden_pane("term_unrelated")
         pty = self.tree()
         pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_shell1"})
-        rc, out, err = self.tree().run(self.LAUNCH, self.lane(PROFILE="ro"))
+        rc, out, err = self.tree().run(*self.armed(PROFILE="ro"))
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("UNVERIFIED", err)
         self.assertEqual(self.pending(), [])
@@ -3138,7 +3150,7 @@ case "$*" in
 esac
 """)
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": os.environ["HOME"], "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": os.environ["HOME"], "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "danger",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1",
                    "ORCA_SANDBOX_RECIPE": "lane-7"}

@@ -126,6 +126,17 @@ def _sh(path):
     return "'" + str(path).replace("'", "'\\''") + "'"
 
 
+# wtree.sh stages in a git dir it builds (W4 custody sweep): every call that stages or hashes
+# content carries this lead. A mutation control removes it to run the pre-custody script.
+_WTREE_CUSTODY = ' --git-dir="$CUSTODY" --work-tree="$TOP"'
+
+
+def _pre_custody(src):
+    """wtree.sh's source with its staging run in the repository itself again (controls only)."""
+    assert src.count(_WTREE_CUSTODY) >= 3, "the custody lead moved: update the control"
+    return src.replace(_WTREE_CUSTODY, "")
+
+
 def _no_custody(repo, **_kw):
     """The pre-custody gate, for mutation controls only: a gitexec.Custody with no git dir, so the
     content-reading git runs in ``repo`` itself, under the repository's own config."""
@@ -399,7 +410,8 @@ class WtreeFingerprint(unittest.TestCase):
         # wtree.sh exports, counted by one final assignment (PR #649). Zero it: core.fsmonitor is
         # honoured again and no filter key is blanked.
         self.assertEqual(src.count("GIT_CONFIG_COUNT=$_n"), 1, "the count assignment moved")
-        stripped = src.replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0")
+        # ...and stage in the repository itself, as before the git custody (W4 custody sweep).
+        stripped = _pre_custody(src).replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0")
         self.assertNotEqual(stripped, src, "the control did not change wtree.sh")
         mutant = p.dir / "wtree_control.sh"
         mutant.write_text(stripped, encoding="utf-8")
@@ -581,8 +593,9 @@ class RequiredFilters(unittest.TestCase):
 # from HEAD and a good run read as STALE. Mapping those bytes back to the committed clean blob
 # needs the repository's own command, which the coordinator must not run. wtree.sh therefore says
 # so: exit 3 with the reason, which evidence-run.py records and verify.py check_commands reports in
-# place of "STALE". An untouched file still fingerprints as HEAD (the stat cache never re-hashes),
-# and a filter declared in the coordinator's OWN global config still runs, so it keeps fidelity.
+# place of "STALE". An untouched file still fingerprints as HEAD (the stat cache never re-hashes).
+# A filter declared in the global config is held to the same rule (W4-02): on a one-uid host the
+# worker writes ~/.gitconfig too, so it never runs and a changed path it selects is unverifiable.
 _UNVERIFIABLE = "cannot be compared to the committed tree without running repository-supplied commands"
 
 
@@ -666,19 +679,25 @@ class FilteredFileFidelity(unittest.TestCase):
         src = (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
         self.assertEqual(src.count("GIT_CONFIG_COUNT=$_n"), 1)
         mutant = p.dir / "wtree_control.sh"
-        mutant.write_text(src.replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0"), encoding="utf-8")
+        # The blanks stripped AND staging in the repository itself (pre-custody, W4 custody sweep).
+        mutant.write_text(_pre_custody(src).replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0"),
+                          encoding="utf-8")
         r = subprocess.run(["sh", str(mutant), str(p.repo)], env=self.env, capture_output=True,
                            text=True, stdin=subprocess.DEVNULL, timeout=120)
         self.assertIn("clean", p.fired(), "control: the stripped wtree.sh must run the filter")
         self.assertEqual(r.stdout.strip(), self.head_tree)
 
-    def test_a_filter_from_the_coordinators_own_global_config_keeps_fidelity(self):
+    def test_a_filter_from_the_same_uid_global_config_is_unverifiable_not_run(self):
+        # W4-02: the global file is not the coordinator's own on a one-uid host — the worker can
+        # write it — so its filter is held to the repo rule: never run, and exit 3 for a changed
+        # path it selects (the earlier "it still runs, for fidelity" let it choose the value).
         p = self._repo(scope="global")
         self._touch(p)
         out, err = self._fingerprint(p)
-        self.assertIsNone(err, err)
-        self.assertEqual(out, self.head_tree)
-        self.assertIn("clean", p.fired(), "the global (coordinator-supplied) filter should run")
+        self.assertIsNone(out, "a fingerprint was produced for content it cannot compare")
+        self.assertIn(_UNVERIFIABLE, err)
+        self.assertIsInstance(err, evidence_run.WtreeUnverifiable)
+        self.assertEqual(p.fired(), set(), "the global filter ran in the coordinator")
 
     def test_a_repo_key_shadowing_a_global_driver_is_still_blanked(self):
         p = self._repo(scope="global")
@@ -714,6 +733,520 @@ class FilteredFileFidelity(unittest.TestCase):
         self.assertIn("UNVERIFIABLE", errs[0])
         self.assertIn(_UNVERIFIABLE, errs[0])
         self.assertNotIn("STALE", errs[0])
+
+
+class WtreeStagesNoDriverAddedAfterTheListing(unittest.TestCase):
+    """W4 custody sweep (Codex on the W4-02 branch, P1): wtree.sh listed the declared drivers and
+    then `add -A` read the repository's config again, so a `filter.<n>.clean` a still-running
+    worker added in between (selected by the shared `info/attributes`) ran in the coordinator —
+    and, mapping a tampered file back to its committed bytes, made the tampered tree fingerprint
+    as HEAD. A racing `git` first on PATH (the one wtree.sh resolves) adds a NEVER-SEEN filter
+    before EVERY call. Staging now runs in a git dir wtree.sh builds, whose config defines none."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\nline2\n")
+        self.head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        # The late clean filter prints HEAD's bytes: run, it maps the tampered file back to HEAD.
+        clean = p.dir / "clean.sh"
+        clean.write_text("#!/bin/sh\necho clean >> " + _sh(p.marker) + "\nprintf 'line1\\nline2\\n'\n",
+                         encoding="utf-8")
+        clean.chmod(0o755)
+        bindir = p.dir / "racebin"
+        bindir.mkdir()
+        counter = p.dir / "race-calls"
+        # One line per call; the driver is named by the call's pid, so two gits wtree.sh runs at
+        # once (its diff-index | check-attr pipeline) each add their own.
+        (bindir / "git").write_text(
+            "#!/bin/sh\n"
+            "n=$$\n"
+            f"echo $n >> {_sh(counter)}\n"
+            f"printf '[filter \"late%s\"]\\n\\tclean = %s\\n\\tsmudge = %s\\n' \"$n\" {_sh(clean)} {_sh(clean)}"
+            f" >> {_sh(p.repo / '.git' / 'config')}\n"
+            f"printf '* filter=late%s\\n' \"$n\" >> {_sh(p.repo / '.git' / 'info' / 'attributes')}\n"
+            f"exec {_sh(shutil.which('git'))} \"$@\"\n", encoding="utf-8")
+        (bindir / "git").chmod(0o755)
+        (p.repo / ".git" / "info").mkdir(exist_ok=True)
+        self.counter = counter
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_CONFIG", "GIT_DIR"))}
+        self.env.update(PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}",
+                        GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        (p.repo / "a.txt").write_text("TAMPERED\n", encoding="utf-8")
+        return p
+
+    def _run(self, p, script):
+        return subprocess.run(["sh", str(script), str(p.repo)], env=self.env, capture_output=True,
+                              text=True, stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_a_filter_added_after_the_listing_neither_runs_nor_chooses_the_fingerprint(self):
+        p = self._repo()
+        r = self._run(p, SCRIPTS / "wtree.sh")
+        self.assertGreater(len(self.counter.read_text().split()), 1, "the race never ran")
+        self.assertEqual(p.fired(), set(), "a filter declared after the listing ran in the coordinator")
+        self.assertNotEqual(r.stdout.strip(), self.head_tree, "a tampered tree fingerprinted as HEAD")
+        # A late driver is not in the listing, so its path is hashed from its raw bytes (exit 0, a
+        # tree that is not HEAD's); one the listing saw makes the changed path unverifiable (3).
+        self.assertIn(r.returncode, (0, 3), r.stderr)
+
+    def test_mutation_control_staging_in_the_repository_runs_the_late_filter(self):
+        p = self._repo()
+        mutant = p.dir / "wtree_control.sh"
+        mutant.write_text(_pre_custody((SCRIPTS / "wtree.sh").read_text(encoding="utf-8")),
+                          encoding="utf-8")
+        r = self._run(p, mutant)
+        self.assertIn("clean", p.fired(), "control: the late filter never ran pre-custody")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, self.head_tree),
+                         "control: the late filter did not choose the fingerprint")
+
+    def test_a_partial_clone_is_no_fingerprint_not_a_guess(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        p._git("config", "core.repositoryformatversion", "1")
+        p._git("config", "extensions.partialClone", "origin")
+        r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=_CLEAN_ENV,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+        self.assertIn("extensions.partialclone", r.stderr)
+
+    def test_a_planted_symlink_where_git_reads_a_file_is_no_fingerprint(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        exclude = p.repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.unlink(missing_ok=True)
+        os.symlink(os.devnull, exclude)
+        r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=_CLEAN_ENV,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+        self.assertIn("not a regular file", r.stderr)
+
+    def test_the_fingerprint_writes_nothing_into_the_repositorys_object_store(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        (p.repo / "untracked.txt").write_text("never committed\n", encoding="utf-8")
+        before = sorted(str(f) for f in (p.repo / ".git" / "objects").rglob("*"))
+        r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=_CLEAN_ENV,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(r.stdout.strip(), p._git("rev-parse", "HEAD^{tree}").stdout.strip())
+        self.assertEqual(sorted(str(f) for f in (p.repo / ".git" / "objects").rglob("*")), before)
+
+
+def _wtree(repo, env=None, script=None):
+    return subprocess.run(["sh", str(script or SCRIPTS / "wtree.sh"), str(repo)], env=env or _CLEAN_ENV,
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+
+
+def _quiet_git(repo, *args):
+    """Plain git with every planted channel pinned off, for fixture steps only."""
+    env = {**_CLEAN_ENV, "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "core.fsmonitor",
+           "GIT_CONFIG_VALUE_0": "false", "GIT_CONFIG_KEY_1": "core.hooksPath", "GIT_CONFIG_VALUE_1": os.devnull}
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.email=a@b", "-c", "user.name=a", *args],
+                          env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+
+
+class WtreeKeepsLineEndingData(unittest.TestCase):
+    """Codex on this branch (P1): CUSTODY dropped the repository's info/attributes, so a clean CRLF
+    checkout of an `eol=crlf` path, once touched, staged CRLF unnormalised and read STALE. The
+    attributes (and the conversion settings) are data, carried as such."""
+
+    def _repo(self, how):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\nline2\n")
+        head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        if how == "info/attributes":
+            (p.repo / ".git" / "info").mkdir(exist_ok=True)
+            (p.repo / ".git" / "info" / "attributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+        elif how == "core.attributesFile ending in a newline":
+            # Codex (round 3): `$(...)` stripped the trailing newline and read `attrs` instead.
+            (p.dir / "attrs\n").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+            (p.dir / "attrs").write_text("*.txt -text\n", encoding="utf-8")
+            p._git("config", "core.attributesFile", str(p.dir) + "/attrs\n")
+        elif how.startswith("core.attributesFile"):
+            # Codex on this branch (P1, round 2): a repository-scope core.attributesFile, absolute
+            # or relative to the work tree top (beside the repository, so nothing is untracked).
+            (p.dir / "attrs").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+            p._git("config", "core.attributesFile", str(p.dir / "attrs") if how.endswith("absolute") else "../attrs")
+        else:
+            p._git("config", "core.autocrlf", "true")
+        (p.repo / "a.txt").unlink()
+        p._git("checkout", "--", "a.txt")
+        self.assertEqual((p.repo / "a.txt").read_bytes(), b"line1\r\nline2\r\n", "fixture: not a CRLF checkout")
+        later = time.time() + 30
+        os.utime(p.repo / "a.txt", (later, later))  # touched: `add -A` re-reads it
+        return p, head_tree
+
+    def test_a_touched_clean_crlf_checkout_fingerprints_as_head(self):
+        for how in ("info/attributes", "core.autocrlf", "core.attributesFile absolute",
+                    "core.attributesFile relative", "core.attributesFile ending in a newline"):
+            with self.subTest(how=how):
+                p, head_tree = self._repo(how)
+                r = _wtree(p.repo)
+                self.assertEqual((r.returncode, r.stdout.strip()), (0, head_tree), r.stderr)
+
+    def test_a_real_edit_still_changes_it(self):
+        p, head_tree = self._repo("info/attributes")
+        (p.repo / "a.txt").write_bytes(b"line1\r\nEDITED\r\n")
+        r = _wtree(p.repo)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(r.stdout.strip(), head_tree)
+
+
+class WtreeRefusesAnUnreadableAttributesFile(unittest.TestCase):
+    """Codex on this branch (P1, round 2): core.attributesFile's content is carried only from a
+    regular file of at most 1 MiB, opened without blocking. A FIFO (whose open would hang the gate),
+    a symlink, a directory or a larger file is no fingerprint (exit 1) at once, never dropped."""
+
+    def test_each_is_no_fingerprint_without_hanging(self):
+        for kind in ("fifo", "symlink", "directory", "oversized"):
+            with self.subTest(kind=kind):
+                tmp = tempfile.mkdtemp()
+                self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
+                p = _Probe(tmp)
+                p.commit("a.txt", "line1\n")
+                target = p.dir / "attrs"
+                if kind == "fifo":
+                    os.mkfifo(target)
+                elif kind == "symlink":
+                    (p.dir / "real").write_text("*.txt text\n", encoding="utf-8")
+                    os.symlink(p.dir / "real", target)
+                elif kind == "directory":
+                    target.mkdir()
+                else:
+                    target.write_bytes(b"#" * ((1 << 20) + 1))
+                p._git("config", "core.attributesFile", str(target))
+                try:
+                    r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=_CLEAN_ENV,
+                                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"wtree.sh hung on a {kind} core.attributesFile")
+                self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+                self.assertIn("core.attributesFile", r.stderr)
+
+    def test_a_missing_file_is_no_attributes_as_for_git(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        p._git("config", "core.attributesFile", str(p.dir / "absent"))
+        r = _wtree(p.repo)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, p._git("rev-parse", "HEAD^{tree}").stdout.strip()),
+                         r.stderr)
+
+
+class WtreeOpensNoUserOrSystemAttributesFile(unittest.TestCase):
+    """Codex on this branch (round 3, P2): with no repository core.attributesFile, git opened its
+    default user attributes file ($XDG_CONFIG_HOME/git/attributes, else ~/.config/git/attributes;
+    the worker's to write on a one-uid host) and the system one, so a FIFO there hung the
+    fingerprint. CUSTODY's own attributes file is now named always, and GIT_ATTR_NOSYSTEM=1."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")  # `add -A` reads attributes
+        (p.repo / "b.txt").write_text("new\n", encoding="utf-8")
+        return p
+
+    def _run(self, p, env):
+        try:
+            return subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=env, capture_output=True,
+                                  text=True, stdin=subprocess.DEVNULL, timeout=30)
+        except subprocess.TimeoutExpired:
+            self.fail("wtree.sh hung opening a default attributes file")
+
+    def test_a_fifo_at_either_default_user_attributes_file_is_never_opened(self):
+        for where in ("XDG_CONFIG_HOME", "HOME"):
+            with self.subTest(where=where):
+                p = self._repo()
+                empty = p.dir / "empty-home"
+                empty.mkdir()
+                base = {k: v for k, v in _CLEAN_ENV.items() if k != "XDG_CONFIG_HOME"}
+                want = self._run(p, {**base, "HOME": str(empty)})
+                self.assertEqual(want.returncode, 0, want.stderr)
+                if where == "XDG_CONFIG_HOME":
+                    xdg = p.dir / "xdg"
+                    (xdg / "git").mkdir(parents=True)
+                    os.mkfifo(xdg / "git" / "attributes")
+                    env = {**base, "HOME": str(empty), "XDG_CONFIG_HOME": str(xdg)}
+                else:
+                    home = p.dir / "home"
+                    (home / ".config" / "git").mkdir(parents=True)
+                    os.mkfifo(home / ".config" / "git" / "attributes")
+                    env = {**base, "HOME": str(home)}
+                r = self._run(p, env)
+                self.assertEqual((r.returncode, r.stdout), (0, want.stdout), r.stderr)
+
+    def test_every_git_runs_with_system_attributes_off(self):
+        p = self._repo()
+        bindir = p.dir / "envbin"
+        bindir.mkdir()
+        log = p.dir / "attr-nosystem.log"
+        (bindir / "git").write_text(
+            '#!/bin/sh\necho "${GIT_ATTR_NOSYSTEM:-unset}" >> ' + _sh(log) + "\nexec " + _sh(_REAL_GIT) + ' "$@"\n',
+            encoding="utf-8")
+        (bindir / "git").chmod(0o755)
+        r = self._run(p, {**_CLEAN_ENV, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        seen = log.read_text(encoding="utf-8").split()
+        self.assertTrue(seen, "the wrapper never ran")
+        self.assertEqual(set(seen), {"1"}, "a git ran with the system attributes file live")
+
+
+class WtreeStartsNoChildGitInASubmodule(unittest.TestCase):
+    """Codex on PR #724 (P1), wtree's half: `git add` probes a checked-out submodule's dirtiness with
+    a child `git status` INSIDE it, under the submodule's own config, and no option or config stops
+    it. A gitlink directory is kept out of `add -A` and refreshed with `update-index`, which reads
+    the submodule's HEAD in-process."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        lib = p.dir / "lib"
+        lib.mkdir()
+        _quiet_git(p.dir, "init", "-q", str(lib))
+        (lib / "f.txt").write_text("library\n", encoding="utf-8")
+        _quiet_git(lib, "add", "f.txt")
+        _quiet_git(lib, "commit", "-qm", "lib")
+        r = _quiet_git(p.repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), "sub")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        _quiet_git(p.repo, "commit", "-qm", "add sub")
+        self.sub = p.repo / "sub"
+        self._plant(p, self.sub)
+        # Positive control: plain git's `add -A` (temp index) runs the submodule's own filter.
+        idx = p.dir / "probe.index"
+        shutil.copy(p.repo / ".git" / "index", idx)
+        subprocess.run(["git", "-C", str(p.repo), "add", "-A"], env={**_CLEAN_ENV, "GIT_INDEX_FILE": str(idx)},
+                       capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertIn("sub-clean", p.fired(), "the submodule's planted filter is not live")
+        self._touch(self.sub / "f.txt")
+        self.head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        return p
+
+    @staticmethod
+    def _plant(p, repo):
+        """A filter, an fsmonitor and a post-index-change hook in `repo`'s OWN config."""
+        for key, var in (("core.fsmonitor", "fsmonitor"), ("filter.sf.clean", "sub-clean"),
+                         ("filter.sf.smudge", "sub-smudge")):
+            _quiet_git(repo, "config", key, f"{p.probe} {var}")
+        git_dir = Path(_quiet_git(repo, "rev-parse", "--absolute-git-dir").stdout.strip())
+        (git_dir / "info").mkdir(exist_ok=True)
+        (git_dir / "info" / "attributes").write_text("* filter=sf\n", encoding="utf-8")
+        hook = git_dir / "hooks" / "post-index-change"
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text(f"#!/bin/sh\n{_sh(p.probe)} sub-hook\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+    @staticmethod
+    def _touch(path):
+        later = time.time() + 60
+        os.utime(path, (later, later))  # same size, new mtime: a refresh re-hashes it
+
+    def test_a_checked_out_submodule_runs_nothing_and_fingerprints_as_head(self):
+        p = self._repo()
+        r = _wtree(p.repo)
+        self.assertEqual(p.fired(), set(), "wtree.sh ran a command the submodule's config names")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, self.head_tree), r.stderr)
+
+    def test_a_moved_submodule_still_changes_the_fingerprint(self):
+        p = self._repo()
+        (self.sub / "g.txt").write_text("new\n", encoding="utf-8")
+        _quiet_git(self.sub, "-c", "filter.sf.clean=", "add", "g.txt")
+        _quiet_git(self.sub, "commit", "-qm", "moved")
+        moved = _quiet_git(self.sub, "rev-parse", "HEAD").stdout.strip()
+        p.fired()
+        self._touch(self.sub / "f.txt")
+        idx = p.dir / "want.index"
+        env = {**_CLEAN_ENV, "GIT_INDEX_FILE": str(idx)}
+        subprocess.run(["git", "-C", str(p.repo), "read-tree", "HEAD"], env=env, check=True, stdin=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(p.repo), "update-index", "--cacheinfo", f"160000,{moved},sub"],
+                       env=env, check=True, stdin=subprocess.DEVNULL)
+        want = subprocess.run(["git", "-C", str(p.repo), "write-tree"], env=env, check=True, capture_output=True,
+                              text=True, stdin=subprocess.DEVNULL).stdout.strip()
+        r = _wtree(p.repo)
+        self.assertEqual(p.fired(), set())
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, want), r.stderr)
+
+    def test_an_untracked_nested_repository_runs_nothing(self):
+        # A guard, not a regression: `add -A` adds an untracked nested repository as a gitlink
+        # from its HEAD in-process, with or without gitlinks in the index (both branches here).
+        for with_submodule in (True, False):
+            with self.subTest(with_submodule=with_submodule):
+                self._nested(with_submodule)
+
+    def _nested(self, with_submodule):
+        if with_submodule:
+            p = self._repo()
+        else:
+            tmp = tempfile.mkdtemp()
+            self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+            p = _Probe(tmp)
+            p.commit("a.txt", "line1\n")
+            self.head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        nested = p.repo / "nested"
+        _quiet_git(p.repo, "init", "-q", str(nested))
+        (nested / "n.txt").write_text("nested\n", encoding="utf-8")
+        _quiet_git(nested, "add", "n.txt")
+        _quiet_git(nested, "commit", "-qm", "n")
+        self._plant(p, nested)
+        self._touch(nested / "n.txt")
+        r = _wtree(p.repo)
+        self.assertEqual(p.fired(), set(), "wtree.sh ran a command a nested repository's config names")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(r.stdout.strip(), self.head_tree)
+
+    def test_mutation_control_a_plain_add_runs_the_submodules_filter(self):
+        p = self._repo()
+        src = (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
+        self.assertEqual(src.count('if [ -s "$CUSTODY/wtree-gitlinks" ]; then'), 1, "the gitlink branch moved")
+        mutant = p.dir / "wtree_control.sh"
+        mutant.write_text(src.replace('if [ -s "$CUSTODY/wtree-gitlinks" ]; then', "if false; then"),
+                          encoding="utf-8")
+        _wtree(p.repo, script=mutant)
+        self.assertIn("sub-clean", p.fired(), "control: a plain `add -A` never probed the submodule")
+
+
+class WtreeRefusesWhenTheUnverifiableCheckFails(unittest.TestCase):
+    """Codex on this branch (P2): the exit-3 check piped diff-index into check-attr into a reader, so
+    a failing diff-index or check-attr left HIT empty and the TREE was printed as if no declared
+    filter applied. Each status decides now: a failed check is no fingerprint (exit 1)."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        p.arm_filter()
+        (p.repo / "a.txt").write_text("CHANGED\n", encoding="utf-8")
+        r = _wtree(p.repo)
+        self.assertEqual(r.returncode, 3, "fixture: the changed filtered path is not unverifiable")
+        return p
+
+    def _failing(self, p, sub):
+        bindir = p.dir / f"bin-{sub}"
+        bindir.mkdir()
+        (bindir / "git").write_text(
+            '#!/bin/sh\nfor a in "$@"; do [ "$a" = ' + sub + ' ] && { echo "fatal: forced" >&2; exit 128; }; done\n'
+            "exec " + _sh(_REAL_GIT) + ' "$@"\n', encoding="utf-8")
+        (bindir / "git").chmod(0o755)
+        return {**_CLEAN_ENV, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+
+    def test_a_failing_diff_index_or_check_attr_is_no_fingerprint(self):
+        for sub in ("diff-index", "check-attr"):
+            with self.subTest(failing=sub):
+                p = self._repo()
+                r = _wtree(p.repo, env=self._failing(p, sub))
+                self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+                self.assertIn("no fingerprint", r.stderr)
+                self.assertEqual(p.fired(), set())
+
+
+class WtreeTrustsNoSameUidConfigOrEnvironment(unittest.TestCase):
+    """W4-02 (P1): on a single-host fleet the worker runs as the coordinator's uid, so
+    `~/.gitconfig` is as much the worker's to write as `.git/config`. A global clean filter both
+    ran in the coordinator and CHOSE the fingerprint: `printf 'v1'` mapped a tampered file back to
+    its committed blob, so a tree no test saw printed `HEAD^{tree}` and verify graded it FRESH.
+    W4-07: the environment pointers that outrank `-C` (GIT_DIR, GIT_INDEX_FILE, ...) are the
+    caller's, not the fingerprint's. HOME is a scratch dir; nothing touches the real one."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        (p.repo / ".gitattributes").write_text("tampered.txt filter=evil\n", encoding="utf-8")
+        p.commit("tampered.txt", "v1\n")
+        self.head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        self.home = p.dir / "home"
+        self.home.mkdir()
+        clean = f"sh -c 'echo clean >> {_sh(p.marker)}; printf \"v1\\n\"'"
+        subprocess.run(["git", "config", "-f", str(self.home / ".gitconfig"), "filter.evil.clean", clean],
+                       check=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith(("GIT_CONFIG", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"))}
+        self.env.update(HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"))
+        return p
+
+    def _wtree(self, p, **extra):
+        return subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env={**self.env, **extra},
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_a_global_filter_neither_runs_nor_chooses_a_tampered_fingerprint(self):
+        p = self._repo()
+        (p.repo / "tampered.txt").write_text("COMPLETELY DIFFERENT TAMPERED CONTENT\n", encoding="utf-8")
+        r = self._wtree(p)
+        self.assertEqual(p.fired(), set(), "wtree.sh ran a filter from the worker-writable ~/.gitconfig")
+        self.assertNotEqual(r.stdout.strip(), self.head_tree, "a tampered tree fingerprinted as HEAD")
+        # The path IS selected by a driver some config declares: comparing it to the committed blob
+        # would need that command, so it is unverifiable (exit 3), never a value.
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn(_UNVERIFIABLE, r.stderr)
+        self.assertIn("tampered.txt", r.stderr)
+
+    def test_an_untouched_tree_still_fingerprints_as_head_under_a_global_filter(self):
+        p = self._repo()
+        r = self._wtree(p)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, self.head_tree), r.stderr)
+        self.assertEqual(p.fired(), set())
+
+    def test_an_untracked_file_still_changes_the_fingerprint(self):
+        # Global config off must not hide content: a new file is still counted (the drop is
+        # not a blanket "ignore everything"), and the global filter still does not run.
+        p = self._repo()
+        (p.repo / "new.txt").write_text("new\n", encoding="utf-8")
+        r = self._wtree(p)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(r.stdout.strip(), self.head_tree)
+        self.assertEqual(p.fired(), set())
+
+    def test_an_inherited_git_dir_or_index_cannot_redirect_the_fingerprint(self):
+        p = self._repo()
+        other = _Probe(tempfile.mkdtemp(dir=str(p.dir)))
+        other.commit("elsewhere.txt", "another repository\n")
+        decoy_index = p.dir / "decoy.index"
+        for extra in ({"GIT_DIR": str(other.repo / ".git")},
+                      {"GIT_WORK_TREE": str(other.repo)},
+                      {"GIT_INDEX_FILE": str(decoy_index)},
+                      {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='" + str(p.probe) + " fsmonitor'"},
+                      {"GIT_CONFIG": os.devnull}):
+            with self.subTest(extra=sorted(extra)):
+                r = self._wtree(p, **extra)
+                self.assertEqual((r.returncode, r.stdout.strip()), (0, self.head_tree), r.stderr)
+                self.assertEqual(p.fired(), set())
+        self.assertFalse(decoy_index.exists(), "wtree.sh seeded or wrote an inherited index")
+
+    def test_an_inherited_git_config_cannot_hide_a_repo_driver_from_the_listing(self):
+        # GIT_CONFIG names the one file `git config --list` reads: inherited, it emptied the
+        # driver listing while `add -A` still loaded the repo config and ran its filter.
+        p = self._repo()
+        p.arm_filter()
+        (p.repo / "tampered.txt").write_text("changed\n", encoding="utf-8")
+        r = self._wtree(p, GIT_CONFIG=os.devnull)
+        self.assertEqual(p.fired(), set(), "a repo filter ran behind an inherited GIT_CONFIG")
+        self.assertEqual(r.returncode, 3, r.stderr)
+
+    def test_git_is_resolved_once_to_an_absolute_path(self):
+        # gitexec.py's rule: every call runs the one absolute git found at startup.
+        code = "\n".join(ln.split(" #", 1)[0] for ln in (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
+                         .splitlines() if not ln.lstrip().startswith("#"))
+        # `git` in a command-word position: a line start, `$(`, a pipe, `;`/`&&`, or env's argv.
+        bare = r'(?m)(^\s*|\$\(\s*|\|\s*|;\s*|&&\s*|env "\$@"\s+)git\s'
+        self.assertNotRegex(code, bare, "a bare, PATH-resolved git call is left")
+        self.assertIn('"$GIT" -C', code)
+        self.assertIn("command -v git", code)
 
 
 # PR #649 review (PRRT_kwDOTWxN9c6vxaeq): an `includeIf` makes the effective config depend on WHERE

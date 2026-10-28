@@ -1071,6 +1071,8 @@ class _BodyBudget:
                             self.held += n
                             ticket.held += n
                             self.tickets.add(ticket)
+                            if self.grower is ticket:  # served: what it needed is now held, not kept free
+                                self.grower, self.growth = None, 0
                             return True
                         if grow and self.grower is None:
                             self.grower, self.growth = ticket, n
@@ -1092,7 +1094,7 @@ class _BodyBudget:
                         reclaimed(victim)
         finally:
             with self.cond:
-                if self.grower is ticket:  # served, refused or evicted: its claim on the room ends
+                if self.grower is ticket:  # its deadline passed, or it was evicted: its claim on the room ends
                     self.grower, self.growth = None, 0
                     self.cond.notify_all()
 

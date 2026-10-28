@@ -1954,8 +1954,9 @@ NOTHING means. A scan is complete only when every process of this uid that could
 pane was read; a read that fails for any reason but the process being gone is UNKNOWN, never
 "absent" (Codex round 4): an environment that stays unreadable (`EACCES` from a non-dumpable
 process, `EIO`) makes the scan incomplete. It is read again for up to 0.25 s first, since a
-process caught exiting answers `EACCES` for a moment and then is gone; a process that vanishes
-mid-scan is gone, not unknown (the scan re-lists a few times for a carrier it forked just before
+process caught exiting answers `EACCES` for a moment and then is gone, and one that has exited
+but is not yet reaped (a zombie) answers it for as long as it lingers and is absent too; a
+process that vanishes mid-scan is gone, not unknown (the scan re-lists a few times for a carrier it forked just before
 it exited, which would be outside the pane's live tree: the residual below). With
 `--since <pid>` (`spawn_worker.sh` passes itself) an unreadable process that started before that
 pid is not counted, since it cannot be a pane this launch created; a runtime that handed a launch

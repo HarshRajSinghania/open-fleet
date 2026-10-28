@@ -31,8 +31,8 @@
   is handled best-effort. Before any git runs, floor_guard, diff_scope and hint_provenance refuse a
   repository in which they positively find a config, config include, `commondir` or `shallow`
   that is a FIFO or other non-regular file, checking every spelling of each name a git might
-  read (whitespace trimmed or not, either git's config whitespace), without running git and
-  without ever refusing on doubt. Any promisor remote is refused as a partial clone (git 2.43
+  read (inner whitespace as spaces, verbatim or collapsed; ends trimmed or not; with or without
+  `\v`/`\f` as whitespace), without running git and without ever refusing on doubt. Any promisor remote is refused as a partial clone (git 2.43
   never writes `extensions.partialClone`). A blocking file that check misses (one it cannot
   parse, a FIFO swapped in after it, one at a work tree `.gitignore` or `.gitattributes`) blocks
   the git call until its timeout (60 s; up to 120 s in the verifier), and the call is then

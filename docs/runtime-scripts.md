@@ -1256,13 +1256,19 @@ exists and is not a regular file. Every name it derives — a gitfile's `gitdir:
 worktree's `commondir`, each `[include]`/`[includeIf]` `path` (config parsed like git's parser:
 CRLF, BOM, quotes and escapes, `\`-continued lines, comments, case-insensitive names,
 subsections, `~`/`~user` and relative paths; conditions not evaluated) — is checked in EVERY
-spelling a git might read it as: raw, and with any of space, `\t`, `\n`, `\v`, `\f`, `\r`
-trimmed from either end, with config parsed under git 2.43's whitespace and a newer git's (which
-also counts `\v` and `\f`). Exact parity with each git version is not attempted, and nothing about
+spelling a git might read it as. The spelling rules: (1) config is parsed with each whitespace
+set, git's own (space, `\t`, `\n`, `\r`) and that plus `\v` and `\f`; (2) whitespace INSIDE an
+unquoted value is rendered each way a git does or might: each byte as one space (git 2.43), kept
+byte for byte (git 2.55), each run as one space; quoted whitespace is always literal; (3) every
+resulting value, gitfile `gitdir:` and `commondir` is then taken raw and with any of space, `\t`,
+`\n`, `\v`, `\f`, `\r` trimmed from either end (each prefix and suffix of the end runs, up to 16
+bytes); (4) relative paths resolve from the including file's directory (a gitdir or commondir
+from its own), `~`/`~user` from the password database. Exact parity with each git version is not
+attempted, and nothing about
 a git version can make it refuse an ordinary repository: config it cannot parse, a value it
 cannot expand, an oversized file, add nothing. `tests/test_gitexec_config_commands.py` checks, for
 every byte in 25 positions, that each include path the installed git reads is among the spellings
-the check examines.
+the check examines (run against git 2.43 and 2.55).
 The security property does not rest on it: no repository-named command runs either way. What it
 misses — a name it cannot follow, a FIFO swapped in after it, one at a work tree's own `.gitignore`
 or `.gitattributes`, which git opens itself path by path — is bounded by the git call's own

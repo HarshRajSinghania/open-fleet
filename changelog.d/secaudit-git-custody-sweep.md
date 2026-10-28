@@ -22,10 +22,17 @@
   planted there ran too. A moved submodule commit is still reported; uncommitted changes inside a
   submodule no longer are. The custody also carries the repository's `info/attributes`, the
   content of its own `core.attributesFile` (read only as a regular file of at most 1 MiB, never
-  opened blocking; a FIFO, symlink or larger file refuses; no user attributes file is opened, and
-  no system one except by verify.py's negative control, whose pinned git environment does not set
-  `GIT_ATTR_NOSYSTEM`) and its
+  opened blocking; a FIFO, symlink or larger file refuses; no user attributes or ignore file is
+  opened, and no system attributes file except by verify.py's negative control, whose pinned git
+  environment does not set `GIT_ATTR_NOSYSTEM`), the content of its own `core.excludesFile` (read
+  the same way) and its
   `core.safecrlf`/`core.checkRoundtripEncoding` as data, so a CRLF (`eol=crlf`) checkout no longer
-  reads as modified. Also:
+  reads as modified. Before any git runs, floor_guard, diff_scope and hint_provenance refuse a
+  repository whose config, config include or `shallow` is a FIFO or other non-regular file (git
+  would block opening it), and any promisor remote is refused as a partial clone (git 2.43 never
+  writes `extensions.partialClone`). A FIFO at a work tree `.gitignore` or `.gitattributes`, which
+  git opens itself, still blocks a call until its timeout (60 s; up to 120 s in the verifier) and
+  is then refused. predict-merge reports a custody refusal as such, and hint_provenance a git
+  timeout as a `ProvenanceError`. Also:
   the `_external.py` runner docstring no longer claims `reset --hard` runs in custody (it is
   refused).

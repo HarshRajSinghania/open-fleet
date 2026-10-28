@@ -529,7 +529,11 @@ line selects runs nowhere, even one added to the repository's config mid-call (W
 The prediction is given the two commit ids and writes its merged tree into the repository's own
 object store. The declared driver commands are still listed and blanked as a belt
 (`_driver_blanks`, #629): an unreadable list is `diff_failed`, and so is a repository the custody
-refuses. The committed diff compares two trees by name only and runs in the repository. Twelve
+refuses, and so is a config, include or `shallow` git would block on (refused before git runs);
+a FIFO at a work tree `.gitignore`/`.gitattributes` blocks a git call up to 60 s, then
+`diff_failed`. The untracked listing runs in custody too. A `--predict-merge` the custody refuses
+reports the custody's reason, never a git-version guess. The committed diff compares two trees by
+name only and runs in the repository. Twelve
 independent flags: `FRONTEND`, `BACKEND`, `PROMPTS`, `TESTS`, `DOCS`, `CONFIG`,
 `MIGRATIONS`, `API`, `AUTH`, `SECURITY`, `A11Y`, `PERF` — path signals plus working-tree
 content signals (capped at 256 KiB per file; deleted files contribute path signals only).
@@ -1017,7 +1021,8 @@ against `/dev/null`) run in git custody (`gitexec.custody`): against a git dir t
 over the repository's objects and index, with its own work tree, so no clean filter, textconv or
 diff driver the repository names runs — including one added to its config while the guard reads
 (W4 custody sweep). A repository the custody refuses (a partial clone, a non-regular
-`info/exclude`) is exit 2. Every git the guard runs is under `gitexec.custody_env`. Binary media (images, fonts, audio/video, archives) skip the content
+`info/exclude`, a config, include, `shallow` or `core.excludesFile` git would block on) is exit 2;
+a FIFO at a work tree `.gitignore`/`.gitattributes` blocks a git call up to 60 s, then exit 2. Every git the guard runs is under `gitexec.custody_env`. Binary media (images, fonts, audio/video, archives) skip the content
 rules by extension, never by a NUL byte; the guard surface still sees them by path. Run it OFF
 the worker.
 
@@ -1211,12 +1216,17 @@ that key's precedence (below `.gitattributes`, below `info/attributes`). It is r
 repository's own `core.attributesFile` (`custody_attributes`: the path expanded as git expands it,
 a relative one from the work tree top, then read only as a regular file of at most
 `ATTRIBUTES_FILE_LIMIT` (1 MiB) bytes, opened without following a final symlink and without
-blocking; a FIFO, device, directory, symlink or larger file refuses, never dropped — dropped, a
+blocking; `custody_excludes` does the same for `core.excludesFile`, so a custody
+`ls-files --others` lists what the repository's own git lists; a FIFO, device, directory, symlink or
+larger file refuses, never dropped — dropped, a
 clean CRLF checkout an `eol=crlf` line there steers read as modified; a missing file or empty
 value is no attributes, as for git; a global or system value stays unread; with no repository value
-the custody still names its own empty file, so git never opens its default user attributes file,
-`$XDG_CONFIG_HOME/git/attributes` or `~/.config/git/attributes`, where a FIFO would hang it), refuses an
-`extensions.*` the dir cannot honour (`partialClone` above all) and yields a `Custody` whose `lead`
+the custody still names its own empty file, and an excludes file always (that content, or
+`/dev/null` from `custody_git_dir` alone), so git never opens its default user attributes or ignore
+file, `$XDG_CONFIG_HOME/git/attributes` and `.../ignore` or under `~/.config/git/`, where a FIFO
+blocked it), refuses an `extensions.*` the dir cannot honour and a partial clone (git 2.43's
+`clone --filter` writes `remote.<name>.promisor` and `.partialclonefilter`, never
+`extensions.partialClone`, so any promisor remote refuses) and yields a `Custody` whose `lead`
 is `-C <repo> --git-dir <dir> --work-tree <top>` and whose `pairs` are those settings. A git run
 with that lead reads the repository's work tree, index and objects and no config the worker
 writes, so a `filter`, `textconv`, `diff` or `merge` driver a `.gitattributes` or `info/attributes`
@@ -1233,14 +1243,25 @@ child git that runs under the submodule's OWN config, so every custody diff carr
 `NO_SUBMODULE_CHILD` (`--ignore-submodules=dirty`: a moved gitlink is still reported, read from the
 submodule's refs in-process; uncommitted changes inside it are not), and a caller that stages a
 work tree keeps its gitlinks out of `git add`, which has no such option (`wtree.sh`).
+`refuse_blocking_files(path)` runs before any git in floor_guard, diff_scope and hint_provenance:
+every git reads the repository's config and follows its includes, and a commit walk reads
+`shallow`, so a FIFO (or device) there blocked each gate until its timeout. It finds the git dir
+without running git, reads `config` and `config.worktree` (and, recursively, every
+`[include]`/`[includeIf]` `path` they name, conditions not evaluated) without blocking, and refuses
+(`GitCustodyRefused`) any of them, or the common `shallow`, that exists and is not a regular file.
+What can still block: a FIFO the worker swaps in after that check, and one at a work tree's own
+`.gitignore` or `.gitattributes`, which git opens itself path by path. Those are bounded by the
+call's own timeout (60 s in floor_guard, diff_scope and hint_provenance; up to 120 s in verify.py's
+control) and then fail closed: exit 2, `diff_failed`, a `ProvenanceError`, a refused control.
 Callers: the posix provider's `run_git` (`status`, `merge-tree`, `checkout_worktree`; see
 `docs/runtimes.md`, "`posix` git custody"), floor_guard's tracked and untracked diffs,
 diff_scope's working-tree diff and `--predict-merge` (`objects="shared"`, so the merged tree
 `merge_queue.py` commits is in the repository), hint_provenance's `diff` and `log`, and verify.py's
 negative-control checkout, apply, revert and seal (`objects="shared"`, `bare=False`, reached
 through a `.git` gitfile; its git runs under verify.py's own pinned environment, not
-`custody_env`, so the custody's own attributes file closes the default user one there but
-`GIT_ATTR_NOSYSTEM` is not set: the system attributes file is still read, as data). floor_guard, diff_scope and hint_provenance run every other git under
+`custody_env`, so the custody's own attributes and excludes files close the default user ones
+there — and each phase repository's `reset --hard` pins both to `/dev/null` on its command line —
+but `GIT_ATTR_NOSYSTEM` is not set: the system attributes file is still read, as data). floor_guard, diff_scope and hint_provenance run every other git under
 `custody_env` too.
 
 Exits: n/a (library).
@@ -1388,8 +1409,10 @@ else raises `ProvenanceError` before a process starts) under `gitexec.custody_en
 (`gitexec.custody`): against a git dir built over the checkout's objects and index, whose config
 defines no filter, textconv or diff driver, so none a `.gitattributes` or `info/attributes` line
 selects runs — not even one the checkout's config gained while the hint was read (W4 custody
-sweep). The checkout's declared drivers are still listed first as a belt; an unreadable config,
-or a checkout the custody refuses (a partial clone), is a `ProvenanceError`.
+sweep), and so does `ls-files` (it reads the ignore files). The checkout's declared drivers are
+still listed first as a belt; an unreadable config, a checkout the custody refuses (a partial
+clone), a config, include or `shallow` git would block on, and a git that timed out (60 s: a FIFO at
+a work tree `.gitignore`/`.gitattributes`) are each a `ProvenanceError`.
 
 Replay corpus (`scripts/hint_replay.py`): 27 scenarios (37 hints), each a synthetic multi-commit
 repository plus a committed run archive (some tampered after commit), replayed with hints `off`,

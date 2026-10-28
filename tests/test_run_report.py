@@ -2041,6 +2041,28 @@ class ASoundLaneReadsTheKeyAndPolicyAtATrustedBase(SignedKeyFixture):
                 self.assertIn("exactly that name", r.stderr)
                 self.assertNotIn("bound demo-it", r.stdout)
 
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_no_base(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so
+        # origin/HEAD -> refs/heads/bridge -> refs/remotes/origin/the-pr (a fetched PR branch)
+        # read as remote-tracking all the way: the policy the PR wrote judged the PR. Each hop is
+        # now read on its own; the default skips the bridged origin/HEAD for origin/main.
+        self._scenario()
+        _git(self.repo, "update-ref", "refs/remotes/origin/the-pr", self.rev)
+        _git(self.repo, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/the-pr")
+        _git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/bridge")
+        _git(self.repo, "symbolic-ref", "refs/remotes/worker/b", "refs/heads/bridge")
+        _git(self.repo, "symbolic-ref", "refs/remotes/worker/a", "refs/remotes/worker/b")
+        r = self.run_report()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("mutation-class", r.stdout)
+        self.assertNotIn("bound demo-it", r.stdout)
+        for base in ("refs/remotes/origin/HEAD", "refs/remotes/worker/a"):
+            with self.subTest(base=base):
+                r = self.run_report("--base", base)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("refs/heads/bridge", r.stderr)
+                self.assertNotIn("bound demo-it", r.stdout)
+
     def test_a_suffixed_or_hex_named_base_is_no_trusted_base(self):
         # A revision suffix passed the prefix check (origin/main~1 is an older commit than the
         # reviewed tip), and 64 hex digits in a SHA-1 repository are no object id: rev-parse

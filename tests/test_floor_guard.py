@@ -1864,6 +1864,21 @@ class TestTheBaseIsResolvedByExactNameW307(FloorGuardBase):
         err = self.assert_not_waived("--base", "refs/remotes/origin/main", code=2)
         self.assertIn("exactly that name", err)
 
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_no_base(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so origin/HEAD
+        # (or a named origin/<x>) -> refs/heads/bridge -> refs/remotes/origin/planted read as
+        # remote-tracking all the way, and the planted waiver was honoured.
+        self.waiver_on("refs/remotes/origin/planted")
+        git(self.repo, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/planted")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/bridge")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/b", "refs/heads/bridge")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/a", "refs/remotes/origin/b")
+        self.assert_not_waived()  # origin/HEAD skipped: origin/main, which carries no waiver
+        for base in ("origin/HEAD", "origin/a", "refs/remotes/origin/a"):
+            with self.subTest(base=base):
+                err = self.assert_not_waived("--base", base, code=2)
+                self.assertIn("refs/heads/bridge", err)
+
     def test_a_revision_suffix_is_no_base(self):
         # The waiver stood at origin/main~1 and was retired by a later `superseded` line.
         land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.WAIVER) + "\n"})

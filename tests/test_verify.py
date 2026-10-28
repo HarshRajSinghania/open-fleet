@@ -6589,6 +6589,25 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
             self.assertIn("exactly that name", errs[0])
             self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, "main", True), [])
 
+    def test_a_local_bridge_inside_the_base_chain_is_not_the_base(self):
+        # Codex review round 2 (P1): refs/remotes/origin/main -> refs/heads/bridge ->
+        # refs/remotes/origin/side (a fetched branch holding the poison) read as remote-tracking
+        # all the way, so the poison was "on base" on a sound lane.
+        git = ["git", "-C", str(self.repo)]
+        subprocess.run([*git, "update-ref", "refs/remotes/origin/side", self.poison], check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/side"],
+                       check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/remotes/origin/main", "refs/heads/bridge"],
+                       check=True)
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            errs = verify.check_ancestry({"head_sha": self.poison}, "main")
+            self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+            self.assertIn("refs/heads/bridge", errs[0])
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, "main", True), [])
+            self.assertTrue(any("not found on origin/main" in e
+                                for e in verify.check_symbol_on_base("raise", "main")))
+
     def test_a_revision_suffix_on_the_base_is_not_a_base(self):
         verify._Authority.lane = "provenance=ci"
         with self._inside_repo():
@@ -6876,6 +6895,20 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         for ref in ("refs/remotes/worker/key", "refs/remotes/origin/HEAD"):
             with self.subTest(ref=ref):
                 self.assert_refused(ref, "exactly that name")
+
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_refused(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so
+        # refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/worker-pr (a fetched
+        # branch holding the worker's key) read as remote-tracking all the way and verified.
+        worker = self._worker_branch_key()
+        self.git("update-ref", "refs/remotes/origin/worker-pr", worker)
+        self.git("symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/worker-pr")
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/b", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/a", "refs/remotes/worker/b")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/worker/a"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "refs/heads/bridge")
 
     def test_a_hex_named_branch_is_not_a_commit_id(self):
         # 64 hex digits are no object id in a SHA-1 repository: rev-parse expands them as a ref.

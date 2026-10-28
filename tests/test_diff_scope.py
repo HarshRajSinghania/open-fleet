@@ -726,6 +726,25 @@ class TestTheBaseIsResolvedByExactNameW307(ScopeBase):
         self.assertIsNone(data["error"], r.stdout + r.stderr)
         self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
 
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_no_base(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so origin/HEAD
+        # -> refs/heads/bridge -> refs/remotes/origin/tip (the change's own tip, fetched) read as
+        # remote-tracking all the way: the diff was empty and the AUTH lens off.
+        git(self.repo, "update-ref", "refs/remotes/origin/tip", "HEAD")
+        git(self.repo, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/tip")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/bridge")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/b", "refs/heads/bridge")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/a", "refs/remotes/origin/b")
+        data, r = self.scoped()  # origin/HEAD skipped: origin/main
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
+        for base in ("origin/HEAD", "origin/a"):
+            with self.subTest(base=base):
+                data, r = self.scoped("--base", base)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(data["error"], "no_base", r.stdout)
+                self.assertIn("refs/heads/bridge", r.stderr)
+
     def test_an_absent_remote_ref_is_not_answered_by_a_local_branch_of_its_spelling(self):
         git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
         git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")

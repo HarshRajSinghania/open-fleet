@@ -524,6 +524,30 @@ class GateOneReadsTheHumanKeyAtTheAnchor(unittest.TestCase):
         self.assertEqual(status, rc.FAIL, detail)
         self.assertIn("refs/remotes/origin/main", detail)
 
+    def test_a_local_bridge_inside_the_anchor_chain_is_no_anchor(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so
+        # refs/remotes/origin/main -> refs/heads/bridge -> refs/remotes/origin/typed (a fetched
+        # branch that drops the pin and types the answer) read as remote-tracking all the way.
+        (self.root / ".orca" / "human-grant-pubkey").unlink()
+        self.answer(signed=False)
+        git = ["git", "-C", str(self.root)]
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                        "commit.gpgsign=false", "commit", "-q", "-m", "no pin, typed"], check=True)
+        subprocess.run([*git, "update-ref", "refs/remotes/origin/typed", "HEAD"], check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/typed"],
+                       check=True)
+        for chain in ((("refs/remotes/origin/main", "refs/heads/bridge"),),
+                      (("refs/remotes/origin/hop", "refs/heads/bridge"),
+                       ("refs/remotes/origin/main", "refs/remotes/origin/hop"))):
+            for link in chain:
+                subprocess.run([*git, "symbolic-ref", *link], check=True)
+            for env in (None, {"ORCA_PROVENANCE": "ci"}):
+                with self.subTest(chain=chain, env=env):
+                    _, status, detail = self.gate1(env)
+                    self.assertEqual(status, rc.FAIL, detail)
+                    self.assertIn("refs/heads/bridge", detail)
+
     def test_a_local_branch_spelled_as_the_absent_anchor_is_no_anchor(self):
         # W3-07 class, Codex review (P1): with refs/remotes/origin/main ABSENT, symbolic-ref
         # failed, the name kept its spelling, and rev-parse expanded it to the LOCAL branch

@@ -272,9 +272,10 @@ def remote_tracking_commit(git, name):
       prints that same id: it names a commit OBJECT, never a ref spelled in hex.
     - Anything else must be a full ``refs/remotes/…`` name ``git check-ref-format`` accepts —
       no revision syntax — that EXISTS under exactly that name in the repository's
-      ``refs/remotes/`` listing. A symbolic ref is followed hop by hop in that same listing, so
-      every hop and the final target are remote-tracking and exist; the target's object id is
-      then peeled to a commit. Resolved once: the caller reads at ``commit``, never at ``name``.
+      ``refs/remotes/`` listing. A symbolic ref is walked one hop at a time (``symbolic-ref
+      --no-recurse``, never the listing's recursive ``%(symref)``), so every hop and the final
+      target are remote-tracking and exist; the target's object id is then peeled to a commit.
+      Resolved once: the caller reads at ``commit``, never at ``name``.
 
     Remote-tracking means what this clone's fetch wrote: an anchor in the coordinator's clone or
     a CI checkout, advisory in a worker's own, where every ref is the worker's to write."""
@@ -307,9 +308,16 @@ def local_branch_commit(git, name):
 
 
 def _exact_ref_commit(git, name, namespace, kind, outside):
-    """The exact-name lookup both rules share: ``name`` (already under ``namespace``) must pass
+    """The exact-name lookup both rules share. ``name`` (already under ``namespace``) must pass
     check-ref-format and exist under exactly that name in one ``for-each-ref <namespace>``
-    listing; symbolic hops are followed in that listing and may not leave ``namespace``."""
+    listing. A symbolic ref is walked ONE HOP AT A TIME with ``git symbolic-ref --no-recurse``:
+    the listing's ``%(symref)`` is the RECURSIVELY resolved target, so it showed
+    refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/retired-key as pointing
+    straight at the remote ref and hid the local bridge — which the checked change can re-point
+    at any other remote-tracking ref (Codex review). Every hop must be a ``namespace`` ref listed
+    under exactly its name, the chain is bounded, and where one hop cannot be read on its own (git
+    older than 2.39 has no ``--no-recurse``) a symbolic name is refused, never trusted on its
+    recursive target. A plain, non-symbolic ref needs no hop reading and works on any git."""
     code, _ = git("check-ref-format", name)
     if code != 0:
         return None, name, ("is not a valid ref name: revision syntax (~1, ^, @{…}, :) names a "
@@ -329,12 +337,19 @@ def _exact_ref_commit(git, name, namespace, kind, outside):
             return None, target, (f"names no {kind} that exists under exactly that name{via}: "
                                   f"git's ref-name expansion (refs/heads/{target}, …) is never "
                                   "followed")
-        symref, oid = listed[target]
-        if not symref:
+        symbolic, oid = listed[target]
+        if not symbolic:
             break
-        if not symref.startswith(namespace):
-            return None, symref, f"is a symbolic ref to {symref}, which {outside}"
-        target = symref
+        # %(symref) above is the chain's END; the next hop is read on its own.
+        code, out = git("symbolic-ref", "-q", "--no-recurse", target)
+        hop = out.strip() if code == 0 else ""
+        if not hop:
+            return None, target, ("is a symbolic ref whose chain cannot be read one hop at a time "
+                                  "here (git symbolic-ref --no-recurse, git 2.39+): refused rather "
+                                  "than trusted on its recursively resolved target")
+        if not hop.startswith(namespace):
+            return None, hop, f"is a symbolic ref to {hop}, which {outside}"
+        target = hop
     else:
         return None, target, f"is a symbolic-ref chain longer than {_SYMREF_HOPS} hops"
     code, out = git("rev-parse", "--verify", "-q", f"{oid}^{{commit}}")

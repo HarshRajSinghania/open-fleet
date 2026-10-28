@@ -1325,6 +1325,27 @@ class TestPinRefIsAnExactNameW307(TestPinRefIsTheTrustAnchor):
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("differs", r.stderr)
 
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_refused(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's recursively resolved
+        # END, so refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/retired-key
+        # read as pointing straight at a remote ref, and the local bridge — the change's to
+        # re-point at any other remote-tracking key — was never seen. Each hop is read on its own.
+        self.rogue_branch("refs/remotes/origin/retired-key")
+        self.git("symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/retired-key")
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/b", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/a", "refs/remotes/worker/b")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/worker/a"):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("refs/heads/bridge", r.stderr)
+        # remote -> remote -> remote still anchors (the ordinary origin/HEAD shape, one hop more)
+        self.git("symbolic-ref", "refs/remotes/worker/c", "refs/remotes/origin/retired-key")
+        self.git("symbolic-ref", "refs/remotes/worker/d", "refs/remotes/worker/c")
+        r = self.run_dec("--pin-ref", "refs/remotes/worker/d", "check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_a_deleted_working_tree_pin_is_never_silent(self):
         # Codex review P2: with neither --pin-ref nor a provenance variable, the NOTE fired only
         # when a pin was present, so the deleted case — unsigned one-way grants valid — was the

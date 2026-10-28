@@ -1072,6 +1072,22 @@ class TheOwedSetIsReadWhereTheKeyIsRead(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn("exactly that name", r.stderr)
 
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_no_anchor(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so
+        # refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/stale read as
+        # remote-tracking all the way and the local bridge was never seen.
+        self.emptied_on("refs/remotes/origin/stale")
+        self.git("symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/stale")
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/b", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/a", "refs/remotes/worker/b")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/worker/a"):
+            with self.subTest(ref=ref):
+                r = self.cli("--pin-ref", ref, "list", "--status", "owed")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(r.stdout, "")
+                self.assertIn("refs/heads/bridge", r.stderr)
+
     def test_a_hex_named_branch_is_no_commit_id(self):
         # In a SHA-1 repository 64 hex digits are no object id: rev-parse expands them as a ref.
         hexname = "cd" * 32

@@ -821,6 +821,207 @@ class WtreeStagesNoDriverAddedAfterTheListing(unittest.TestCase):
         self.assertEqual(sorted(str(f) for f in (p.repo / ".git" / "objects").rglob("*")), before)
 
 
+def _wtree(repo, env=None, script=None):
+    return subprocess.run(["sh", str(script or SCRIPTS / "wtree.sh"), str(repo)], env=env or _CLEAN_ENV,
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+
+
+def _quiet_git(repo, *args):
+    """Plain git with every planted channel pinned off, for fixture steps only."""
+    env = {**_CLEAN_ENV, "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "core.fsmonitor",
+           "GIT_CONFIG_VALUE_0": "false", "GIT_CONFIG_KEY_1": "core.hooksPath", "GIT_CONFIG_VALUE_1": os.devnull}
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.email=a@b", "-c", "user.name=a", *args],
+                          env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+
+
+class WtreeKeepsLineEndingData(unittest.TestCase):
+    """Codex on this branch (P1): CUSTODY dropped the repository's info/attributes, so a clean CRLF
+    checkout of an `eol=crlf` path, once touched, staged CRLF unnormalised and read STALE. The
+    attributes (and the conversion settings) are data, carried as such."""
+
+    def _repo(self, how):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\nline2\n")
+        head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        if how == "info/attributes":
+            (p.repo / ".git" / "info").mkdir(exist_ok=True)
+            (p.repo / ".git" / "info" / "attributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+        else:
+            p._git("config", "core.autocrlf", "true")
+        (p.repo / "a.txt").unlink()
+        p._git("checkout", "--", "a.txt")
+        self.assertEqual((p.repo / "a.txt").read_bytes(), b"line1\r\nline2\r\n", "fixture: not a CRLF checkout")
+        later = time.time() + 30
+        os.utime(p.repo / "a.txt", (later, later))  # touched: `add -A` re-reads it
+        return p, head_tree
+
+    def test_a_touched_clean_crlf_checkout_fingerprints_as_head(self):
+        for how in ("info/attributes", "core.autocrlf"):
+            with self.subTest(how=how):
+                p, head_tree = self._repo(how)
+                r = _wtree(p.repo)
+                self.assertEqual((r.returncode, r.stdout.strip()), (0, head_tree), r.stderr)
+
+    def test_a_real_edit_still_changes_it(self):
+        p, head_tree = self._repo("info/attributes")
+        (p.repo / "a.txt").write_bytes(b"line1\r\nEDITED\r\n")
+        r = _wtree(p.repo)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(r.stdout.strip(), head_tree)
+
+
+class WtreeStartsNoChildGitInASubmodule(unittest.TestCase):
+    """Codex on PR #724 (P1), wtree's half: `git add` probes a checked-out submodule's dirtiness with
+    a child `git status` INSIDE it, under the submodule's own config, and no option or config stops
+    it. A gitlink directory is kept out of `add -A` and refreshed with `update-index`, which reads
+    the submodule's HEAD in-process."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        lib = p.dir / "lib"
+        lib.mkdir()
+        _quiet_git(p.dir, "init", "-q", str(lib))
+        (lib / "f.txt").write_text("library\n", encoding="utf-8")
+        _quiet_git(lib, "add", "f.txt")
+        _quiet_git(lib, "commit", "-qm", "lib")
+        r = _quiet_git(p.repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), "sub")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        _quiet_git(p.repo, "commit", "-qm", "add sub")
+        self.sub = p.repo / "sub"
+        self._plant(p, self.sub)
+        # Positive control: plain git's `add -A` (temp index) runs the submodule's own filter.
+        idx = p.dir / "probe.index"
+        shutil.copy(p.repo / ".git" / "index", idx)
+        subprocess.run(["git", "-C", str(p.repo), "add", "-A"], env={**_CLEAN_ENV, "GIT_INDEX_FILE": str(idx)},
+                       capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertIn("sub-clean", p.fired(), "the submodule's planted filter is not live")
+        self._touch(self.sub / "f.txt")
+        self.head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        return p
+
+    @staticmethod
+    def _plant(p, repo):
+        """A filter, an fsmonitor and a post-index-change hook in `repo`'s OWN config."""
+        for key, var in (("core.fsmonitor", "fsmonitor"), ("filter.sf.clean", "sub-clean"),
+                         ("filter.sf.smudge", "sub-smudge")):
+            _quiet_git(repo, "config", key, f"{p.probe} {var}")
+        git_dir = Path(_quiet_git(repo, "rev-parse", "--absolute-git-dir").stdout.strip())
+        (git_dir / "info").mkdir(exist_ok=True)
+        (git_dir / "info" / "attributes").write_text("* filter=sf\n", encoding="utf-8")
+        hook = git_dir / "hooks" / "post-index-change"
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text(f"#!/bin/sh\n{_sh(p.probe)} sub-hook\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+    @staticmethod
+    def _touch(path):
+        later = time.time() + 60
+        os.utime(path, (later, later))  # same size, new mtime: a refresh re-hashes it
+
+    def test_a_checked_out_submodule_runs_nothing_and_fingerprints_as_head(self):
+        p = self._repo()
+        r = _wtree(p.repo)
+        self.assertEqual(p.fired(), set(), "wtree.sh ran a command the submodule's config names")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, self.head_tree), r.stderr)
+
+    def test_a_moved_submodule_still_changes_the_fingerprint(self):
+        p = self._repo()
+        (self.sub / "g.txt").write_text("new\n", encoding="utf-8")
+        _quiet_git(self.sub, "-c", "filter.sf.clean=", "add", "g.txt")
+        _quiet_git(self.sub, "commit", "-qm", "moved")
+        moved = _quiet_git(self.sub, "rev-parse", "HEAD").stdout.strip()
+        p.fired()
+        self._touch(self.sub / "f.txt")
+        idx = p.dir / "want.index"
+        env = {**_CLEAN_ENV, "GIT_INDEX_FILE": str(idx)}
+        subprocess.run(["git", "-C", str(p.repo), "read-tree", "HEAD"], env=env, check=True, stdin=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(p.repo), "update-index", "--cacheinfo", f"160000,{moved},sub"],
+                       env=env, check=True, stdin=subprocess.DEVNULL)
+        want = subprocess.run(["git", "-C", str(p.repo), "write-tree"], env=env, check=True, capture_output=True,
+                              text=True, stdin=subprocess.DEVNULL).stdout.strip()
+        r = _wtree(p.repo)
+        self.assertEqual(p.fired(), set())
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, want), r.stderr)
+
+    def test_an_untracked_nested_repository_runs_nothing(self):
+        # A guard, not a regression: `add -A` adds an untracked nested repository as a gitlink
+        # from its HEAD in-process, with or without gitlinks in the index (both branches here).
+        for with_submodule in (True, False):
+            with self.subTest(with_submodule=with_submodule):
+                self._nested(with_submodule)
+
+    def _nested(self, with_submodule):
+        if with_submodule:
+            p = self._repo()
+        else:
+            tmp = tempfile.mkdtemp()
+            self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+            p = _Probe(tmp)
+            p.commit("a.txt", "line1\n")
+            self.head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        nested = p.repo / "nested"
+        _quiet_git(p.repo, "init", "-q", str(nested))
+        (nested / "n.txt").write_text("nested\n", encoding="utf-8")
+        _quiet_git(nested, "add", "n.txt")
+        _quiet_git(nested, "commit", "-qm", "n")
+        self._plant(p, nested)
+        self._touch(nested / "n.txt")
+        r = _wtree(p.repo)
+        self.assertEqual(p.fired(), set(), "wtree.sh ran a command a nested repository's config names")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(r.stdout.strip(), self.head_tree)
+
+    def test_mutation_control_a_plain_add_runs_the_submodules_filter(self):
+        p = self._repo()
+        src = (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
+        self.assertEqual(src.count('if [ -s "$CUSTODY/wtree-gitlinks" ]; then'), 1, "the gitlink branch moved")
+        mutant = p.dir / "wtree_control.sh"
+        mutant.write_text(src.replace('if [ -s "$CUSTODY/wtree-gitlinks" ]; then', "if false; then"),
+                          encoding="utf-8")
+        _wtree(p.repo, script=mutant)
+        self.assertIn("sub-clean", p.fired(), "control: a plain `add -A` never probed the submodule")
+
+
+class WtreeRefusesWhenTheUnverifiableCheckFails(unittest.TestCase):
+    """Codex on this branch (P2): the exit-3 check piped diff-index into check-attr into a reader, so
+    a failing diff-index or check-attr left HIT empty and the TREE was printed as if no declared
+    filter applied. Each status decides now: a failed check is no fingerprint (exit 1)."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        p.arm_filter()
+        (p.repo / "a.txt").write_text("CHANGED\n", encoding="utf-8")
+        r = _wtree(p.repo)
+        self.assertEqual(r.returncode, 3, "fixture: the changed filtered path is not unverifiable")
+        return p
+
+    def _failing(self, p, sub):
+        bindir = p.dir / f"bin-{sub}"
+        bindir.mkdir()
+        (bindir / "git").write_text(
+            '#!/bin/sh\nfor a in "$@"; do [ "$a" = ' + sub + ' ] && { echo "fatal: forced" >&2; exit 128; }; done\n'
+            "exec " + _sh(_REAL_GIT) + ' "$@"\n', encoding="utf-8")
+        (bindir / "git").chmod(0o755)
+        return {**_CLEAN_ENV, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+
+    def test_a_failing_diff_index_or_check_attr_is_no_fingerprint(self):
+        for sub in ("diff-index", "check-attr"):
+            with self.subTest(failing=sub):
+                p = self._repo()
+                r = _wtree(p.repo, env=self._failing(p, sub))
+                self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+                self.assertIn("no fingerprint", r.stderr)
+                self.assertEqual(p.fired(), set())
+
+
 class WtreeTrustsNoSameUidConfigOrEnvironment(unittest.TestCase):
     """W4-02 (P1): on a single-host fleet the worker runs as the coordinator's uid, so
     `~/.gitconfig` is as much the worker's to write as `.git/config`. A global clean filter both

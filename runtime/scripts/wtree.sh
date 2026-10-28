@@ -42,8 +42,9 @@
 # Exit 1 outside a git repo, or in a repo with no commits and no usable index — callers MUST treat
 # a non-zero exit as "no fingerprint" and fail closed, never as an empty one.
 # Exit 1 too when the repository cannot be staged in custody: an `extensions.*` the custody git dir
-# cannot honour (a partial clone above all), or a non-regular `info/exclude`, `shallow`, shared
-# index or `info/sparse-checkout` where git would read one.
+# cannot honour (a partial clone above all), a non-regular `info/exclude`, `info/attributes`,
+# `shallow`, shared index or `info/sparse-checkout` where git would read one, or a gitlink path
+# holding a newline; and when the exit-3 check below cannot run (its diff-index or check-attr fails).
 # Exit 3, with the reason on stderr, when a path staged differently from HEAD is selected by a
 # filter driver a config DECLARES — the repository's, or a global/system file, which on a one-uid
 # host the worker can write as well (#629, PR #649 review, W4-02). No filter ever runs here: the
@@ -265,7 +266,7 @@ done
 set +f
 IFS=$OLDIFS
 for _k in filemode symlinks ignorecase precomposeunicode protecthfs protectntfs sparsecheckout \
-    sparsecheckoutcone autocrlf eol checkstat trustctime; do
+    sparsecheckoutcone autocrlf eol safecrlf checkroundtripencoding checkstat trustctime; do
   _v=$("$GIT" -C "$TOP" config --get "core.$_k" 2>/dev/null) || continue
   set -- "$@" "GIT_CONFIG_KEY_$_n=core.$_k" "GIT_CONFIG_VALUE_$_n=$_v"
   _n=$((_n + 1))
@@ -297,7 +298,12 @@ else
   printf 'ref: refs/heads/open-fleet-unborn\n' >"$CUSTODY/HEAD" || exit 1
 fi
 printf '%s/objects\n' "$_common" >"$CUSTODY/objects/info/alternates" || exit 1
-for _pair in "info/exclude:$_common" "shallow:$_common" "info/sparse-checkout:$_gitdir"; do
+# info/attributes is DATA (Codex on this branch, P1): `text`/`eol`/`working-tree-encoding`/`ident`
+# are built-in conversions, so without it a clean CRLF checkout of an `eol=crlf` path, once
+# touched, staged as CRLF and read STALE; a `filter=`/`diff=` it selects names a driver CUSTODY's
+# config never defines. core.attributesFile (a path the worker names) is not carried.
+for _pair in "info/exclude:$_common" "info/attributes:$_common" "shallow:$_common" \
+    "info/sparse-checkout:$_gitdir"; do
   _rel=${_pair%%:*}
   if ! copy_regular "${_pair#*:}/$_rel" "$CUSTODY/$_rel"; then
     echo "wtree: ${_pair#*:}/$_rel is not a regular file; no fingerprint" >&2
@@ -338,7 +344,46 @@ else
   seed_from_head || exit 1
 fi
 
-env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" add -A 2>/dev/null || exit 1
+# Gitlinks (Codex on PR #724, P1). For a gitlink whose submodule is checked out, `add` asks whether
+# the submodule is dirty by starting a child `git status` INSIDE it, under the submodule's own
+# config and attributes — which CUSTODY never sees, so a filter planted there ran here. `add` has
+# no option against it and ignores the config that would set one. So every gitlink whose path is a
+# directory is kept out of `add -A` (an exclude pathspec) and refreshed with `update-index`, which
+# reads the submodule's HEAD from its refs in-process (a moved submodule still changes the
+# fingerprint) and starts no child. The index is listed NUL-separated; a gitlink path holding a
+# newline (or \001, which stands in for one below) is refused, never guessed. An untracked nested
+# repository is added by `add -A` as a gitlink, the same in-process way.
+SOH=$(printf '\001')
+"$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" ls-files -s -z >"$CUSTODY/wtree-ls" 2>/dev/null || exit 1
+: >"$CUSTODY/wtree-gitlinks"
+printf ':/\000' >"$CUSTODY/wtree-pathspec"
+if ! tr '\0\n' '\n\001' <"$CUSTODY/wtree-ls" | {
+  while IFS= read -r _rec; do
+    case "$_rec" in
+      ("160000 "*) ;;
+      (*) continue ;;
+    esac
+    case "$_rec" in
+      (*"$SOH"*) exit 1 ;;
+    esac
+    _p=${_rec#*"$TAB"}
+    if [ ! -L "$TOP/$_p" ] && [ -d "$TOP/$_p" ]; then
+      printf '%s\000' "$_p" >>"$CUSTODY/wtree-gitlinks"
+      printf ':(exclude,literal)%s\000' "$_p" >>"$CUSTODY/wtree-pathspec"
+    fi
+  done
+}; then
+  echo "wtree: a gitlink path in $TOP's index holds a newline; no fingerprint" >&2
+  exit 1
+fi
+if [ -s "$CUSTODY/wtree-gitlinks" ]; then
+  env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" add -A \
+    --pathspec-from-file="$CUSTODY/wtree-pathspec" --pathspec-file-nul 2>/dev/null || exit 1
+  env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" update-index -z --stdin \
+    <"$CUSTODY/wtree-gitlinks" 2>/dev/null || exit 1
+else
+  env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" add -A 2>/dev/null || exit 1
+fi
 # write-tree too: a racily-clean index entry (its mtime equals the temp index's, which `touch -r`
 # above makes likely) is re-hashed here, which would re-run a clean filter — so it runs in custody
 # with the blanks (#629), as `add -A` does.
@@ -353,13 +398,24 @@ TREE=$(env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" write-t
 # check-attr -z prints `path NUL filter NUL value NUL`: NUL and newline
 # are swapped so each field is one line (a newline inside a path becomes a NUL that `read` drops,
 # which keeps every third line the value). A value is never a path, and holds no whitespace.
+# Each git's own status decides (Codex on this branch, P2): a pipeline reported only its last
+# reader's, so a diff-index or check-attr that failed left HIT empty and the TREE was printed as
+# if nothing were filtered. Both write to files first; either failing is "no fingerprint".
 if [ -n "$DECLARED" ]; then
   HEAD_TREE=$("$GIT" -C "$TOP" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null) \
     || HEAD_TREE=$("$GIT" -C "$TOP" hash-object -t tree /dev/null)
-  HIT=$(env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" diff-index --cached \
-          --no-ext-diff -z --name-only --no-renames --diff-filter=AMT "$HEAD_TREE" -- 2>/dev/null \
-        | GIT_INDEX_FILE=${REAL_INDEX:-$TMPIDX} "$GIT" -C "$TOP" check-attr --stdin -z filter 2>/dev/null \
-        | tr '\0\n' '\n\0' \
+  if ! env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" diff-index --cached \
+      --ignore-submodules=dirty --no-ext-diff -z --name-only --no-renames --diff-filter=AMT \
+      "$HEAD_TREE" -- >"$CUSTODY/wtree-changed" 2>/dev/null; then
+    echo "wtree: cannot list the paths staged differently from HEAD; no fingerprint" >&2
+    exit 1
+  fi
+  if ! GIT_INDEX_FILE=${REAL_INDEX:-$TMPIDX} "$GIT" -C "$TOP" check-attr --stdin -z filter \
+      <"$CUSTODY/wtree-changed" >"$CUSTODY/wtree-attrs" 2>/dev/null; then
+    echo "wtree: cannot read the filter attributes of the changed paths; no fingerprint" >&2
+    exit 1
+  fi
+  HIT=$(tr '\0\n' '\n\0' <"$CUSTODY/wtree-attrs" \
         | { _i=0; _path=
             while IFS= read -r _f; do
               # `(pattern)`: a bare `pattern)` inside $( ) trips bash 3.2's parser (macOS /bin/sh).
@@ -370,7 +426,7 @@ if [ -n "$DECLARED" ]; then
                     esac ;;
               esac
               _i=$((_i + 1))
-            done; }) || HIT=
+            done; })
   if [ -n "$HIT" ]; then
     printf 'wtree: %s: filtered by declared driver %s and staged differently from HEAD; its content cannot be compared to the committed tree without running repository-supplied commands, so no fingerprint (#629)\n' \
       "${HIT#*"$TAB"}" "${HIT%%"$TAB"*}" >&2

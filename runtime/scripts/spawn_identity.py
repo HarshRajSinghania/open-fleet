@@ -27,9 +27,10 @@ process could not be read); 3 when a COMPLETE scan found no process carrying the
 worker is not a local process: it exited, runs remotely or in another uid's container, or the
 backend is a dry run); 1 when nothing was found and the scan was not complete, or nothing could
 be read. A scan is complete only when every process of this uid that could be this launch's pane
-was read: an environment that cannot be read for any reason but the process being gone (EACCES
-from a non-dumpable process, EIO) makes it incomplete, and so do processes that keep vanishing
-mid-scan (one may have forked a carrier after the listing). With `--since PID` (spawn_worker.sh
+was read: an environment that stays unreadable for any reason but the process being gone
+(EACCES from a non-dumpable process, EIO; re-read for a moment first, since a process caught
+exiting answers EACCES briefly) makes it incomplete. A process that vanishes mid-scan is gone,
+not unknown. With `--since PID` (spawn_worker.sh
 passes itself), an unreadable process that started before PID is not counted: it cannot be a
 pane this launch created, so a runtime that hands a launch a pre-existing pane is not covered
 there. Without /proc, `ps -E` omits an environment it may not read without saying so, so no scan
@@ -186,19 +187,35 @@ def _handles_in(raw: bytes) -> set[str]:
     return found
 
 
+UNREADABLE_SETTLE_SECS = 0.25
+VANISHED_ROUNDS = 5
+
+
 def _scan_proc(handle: str, since: int | None) -> tuple[list[int], bool]:
-    """(pids whose initial environment names `handle`, complete?) over /proc. Incomplete when a
-    process of this uid has an environment that cannot be read (non-dumpable, EIO) and may be this
-    launch's (it started at or after `since`, or its start is unknown), or when processes keep
-    vanishing: one that vanished may have forked a carrier after the listing, so each round
-    re-examines the pids that appeared since, until a round in which nothing vanished."""
+    """(pids whose initial environment names `handle`, complete?) over /proc. Incomplete when /proc
+    or a process's owner cannot be read, or when a process of this uid has an environment that
+    stays unreadable (non-dumpable, EIO) and may be this launch's (it started at or after `since`,
+    or its start is unknown). An unreadable environment is read again for up to
+    UNREADABLE_SETTLE_SECS first: a process caught exiting answers EACCES for a moment and then is
+    gone, and on a busy host (other sessions' commands) that moment is common.
+
+    A process that vanishes mid-scan is GONE, not unknown. A carrier it forked just before it
+    exited is reparented out of the pane's live tree (the daemonized-out residual); the scan
+    re-lists up to VANISHED_ROUNDS times to examine such children, as a best effort, but a host
+    whose processes never stop coming and going does not make it incomplete."""
     uid = os.getuid()
     examined: set[int] = set()
     found: list[int] = []
     complete, vanished, rounds = True, True, 0
-    while vanished and rounds < 50:
+
+    def judge(pid: int, raw: bytes) -> None:
+        if handle in _handles_in(raw):
+            found.append(pid)
+
+    while vanished and rounds < VANISHED_ROUNDS:
         rounds += 1
         vanished = False
+        unreadable: list[int] = []
         try:
             listing = [int(p.name) for p in PROC.iterdir() if p.name.isdigit()]
         except OSError as exc:
@@ -231,12 +248,27 @@ def _scan_proc(handle: str, since: int | None) -> tuple[list[int], bool]:
                 if st is None:
                     vanished = True
                 elif since is None or int(st[1]) >= since:
-                    complete = False
+                    unreadable.append(pid)
                 continue
-            if handle in _handles_in(raw):
-                found.append(pid)
-    if vanished:
-        complete = False
+            judge(pid, raw)
+        settle = time.monotonic() + UNREADABLE_SETTLE_SECS
+        while unreadable:
+            for pid in list(unreadable):
+                try:
+                    raw = _read_environ(pid)
+                except GONE:
+                    unreadable.remove(pid)
+                    vanished = True
+                    continue
+                except OSError:
+                    continue
+                unreadable.remove(pid)
+                judge(pid, raw)
+            if not unreadable or time.monotonic() >= settle:
+                break
+            time.sleep(0.01)
+        if unreadable:
+            complete = False
     return sorted(found), complete
 
 
@@ -417,8 +449,8 @@ def record_root(reg: Registry, handle: str, profile: str, launcher: int | None, 
         if complete and verified:
             raise NoProcess(f"no running process carries pane handle {handle}")
         raise Unknown(f"no process could be confirmed to carry pane handle {handle}, and the scan "
-                      "was not complete (an environment it could not read, processes that kept "
-                      "vanishing, or no /proc to read them in)")
+                      "was not complete (an environment it could not read, or no /proc to read "
+                      "them in)")
     lines = []
     for pid, (ppid, start) in roots:
         k = f"{pid}.{start}"

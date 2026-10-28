@@ -664,7 +664,7 @@ register_spawn() {
   # handle record is its record. 1 (nothing found, the scan not complete or impossible: without
   # /proc it never is) and 2 (a root found but not verified) keep the reservation.
   if [ "$_rr" != "0" ] && [ "$_rr" != "3" ]; then
-    echo "SPAWN=WARNING task=${task} pane $1 is recorded, but its worker's process tree is UNVERIFIED (record-root exit ${_rr}: nothing carrying it was found by a scan that could not read every candidate — an environment it could not read, processes that kept vanishing, no /proc — or a root it found could not be verified): the launch reservation stays, capping every session nothing else identifies, until it is removed (W4-04)" >&2
+    echo "SPAWN=WARNING task=${task} pane $1 is recorded, but its worker's process tree is UNVERIFIED (record-root exit ${_rr}: nothing carrying it was found by a scan that could not read every candidate — an environment that stayed unreadable, or no /proc — or a root it found could not be verified): the launch reservation stays, capping every session nothing else identifies, until it is removed (W4-04)" >&2
     return 2
   fi
   return 0

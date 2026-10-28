@@ -512,11 +512,21 @@ def _unwrap(doc):
     down, skipped every portable isolation check on exactly the runtimes that need them (Codex
     round 6: a report wrapped twice was read as its middle wrapper, which names no backend)."""
     wrappers = []
-    while (isinstance(doc, dict) and "backend" not in doc and isinstance(doc.get("result"), dict)
-           and len(wrappers) < MAX_WRAPPERS):
+    while _wrapper(doc) and len(wrappers) < MAX_WRAPPERS:
         wrappers.append({k: v for k, v in doc.items() if k != "result"})
         doc = doc["result"]
     return doc, wrappers
+
+
+def _wrapper(doc) -> bool:
+    return isinstance(doc, dict) and "backend" not in doc and isinstance(doc.get("result"), dict)
+
+
+def _too_deep(parsed) -> bool:
+    """Whether the report sits inside more than MAX_WRAPPERS envelopes. Reading stops there, so
+    what it would take for the report is still a wrapper (Codex round 7: 17 envelopes around a
+    privileged report read as clear): a REFUSAL, never a report."""
+    return _wrapper(_portable_doc(parsed))
 
 
 def _portable_doc(doc):
@@ -532,16 +542,33 @@ def _envelope_findings(parsed) -> list[str]:
     out = []
     for outer in _unwrap(parsed)[1]:
         out += findings(outer) + _contradicted_claims(outer)
+    if _too_deep(parsed):
+        out.append(f"the report is wrapped more than {MAX_WRAPPERS} levels deep and was not read")
     return out
+
+
+TOO_DEEP = "doctor output is nested too deep to read: refused, never read as a report"
+
+
+def _looks_like_json(raw) -> bool:
+    """A transcript that opens like a JSON document (a byte-order mark and whitespace aside): `{`,
+    or `[` opening an array of objects, arrays or strings (`[PASS] …`, a plain-text log line, does
+    not). One that then does not parse is refused: read as plain text it skipped every structural
+    and isolation check, so a truncated report of a privileged container read as clear."""
+    head = raw.lstrip().lstrip("\ufeff").lstrip()
+    return head[:1] == "{" or (head[:1] == "[" and head[1:].lstrip()[:1] in ("{", "[", '"', "]"))
 
 
 def placement_bound(raw) -> bool:
     """Whether the transcript is a PORTABLE backend that binds the worker's placement before
     launch. Orca's own doctor proves recipe health only, so it never answers yes here."""
     try:
-        parsed = _parse(raw)
-    except ValueError:  # DuplicateKey included: a repeated key binds nothing
+        return _placement_bound(_parse(raw))
+    except (ValueError, RecursionError):  # DuplicateKey, a report too deep to read: binds nothing
         return False
+
+
+def _placement_bound(parsed) -> bool:
     if _envelope_findings(parsed):
         return False
     doc = _portable_doc(parsed)
@@ -554,14 +581,25 @@ def placement_bound(raw) -> bool:
 
 def assess(raw, recipe):
     """(clear, reason, exposes_host). `exposes_host` marks a credential/isolation finding — the
-    exit-2 class — apart from an ordinary fail/warn."""
+    exit-2 class — apart from an ordinary fail/warn. Output nested deeper than the reader goes is
+    refused (Codex round 7), however it would otherwise have read."""
+    try:
+        return _assess(raw, recipe)
+    except RecursionError:
+        return False, TOO_DEEP, False
+
+
+def _assess(raw, recipe):
     try:
         parsed = _parse(raw)
     except DuplicateKey as exc:
         return False, (f"doctor output names one key twice in one object ({exc.args[0]}): it "
                        "repeats the key or spells it two ways, and which value holds would be an "
                        "accident of order, not the doctor's"), False
-    except ValueError:
+    except ValueError as exc:
+        if _looks_like_json(raw):
+            return False, (f"doctor output opens as JSON but does not parse ({str(exc)[:80]}): "
+                           "refused, never read as plain text"), False
         parsed = None
     doc = _portable_doc(parsed) if parsed is not None else None
 

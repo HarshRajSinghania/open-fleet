@@ -891,7 +891,8 @@ class _Authority:
                 gitexec = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(gitexec)
                 commit, target, why = gitexec.remote_tracking_commit(lambda *a: _git(list(a)), ref)
-            except Exception as err:  # noqa: BLE001 - no rule loaded is no anchor, never a pass
+            except (OSError, ImportError, SyntaxError, AttributeError) as err:
+                # No rule loaded is no anchor, never a pass.
                 commit, target, why = None, ref, f"could not be classed (gitexec.py: {err})"
             if commit is not None:
                 read, pinned = f"{path}@{commit}", True

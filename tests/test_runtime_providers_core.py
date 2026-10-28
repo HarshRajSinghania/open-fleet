@@ -542,6 +542,7 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
             # the guard inside worker-start, so the pre-launch gate defers (W4-06).
             "PROFILE": "rw",
             "SP": str(scratch),
+            "HOME": self.tmp.name,  # the spawn registry, never the developer's own
             "SETTLE_SECS": "0",
         }
         p = subprocess.run(
@@ -629,6 +630,7 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
             "OPEN_FLEET_COORD_ALLOW_AUTONOMOUS_WRITE": "1",
             "PROFILE": "rw",
             "SP": str(scratch),
+            "HOME": self.tmp.name,  # the spawn registry, never the developer's own
         }
         p = subprocess.run(
             ["bash", str(SPAWN), "--parent-profile", "ro", "task_1", "current", "title", "claude"],

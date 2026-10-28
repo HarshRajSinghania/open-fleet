@@ -275,14 +275,21 @@ def _text(raw):
     return raw.decode("utf-8", "replace")
 
 
-def git(repo, *args, blanks=()):
+def git(repo, *args, blanks=(), custody=None):
     """Run git with argv only. Returns stdout, or None when git exits non-zero. ``blanks`` are
-    gitexec.driver_blanks pairs, carried in the env so a driver name reaches git byte-exact."""
+    gitexec.driver_blanks pairs, carried in the env so a driver name reaches git byte-exact.
+    Every call runs under gitexec.custody_env (no lazy fetch, no transport but `file`, no
+    signature or submodule child, no inherited repository selector); ``custody`` (a
+    gitexec.Custody) runs it against the coordinator-built git dir instead of ``repo``'s own."""
+    lead = custody.lead if custody is not None else ["-C", str(repo)]
+    pairs = [*(custody.pairs if custody is not None else ()), *blanks]
     try:
+        # A config, include or `shallow` git would block opening is refused before git runs.
+        gitexec.refuse_blocking_files(repo)
         # No stdin (#629): an inherited, never-closed one would let a hook or filter block the guard.
         r = subprocess.run(
-            gitexec.argv("-C", str(repo), *args),
-            capture_output=True, timeout=60, env=gitexec.env(blanks=blanks),
+            gitexec.argv(*lead, *args),
+            capture_output=True, timeout=60, env=gitexec.custody_env(blanks=pairs),
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as err:
@@ -365,43 +372,62 @@ def collect_diff(repo, mb):
     """
     diff_options = ("--no-ext-diff", "--no-textconv", "--no-renames", "--text", "--no-color",
                     "--unified=0")
-    # A diff of the working tree runs a repo-config clean/smudge filter that a .gitattributes
-    # line selects — the exec channel --no-ext-diff/--no-textconv do NOT close (#629). Blank
-    # every filter/diff driver command the repo declares (the only place such a command lives)
-    # before any diff that touches a worktree file.
+    # A diff of the working tree runs a clean filter (and could run a textconv or diff driver)
+    # that a .gitattributes or $GIT_DIR/info/attributes line selects — the exec channel
+    # --no-ext-diff/--no-textconv do NOT close (#629). Listing the drivers the repo declares and
+    # blanking them is not enough: a worker adding a new one between that listing and the diff
+    # had it run (W4 custody sweep). So both diffs run in git custody (gitexec.custody): against a
+    # git dir the guard builds over the repo's objects and index, whose config declares no driver,
+    # with the repo's own work tree. A selected driver is undefined there, whenever it was added,
+    # and no child git is started inside a checked-out submodule (gitexec.NO_SUBMODULE_CHILD).
+    # The listing stays as a belt and keeps its fail-closed contract: an unreadable driver list is
+    # could-not-run, never "no drivers" (PR #649 review).
+    try:
+        gitexec.refuse_blocking_files(repo)
+    except OSError as err:
+        raise GuardError(f"git would block reading this repository: {err}") from err
     try:
         blanks = gitexec.driver_blanks(repo)
     except gitexec.DriverQueryFailed as err:
-        # An unreadable driver list is could-not-run, never "no drivers": diffing with nothing
-        # blanked would run every planted filter (PR #649 review).
         raise GuardError(f"cannot read the repository's driver config, so its filter commands "
                          f"cannot be neutralised: {err}") from err
-    tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, mb, "--", blanks=blanks)
-    if tracked is None:
-        raise GuardError("tracked/staged diff acquisition failed")
-    others = git(repo, "ls-files", "-z", "--others", "--exclude-standard")
-    if others is None:
-        raise GuardError("untracked file enumeration failed")
-    chunks = [tracked]
-    for name in others.split("\0"):
-        if not name:
-            continue
-        # --no-index exits 1 when the files differ; that is the normal case, so
-        # go through subprocess directly rather than git() (which returns None).
-        try:
-            r = subprocess.run(
-                gitexec.argv("-C", str(repo), *DIFF_RENDERING, "diff", "--no-index",
-                             *diff_options, "--", "/dev/null", name),
-                capture_output=True, timeout=60, env=gitexec.env(blanks=blanks),
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError) as err:
-            raise GuardError("untracked diff acquisition failed to run") from err
-        # Git also exits 1 for inaccessible input, with no acquired patch. A
-        # successful difference must have output; exit 0 may legitimately be empty.
-        if r.returncode not in (0, 1) or (r.returncode == 1 and not r.stdout):
-            raise GuardError(f"untracked diff acquisition failed (exit {r.returncode})")
-        chunks.append(_text(r.stdout))
+    try:
+        with gitexec.custody(repo) as custody:
+            # NO_SUBMODULE_CHILD: a checked-out submodule's dirtiness is never probed (that is a
+            # child git under the submodule's own config); a moved gitlink still shows.
+            tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, gitexec.NO_SUBMODULE_CHILD,
+                          mb, "--", blanks=blanks, custody=custody)
+            if tracked is None:
+                raise GuardError("tracked/staged diff acquisition failed")
+            # Lists names, reads no file content, but reads the ignore files: in custody, where the
+            # repository's own core.excludesFile is carried as data and no user default is opened.
+            others = git(repo, "ls-files", "-z", "--others", "--exclude-standard", custody=custody)
+            if others is None:
+                raise GuardError("untracked file enumeration failed")
+            chunks = [tracked]
+            for name in others.split("\0"):
+                if not name:
+                    continue
+                # --no-index exits 1 when the files differ; that is the normal case, so
+                # go through subprocess directly rather than git() (which returns None).
+                try:
+                    r = subprocess.run(
+                        custody.argv(*DIFF_RENDERING, "diff", "--no-index",
+                                     *diff_options, "--", "/dev/null", name),
+                        capture_output=True, timeout=60, env=custody.env(blanks=blanks),
+                        stdin=subprocess.DEVNULL,
+                    )
+                except (OSError, subprocess.SubprocessError) as err:
+                    raise GuardError("untracked diff acquisition failed to run") from err
+                # Git also exits 1 for inaccessible input, with no acquired patch. A
+                # successful difference must have output; exit 0 may legitimately be empty.
+                if r.returncode not in (0, 1) or (r.returncode == 1 and not r.stdout):
+                    raise GuardError(f"untracked diff acquisition failed (exit {r.returncode})")
+                chunks.append(_text(r.stdout))
+    except gitexec.GitCustodyRefused as err:
+        raise GuardError(f"cannot diff the working tree in git custody: {err}") from err
+    except (OSError, subprocess.SubprocessError) as err:
+        raise GuardError(f"git custody could not run: {err}") from err
     return "\n".join(chunks)
 
 

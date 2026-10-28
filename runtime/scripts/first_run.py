@@ -307,6 +307,29 @@ def literal_stand_in(source: str) -> str:
     return source.replace("\nLITERAL = False\n", "\nLITERAL = True\n")
 
 
+# What an on-host run takes from the operator's environment (W5-20): an ALLOWLIST, never
+# `**os.environ`. The container lane already holds no credential (scripts/live_container.py drops
+# TOKEN_ENV; its arm gets the image's environment and PATH alone); now the host lane cannot hand
+# the worker, or the code it writes and runs, ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN,
+# AWS_*, a proxy URL with a password in it, or anything else not named here. An inherited CLI
+# override or Orca session (ORCA_CLI_COMMAND, *_SANDBOX_PROFILE, ORCA_TERMINAL_HANDLE, ...) is
+# excluded by the same rule. `--worker live` needs no credential from here: its `claude` is the
+# live harness's wrapper (scripts/live_container_bin/claude), which sends every call to the broker
+# that holds the token. It needs HOME, the arm's config home (inert runs get a private one), and
+# the image's DISABLE_AUTOUPDATER pin.
+# The locale names are listed, never matched as an `LC_` prefix: a prefix let `LC_GH_TOKEN` through.
+SANDBOX_ENV_ALLOW = frozenset({"HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TERM", "TMPDIR",
+                               "DISABLE_AUTOUPDATER", "PYTHONDONTWRITEBYTECODE",
+                               "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LC_MESSAGES", "LC_MONETARY",
+                               "LC_NUMERIC", "LC_TIME", "LC_ADDRESS", "LC_IDENTIFICATION",
+                               "LC_MEASUREMENT", "LC_NAME", "LC_PAPER", "LC_TELEPHONE"})
+
+
+def sandbox_base_env(environ) -> dict:
+    """The allowlisted part of `environ` an on-host run starts from (W5-20): exact names only."""
+    return {k: v for k, v in environ.items() if k in SANDBOX_ENV_ALLOW}
+
+
 class Sandbox:
     """Every path one run touches, plus the environment its wrappers run under."""
 
@@ -327,7 +350,7 @@ class Sandbox:
             self._install_inert()
             path = [str(self.inert), str(self.tripwire)] + path
         self.env = {
-            **os.environ,
+            **sandbox_base_env(os.environ),
             "PATH": os.pathsep.join(path),
             # setsid only: tmux would start a server whose login shell can reorder PATH; and no
             # rc file of a login shell (zsh reads ~/.zshenv even for `-c`) may run at all.
@@ -339,12 +362,6 @@ class Sandbox:
             "SP": str(self.scratch),
             "PYTHON": sys.executable,
         }
-        # An inherited CLI override or Orca session would route the wrappers somewhere else.
-        for var in ("ORCA_CLI_COMMAND", "OPEN_FLEET_CLI_COMMAND", "ORCA_FLEET_RUNTIME", "OPEN_FLEET_REPO_ROOT",
-                    "OPEN_FLEET_SANDBOX_PROFILE", "ORCA_SANDBOX_PROFILE", "OPEN_FLEET_PARENT_PROFILE",
-                    "ORCA_PARENT_PROFILE", "OPEN_FLEET_DENY_HOOK_SETTINGS", "ORCA_DENY_HOOK_SETTINGS",
-                    "WORKER_CMD", "CLAUDE_CMD", "CODEX_CMD", "ORCA_TERMINAL_HANDLE", "OPEN_FLEET_TERMINAL_HANDLE"):
-            self.env.pop(var, None)
         if worker == "inert":
             # The stand-in needs no credentials; a private HOME keeps every user config out.
             self.env["HOME"] = str(self.home)

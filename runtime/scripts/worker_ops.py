@@ -36,7 +36,8 @@ try:
 except ImportError:  # loaded by file path (tests): the resolver sits beside this script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
-from pm import _visible
+from pm import _indent_continuations, _off_column_0, _visible
+from pm import _visible_line as _line
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -156,16 +157,16 @@ def format_show(result):
         raise Failed("worker-show receipt is not an object")
     dispatch = result.get("dispatch") or {}
     worker = result.get("worker") or {}
-    lines = [f"DISPATCH={dispatch.get('id') or 'unknown'}",
-             f"STATE={worker.get('state') or 'unknown'}",
-             f"STAGE={worker.get('stage') or 'unknown'}"]
+    lines = [f"DISPATCH={_line(dispatch.get('id') or 'unknown')}",
+             f"STATE={_line(worker.get('state') or 'unknown')}",
+             f"STAGE={_line(worker.get('stage') or 'unknown')}"]
     projection = result.get("projection")
     if isinstance(projection, dict):
         liveness = projection.get("liveness") or {}
         nxt = projection.get("nextAction") or {}
         argv = nxt.get("argv")
-        lines.append(f"PROJECTION_VERDICT={liveness.get('verdict') or 'unknown'}")
-        lines.append("NEXT_ACTION=" + (" ".join(argv) if argv else "none"))
+        lines.append(f"PROJECTION_VERDICT={_line(liveness.get('verdict') or 'unknown')}")
+        lines.append("NEXT_ACTION=" + (" ".join(_line(a) for a in argv) if argv else "none"))
     else:
         lines += ["PROJECTION_VERDICT=absent", "NEXT_ACTION=absent"]
     observation = result.get("observation")
@@ -175,8 +176,8 @@ def format_show(result):
         lines.append("AGENT_WAIT=unknown")
     elif observation["agentWait"]:
         wait = observation["agentWait"]
-        lines.append(f"AGENT_WAIT=waiting:{wait.get('source') or '?'}:"
-                     f"{wait.get('reason') or 'interactive prompt'}")
+        lines.append(f"AGENT_WAIT=waiting:{_line(wait.get('source') or '?')}:"
+                     f"{_line(wait.get('reason') or 'interactive prompt')}")
     else:
         lines.append("AGENT_WAIT=none")
     return lines
@@ -201,13 +202,13 @@ def format_read(result, want="auto"):
     if want == "transcript" and source != "transcript":
         raise Failed(f"--source transcript asked but the effective source is "
                      f"{source} (fallback "
-                     f"{result.get('fallbackReason') or 'unknown'}): refusing "
+                     f"{_line(result.get('fallbackReason') or 'unknown')}): refusing "
                      f"to certify terminal output as transcript evidence")
     lines = [f"SOURCE={source}",
-             f"CURSOR={result.get('cursor') or 'none'}"]
+             f"CURSOR={_line(result.get('cursor') or 'none')}"]
     fallback = result.get("fallbackReason")
     if fallback:
-        lines.append(f"FALLBACK={fallback}")
+        lines.append(f"FALLBACK={_line(fallback)}")
     if source == "transcript":
         page = result.get("transcript")
         messages = page.get("messages") if isinstance(page, dict) else None
@@ -218,20 +219,24 @@ def format_read(result, want="auto"):
                 lines.append("--- ? (?)")
                 lines.append("(unreadable message skipped)")
                 continue
-            lines.append(f"--- {_visible(m.get('id', '?'))} "
-                         f"({_visible(m.get('role', '?'))})")
+            lines.append(f"--- {_line(m.get('id', '?'))} "
+                         f"({_line(m.get('role', '?'))})")
             text = "\n".join(
                 b.get("text", "") for b in m.get("blocks", [])
                 if isinstance(b, dict) and b.get("type") == "text"
                 and isinstance(b.get("text"), str))
-            lines.append(_bounded(_visible(text if text else "(no text blocks)")))
+            # A body keeps its lines, indented off column 0, so it cannot pass for a header.
+            lines.append(_indent_continuations(_bounded(_visible(text if text else "(no text blocks)")),
+                                               ("--- ",)))
     else:
         term = result.get("terminal")
         tail = term.get("tail") if isinstance(term, dict) else None
         if not isinstance(tail, list):
             raise Failed("worker-read receipt names no terminal tail")
         lines.append("--- tail")
-        lines.extend(_visible(line) for line in tail)
+        # One item, one line — and off column 0 when it starts like this receipt's own lines
+        # (Codex round 2, swept: a pane printing `SOURCE=transcript` forged the field).
+        lines.extend(_off_column_0(_line(line)) for line in tail)
     return lines
 
 
@@ -243,8 +248,8 @@ def format_fence(result, unknown):
         raise Failed("fencing receipt names no state")
     if unknown is not None and state == unknown:
         raise Failed(f"the runtime reports {unknown}: unproven, inspect")
-    return [f"DISPATCH={result.get('dispatchId') or 'unknown'}",
-            f"STATE={state}"]
+    return [f"DISPATCH={_line(result.get('dispatchId') or 'unknown')}",
+            f"STATE={_line(state)}"]
 
 
 def format_list(result):
@@ -256,14 +261,14 @@ def format_list(result):
     scope = result.get("scope") or {}
     page = result.get("page") or {}
     lines = [f"ROWS={len(workers)}",
-             f"SCOPE={scope.get('source') or 'unknown'}",
-             f"NEXT_CURSOR={page.get('nextCursor') or 'none'}"]
+             f"SCOPE={_line(scope.get('source') or 'unknown')}",
+             f"NEXT_CURSOR={_line(page.get('nextCursor') or 'none')}"]
     for row in workers:
         if not isinstance(row, dict):
             continue
-        lines.append(f"{row.get('dispatchId') or '?'} "
-                     f"{row.get('taskId') or '?'} "
-                     f"{row.get('terminalState') or '?'}")
+        lines.append(_off_column_0(f"{_line(row.get('dispatchId') or '?')} "
+                                   f"{_line(row.get('taskId') or '?')} "
+                                   f"{_line(row.get('terminalState') or '?')}"))
     return lines
 
 
@@ -296,10 +301,10 @@ def main(argv=None):
         print("\n".join(lines))
         return EXIT_OK
     except Refused as exc:
-        print(f"worker_ops: REFUSED: {exc}", file=sys.stderr)
+        print(f"worker_ops: REFUSED: {_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_REFUSED
     except Failed as exc:
-        print(f"worker_ops: FAILED: {exc}", file=sys.stderr)
+        print(f"worker_ops: FAILED: {_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_FAILED
 
 

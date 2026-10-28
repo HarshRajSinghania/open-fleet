@@ -178,6 +178,12 @@
 #   SETTLE_SECS               TUI settle delay (default 20 seconds) — custom-argv lane.
 #   SUBMIT_SECS               how long terminal send waits to observe the submit (default 30) — the
 #                             ro claude no-inject fallback (#680).
+#   RESERVATION_WAIT_SECS     how long a session nothing identifies waits for open launch
+#                             reservations to resolve before it is capped at them (default 120;
+#                             0 caps at once). Lowering it only caps sooner (W4-04).
+#   SPAWN_ROOT_WAIT_SECS      how long registration looks for the process carrying a new pane's
+#                             handle (default 1). Lowering it only gives up sooner, which keeps
+#                             the launch reservation (W4-04).
 set -Eeuo pipefail  # -E: ERR trap fires inside functions (orca_json) too
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # sibling scripts (sandbox_doctor.py)
 # The CLI command name, resolved the way upstream documents it (#510): ORCA_CLI_COMMAND when set,
@@ -187,19 +193,75 @@ step=resolve-cli
 task="?"
 trap 'rc=$?; echo "SPAWN=FAILED task=${task} step=${step} rc=${rc}" >&2; exit "${rc}"' ERR
 if ! ORCA_BIN="$(python3 "$HERE/orca_cli.py")"; then
-  echo "SPAWN=REFUSED task=? the runtime CLI could not be resolved (OPEN_FLEET_RUNTIME / ORCA_CLI_COMMAND; see runtime/scripts/orca_cli.py)" >&2
+  echo "SPAWN=REFUSED task=? the runtime CLI could not be resolved (OPEN_FLEET_RUNTIME / OPEN_FLEET_CLI_COMMAND / ORCA_CLI_COMMAND; see runtime/scripts/orca_cli.py)" >&2
   exit 2
 fi
 step=parse-args
+
+# inert_text: stdin as ONE inert line, every unprintable character (line breaks, ESC, CR, bidi)
+# escaped, for runtime text spliced into a SPAWN= line (W4-11 class, Codex round 2 sweep).
+inert_text() {
+  python3 -I -c 'import sys
+t = sys.stdin.buffer.read().decode("utf-8", "replace")
+sys.stdout.write("".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in t))'
+}
+
+# JSON_STRICT_PY: the one way a runtime response is read here (Codex round 5). json.load keeps the
+# LAST of two equal keys, so a response could name one pane to the registry and another to the
+# reader that judged it; NaN, Infinity and a number that overflows to inf are not JSON either.
+# strict_load / strict_loads raise Ambiguous (a ValueError) on each of those and on bytes that
+# are not UTF-8, so every reader below takes its own unparseable path, which fails closed.
+# (receipt_handles reads every occurrence instead: it must still find a handle in such a response.)
+JSON_STRICT_PY='import json, math, sys
+class Ambiguous(ValueError):
+    pass
+def _strict_pairs(pairs):
+    out = {}
+    for k, v in pairs:
+        if k in out:
+            raise Ambiguous(f"duplicate key {k!r}")
+        out[k] = v
+    return out
+def _strict_constant(c):
+    raise Ambiguous(f"non-JSON constant {c}")
+def _strict_float(s):
+    f = float(s)
+    if not math.isfinite(f):
+        raise Ambiguous(f"number out of range: {s[:40]}")
+    return f
+def strict_loads(text):
+    return json.loads(text, object_pairs_hook=_strict_pairs, parse_constant=_strict_constant,
+                      parse_float=_strict_float)
+def strict_load(path):
+    with open(path, "rb") as fh:
+        return strict_loads(fh.read().decode("utf-8"))
+'
+# pyjson ARGS... <<'PY' — python3 -I running the program on stdin, with JSON_STRICT_PY loaded.
+pyjson() {
+  python3 -I -c "${JSON_STRICT_PY}"'
+exec(compile(sys.stdin.read(), "<spawn_worker.sh>", "exec"))' "$@"
+}
 
 # orca_json <outfile> <orca-args...> — run orca with --json, fail on nonzero exit
 # OR on an exit-0 error envelope ({"error": ...}); fail-closed for every step.
 orca_json() {
   local out="$1"; shift
   "$ORCA_BIN" "$@" --json > "$out"
-  python3 -I - "$out" <<'PY'
+  envelope_check "$out"
+}
+# envelope_check <file>: fail (exit 1, the error printed inert) on an error envelope, and on a
+# response that is not one unambiguous JSON document.
+envelope_check() {
+  pyjson "$1" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1]))
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
+try:
+    d = strict_load(sys.argv[1])
+except ValueError as exc:
+    print(f"orca response is not one unambiguous JSON document: {_f(exc)}", file=sys.stderr)
+    raise SystemExit(1)
 err = None
 if isinstance(d, dict):
     err = d.get("error")
@@ -207,7 +269,7 @@ if isinstance(d, dict):
     if not err and isinstance(res, dict):
         err = res.get("error")
 if err:
-    print(f"orca error envelope: {err}", file=sys.stderr)
+    print(f"orca error envelope: {_f(err)}", file=sys.stderr)
     raise SystemExit(1)
 PY
 }
@@ -458,7 +520,7 @@ from runtime.providers import ProviderError, active_provider_name
 try:
     print(active_provider_name())
 except ProviderError as err:
-    print(err.message, file=sys.stderr)
+    print("".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(err.message)), file=sys.stderr)
     raise SystemExit(2)
 PY
 ); then
@@ -478,22 +540,495 @@ if [ "$ACTIVE_RUNTIME" = "openhands" ] && [ "$agent" != "openhands" ]; then
 fi
 # The parent profile a child must not exceed is the MOST restrictive of every source that
 # names one: the --parent-profile flag, the inherited OPEN_FLEET_PARENT_PROFILE /
-# ORCA_PARENT_PROFILE, and the CALLER's own OPEN_FLEET_SANDBOX_PROFILE / ORCA_SANDBOX_PROFILE
-# (the launcher exports it into every worker). Taking the first non-empty one let a ro
-# worker mint an rw child by passing --parent-profile rw, or by naming none at all (G14).
+# ORCA_PARENT_PROFILE, the CALLER's own OPEN_FLEET_SANDBOX_PROFILE / ORCA_SANDBOX_PROFILE (posix
+# exports both into every worker), and the profile this script RECORDED for the caller's pane.
+# Taking the first non-empty one let a ro worker mint an rw child by passing --parent-profile rw,
+# or by naming none at all (G14).
 profile_rank() { case "$1" in ro) echo 0 ;; rw) echo 1 ;; danger) echo 2 ;; *) echo x ;; esac; }
-eff_parent_profile=""
-for _pp in "${PARENT_PROFILE:-}" "${OPEN_FLEET_PARENT_PROFILE:-}" "${ORCA_PARENT_PROFILE:-}" \
-           "${OPEN_FLEET_SANDBOX_PROFILE:-}" "${ORCA_SANDBOX_PROFILE:-}"; do
-  [ -n "$_pp" ] || continue
-  if [ "$(profile_rank "$_pp")" = "x" ]; then
-    echo "SPAWN=REFUSED task=${task} unknown parent profile '${_pp}' (want ro|rw|danger)" >&2
+# W4-04: the spawn registry. Nothing exported a profile into an Orca worker, and a `VAR=val`
+# prefix on its launch command is neither shell-neutral (PowerShell, cmd.exe and nushell are in
+# Orca's --shell keyset) nor available to worker-start, so every launch below is RECORDED here
+# under the pane handle Orca (or posix) gives the worker, which its pane then carries as
+# ORCA_TERMINAL_HANDLE. A spawn from a recorded pane is capped at that record; an empty record
+# fails safe (ro), a foreign value refuses.
+# The ABSENCE of a record never reads as uncapped for a session that may be a worker (Codex rounds
+# 2 and 3). The worker's command runs before its handle is known (terminal create and worker-start
+# both return it after starting the command), so each launch first RESERVES its profile in
+# .pending/ (`<profile> <launcher pane> <launcher pid> <launcher start>`); a launch whose
+# reservation cannot be written is refused. And a harness may drop ORCA_* from the worker's shell
+# (Codex's shell_environment_policy does), so the handle is not the only identity: registration
+# also records the worker's pane ROOT process by pid and start time (spawn_identity.py, found by
+# the handle in the pane's initial environment), and a spawn walks its own ancestry, so a process
+# in a ro worker's pane tree is capped at ro whatever its environment says. A session no record
+# and no root identifies:
+#   - waits for every open reservation it is not exempt from (RESERVATION_WAIT_SECS, default 120),
+#     re-reading its identity each time, and is then capped at the most restrictive one still open;
+#   - is capped at the most restrictive LIVE worker when it runs inside a provider's process tree
+#     (under a recorded host: the pty host, a tmux pane) — unless it is ANCHORED: a process of the
+#     coordinator that launched a worker while uncapped, which no worker can descend from. Only an
+#     anchored session is exempt from a reservation, and never from one whose launch it descends
+#     from. A reservation whose launcher is gone is not waited on: it was kept because its worker
+#     may be live unrecorded, and it caps until removed.
+# Not covered (residuals; whether any harness does one as ordinary behaviour is unwitnessed): a
+# worker process outside its pane's tree — one that daemonized out of it (reparented, it descends
+# from no recorded root or host, root alive or not), a command a harness runs from a process
+# started outside the pane, a spawn in another pid namespace — when its environment no longer
+# carries the pane handle; a worker whose HOME is not its coordinator's; a launch whose pane
+# process itself carries no handle (a command that clears its environment, `env -i …`).
+SPAWN_HOME="${HOME:-}"
+if [ -z "$SPAWN_HOME" ]; then  # a scrubbed HOME still reads the uid's registry
+  SPAWN_HOME=$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)
+fi
+SPAWN_REGISTRY="${SPAWN_HOME:+$SPAWN_HOME/.open-fleet/spawn-profiles}"
+SPAWN_PENDING="${SPAWN_REGISTRY:+$SPAWN_REGISTRY/.pending}"
+registry_key_ok() { case "$1" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._:-]*) return 1 ;; esac; return 0; }
+own_handles=()
+for _ph in "${ORCA_TERMINAL_HANDLE:-}" "${OPEN_FLEET_TERMINAL_HANDLE:-}"; do
+  if registry_key_ok "$_ph"; then own_handles+=("$_ph"); fi
+done
+# identify: registered_profiles ← this pane's handle records and every recorded root among this
+# process's ancestors; plus the reservations, liveness and tree position whoami reports.
+identify() {
+  registered_profiles=(); open_reservations=(); open_profiles=(); live_profiles=()
+  reservations_in_flight=0; in_tree=no; anchored=no; self_key=""; identity_ok=1
+  [ -n "$SPAWN_REGISTRY" ] || { identity_ok=0; return 0; }
+  local _out _k _a _b _c
+  if ! _out=$(python3 -I "$HERE/spawn_identity.py" whoami --registry "$SPAWN_REGISTRY" --pid "$$" 2>/dev/null); then
+    identity_ok=0; return 0
+  fi
+  while read -r _k _a _b _c; do
+    case "$_k" in
+      ROOT) registered_profiles+=("$_a") ;;
+      LIVE) live_profiles+=("$_a") ;;
+      INTREE) in_tree="$_a" ;;
+      ANCHORED) anchored="$_a" ;;
+      SELF) self_key="$_a" ;;
+      RESERVATION)
+        open_profiles+=("$_a"); open_reservations+=("$_c")
+        if [ "$_b" = "1" ]; then reservations_in_flight=1; fi ;;
+    esac
+  done <<< "$_out"
+  for _ph in ${own_handles[@]+"${own_handles[@]}"}; do
+    [ -f "$SPAWN_REGISTRY/$_ph" ] || continue
+    _rp=$(head -n 1 -- "$SPAWN_REGISTRY/$_ph" 2>/dev/null || true)
+    registered_profiles+=("${_rp:-ro}")
+  done
+}
+identify
+if [ "$identity_ok" = "1" ] && [ "${#registered_profiles[@]}" -eq 0 ]; then
+  _rwait="${RESERVATION_WAIT_SECS:-120}"
+  case "$_rwait" in ""|*[!0-9]*) _rwait=120 ;; esac
+  _rdeadline=$((SECONDS + _rwait))
+  while [ "$identity_ok" = "1" ] && [ "${#registered_profiles[@]}" -eq 0 ] \
+        && [ "$reservations_in_flight" = "1" ] && [ "$SECONDS" -lt "$_rdeadline" ]; do
+    sleep 0.2
+    identify
+  done
+fi
+# The cap is a property of the FINAL identity state, the last identify()'s, whichever iteration
+# that was (Codex round 5): a read that fails while waiting clears every array and sets
+# identity_ok=0, and capping only on the first read let such a session launch uncapped.
+if [ "$identity_ok" = "0" ]; then
+  registered_profiles=(ro)
+  echo "SPAWN=NOTE task=${tname} this session's spawn identity cannot be read (no registry location, or a read it needs failed: its process ancestry, the spawn registry, or a /proc that is not this pid namespace's): the child is capped at ro rather than left uncapped (W4-04)" >&2
+elif [ "${#registered_profiles[@]}" -eq 0 ] && [ "${#open_reservations[@]}" -gt 0 ]; then
+  registered_profiles=("${open_profiles[@]}")
+  echo "SPAWN=NOTE task=${tname} this session has no spawn record, and ${#open_reservations[@]} launch(es) in the spawn registry have not recorded their worker (${open_reservations[*]}): it may be the worker one of them started, so the child is capped at the most restrictive reserved profile (W4-04). A reservation whose launcher is gone was kept because its worker may be live unrecorded; remove it once worker-list shows no such worker." >&2
+elif [ "${#registered_profiles[@]}" -eq 0 ] && [ "$in_tree" = "yes" ] && [ "$anchored" = "no" ] \
+     && [ "${#live_profiles[@]}" -gt 0 ]; then
+  registered_profiles=("${live_profiles[@]}")
+  echo "SPAWN=NOTE task=${tname} this session runs inside a provider's process tree, nothing identifies it (no spawn record, no recorded worker root among its ancestors, no coordinator anchor), and ${#live_profiles[@]} capped worker(s) are live: it is capped at the most restrictive of them rather than read as a coordinator (W4-04)" >&2
+fi
+known_parent() {  # refuse, in this shell (never a subshell), a parent profile outside the keyset
+  if [ "$(profile_rank "$1")" = "x" ]; then
+    echo "SPAWN=REFUSED task=${task} unknown parent profile '$1' (want ro|rw|danger)" >&2
     exit 2
   fi
-  if [ -z "$eff_parent_profile" ] || [ "$(profile_rank "$_pp")" -lt "$(profile_rank "$eff_parent_profile")" ]; then
-    eff_parent_profile="$_pp"
-  fi
+}
+fold_parent() {  # fold_parent <current> <candidate>: the more restrictive of two known profiles
+  if [ -z "$1" ] || [ "$(profile_rank "$2")" -lt "$(profile_rank "$1")" ]; then echo "$2"; else echo "$1"; fi
+}
+env_parent=""
+for _pp in "${OPEN_FLEET_PARENT_PROFILE:-}" "${ORCA_PARENT_PROFILE:-}" "${OPEN_FLEET_SANDBOX_PROFILE:-}" \
+           "${ORCA_SANDBOX_PROFILE:-}" ${registered_profiles[@]+"${registered_profiles[@]}"}; do
+  [ -n "$_pp" ] || continue
+  known_parent "$_pp"
+  env_parent=$(fold_parent "$env_parent" "$_pp")
 done
+# No parent profile is NOT "uncapped" inside a worker. Each of these names is fleet worker identity
+# a runtime sets for the worker it launches (posix: dispatch/worker id; every base.py launch and a
+# deny-hook settings file: the unit worktree), never a coordinator session; carrying one with no
+# profile in the environment or the registry caps the child at ro, and a --parent-profile flag
+# cannot raise that (the flag only ever narrows). Every source here is still the worker's OWN
+# environment or a file its uid can write: this bounds the spawn path a worker inherits, not a
+# worker that scrubs its env or calls the runtime CLI or an agent directly (W4-05 is the ro
+# boundary). A coordinator session carries none of them and is unchanged.
+if [ -z "$env_parent" ]; then
+  for _wv in OPEN_FLEET_DISPATCH_ID ORCA_DISPATCH_ID OPEN_FLEET_WORKER_ID ORCA_WORKER_ID \
+             OPEN_FLEET_UNIT_WORKTREE ORCA_UNIT_WORKTREE; do
+    [ -n "${!_wv:-}" ] || continue
+    env_parent=ro
+    echo "SPAWN=NOTE task=${tname} this session carries fleet worker identity (${_wv}) but no parent profile (OPEN_FLEET_PARENT_PROFILE, OPEN_FLEET_SANDBOX_PROFILE, an ORCA_ alias, or a recorded pane): the child is capped at ro, the most restrictive tier, rather than left uncapped (W4-04). A coordinator session must not carry ${_wv}." >&2
+    break
+  done
+fi
+eff_parent_profile="$env_parent"
+if [ -n "${PARENT_PROFILE:-}" ]; then
+  known_parent "$PARENT_PROFILE"
+  eff_parent_profile=$(fold_parent "$eff_parent_profile" "$PARENT_PROFILE")
+fi
+# register_spawn <handle>: record this launch's PROFILE under the pane handle it was given and
+# under the worker's pane ROOT process (spawn_identity.py: the process whose initial environment
+# names the handle; an uncapped launcher also records its own anchors), THEN drop the reservation
+# (that order, so a reader never sees neither). Returns 1 when the handle record cannot be
+# written and 2 when the worker's process tree is not verified (spawn_identity.py exits 1:
+# nothing found by a scan that was not complete, or no scan at all; or 2: a root it found but
+# could not verify): either way the reservation stays, still capping every session nothing else
+# identifies. Only a COMPLETE scan that finds no process (SPAWN_ROOT_WAIT_SECS, default 1) means
+# no local worker process to record; an environment the scan cannot read is unknown, never "no
+# process" (Codex round 4).
+register_spawn() {
+  if ! registry_key_ok "$1"; then
+    echo "SPAWN=WARNING task=${task} the launched pane's handle is not a registry key, so its PROFILE=${PROFILE} cannot be recorded under it (W4-04)" >&2
+    return 1
+  fi
+  if ! { printf '%s\n' "$PROFILE" > "$SPAWN_REGISTRY/.$1.$$" \
+      && mv -f -- "$SPAWN_REGISTRY/.$1.$$" "$SPAWN_REGISTRY/$1"; } 2>/dev/null; then
+    rm -f -- "$SPAWN_REGISTRY/.$1.$$" 2>/dev/null || true
+    echo "SPAWN=WARNING task=${task} could not record PROFILE=${PROFILE} for pane $1 in the spawn registry (${SPAWN_REGISTRY}) (W4-04)" >&2
+    return 1
+  fi
+  local _wait="${SPAWN_ROOT_WAIT_SECS:-1}" _anchor=()
+  case "$_wait" in ""|*[!0-9.]*) _wait=1 ;; esac
+  # Only a worker that runs HERE, as a process carrying its pane handle, has a process tree to
+  # record: Orca's and posix's panes on this host. A remote placement (--environment, --on) or
+  # another runtime's worker (an OpenHands conversation, a hosted agent) has none on this host,
+  # and its handle record is its record.
+  if { [ "$ACTIVE_RUNTIME" != "orca" ] && [ "$ACTIVE_RUNTIME" != "posix" ]; } \
+     || [ "$ENV_GIVEN" = "1" ] || [ "$ON_GIVEN" = "1" ]; then
+    return 0
+  fi
+  if [ -z "$eff_parent_profile" ]; then _anchor=(--launcher "$$"); fi  # only an uncapped launcher anchors
+  local _rr=0
+  python3 -I "$HERE/spawn_identity.py" record-root --registry "$SPAWN_REGISTRY" --handle "$1" \
+    --profile "$PROFILE" --wait "$_wait" --since "$$" ${_anchor[@]+"${_anchor[@]}"} >/dev/null 2>&1 || _rr=$?
+  # 3: a complete scan found no process carrying the handle — the worker is not a local process
+  # (it exited, runs remotely or in another uid's container, or the backend is a dry run), so its
+  # handle record is its record. 1 (nothing found, the scan not complete or impossible: without
+  # /proc it never is) and 2 (a root found but not verified) keep the reservation.
+  if [ "$_rr" != "0" ] && [ "$_rr" != "3" ]; then
+    echo "SPAWN=WARNING task=${task} pane $1 is recorded, but its worker's process tree is UNVERIFIED (record-root exit ${_rr}: nothing carrying it was found by a scan that could not read every candidate — an environment that stayed unreadable, or no /proc — or a root it found could not be verified): the launch reservation stays, capping every session nothing else identifies, until it is removed (W4-04)" >&2
+    return 2
+  fi
+  return 0
+}
+# receipt_handles <receipt> [terminal]: THE one extraction of the pane handles a response names
+# (Codex round 4: the verdict parser left at its error-code branch before it read the handle, so
+# an error envelope beside a live worker's handle lost both its record and its reservation).
+# Every receipt reader below takes its handle from here, and it runs FIRST, before anything judges
+# the response: registration, the verdict parser's HANDLE= line, terminal create's pane. It reads
+# every place a runtime puts one — result, error, error.data, nested worker/terminal objects,
+# effects[] (any terminal effect; role agent is the worker's pane) — whatever the exit code, error
+# code or state says. One line per handle, `<role> <status> <value>`: role `agent` (the worker's
+# pane, in the parser's order: result.agentTerminalHandle, then the agent terminal effect; for
+# terminal create, result.terminal.handle then the bare result.handle older hosts answer) or
+# `other`; status `ok` (a registry key), `unprintable` (a control character or a space) or
+# `notkey` (anything else, a non-string included); the value always inert. A response that does
+# not parse whole (truncated, two documents, a warning line before it) is still searched for
+# handle-shaped fields and ends with `PARTIAL`: what it names is registered, but it may name more.
+# The last line is `END`; a reader that never sees it treats the response as PARTIAL.
+receipt_handles() {
+  python3 -I - "$1" "${2:-}" <<'PY'
+import json, math, re, sys
+KEYS = ("agentTerminalHandle", "terminalHandle", "terminal_handle")
+KEY_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*\Z")
+terminal_mode = sys.argv[2] == "terminal"
+named, partial = [], False
+
+
+class Obj(list):
+    """A JSON object as its (key, value) pairs, EVERY occurrence kept (Codex round 5: json.load
+    keeps the last of two equal keys, so `"agentTerminalHandle": "term_live",
+    "agentTerminalHandle": "term_dead"` hid the live pane)."""
+
+
+def _pairs(pairs):
+    global partial
+    if len({k for k, _v in pairs}) != len(pairs):
+        partial = True  # a duplicate key: every reader but this one sees a different response
+    return Obj(pairs)
+
+
+def _constant(_c):
+    global partial
+    partial = True  # NaN / Infinity: not JSON
+    return None
+
+
+def _float(s):
+    global partial
+    f = float(s)
+    if not math.isfinite(f):
+        partial = True
+    return f
+
+
+def every(o, key):
+    return [v for k, v in o if k == key] if isinstance(o, Obj) else []
+
+
+def inert(s):
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in s)
+
+
+def add(role, v):
+    if v is None or v is False or v == "" or v == []:
+        return  # names nothing (an empty object is an empty Obj)
+    if isinstance(v, str):
+        status = "ok" if KEY_OK.match(v) else (
+            "unprintable" if any(not c.isprintable() or c.isspace() for c in v) else "notkey")
+        named.append((role, status, inert(v)))
+    else:
+        named.append((role, "notkey", inert(json.dumps(v, sort_keys=True, default=str))))
+
+
+def effect(e):
+    """A terminal (or dispatch_input) effect: the WORKER's pane only with `role: agent`; any other
+    role, a missing one or an unknown one is another pane (Codex round 9: a coordinator-role pane
+    counted as the worker's)."""
+    if not isinstance(e, Obj):
+        return
+    kinds, roles = every(e, "kind"), every(e, "role")
+    if "terminal" not in kinds and "dispatch_input" not in kinds:
+        return
+    role = "agent" if roles and all(r == "agent" for r in roles) else "other"
+    for key in ("id", "handle"):
+        for v in every(e, key):
+            add(role, v)
+
+
+def walk(o, depth=0, worker=False):
+    """Every handle-shaped field. `agentTerminalHandle` names the worker's pane wherever it sits;
+    a generic terminalHandle / terminal_handle / terminal.handle does so only on the result itself
+    or inside a `worker` object (`worker`), and anywhere else names another pane."""
+    global partial
+    if depth > 64:
+        partial = True  # nested past what is read: it may name more
+        return
+    if isinstance(o, Obj):
+        for k, v in o:
+            if k == "agentTerminalHandle":
+                add("agent", v)
+            elif k in KEYS:
+                add("agent" if worker else "other", v)
+            elif k == "terminal" and isinstance(v, Obj):
+                for h in every(v, "handle"):
+                    add("agent" if worker else "other", h)
+            elif k == "effects" and isinstance(v, list) and not isinstance(v, Obj):
+                for e in v:
+                    effect(e)
+            walk(v, depth + 1, k in ("result", "worker") and (worker or k == "worker" or depth == 0))
+    elif isinstance(o, list):
+        for v in o:
+            walk(v, depth + 1)
+
+
+try:
+    raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+except OSError:
+    raw = ""
+parsed = True
+try:
+    d = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_constant, parse_float=_float)
+except ValueError:
+    d, parsed, partial = None, False, True
+if parsed:
+    results = every(d, "result") if isinstance(d, Obj) else []
+    rs = [r for r in results if isinstance(r, Obj)] or ([d] if isinstance(d, Obj) else [])
+    for r in rs:
+        if terminal_mode:  # the order terminal create's pane was always read in
+            for term in every(r, "terminal"):
+                for h in every(term, "handle"):
+                    add("agent", h)
+            for h in every(r, "handle"):
+                add("agent", h)
+        else:  # the order the verdict parser always read the worker's pane in
+            for h in every(r, "agentTerminalHandle"):
+                add("agent", h)
+            for effects in every(r, "effects"):
+                for e in effects if isinstance(effects, list) and not isinstance(effects, Obj) else []:
+                    if isinstance(e, Obj) and "terminal" in every(e, "kind") and "agent" in every(e, "role"):
+                        for h in every(e, "id"):
+                            add("agent", h)
+    walk(d, 0, not (isinstance(d, Obj) and every(d, "result")))  # a bare result is the result
+else:
+    # Not one whole document: every handle-shaped field in the text, so a live worker's handle
+    # in a truncated or doubled response is still registered.
+    s = r'"((?:[^"\\]|\\.)*)"'
+    for m in re.finditer(r'"(%s|handle)"\s*:\s*%s' % ("|".join(KEYS), s), raw):
+        try:
+            add("agent", json.loads('"%s"' % m.group(2)))
+        except ValueError:
+            add("agent", m.group(2))
+    for obj in re.finditer(r"\{[^{}]*\}", raw):
+        if re.search(r'"kind"\s*:\s*"terminal"', obj.group(0)):
+            for m in re.finditer(r'"(?:id|handle)"\s*:\s*%s' % s, obj.group(0)):
+                add("agent", m.group(1))
+# One line per handle; a handle the response names as the worker's anywhere is the worker's.
+agents = {value for role, _status, value in named if role == "agent"}
+seen = set()
+for role, status, value in named:
+    if value not in seen:
+        seen.add(value)
+        print(f"{'agent' if value in agents else role} {status} {value}")
+if partial:
+    print("PARTIAL")
+print("END")
+PY
+}
+# read_named <receipt> [terminal]: run receipt_handles once into named_lines (`<role> <status> <value>`),
+# agent_handle/agent_status (the worker's pane, if named) and receipt_partial.
+named_lines=(); agent_handle=""; agent_status=""; receipt_partial=0
+read_named() {
+  named_lines=(); agent_handle=""; agent_status=""; receipt_partial=1
+  local _role _st _v _end=0 _partial=0
+  while read -r _role _st _v; do
+    case "$_role" in
+      END) _end=1 ;;
+      PARTIAL) _partial=1 ;;
+      agent|other)
+        named_lines+=("$_role $_st $_v")
+        if [ "$_role" = "agent" ] && [ -z "$agent_status" ]; then agent_handle="$_v"; agent_status="$_st"; fi ;;
+    esac
+  done < <(receipt_handles "$1" "${2:-}")
+  if [ "$_end" = "1" ] && [ "$_partial" = "0" ]; then receipt_partial=0; fi
+}
+# register_named: register every handle read_named found (never this session's own). named_count
+# counts them across every response this launch read, and named_agent the WORKER's own pane among
+# them (role agent): only that one being named lets a reservation go, never an ancillary pane
+# alone (Codex round 9); named_unrecorded is 1 when any could not be
+# recorded completely (its record not written, its process tree unverified, not a registry key,
+# or a response that did not parse whole), and named_record_failed when a handle record itself
+# could not be written.
+named_count=0; named_agent=0; named_unrecorded=0; named_record_failed=0
+register_named() {
+  local _line _role _st _h _rs _mine _ph _n=0 _a=0
+  for _line in ${named_lines[@]+"${named_lines[@]}"}; do
+    _role="${_line%% *}"; _line="${_line#* }"
+    _st="${_line%% *}"; _h="${_line#* }"
+    _mine=0
+    for _ph in ${own_handles[@]+"${own_handles[@]}"}; do
+      if [ "$_st" = "ok" ] && [ "$_h" = "$_ph" ]; then _mine=1; fi
+    done
+    [ "$_mine" = "0" ] || continue
+    _n=$((_n + 1))
+    if [ "$_role" = "agent" ]; then _a=$((_a + 1)); fi
+    if [ "$_st" != "ok" ]; then
+      named_unrecorded=1; named_record_failed=1
+      echo "SPAWN=WARNING task=${task} the response names a worker pane whose handle is not a registry key ($_h), so it cannot be recorded: the launch reservation stays (W4-04)" >&2
+      continue
+    fi
+    _rs=0; register_spawn "$_h" || _rs=$?
+    case "$_rs" in
+      0) : ;;
+      1) named_unrecorded=1; named_record_failed=1 ;;
+      *) named_unrecorded=1 ;;
+    esac
+  done
+  named_count=$((named_count + _n)); named_agent=$((named_agent + _a))
+  if [ "$receipt_partial" = "1" ]; then
+    named_unrecorded=1
+    if [ "$_n" -gt 0 ]; then
+      echo "SPAWN=WARNING task=${task} the response did not parse whole, so it may name a worker pane beyond the ${_n} recorded: the launch reservation stays (W4-04)" >&2
+    fi
+  fi
+}
+# prelaunch_refusal <receipt>: exit 0 only when the launch call is PROVEN to have started nothing
+# (Codex rounds 6 and 7): the WHOLE response is exactly one pre-launch refusal, read against a
+# strict schema at every level. The document is `{"id"?, "ok": false?, "error": E}` or
+# `{"id"?, "ok": false?, "result": {"error": E}}` (never both); E is `{"code", "message"?,
+# "data"?}` with a code a runtime gives BEFORE any launch effect, and its data holds only the
+# documented refusal fields (nextSteps, unmetDependencies, retryOf, failureCount, reason) with
+# their documented types. Anything else anywhere — a second error, a result beside the error, a
+# state, an effect, a handle, an unknown key at any depth, a code outside the list (runtime_error,
+# inject_rejected, consumer_fenced, dispatch_inactive, an unknown or untyped one) — leaves the
+# outcome unknown, and the reservation stays. The caller also requires that no handle was named
+# and that the response parsed whole.
+PRELAUNCH_CODES="task_not_found task_not_startable nested_worker_depth_exceeded worktree_not_found selector_not_found invalid_argument"
+prelaunch_refusal() {
+  pyjson "$1" "$PRELAUNCH_CODES" <<'PY'
+CODES = set(sys.argv[2].split())
+
+
+def strs(v):
+    return isinstance(v, list) and all(isinstance(x, str) for x in v)
+
+
+DATA = {"nextSteps": strs, "unmetDependencies": strs, "retryOf": lambda v: isinstance(v, str),
+        "failureCount": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "reason": lambda v: isinstance(v, str)}
+
+
+def refusal(e):
+    if not isinstance(e, dict) or not set(e) <= {"code", "message", "data"}:
+        return False
+    if not isinstance(e.get("code"), str) or e["code"] not in CODES:
+        return False
+    if "message" in e and not isinstance(e["message"], str):
+        return False
+    data = e.get("data", {})
+    if data is None:
+        return True
+    return isinstance(data, dict) and all(k in DATA and DATA[k](v) for k, v in data.items())
+
+
+try:
+    d = strict_load(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
+if not isinstance(d, dict) or not set(d) <= {"id", "ok", "error", "result"}:
+    raise SystemExit(1)
+if "id" in d and not isinstance(d["id"], str):
+    raise SystemExit(1)
+if "ok" in d and d["ok"] is not False:
+    raise SystemExit(1)  # ok:true (or anything but false) beside a refusal contradicts it
+if "error" in d:
+    if d.get("result") not in (None, {}):
+        raise SystemExit(1)  # a result beside the error, an error inside it included
+    err = d["error"]
+else:
+    r = d.get("result")
+    if not isinstance(r, dict) or set(r) != {"error"}:
+        raise SystemExit(1)
+    err = r["error"]
+raise SystemExit(0 if refusal(err) else 1)
+PY
+}
+# release_after_registration: every handle the response named is recorded, so the reservation goes.
+release_after_registration() {
+  if [ -z "$launch_reservation" ] || rm -f -- "$launch_reservation" 2>/dev/null; then
+    launch_reservation=""; keep_reservation=0
+  fi
+}
+# release_reservation (EXIT trap): drop the reservation unless a worker may be live with no record.
+# A terminal create that named no pane is released only on a proven pre-launch refusal.
+launch_reservation=""; keep_reservation=0
+release_reservation() {
+  [ -n "$launch_reservation" ] || return 0
+  if [ "$keep_reservation" = "1" ] && [ "$named_agent" -gt 0 ] && [ "$named_unrecorded" = "0" ]; then
+    keep_reservation=0  # the worker's own pane is named, and every pane named is recorded
+  fi
+  if [ "$keep_reservation" = "1" ] && [ "$named_count" = "0" ] && [ "$named_unrecorded" = "0" ] \
+     && [ "$step" = "create-terminal" ] && [ -s "${tj:-}" ] && prelaunch_refusal "$tj"; then
+    keep_reservation=0
+  fi
+  if [ "$keep_reservation" = "1" ]; then
+    echo "SPAWN=NOTE task=${task} launch reservation KEPT: ${launch_reservation} — a worker may be live whose pane was never recorded, so every session without a spawn record of its own stays capped at PROFILE=${PROFILE} until this file is removed. Remove it once worker-list shows no such worker (W4-04)." >&2
+  else
+    rm -f -- "$launch_reservation" 2>/dev/null || true
+  fi
+  launch_reservation=""
+}
 if [ -n "$ACTIVE_RUNTIME" ] && [ "$ACTIVE_RUNTIME" != "orca" ]; then
   WS_ARGS+=(--profile "$PROFILE")
   if [ -n "$eff_parent_profile" ]; then
@@ -503,8 +1038,17 @@ fi
 # Keep a readable worktree/receipt label with a checksum to distinguish squashed titles (#44).
 # This is NOT attempt identity: identical titles, retries, and checksum collisions are possible.
 # Actual scratch isolation is the atomic directory allocation below, independent of this label.
+# Bounded BEFORE any use (W4-12): the label becomes every receipt filename (dispatch-noinject-
+# <label>.json is the longest) and the worktree --name, so an unbounded 300-character title failed
+# `File name too long` after the task existed. The slug keeps its first 64 bytes (tr leaves it
+# ASCII); the checksum still covers the WHOLE title, so titles differing past the cut stay distinct.
+# Its leading dashes go too: `--force` became `--name --force-<cksum>`, an option to the runtime,
+# and `!!!` squashed to `----<cksum>`; a slug left empty reads `title`.
 title_hash=$(printf '%s' "$title" | cksum | cut -d' ' -f1)
-safe_title="$(printf '%s' "$title" | tr -c 'A-Za-z0-9._-' '-')-${title_hash}"
+title_slug="$(printf '%s' "$title" | tr -c 'A-Za-z0-9._-' '-')"
+title_slug="${title_slug:0:64}"
+while [ "${title_slug#-}" != "$title_slug" ]; do title_slug="${title_slug#-}"; done
+safe_title="${title_slug:-title}-${title_hash}"
 
 # Self-test hook: compute the two hardened values and exit before any orchestration side
 # effect. Lets the contract test assert effort-validation and title disambiguation without
@@ -672,12 +1216,12 @@ if [ "$PROFILE" = "danger" ]; then
     "$ORCA_BIN" vm recipe doctor "$recipe" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} > "$doctor_out" 2> "$doctor_out.stderr" || doctor_rc=$?
   fi
   if [ "$doctor_rc" -ne 0 ]; then
-    echo "SPAWN=REFUSED task=${task} \`${ORCA_BIN} vm recipe doctor ${recipe}\` exited ${doctor_rc} — the sandbox did not come up clean: $(cat "$doctor_out" "$doctor_out.stderr" | head -c 300 | tr '\n' ' ')" >&2
+    echo "SPAWN=REFUSED task=${task} \`${ORCA_BIN} vm recipe doctor ${recipe}\` exited ${doctor_rc} — the sandbox did not come up clean: $(cat "$doctor_out" "$doctor_out.stderr" | head -c 300 | inert_text)" >&2
     rm -f "$doctor_out"
     exit 2
   fi
   if ! python3 -I "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>/dev/null; then
-    echo "SPAWN=REFUSED task=${task} recipe doctor for '${recipe}' is not clear — sandbox-policy.md: clear means no fail AND no warn (ok:true alone proves nothing): $(python3 -I "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>&1 >/dev/null | head -c 200)" >&2
+    echo "SPAWN=REFUSED task=${task} recipe doctor for '${recipe}' is not clear — sandbox-policy.md: clear means no fail AND no warn (ok:true alone proves nothing): $(python3 -I "$HERE/sandbox_doctor.py" "$doctor_out" "$recipe" 2>&1 >/dev/null | head -c 200 | inert_text)" >&2
     rm -f "$doctor_out"
     exit 2
   fi
@@ -819,7 +1363,8 @@ try:
     print(launch["shell"])
     print(launch["profile_flag"])
 except ProviderError as err:
-    print(f"spawn_worker: base.py has no {sys.argv[3]} launch for {sys.argv[2]}: {err.message}", file=sys.stderr)
+    msg = "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(err.message))
+    print(f"spawn_worker: base.py has no {sys.argv[3]} launch for {sys.argv[2]}: {msg}", file=sys.stderr)
 PY
 }
 base_profile_flag=""
@@ -855,9 +1400,9 @@ PY
         step=worktree-create
         _wc=$(mktemp)
         orca_json "$_wc" worktree create --name "$safe_title" --repo "$_repo_top" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
-        _launch_wt=$(python3 -I - "$_wc" <<'PY'
+        _launch_wt=$(pyjson "$_wc" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1]))
+d = strict_load(sys.argv[1])
 r = d.get("result", d) if isinstance(d, dict) else {}
 wt = (r.get("worktree") or {}) if isinstance(r, dict) else {}
 p = wt.get("path") if isinstance(wt, dict) else None
@@ -877,6 +1422,13 @@ PY
   base_profile_flag=$(printf '%s\n' "$_bl" | sed -n '2p')
 fi
 
+# W4-04 re-attack: an override replaces the PROFILE's command and its opt-in is the caller's own
+# env, so a capped worker (`PROFILE=ro WORKER_CMD='claude --dangerously-skip-permissions'`) could
+# name any command and still pass the label check. Overrides are a coordinator-only facility.
+if [ -n "$override" ] && [ -n "$eff_parent_profile" ]; then
+  echo "SPAWN=REFUSED task=${task} a launch override (WORKER_CMD / CLAUDE_CMD / CODEX_CMD) is a coordinator-only facility, and this session is capped at parent profile '${eff_parent_profile}': the override would replace the PROFILE's command with any command at all (W4-04)" >&2
+  exit 2
+fi
 ALLOW_OVERRIDE="${OPEN_FLEET_COORD_ALLOW_CMD_OVERRIDE:-${ORCA_COORD_ALLOW_CMD_OVERRIDE:-0}}"
 if [ -n "$override" ]; then
   if [ "$ALLOW_OVERRIDE" != "1" ]; then
@@ -1049,6 +1601,25 @@ PY
   fi
 fi
 
+# --- reserve this launch in the spawn registry (W4-04) -----------------------
+# Before any task mutation or launch call, so a registry that cannot be written refuses the spawn
+# instead of starting a worker whose own spawns nothing caps (Codex round 2: HOME unset or
+# unwritable only warned). The reservation stands for the pane until register_spawn replaces it
+# with the pane's record; the EXIT trap drops it on every path where no worker was started.
+step=reserve-launch
+_rtmp=""
+if [ -z "${HOME:-}" ] || [ -z "$SPAWN_REGISTRY" ] || ! { mkdir -p -m 700 -- "$SPAWN_REGISTRY" && mkdir -p -m 700 -- "$SPAWN_PENDING" \
+    && _rtmp=$(mktemp "$SPAWN_PENDING/.r.XXXXXXXX") \
+    && printf '%s %s %s %s\n' "$PROFILE" "${own_handles[0]:--}" "${self_key%%.*}" "${self_key#*.}" > "$_rtmp" \
+    && mv -f -- "$_rtmp" "$SPAWN_PENDING/r.$$.${_rtmp##*.}"; } 2>/dev/null; then
+  if [ -n "$_rtmp" ]; then rm -f -- "$_rtmp" 2>/dev/null || true; fi
+  echo "SPAWN=REFUSED task=${task} cannot reserve this launch in the spawn registry ($([ -n "${HOME:-}" ] && printf '%s' "$SPAWN_REGISTRY" || printf 'HOME is unset')): a worker launched without a record would spawn uncapped, so nothing is launched (W4-04)" >&2
+  exit 2
+fi
+launch_reservation="$SPAWN_PENDING/r.$$.${_rtmp##*.}"
+trap '_rc=$?; release_reservation; exit "$_rc"' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM  # through the EXIT trap above
+
 # Allocate atomically for every attempt, including identical task/title retries (R13).
 # All lane artifacts use this private directory; retain it even on failure for inspection.
 # Allocation failure exits through ERR before task mutation or launch, never reuses a directory.
@@ -1065,16 +1636,19 @@ if [ "$SPEC_GIVEN" = "1" ]; then
   if [ "$DEPS_GIVEN" = "1" ]; then create_args+=(--deps "$DEPS"); fi
   if [ "$PARENT_GIVEN" = "1" ]; then create_args+=(--parent "$PARENT"); fi
   orca_json "$tc" orchestration task-create ${create_args[@]+"${create_args[@]}"} ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
-  task=$(python3 -I - "$tc" <<'PY'
+  task=$(pyjson "$tc" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     d = {}
 r = d.get("result") if isinstance(d, dict) else None
 tid = (r.get("task") or {}).get("id") if isinstance(r, dict) else None
 if not tid or not isinstance(tid, str):
     print("task-create returned no task id", file=sys.stderr)
+    raise SystemExit(1)
+if not all(c.isprintable() and not c.isspace() for c in tid):
+    print("task-create returned a task id that is not one printable token", file=sys.stderr)
     raise SystemExit(1)
 print(tid)
 PY
@@ -1088,19 +1662,24 @@ tl="$SP/tl-$safe_title.json"
 brief_args=()
 if [ "$TASK_BRIEF" = "1" ]; then brief_args=(--brief); fi
 orca_json "$tl" orchestration task-list ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} ${brief_args[@]+"${brief_args[@]}"}
-tl_out=$(python3 -I - "$tl" "$task" <<'PY'
+tl_out=$(pyjson "$tl" "$task" <<'PY'
 import json, sys
+
+
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
 
 
 def emit(status, unmet):
     """unmet on line 1, status on line 2 — the shell reads lines, never words."""
     print(unmet)
-    print(str(status).replace("\n", " ").replace("\r", " "))
+    print(_f(status))
     raise SystemExit(0)
 
 
 path, tid = sys.argv[1], sys.argv[2]
-d = json.load(open(path))
+d = strict_load(path)
 r = d.get("result", d)
 tasks = r.get("tasks") if isinstance(r, dict) else r
 tasks = tasks or []
@@ -1113,7 +1692,7 @@ if deps is None:
     deps = []  # absent deps is the ONLY value that legitimately means "no deps"
 elif isinstance(deps, str):
     try:
-        deps = json.loads(deps)  # "" and garbage both fail here -> refusal below
+        deps = strict_loads(deps)  # "" and garbage both fail here -> refusal below
     except Exception:
         deps = None
 if not isinstance(deps, list):
@@ -1196,10 +1775,19 @@ if [ "$custom_lane" = "0" ]; then
   # The call's own exit status is NOT the verdict: a typed refusal, a hard failure, and an
   # UNPROVEN outcome (state: outcome_unknown) all exit nonzero. The receipt is the verdict.
   ws_rc=0
+  keep_reservation=1  # from here a worker may be live: its reservation stays until a verdict says otherwise
   # stdout only into the receipt: a keepalive or warning line on stderr turned a READY receipt
   # into UNPARSEABLE_RECEIPT / OUTCOME_UNKNOWN and lost a live worker's handle (2026-10-26 review).
   # stderr is kept beside it ($ws.stderr) for forensics.
   "$ORCA_BIN" orchestration worker-start --task "$task" --worktree "$sel" ${name_args[@]+"${name_args[@]}"} --agent "$agent" ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} ${WS_ARGS[@]+"${WS_ARGS[@]}"} --json > "$ws" 2> "$ws.stderr" || ws_rc=$?
+  # Every handle the response names may be a live worker, whatever its exit code, error code or
+  # state says, so it is read once and registered BEFORE the response is judged (Codex rounds 3
+  # and 4); the verdict parser prints the same handle rather than reading its own.
+  step=register-spawn
+  read_named "$ws"
+  register_named
+  ws_handle="$agent_handle"
+  ws_partial="$receipt_partial"
 
   # The flag the requested PROFILE implies, read back out of the map above so the two cannot
   # drift: worker-start takes its args from the HOST, so this is what the host must have used.
@@ -1224,7 +1812,7 @@ if [ "$custom_lane" = "0" ]; then
   # Line 1 is the machine verdict; the remaining stdout lines are the caller-facing receipt
   # fields. nextSteps / nextCommands go to stderr verbatim — they are the runtime's own
   # recovery text, not ours to paraphrase.
-  ws_out=$(python3 -I - "$ws" "$profile_flag" <<'PY'
+  ws_out=$(pyjson "$ws" "$profile_flag" "$ws_handle" <<'PY'
 import json, sys
 
 # Every typed preflight refusal is a POLICY/usage answer, not a transport failure: the
@@ -1243,6 +1831,11 @@ POLICY_CODES = {
     "task_not_found", "task_not_startable", "inject_rejected",
     "nested_worker_depth_exceeded", "consumer_fenced", "dispatch_inactive",
 }
+
+
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
 
 
 def _launch_tokens(eff):
@@ -1267,7 +1860,7 @@ def _contains_seq(toks, want):
     n = len(want)
     return any(toks[i:i + n] == want for i in range(len(toks) - n + 1))
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     d = {}
 if not isinstance(d, dict):
@@ -1278,40 +1871,37 @@ if not isinstance(r, dict):
 err = d.get("error") or r.get("error") or {}
 if not isinstance(err, dict):
     err = {}
-code = err.get("code") or ""
+code = _f(err.get("code") or "")
 data = err.get("data") if isinstance(err.get("data"), dict) else {}
+w = r.get("worker")
+state = r.get("state") or (w.get("state") if isinstance(w, dict) else None)
+did = r.get("dispatchId") or r.get("dispatch_id") or ""
+# The worker's pane handle, read ONCE by receipt_handles before this parser runs (the agent
+# terminal effect, agentTerminalHandle, or wherever else the response names one, error envelope
+# included), so no branch below can lose it: every verdict prints it when the response names one.
+h = sys.argv[3] if len(sys.argv) > 3 else ""
 # Older hosts may omit `data` entirely — treat every field as optional.
 for s in data.get("nextSteps") or []:
-    print(f"nextStep: {s}", file=sys.stderr)
-if code in POLICY_CODES:
-    print(f"VERDICT=refused CODE={code}")
+    print(f"nextStep: {_f(s)}", file=sys.stderr)
+if code in POLICY_CODES or code:
+    print(f"VERDICT={'refused' if code in POLICY_CODES else 'failed'} CODE={code}")
+    if h:  # an error envelope beside a handle: a worker may be live there
+        print(f"HANDLE={_f(h)} READY={_f(state or 'error')}")
     raise SystemExit(0)
-if code:
-    print(f"VERDICT=failed CODE={code}")
-    raise SystemExit(0)
-
-state = r.get("state") or (r.get("worker") or {}).get("state")
-did = r.get("dispatchId") or r.get("dispatch_id") or ""
-# The agent terminal is the effects[] entry kind=terminal role=agent; agentTerminalHandle is a
-# worker-list/worker-show field, kept as a harmless fallback.
-h = r.get("agentTerminalHandle") or ""
-if not h:
-    for e in r.get("effects") or []:
-        if isinstance(e, dict) and e.get("kind") == "terminal" and e.get("role") == "agent":
-            h = e.get("id") or ""
-            break
 
 if state == "outcome_unknown":
     # NOT a failure: the start neither proved nor disproved the worker. The receipt names the
     # exact inspection commands; a respawn here is the dual-writer class.
     for c in r.get("nextCommands") or []:
-        print(f"nextCommand: {c}", file=sys.stderr)
-    print(f"VERDICT=unknown STATE={state}")
-    print(f"HANDLE={h} READY={state}")
-    print(f"DISPATCH={did}")
+        print(f"nextCommand: {_f(c)}", file=sys.stderr)
+    print(f"VERDICT=unknown STATE={_f(state)}")
+    print(f"HANDLE={_f(h)} READY={_f(state)}")
+    print(f"DISPATCH={_f(did)}")
     raise SystemExit(0)
 if state is not None and state != "ready":
-    print(f"VERDICT=failed STATE={state}")
+    print(f"VERDICT=failed STATE={_f(state)}")
+    if h:  # a receipt naming a handle may have a live worker behind it: the shell registers it
+        print(f"HANDLE={_f(h)} READY={_f(state)}")
     raise SystemExit(0)
 
 if state is None:
@@ -1323,8 +1913,8 @@ if state is None:
     # UNKNOWN, not FAILED: worker-start exited 0, so a worker may well be live, and the one thing
     # a coordinator must not do here is respawn beside it (liveness-resume.md, dual-writer).
     print("VERDICT=unknown STATE=absent")
-    print(f"HANDLE={h} READY=absent")
-    print(f"DISPATCH={did}")
+    print(f"HANDLE={_f(h)} READY=absent")
+    print(f"DISPATCH={_f(did)}")
     raise SystemExit(0)
 
 launch = r.get("launch") if isinstance(r.get("launch"), dict) else {}
@@ -1347,23 +1937,23 @@ if want:
     if eff is None:
         why = "LAUNCH_EFFECTIVE_ABSENT=1"
     elif not _contains_seq(_launch_tokens(eff), want):
-        why = "LAUNCH_FLAG_MISSING=" + " ".join(want)
+        why = "LAUNCH_FLAG_MISSING=" + _f(" ".join(want))
     else:
         why = ""
     if why:
         print("VERDICT=unusable " + why)
-        print(f"HANDLE={h} READY={state}")
-        print(f"DISPATCH={did}")
+        print(f"HANDLE={_f(h)} READY={_f(state)}")
+        print(f"DISPATCH={_f(did)}")
         if eff is not None:
-            print("LAUNCH_EFFECTIVE=" + (eff if isinstance(eff, str)
-                                         else json.dumps(eff, sort_keys=True)))
+            print("LAUNCH_EFFECTIVE=" + _f(eff if isinstance(eff, str)
+                                           else json.dumps(eff, sort_keys=True)))
         raise SystemExit(0)
 
-print(f"VERDICT=ready STATE={state}")
-print(f"HANDLE={h} READY={state}")
-print(f"DISPATCH={did}")
+print(f"VERDICT=ready STATE={_f(state)}")
+print(f"HANDLE={_f(h)} READY={_f(state)}")
+print(f"DISPATCH={_f(did)}")
 if eff is not None:
-    print("LAUNCH_EFFECTIVE=" + (eff if isinstance(eff, str) else json.dumps(eff, sort_keys=True)))
+    print("LAUNCH_EFFECTIVE=" + _f(eff if isinstance(eff, str) else json.dumps(eff, sort_keys=True)))
 PY
 )
   verdict_line=$(printf '%s\n' "$ws_out" | head -n 1)
@@ -1405,10 +1995,16 @@ PY
       rq="$SP/rq-$safe_title.json"
       rq_rc=0
       "$ORCA_BIN" orchestration request-show --request "$RETRY_REQUEST" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$rq" 2> "$rq.stderr" || rq_rc=$?
-      rq_state=$(python3 -I - "$rq" <<'PY'
+      # A landed mutation's record may name the worker's pane that the start response did not:
+      # registered like any other response that names one.
+      step=register-spawn
+      read_named "$rq"
+      register_named
+      step=triage-request
+      rq_state=$(pyjson "$rq" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     print("unreadable")
     raise SystemExit(0)
@@ -1438,12 +2034,41 @@ PY
     fi
   fi
 
+  # W4-04: any response that NAMES a handle may have a live worker behind it, whatever the exit
+  # code, error code or verdict (Codex round 3: a ready receipt from a call that exited nonzero;
+  # round 4: an error envelope beside a ready result). Each was registered above, before the
+  # verdict. With every named worker recorded completely the reservation goes; with any record
+  # incomplete it stays, capping every session nothing else identifies. With none named, only a
+  # refusal PROVEN to precede any launch effect lets it go (prelaunch_refusal, Codex round 6): any
+  # other failure, a policy refusal that can follow a pane's creation included, is unknown, and
+  # unknown means a worker may be live.
+  if [ "$named_count" -gt 0 ]; then
+    if [ "$named_agent" -gt 0 ] && [ "$named_unrecorded" = "0" ]; then
+      release_after_registration
+    elif [ "$named_agent" = "0" ]; then
+      echo "SPAWN=WARNING task=${task} the response names only panes other than the worker's own (no agent-role handle): the worker's pane is unnamed, so its launch reservation stays (W4-04)" >&2
+    else
+      echo "SPAWN=WARNING task=${task} a worker the response names may be live without a complete spawn record; its launch reservation stays instead (W4-04)" >&2
+    fi
+  elif [ "$ws_partial" = "0" ] && prelaunch_refusal "$ws"; then
+    keep_reservation=0
+  fi
+
   step=verify-ready
+  # A refused or failed verdict whose response still names a pane: print it, and say a worker may
+  # be live there, so nothing respawns beside it uninspected.
+  named_pane_note() {
+    if [ -n "$ws_handle" ]; then
+      printf '%s\n' "$payload" | grep '^HANDLE=' || true
+      echo "SPAWN=WARNING task=${task} the response names pane ${ws_handle} beside its error: a worker may be live there (its PROFILE=${PROFILE} is registered, or the launch reservation stays). INSPECT it (worker-list, worker-show) before any retry (W4-04)" >&2
+    fi
+  }
   case "$verdict" in
     ready)
       printf '%s\n' "$payload"
       ;;
     refused)
+      named_pane_note
       echo "SPAWN=REFUSED task=${task} worker-start refused: ${verdict_line#VERDICT=refused } (policy/usage — nextSteps above; receipt in $ws)" >&2
       exit 2
       ;;
@@ -1469,6 +2094,7 @@ PY
       exit 5
       ;;
     *)
+      named_pane_note
       echo "SPAWN=FAILED task=${task} step=${step} rc=${ws_rc} — worker-start failed: ${verdict_line#VERDICT=failed } (receipt in $ws)" >&2
       exit 1
       ;;
@@ -1481,21 +2107,42 @@ else
   # ledger (dispatch-lifecycle.md).
   step=create-terminal
   tj="$SP/sw-$safe_title.json"
-  orca_json "$tj" terminal create --worktree "$sel" --title "$title" --command "$cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
-  h=$(python3 -I - "$tj" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-if d.get("error"):
-    print(f"terminal create error: {d['error']}", file=sys.stderr)
-    raise SystemExit(1)
-r = d.get("result", d)
-h = (r.get("terminal") or {}).get("handle") or r.get("handle")
-if not h or h == "None":
-    print("terminal create returned no handle", file=sys.stderr)
-    raise SystemExit(1)
-print(h)
-PY
-)
+  keep_reservation=1  # the command may be running before terminal create returns its handle
+  tc_rc=0
+  "$ORCA_BIN" terminal create --worktree "$sel" --title "$title" --command "$cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$tj" || tc_rc=$?
+  # Any pane the response names may be live, whatever it says next (Codex round 4): it is read once
+  # (receipt_handles, the one extraction) and registered FIRST; then a nonzero exit or an error
+  # envelope fails as orca_json did, naming the pane it leaves behind.
+  step=register-spawn
+  read_named "$tj" terminal
+  register_named
+  h="$agent_handle"
+  step=create-terminal
+  tc_err=0
+  if [ "$tc_rc" != "0" ]; then tc_err="$tc_rc"; elif ! envelope_check "$tj"; then tc_err=1; fi
+  if [ "$tc_err" != "0" ]; then
+    if [ -n "$h" ]; then
+      echo "SPAWN=WARNING task=${task} terminal create failed but names pane ${h}: it may be live (its PROFILE=${PROFILE} is registered, or the launch reservation stays); close it (${ORCA_BIN} terminal close --terminal ${h}) (W4-04)" >&2
+    fi
+    (exit "$tc_err")
+  fi
+  if [ -z "$h" ] || [ "$h" = "None" ]; then
+    named_unrecorded=1  # a pane may be live that nothing names: its reservation stays
+    echo "terminal create returned no handle" >&2
+    (exit 1)
+  fi
+  if [ "$agent_status" = "unprintable" ]; then
+    echo "terminal create returned a handle that is not one printable token (${h})" >&2
+    (exit 1)
+  fi
+  # The record replaces the reservation before anything is injected. If it cannot be written the
+  # pane gets no task, and its reservation stays (the EXIT trap says so), capping it regardless.
+  step=register-spawn
+  if [ "$named_unrecorded" = "0" ] && [ "$named_agent" -gt 0 ]; then release_after_registration; fi
+  if [ "$named_record_failed" = "1" ] || [ "$named_agent" = "0" ]; then
+    echo "SPAWN=FAILED task=${task} step=${step} rc=1 — pane ${h} is LIVE but its PROFILE=${PROFILE} could not be recorded, so nothing was injected into it: close it (${ORCA_BIN} terminal close --terminal ${h}) (W4-04)" >&2
+    exit 1
+  fi
 
   step=wait-tui-idle
   # READ the result. A timed-out wait prints a normal result carrying `wait.satisfied:false` AND
@@ -1504,10 +2151,10 @@ PY
   tw="$SP/tw-$safe_title.json"
   wait_rc=0
   "$ORCA_BIN" terminal wait --terminal "$h" --for tui-idle --timeout-ms 90000 ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$tw" 2> "$tw.stderr" || wait_rc=$?
-  satisfied=$(python3 -I - "$tw" <<'PY'
+  satisfied=$(pyjson "$tw" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     # An unreadable wait receipt is NOT "absent": nothing proves the pane is idle, so it is
     # judged as unsatisfied and the lane stops before injecting (2026-10-26 review).
@@ -1524,10 +2171,10 @@ PY
   if [ "$satisfied" = "false" ] || [ "$satisfied" = "unreadable" ] || [ "$wait_rc" != "0" ]; then
     # Orca names the prompt an agent stopped at (`wait.blockedReason`): say it, and never answer
     # it for the operator. A trust prompt is a grant only the operator gives (#596).
-    blocked=$(python3 -I - "$tw" <<'PY'
+    blocked=$(pyjson "$tw" <<'PY'
 import json, re, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     raise SystemExit(0)
 r = d.get("result", d) if isinstance(d, dict) else {}
@@ -1560,12 +2207,19 @@ PY
   dj_rc=0
   "$ORCA_BIN" orchestration dispatch --task "$task" --to "$h" --inject ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$dj" || dj_rc=$?
   classify_dispatch() {
-    python3 -I - "$1" <<'PY'
+    pyjson "$1" <<'PY'
 import json, sys
 POLICY_CODES = {"task_not_found", "task_not_startable", "inject_rejected",
                 "nested_worker_depth_exceeded", "consumer_fenced", "dispatch_inactive"}
+
+
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
+
+
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     raise SystemExit(0)
 if not isinstance(d, dict):
@@ -1578,10 +2232,10 @@ if not isinstance(err, dict):
     err = {"code": str(err)}
 data = err.get("data") if isinstance(err.get("data"), dict) else {}
 for step in data.get("nextSteps") or []:
-    print(f"nextStep: {step}", file=sys.stderr)
-code = str(err.get("code") or "unknown")
-reason = data.get("reason") if isinstance(data.get("reason"), str) else ""
-msg = " ".join(str(err.get("message") or "").split())[:300]
+    print(f"nextStep: {_f(step)}", file=sys.stderr)
+code = _f(err.get("code") or "unknown")
+reason = _f(data.get("reason")) if isinstance(data.get("reason"), str) else ""
+msg = _f(" ".join(str(err.get("message") or "").split())[:300])
 verdict = "refused" if code in POLICY_CODES else "failed"
 print(f"{verdict} CODE={code}" + (f" reason={reason}" if reason else "") + f" — {msg}")
 PY
@@ -1604,10 +2258,10 @@ PY
         step=confirm-agent
         ts="$SP/show-$safe_title.json"
         "$ORCA_BIN" terminal show --terminal "$h" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$ts" 2>&1 || true
-        fallback_skip=$(python3 -I - "$ts" <<'PY'
+        fallback_skip=$(pyjson "$ts" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     print("terminal show gave no readable record")
     raise SystemExit(0)
@@ -1643,9 +2297,9 @@ PY
             exit 1 ;;
         esac
         pf="$SP/preamble-$safe_title.txt"
-        if [ "$dd_rc" != "0" ] || ! python3 -I - "$dd" "$pf" <<'PY'
+        if [ "$dd_rc" != "0" ] || ! pyjson "$dd" "$pf" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1]))
+d = strict_load(sys.argv[1])
 r = d.get("result", d) if isinstance(d, dict) else {}
 pre = r.get("preamble") if isinstance(r, dict) else None
 if not isinstance(r.get("dispatch"), dict) or not isinstance(pre, str) or not pre.strip():
@@ -1687,10 +2341,13 @@ PY
 
   step=read-inject-receipt
   read_stages() {
-    python3 -I - "$1" <<'PY'
+    pyjson "$1" <<'PY'
 import json, sys
+def _f(v):
+    """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     print("STAGES= REQUEST=")
     raise SystemExit(0)
@@ -1705,9 +2362,10 @@ if not isinstance(p, dict):
 if not isinstance(p, dict):
     p = {}
 stages = p.get("stages")
-stages = [s for s in stages if isinstance(s, str)] if isinstance(stages, list) else []
+stages = [_f(s).replace(",", "\\u002c").replace(" ", "\\u0020") for s in stages
+          if isinstance(s, str)] if isinstance(stages, list) else []
 req = p.get("requestId")
-print("STAGES=" + ",".join(stages) + " REQUEST=" + (req if isinstance(req, str) else ""))
+print("STAGES=" + ",".join(stages) + " REQUEST=" + (_f(req).replace(" ", "\\u0020") if isinstance(req, str) else ""))
 PY
   }
   rcpt=$(read_stages "$dj")

@@ -44,7 +44,7 @@ The remaining reference sections cover:
   [sending](#send_msgpy), [decision log](#decisionspy), [human asks](#hitl_askpy),
   [ask/reply loop](#hitl-looptemplatesh), [gate batches](#gate-batchpy),
   [one-way door registry](#one-way-doorsjson).
-- **Workers and workspace operations:** [spawn](#spawn_workersh), [workers](#worker_opspy),
+- **Workers and workspace operations:** [spawn](#spawn_workersh), [spawn identity](#spawn_identitypy), [workers](#worker_opspy),
   [tasks](#task_opspy), [terminals](#terminal_opspy), [worktrees](#worktree_opspy),
   [working-tree fingerprints](#wtreesh), [session search](#search_sessionspy) and its
   [episodic-hint provenance](#hint_provenancepy),
@@ -234,7 +234,7 @@ unreadable `SKILL.md` also exits 1, with a traceback) · 2 usage. An `audit --ro
 ## `check_reply.py`
 
 Fail-closed invoker for `check` and `reply` — pm.py parses the inbox, this issues
-it. Source `runtime/scripts/check_reply.py:1-22`; behavior pinned by
+it. Source `runtime/scripts/check_reply.py:1-24`; behavior pinned by
 `tests/test_check_reply.py`.
 
 Usage: `check_reply.py {check,reply} ...`
@@ -253,18 +253,26 @@ Each message prints as a `--- <id> (<type>) from <handle>` block with `SUBJ:` an
 the body (capped at 2000 chars with a truncation marker); malformed entries skip
 with a stderr WARN. Consuming reads show what they consumed — a later check may
 never see these messages again. Every message field (id, type, sender, subject, body) passes
-through pm.py's `_visible`, so control and invisible characters render inertly, never actively;
-the `COUNT=… DELIVERY=… TIMED_OUT=…` and `REPLIED=… FOR=…` receipt lines print the runtime's ids
-and your `--id` as-is.
+through pm.py's `_visible`, so control and invisible characters render inertly, never actively.
+The single-line fields (id, type, sender, `SUBJ`, and the runtime's ids and your `--id` on the
+`COUNT=… DELIVERY=… TIMED_OUT=…` and `REPLIED=… FOR=…` receipt lines) go through `_visible_line`,
+newline and tab escaped too. A body's continuation lines are indented, and so is a first line
+that starts like any line a fleet printer writes at column 0 — a `KEY=` receipt line, a `---`
+header or `===` rule, a `(…)`/`[…]` marker, or this printer's `SUBJ: ` — so no body line can
+start one; a first line of plain prose keeps its column (W5-19, W4-11, Codex round 2).
 
 Exits: 0 checked/replied · 1 runtime/refusal/receipt failure · 2 usage or
 validation refusal (nothing invoked).
 
 > Why: at most one read mode, because the handler refuses more — and on older
 > runtimes an unknown `--peek` strips while `--unread` still marks read, so a
-> combined read would destroy what it meant to preview. Naming the sender is an
-> identity claim: a wrong `--from` speaks as a sibling worker, so disagreement with
-> the ambient handle refuses rather than misattributes.
+> combined read would destroy what it meant to preview. A `--from` that disagrees
+> with the ambient handle refuses rather than misattributes, but both are the
+> caller's own, so this catches an accidental mismatch only: the sender is
+> self-asserted here and the runtime is the authority (W5-19). Printed receipt
+> fields (`DELIVERY`, `REPLIED`, header parts, `SUBJ`) are inert and on one line,
+> and no body line stands at column 0 in a printer line's shape, so a message cannot
+> forge a `--- <id> (<type>) from <handle>` header or another receipt line.
 
 ## `decisions.py`
 
@@ -279,7 +287,22 @@ Flags: `--file` (log path, default `$OPEN_FLEET_DECISIONS_FILE`, then `$ORCA_DEC
 then `docs/DECISIONS.md`), `--doors` (door registry,
 default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-pubkey` from that
 git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
-the checked tree could have been written by a worker). `append` takes `--id`, `--class`, `--answer`,
+the checked tree could have been written by a worker). `REF` must be a commit id that names that
+commit object, or a full remote-tracking ref (`refs/remotes/origin/main`) that exists under exactly
+that name, every hop of a symbolic chain remote-tracking too (read one hop at a time with
+`git symbolic-ref --no-recurse`, git 2.39+; where that cannot run, a symbolic name is refused) — a
+local branch, tag, `HEAD`, a `refs/remotes/…` name symbolic to a local branch (directly or through
+a local bridge back to a remote ref), a revision suffix (`~1`, `^`, `@{1}`), and a
+local `refs/heads/refs/remotes/…` branch that `rev-parse` would find for an absent remote-tracking
+ref are all refused — and is resolved once, the reads naming that commit (W3-07; the rule is
+`gitexec.remote_tracking_commit`, shared by every trust anchor). Remote-tracking means what the clone's own
+fetch wrote: run over a coordinator's clone or a CI checkout, the checked change did not write it;
+in a worker's own clone `git update-ref refs/remotes/…` succeeds and a commit id names whatever the
+caller chose, so there the anchor is advisory. Without
+`--pin-ref` the working-tree pin is used with a stderr NOTE — whether present, swapped or absent
+(an absent pin checks one-way grants unsigned, and only a ref read can tell deleted from never
+pinned) — and a caller that sets
+`ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` (a sound lane) cannot run at all (exit 2). `append` takes `--id`, `--class`, `--answer`,
 `--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `active` takes `--json`; `tally` takes
 `--lens`, `--json`; `check` takes `--since YYYY-MM-DD` (records stamped earlier are counted, not
 judged — the repository's own ledger predates the human-source and class rules, so CI runs
@@ -490,8 +513,9 @@ Usage: `diff_scope.py [--base REF] [--repo DIR] [--strict] [--overlap FILE] [--j
 `source <(diff_scope.py)`), or `diff_scope.py --predict-merge BASE BRANCH [--repo DIR]` (also
 `wtree.sh predict-merge`) to predict a 3-way merge in memory without touching HEAD, index or working tree.
 
-Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master),
-`--repo` (default `.`), `--strict` (any unmatched path exits nonzero), `--overlap`
+Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master; resolved
+once by exact ref names, as for `floor_guard.py` below, and the diff is taken against that
+commit), `--repo` (default `.`), `--strict` (any unmatched path exits nonzero), `--overlap`
 (pre-dispatch JSON `{units: [{id, scope: [...]}]}` intersecting declared unit globs
 against tracked repo files and pattern prefixes to emit `OVERLAP_COUNT`, or with `--json` a
 `deps` map, as serialization chains for shared hot files), `--json` (emit an object instead of
@@ -504,9 +528,23 @@ import is a could-not-run on every call, never a bare `git` re-resolved later; W
 `runtime/scripts/gitexec.py`'s whole floor, inlined (no global or system config,
 `safe.directory=*`, fsmonitor, hooks, external diff, `ext::`, replacement objects and grafts
 off), plus the diff-rendering pins of `runtime/scripts/floor_guard.py:DIFF_RENDERING` (inert
-under `-z --name-only`) and, on the working-tree diff, the declared filter/diff driver commands
-blanked (`_driver_blanks`, #629); `tests/test_diff_scope.py` pins the copy to
-`runtime/scripts/gitexec.py:HARDENED`. Twelve
+under `-z --name-only`) and gitexec's custody floor (`SELECTOR_ENV` dropped, `CUSTODY_FLOOR`,
+`CUSTODY_ENV`); `tests/test_diff_scope.py` pins the copy to
+`runtime/scripts/gitexec.py:HARDENED`. The working-tree diff and `--predict-merge`'s
+`merge-tree --write-tree` run in git custody (`gitexec.custody`, with diff_scope's own git): a git
+dir with no filter, diff or merge driver defined, so one a `.gitattributes` or `info/attributes`
+line selects runs nowhere, even one added to the repository's config mid-call (W4 custody sweep).
+The prediction's BASE and BRANCH are each resolved once by exact ref names (`gitexec.base_commit`,
+the W3-07 rule `resolve_base` follows: a remote-tracking or full commit id anchors; a local branch,
+`HEAD` or an abbreviated id is refused on a lane claiming soundness and NOTE'd elsewhere; a tag or
+revision syntax is `no_base`), merge-tree is given the two commit ids, and it writes its merged tree
+into the repository's own object store. The declared driver commands are still listed and blanked as a belt
+(`_driver_blanks`, #629): an unreadable list is `diff_failed`, and so is a repository the custody
+refuses, and so is a config, include or `shallow` git would block on (refused before git runs);
+a FIFO at a work tree `.gitignore`/`.gitattributes` blocks a git call up to 60 s, then
+`diff_failed`. The untracked listing runs in custody too. A `--predict-merge` the custody refuses
+reports the custody's reason, never a git-version guess. The committed diff compares two trees by
+name only and runs in the repository. Twelve
 independent flags: `FRONTEND`, `BACKEND`, `PROMPTS`, `TESTS`, `DOCS`, `CONFIG`,
 `MIGRATIONS`, `API`, `AUTH`, `SECURITY`, `A11Y`, `PERF` — path signals plus working-tree
 content signals (capped at 256 KiB per file; deleted files contribute path signals only).
@@ -694,6 +732,14 @@ operator's real harness. That run spends, and its receipt reads
 `live-unreviewed` until a maintainer binds it into `docs/runs/`. A live run refuses at `prereqs`
 when the run's PATH, which puts the interpreter's directory first, resolves the harness to a
 different file than the operator's own PATH does (`harness_shadow`).
+Every command of a run, the worker included, gets an ALLOWLISTED environment
+(`runtime/scripts/first_run.py:SANDBOX_ENV_ALLOW`: `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`,
+the POSIX/glibc locale names `LC_ALL`, `LC_CTYPE`, … `LC_TELEPHONE` by exact name, never an `LC_` prefix, `TZ`, `TERM`, `TMPDIR`, `DISABLE_AUTOUPDATER`, `PYTHONDONTWRITEBYTECODE`) plus the run's own
+settings, never the operator's whole environment (W5-20): an exported `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN` or `AWS_*` cannot reach the worker or the code it runs, the
+guarantee the container lane already gave. `--worker live` needs no credential from it: its
+`claude` is the live harness's wrapper, whose broker holds the token. Inert runs also get a
+private `HOME`.
 
 `ro` (the default, the review-it shape) takes the report from the transcript and commits it on
 the coordinator's evidence branch. A ro unit settles in one of two ways. posix can relay the
@@ -1006,6 +1052,20 @@ Usage: `floor_guard.py [--base REF] [--constraints FILE] [--waivers FILE] [--rep
 Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master), `--constraints`
 (numbers file, default CONSTRAINTS.md), `--waivers` (DECISIONS log, default
 `docs/DECISIONS.md`), `--repo` (default `.`), `--quiet` (findings only, no clean banner).
+The base is resolved once, by exact ref names only (`gitexec.base_commit`, W3-07), and the diff,
+the waivers and the human-grant pin are all read at that commit. A commit id, a full
+`refs/remotes/…` name, or a short remote-tracking name (`origin/main`, read only as
+`refs/remotes/origin/main`) goes through the trust-anchor rule (`gitexec.remote_tracking_commit`);
+a bare name (`main`) or `refs/heads/…` is that local branch by its exact name, `HEAD` is the
+checkout's HEAD, and 4 to 63 hex digits are an abbreviated commit id resolved as an object id only
+(`rev-parse --disambiguate`, never a branch of that spelling; name a hex-named branch as
+`refs/heads/<name>`) — each refused (exit 2) where `ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE`
+claims a sound lane, the predicate `decisions.py` and `run_report.py` apply, and elsewhere used
+with a stderr NOTE that it is advisory (the change under check can move a local name, and nothing
+binds an abbreviation); the no-remote fallback to local main/master follows the same rule. Never a
+tag, a revision suffix (`origin/main~1`, `@{1}`), a local branch or tag spelled `origin/main` in place
+of the remote-tracking one, or a local `refs/heads/refs/remotes/…` branch standing in for an
+absent remote-tracking ref; unnamed, an `origin/HEAD` that points at a local branch is skipped.
 
 Rules (stable ids): `silenced-checker`, `test-made-easier`, `unfinished-work`,
 `assertion-removed` (removed lines in test paths that still exist, or that moved: a deleted
@@ -1021,7 +1081,13 @@ the change under review, and grant only as a one-way human decision (`--source h
 plus `--grant-sig` when `.orca/human-grant-pubkey` is pinned at the base): land the waiver on
 the base branch first (2026-10-23 review, P1-7). Every diff is taken with `--text`, `--no-color`
 and pinned prefix keys, so a `.gitattributes` `-diff` or a repo-local diff prefix cannot blank
-the rules (P1-6, P2-4). Binary media (images, fonts, audio/video, archives) skip the content
+the rules (P1-6, P2-4). Both diffs (tracked against the merge base, and each untracked file
+against `/dev/null`) run in git custody (`gitexec.custody`): against a git dir the guard builds
+over the repository's objects and index, with its own work tree, so no clean filter, textconv or
+diff driver the repository names runs — including one added to its config while the guard reads
+(W4 custody sweep). A repository the custody refuses (a partial clone, a non-regular
+`info/exclude`, a config, include, `shallow` or `core.excludesFile` git would block on) is exit 2;
+a FIFO at a work tree `.gitignore`/`.gitattributes` blocks a git call up to 60 s, then exit 2. Every git the guard runs is under `gitexec.custody_env`. Binary media (images, fonts, audio/video, archives) skip the content
 rules by extension, never by a NUL byte; the guard surface still sees them by path. Run it OFF
 the worker.
 
@@ -1053,9 +1119,11 @@ Subcommands: `init`, `add`, `answer`, `waive`, `overtake`, `list`, `stale`, `sho
 
 Flags: `--run` (run directory under docs/runs) or `--file` (explicit batch path, for
 tests and scratch); `--pin-ref REF` (the trust anchor, before or after the subcommand: a commit
-id or a ref whose final target, through any symbolic chain, is remote-tracking — a local branch,
-tag, `HEAD`, short name or a `refs/remotes/…` name symbolic to a local branch exits 2 — resolved
-once; the human grant key, through `decisions.py --pin-ref`, and the batch at this path are both
+id that names that commit object, or a full remote-tracking ref that exists under exactly that
+name, every symbolic hop remote-tracking too — a local branch, tag, `HEAD`, short name, a
+`refs/remotes/…` name symbolic to a local branch, a revision suffix, or a local
+`refs/heads/refs/remotes/…` branch standing in for an absent remote-tracking ref exits 2 (W3-07) —
+resolved once; the human grant key, through `decisions.py --pin-ref`, and the batch at this path are both
 read at that commit. Use it only in a clone the checked change cannot write refs in — the
 coordinator's own fetch or a CI checkout; in a worker's own clone any ref, `refs/remotes/*`
 included, is the worker's to move). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,
@@ -1130,7 +1198,9 @@ Source `runtime/scripts/gitexec.py:1-76`; behavior pinned by `tests/test_invento
 `tests/test_diff_scope.py`, `tests/test_gitexec_config_commands.py`,
 `tests/test_posix_provider.py`, and `tests/test_orchestrator_providers_tier1.py`.
 
-API: `argv`, `env`, `driver_blanks`.
+API: `argv`, `env`, `driver_blanks`, and the git custody: `custody`, `Custody`, `custody_git_dir`,
+`custody_facts`, `custody_settings`, `custody_env`, `GitCustodyRefused`, `SELECTOR_ENV`,
+`CUSTODY_FLOOR`, `CUSTODY_ENV`.
 
 `argv(*args)` prepends the absolute path resolved once at import (`GIT`) and raises `GitAbsent`
 (a `FileNotFoundError`) when no `git` binary was on `PATH`; `env()` returns the caller's
@@ -1177,9 +1247,8 @@ provider and the adapters run, read at its `-C`/cwd or `--git-dir`; not `live_co
 `status` of the catalog checkout); a read of committed objects alone selects no filter and skips
 it. The listing and the call are two steps, so a driver a concurrent writer of that config adds
 between them runs unblanked: `driver_blanks` closes the channel only for a config no one writes
-while the call runs. The posix provider and the adapters do not rely on it (PR #720 Codex round
-3): a git of theirs that could apply a driver runs against a git dir they build, whose config
-declares none, and any other such git is refused (`docs/runtimes.md`, "`posix` git custody"). An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed`, hint_provenance.py's `ProvenanceError`, a posix provider git call that never runs (exit 127, surfacing as that verb's `ProviderError`, e.g. `worktree_create_failed` or `worktree_rm_failed`) and an adapter's `<provider>_cli_error`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
+while the call runs. A git that can apply such a driver therefore runs in git custody instead, and
+the listing stays beside it as a belt with its fail-closed contract. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed`, hint_provenance.py's `ProvenanceError`, a posix provider git call that never runs (exit 127, surfacing as that verb's `ProviderError`, e.g. `worktree_create_failed` or `worktree_rm_failed`) and an adapter's `<provider>_cli_error`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
 `stdin=subprocess.DEVNULL` (or input of its own), as `driver_blanks` does, so a hook, filter or git itself never
 waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
 parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
@@ -1191,6 +1260,93 @@ every verifier git leg runs the custody-classed git it pinned at startup under i
 environment, where this module runs `GIT` under the caller's whole environment.
 `tests/test_gitexec_config_commands.py` holds both `driver_blanks` copies to this one.
 
+Git custody (W4-01, PR #720 Codex round 3; shared with the read-side tools since the W4 custody
+sweep). `custody_git_dir(common, object_format, head, gitdir, objects=, bare=, attributes=)` builds a git dir in
+a fresh temporary directory that no worker names: its own config (repository format, object
+format, `core.bare`, and no driver of any kind), HEAD at `head`, the repository's objects —
+`objects="alternate"` (default) through `objects/info/alternates`, read only, or `"shared"`, a
+symlink to the repository's store, so an object the custody call writes lands where a later git in
+the repository finds it — and regular-file copies of the common `info/exclude`, `info/attributes`
+(data: `text`/`eol`/`working-tree-encoding` steer how a work-tree file reads as a blob, and a
+`filter=`/`diff=`/`merge=` it selects names a driver the dir never defines) and `shallow` and,
+when `gitdir` names a per-worktree admin dir, its `index` (mtime kept), split-index
+`sharedindex.*` and `info/sparse-checkout`; a FIFO, symlink or other non-regular file at any of
+those paths is refused (`GitCustodyRefused`, an `OSError`), never followed. `attributes` (bytes)
+is written to a file in the dir that its config names as `core.attributesFile`, so git reads it at
+that key's precedence (below `.gitattributes`, below `info/attributes`). It is removed on exit.
+`custody(repo, run=, index=, objects=)` reads the repository's facts (`rev-parse`) and data-only
+`core.*` settings (`custody_settings`: `filemode`, `symlinks`, `ignorecase`, sparse flags,
+`autocrlf`, `eol`, `safecrlf`, `checkRoundtripEncoding`, `checkstat`, `trustctime` — never
+`core.excludesFile`, whose ignore list could hide an untracked file) and the CONTENT of the
+repository's own `core.attributesFile` (`custody_attributes`: the path expanded as git expands it,
+a relative one from the work tree top, then read only as a regular file of at most
+`ATTRIBUTES_FILE_LIMIT` (1 MiB) bytes, opened without following a final symlink and without
+blocking; `custody_excludes` does the same for `core.excludesFile`, so a custody
+`ls-files --others` lists what the repository's own git lists; a FIFO, device, directory, symlink or
+larger file refuses, never dropped — dropped, a
+clean CRLF checkout an `eol=crlf` line there steers read as modified; a missing file or empty
+value is no attributes, as for git; a global or system value stays unread; with no repository value
+the custody still names its own empty file, and an excludes file always (that content, or
+`/dev/null` from `custody_git_dir` alone), so git never opens its default user attributes or ignore
+file, `$XDG_CONFIG_HOME/git/attributes` and `.../ignore` or under `~/.config/git/`, where a FIFO
+blocked it), refuses an `extensions.*` the dir cannot honour and a partial clone (git 2.43's
+`clone --filter` writes `remote.<name>.promisor` and `.partialclonefilter`, never
+`extensions.partialClone`, so any promisor remote refuses) and yields a `Custody` whose `lead`
+is `-C <repo> --git-dir <dir> --work-tree <top>` and whose `pairs` are those settings. A git run
+with that lead reads the repository's work tree, index and objects and no config the worker
+writes, so a `filter`, `textconv`, `diff` or `merge` driver a `.gitattributes` or `info/attributes`
+line selects is undefined, whenever the repository's config gained it. `custody_env(base, blanks)`
+is `env()` minus `SELECTOR_ENV` (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_ATTR_SOURCE`,
+`GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, ...) plus `CUSTODY_FLOOR` (`core.alternateRefsCommand`,
+submodule recursion, `log.showSignature` and every `gpg.*.program`, auto-maintenance) and
+`CUSTODY_ENV` (`GIT_ALLOW_PROTOCOL=file`, `GIT_NO_LAZY_FETCH=1`, so a planted promisor remote's
+`uploadpack`, credential helper or ssh command is never reached by a lazy fetch, and
+`GIT_ATTR_NOSYSTEM=1`, so the system attributes file is never opened). Neither reaches
+into a checked-out submodule: a git comparing the work tree probes a submodule's dirtiness with a
+child git that runs under the submodule's OWN config, so every custody diff carries
+`NO_SUBMODULE_CHILD` (`--ignore-submodules=dirty`: a moved gitlink is still reported, read from the
+submodule's refs in-process; uncommitted changes inside it are not), and a caller that stages a
+work tree keeps its gitlinks out of `git add`, which has no such option (`wtree.sh`).
+`refuse_blocking_files(path)` runs before any git in floor_guard, diff_scope and hint_provenance.
+It is BEST-EFFORT and never refuses on doubt: every git reads the repository's config and follows
+its includes, and a commit walk reads `shallow`, so a FIFO (or device) there blocked each gate
+until its timeout. It runs no git and opens nothing blocking (stat, then a non-blocking read). It
+finds the git dir the way git discovers one, and refuses (`GitCustodyRefused`) ONLY when it
+positively finds a `config`, `config.worktree`, `shallow`, `commondir` or include target that
+exists and is not a regular file. Every name it derives — a gitfile's `gitdir:`, a linked
+worktree's `commondir`, each `[include]`/`[includeIf]` `path` (config parsed like git's parser:
+CRLF, BOM, quotes and escapes, `\`-continued lines, comments, case-insensitive names,
+subsections, `~`/`~user` and relative paths; conditions not evaluated) — is checked in EVERY
+spelling a git might read it as. The spelling rules: (1) config is parsed with each whitespace
+set, git's own (space, `\t`, `\n`, `\r`) and that plus `\v` and `\f`; (2) whitespace INSIDE an
+unquoted value is rendered each way a git does or might: each byte as one space (git 2.43), kept
+byte for byte (git 2.55), each run as one space; quoted whitespace is always literal; (3) every
+resulting value, gitfile `gitdir:` and `commondir` is then taken raw and with any of space, `\t`,
+`\n`, `\v`, `\f`, `\r` trimmed from either end (each prefix and suffix of the end runs, up to 16
+bytes); (4) relative paths resolve from the including file's directory (a gitdir or commondir
+from its own), `~`/`~user` from the password database. Exact parity with each git version is not
+attempted, and nothing about
+a git version can make it refuse an ordinary repository: config it cannot parse, a value it
+cannot expand, an oversized file, add nothing. `tests/test_gitexec_config_commands.py` checks, for
+every byte in 25 positions, that each include path the installed git reads is among the spellings
+the check examines (run against git 2.43 and 2.55).
+The security property does not rest on it: no repository-named command runs either way. What it
+misses — a name it cannot follow, a FIFO swapped in after it, one at a work tree's own `.gitignore`
+or `.gitattributes`, which git opens itself path by path — is bounded by the git call's own
+timeout (60 s in floor_guard, diff_scope and hint_provenance; up to 120 s in verify.py's control),
+after which the call is refused: exit 2, `diff_failed`, a `ProvenanceError`, a refused control.
+Callers: the posix provider's `run_git` (`status`, `merge-tree`, `checkout_worktree`; see
+`docs/runtimes.md`, "`posix` git custody"), floor_guard's tracked and untracked diffs,
+diff_scope's working-tree diff and `--predict-merge` (`objects="shared"`, so the merged tree
+`merge_queue.py` commits is in the repository), hint_provenance's `diff` and `log`, and verify.py's
+negative-control checkout, apply, revert and seal (`objects="shared"`, `bare=False`, reached
+through a `.git` gitfile; its git runs under verify.py's own pinned environment, not
+`custody_env`, so the custody's own attributes and excludes files close the default user ones
+there — and each phase repository's `reset --hard` pins both to `/dev/null` on its command line —
+but `GIT_ATTR_NOSYSTEM` is not set: the system attributes file is still read, as data). floor_guard, diff_scope and hint_provenance run every other git under
+`custody_env` too.
+
 Exits: n/a (library).
 
 > Why: read-side tools inspect repositories they do not own, where a worker-planted `./bin/git`,
@@ -1198,8 +1354,10 @@ Exits: n/a (library).
 > could hijack a bare `git` call or run a command on the coordinator. Resolving
 > `runtime/scripts/gitexec.py:GIT` once at import (and raising
 > `runtime/scripts/gitexec.py:GitAbsent` when missing), overriding repo-local config via
-> `runtime/scripts/gitexec.py:env`, and blanking attribute-selected driver commands via
-> `runtime/scripts/gitexec.py:driver_blanks` keeps read-side git queries deterministic.
+> `runtime/scripts/gitexec.py:env`, and running every git that can apply an attribute-selected
+> driver in a coordinator-built git dir (`runtime/scripts/gitexec.py:custody`), where no driver is
+> defined however late the repository's config gained one, keeps read-side git queries
+> deterministic; `runtime/scripts/gitexec.py:driver_blanks` stays as the belt beside it.
 > `runtime/scripts/wtree.sh` carries the same belt and blanks for its `add -A`/`write-tree`
 > fingerprint, blanking only repository-declared drivers and leaving global/system config in
 > force; a changed path a repo-declared driver filters is refused as unverifiable (exit 3) rather
@@ -1336,8 +1494,15 @@ claimed time; two contradicting records of one unit that nothing orders are both
 `contradicted-by` the other.
 
 `git()` runs only `rev-parse`, `cat-file`, `merge-base`, `diff`, `ls-files` and `log` (anything
-else raises `ProvenanceError` before a process starts) through `gitexec.py`'s hardened
-environment with `GIT_OPTIONAL_LOCKS=0`, `--no-ext-diff` and `--no-textconv`.
+else raises `ProvenanceError` before a process starts) under `gitexec.custody_env` with
+`GIT_OPTIONAL_LOCKS=0`, `--no-ext-diff` and `--no-textconv`. `diff` and `log` run in git custody
+(`gitexec.custody`): against a git dir built over the checkout's objects and index, whose config
+defines no filter, textconv or diff driver, so none a `.gitattributes` or `info/attributes` line
+selects runs — not even one the checkout's config gained while the hint was read (W4 custody
+sweep), and so does `ls-files` (it reads the ignore files). The checkout's declared drivers are
+still listed first as a belt; an unreadable config, a checkout the custody refuses (a partial
+clone), a config, include or `shallow` git would block on, and a git that timed out (60 s: a FIFO at
+a work tree `.gitignore`/`.gitattributes`) are each a `ProvenanceError`.
 
 Replay corpus (`scripts/hint_replay.py`): 27 scenarios (37 hints), each a synthetic multi-commit
 repository plus a committed run archive (some tampered after commit), replayed with hints `off`,
@@ -1650,7 +1815,7 @@ or refused input · 3 not the owner (fenced, lease held, unknown token).
 ## `orca_cli.py`
 
 Resolves the Orca CLI command name once, for every script that talks to Orca. Source
-`runtime/scripts/orca_cli.py:1-46`; behavior pinned by `tests/test_orca_cli.py`, which also
+`runtime/scripts/orca_cli.py:1-53`; behavior pinned by `tests/test_orca_cli.py`, which also
 fails on any script under `runtime/scripts/` that spells the executable itself.
 
 Usage: `orca_cli.py [--path | --version | <domain> ARGS…]`; library `from orca_cli import resolve, run_json`.
@@ -1671,9 +1836,24 @@ sessions it manages; the test suite points it at a stub) → `orca_cli.py` itsel
 `OPEN_FLEET_RUNTIME`/`ORCA_FLEET_RUNTIME` selects a non-Orca runtime → `orca-dev` when
 `ORCA_DEV_REPO_ROOT` is set → `orca-ide` on Linux and WSL → `orca` elsewhere. Resolution never consults PATH; `--path` additionally
 looks the resolved name up and fails when it is absent.
+A configured command must name ONE executable — a bare name or an absolute path; a command line
+(`python3 /tmp/orca.py`), an option-shaped value, a cwd-relative path or a control character is
+refused by name, "(it must name one executable, without arguments)", and `run_json` also refuses
+a configured name that is not on PATH with that message instead of an errno. The precedence
+lives in `configured_command` and the rule in `cli_command_problem` (which also refuses C1,
+bidi/format and separator characters), and every resolver goes through them: `resolve_orca`, to
+which `runtime/providers/orca.py`'s `resolve_orca_binary` (the Orca provider, `auto`,
+`preflight.py`, `install.sh`) delegates, raising `invalid_cli_command`, and `upstream_probe.py`'s
+`capture` resolver, so the override it runs is the one every fleet call runs (W4-15/W2-03).
+Under `OPEN_FLEET_RUNTIME=auto` the registry decides whether Orca answers, so `resolve` never
+names an Orca binary `active_provider_name` rejected. It differs on purpose, and only, where `capture` must reach the
+real Orca CLI: the override must also be on PATH, an `ORCA_DEV_REPO_ROOT` without `orca-dev` on
+PATH falls through to the platform default, and `OPEN_FLEET_RUNTIME` is ignored (this module's
+non-Orca shim is not Orca).
 
 Exits: 0 printed · 1 (`--path`) the resolved command is not on PATH, or a provider dispatch
-failed · 2 usage, or an unknown `OPEN_FLEET_RUNTIME`.
+failed · 2 usage, a configured command that is not one executable, or an unknown
+`OPEN_FLEET_RUNTIME`.
 
 > Why: Orca's Linux executable, `.deb` and `.rpm` are all `orca-ide` by construction
 > (`src/main/cli/bundled-cli-launcher-path.ts` LINUX_CLI_COMMAND_NAME), and bare `orca` on a
@@ -1718,10 +1898,13 @@ Flags: none — the single argument is the input file. There is no help flag: pa
 Output prints `MESSAGES: <n>`, then per message `ID`, `FROM`, `TYPE`, `SUBJ`, `BODY`,
 `PAYLOAD`. Missing `ID`/`FROM`/`TYPE`/`SUBJ` print as `?`, but a missing `BODY` prints
 as an empty string and a missing `PAYLOAD` prints as `None`. Every printed field passes
-through escaping for C0/C1 controls (except LF and TAB, kept literal for readability), DEL, and
-invisible Unicode (Cf, Zl, Zp), so hostile text can neither drive the terminal nor reorder
-characters. Because LF passes through, a multi-line field (a `BODY`) can print a line that looks
-like a message header: read the message boundaries from the structure, never from a line's look. Malformed segments are skipped line-wise
+through escaping for C0/C1 controls, DEL, invisible Unicode (Cf, Zl, Zp) and lone surrogates
+(Cs), so hostile text can neither drive the terminal nor reorder characters. `ID`, `FROM`,
+`TYPE`, `SUBJ` and `PAYLOAD` escape LF and TAB too, so each stays on its line; `BODY` keeps its
+lines for readability, but one that starts like a line a fleet printer writes (this printer's
+`ID:`/`SUBJ:`/`BODY:`/`PAYLOAD:`/`MESSAGES:`, a `KEY=` line, `===`, `---`, a `(…)`/`[…]`
+marker) is indented off column 0, so a body cannot draw the
+fields of a message that never arrived (Codex round 2). Prose lines keep their column. Malformed segments are skipped line-wise
 (counted on stderr); envelopes carrying a `messages` key outside the expected shape warn
 as unrecognized rather than silently undercounting.
 
@@ -1787,12 +1970,36 @@ Flags: `--require-placement` (also require a portable backend that binds the wor
 before launch; Orca's own doctor never does). Otherwise two positional arguments.
 
 Verdict rule: the transcript must name THIS recipe (the whole id, not a substring of a
-longer one) and report no fail and no warn. JSON transcripts read structurally (empty
+longer one) and report no fail and no warn. In JSON the id must sit in a recipe field
+(`recipe`, `recipeId`, `recipe-id`, `recipeName` in any case or separator, or a `recipe`
+object's id), never a dict key or another value, and every recipe field must name this recipe;
+a portable backend must declare one, and only a report with no recipe field at all falls back
+to its `id`/`name` fields outside checks, findings and mounts, all of which must be the id
+(W4-10). A recipe field that is present but declares nothing (null, a number, an empty value, a
+list holding a non-string, an object without a usable id) is refused as malformed, never read
+past to that fallback. JSON that names a key twice inside one object, as written or in two spellings the reader takes as one (`id`/`ID`, `recipeId`/`recipe-id`), is refused at every level (which value wins
+would be the parser's choice), placement claims are read in every spelling
+(`prelaunchPlacementBound`, `Ephemeral`) and at every level, and every `{ok, result}` envelope
+around the report, at every wrapping level, is held to it: its own `ok:false`, `error` or any
+finding, or a false placement claim anywhere inside it (its `metadata` included), refuses. A
+report wrapped more than once is read out of all of its wrappers (up to 16), and a false placement
+claim anywhere in a report that names no portable backend refuses too. Whatever stops the reader
+short of the report is a refusal, in the assessment and in `--require-placement` alike: more than
+16 wrappers, output nested too deep to parse, and a transcript that opens as JSON by the JSON
+grammar's first token (a byte-order mark and whitespace aside: `{`, or `[` followed by `]` or by
+any value's first token — an object, an array, a string, or a number, `true`, `false` or `null`
+that ends at a delimiter) but does not parse, which is never read as plain text; `[PASS] …`,
+`[12:00:01] …` and `[2026-10-28] …` lines are still read as text. The documented JSON output is one report object, optionally inside
+those envelopes; every other shape is refused the same way, never assessed: an array or a scalar
+(`null` included) at the top, a list as the report's `result`, and a report's `backend` anywhere
+but at the top of the report proper or spelt otherwise (an array-wrapped report was read as one
+naming no backend, so its isolation checks were skipped). JSON transcripts read structurally (empty
 finding collections are good news; `ok:false` is a finding); plain-text transcripts first
 strip "none of these" shapes (`"failures": []`, `failures: 0`, `0 warnings`, `no
 failures`) before matching fail/warn/error words. A transcript naming a portable `backend`
 (#585) must also prove its isolation: ephemeral, no credential mounts, placement bound before
-launch, and the backend's own flags (docker family: cap-drop ALL, no-new-privileges, a pids
+launch (claims read at the top level; the same claim false at any nested level is a
+contradiction and an isolation finding), and the backend's own flags (docker family: cap-drop ALL, no-new-privileges, a pids
 limit; bwrap: workspace filesystem scope, no host network; gondolin: only `/workspace`
 mounted). Any backend fails on `privileged: true`, host networking, a mount of a runtime socket
 or a directory holding one, or a mount of the real home, `/root`, a home root (`/home`,
@@ -1803,7 +2010,8 @@ resolved. Called by
 `runtime/scripts/spawn_worker.sh`, which runs the doctor itself and passes its own output
 here — a transcript the caller names is not evidence.
 
-Exits: 0 clear · 1 not clear (reason on stderr), an unreadable transcript, or no placement
+Exits: 0 clear · 1 not clear (reason on stderr, escaped onto one line: a reason can quote a
+transcript key, and `spawn_worker.sh` splices it into its refusal), an unreadable transcript, or no placement
 under `--require-placement` · 2 a credential or isolation finding (the sandbox would expose the
 host), or usage.
 
@@ -1897,7 +2105,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt failure · 2 usage or precheck refusal.
 ## `send_msg.py`
 
 Orchestration `send` with the handler's rules enforced client-side plus sender
-assertion. Source `runtime/scripts/send_msg.py:1-24`; behavior pinned by
+assertion. Source `runtime/scripts/send_msg.py:1-32`; behavior pinned by
 `tests/test_send_msg.py`.
 
 Usage: `send_msg.py --subject S [--to DEST] [--run R] [--from SENDER] [--body B] [--type T] [--priority P] [--thread-id T] [--payload JSON] [--task-id ID] [--dispatch-id ID] [--outcome O] [--files-modified JSON] [--report-path P] [--phase P] [--retry-request ID] [--dispatch-capability C]`
@@ -1906,7 +2114,12 @@ Gates (all exit 2, zero side effects): `--type` from the 9-value keyset;
 `worker_done` requires `--outcome succeeded|failed` and `--outcome` rides nothing
 else; `worker_done`/`heartbeat` never target a group address and never run
 identity-less (needs `--from` or `ORCA_TERMINAL_HANDLE`; disagreement between them
-refuses). `--payload` must be JSON.
+refuses). `--payload` must be JSON. That disagreement check catches an ACCIDENTAL mismatch
+only: both sides are the caller's own, so a worker that sets `ORCA_TERMINAL_HANDLE` to a
+sibling's handle passes it. The sender is self-asserted client-side; the authority is the
+runtime (Orca's `sender_not_assignee` / `task_dispatch_mismatch`, and `dispatch_capability_invalid`
+for a wrong `--dispatch-capability`, the one secret-bound proof when the preamble carries one),
+and posix records the sender as given (W5-19). The receipt's `MESSAGE_ID` prints inert, on one line.
 
 Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refusal.
 
@@ -1914,6 +2127,63 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 > from nobody either fans out or speaks as a sibling. The runtime would refuse each
 > of these after the fact; refusing client-side keeps the mistake a usage error with
 > no dispatch touched.
+
+## `spawn_identity.py`
+
+Who is spawning, by process tree: the identity `spawn_worker.sh` reads when an environment says
+nothing (W4-04, Codex rounds 3 and 4). Source `runtime/scripts/spawn_identity.py`; behavior pinned
+by `tests/test_spawn_worker.py` (`TestIdentitySurvivesAScrubbedEnvironment`,
+`TestUnknownIsNeverAbsent`).
+
+Usage: `spawn_identity.py whoami --registry <dir> --pid <pid>` (one line per fact: `ROOT <profile>
+<key>` for each recorded worker root among the pid's ancestors, `INTREE`, `ANCHORED`, `LIVE
+<profile>` per live worker, `RESERVATION <profile> <in-flight> <path>` per open launch reservation
+the caller is not exempt from, `SELF <key>`); `spawn_identity.py record-root --registry <dir>
+--handle <h> --profile <p> [--launcher <pid>] [--since <pid>] [--wait <secs>]` (record the topmost process whose
+initial environment names pane `h` as a root, its parent as a host, and — with `--launcher`, for
+an uncapped launch only — the launcher's own ancestors below the one it shares with the worker
+as anchors). A key is `<pid>.<start time>`, so a reused pid never matches; dead roots, hosts and
+anchors are pruned on read, and an anchor stops counting once a live root or a host descends
+from it.
+
+Exits: 0 answered, or the pane's root recorded · 2 (`record-root`) a root recorded but not
+verified: a carrier's start time or parent could not be read, or a root with no parent to record
+as its host (reparented to init) was found by a scan that was not complete, so it may be a carrier
+that escaped a pane whose own process could not be read · 3 a COMPLETE scan found no process
+carrying the handle (no local worker process: `spawn_worker.sh` drops the reservation, the handle
+record stands) · 1 nothing found by a scan that was not complete, or a read the answer needs
+failed (`spawn_worker.sh` keeps the reservation on 2 and 1, and caps a `whoami` caller at `ro`
+on 1).
+
+A pane found is recorded: its process tree is identified, and another carrier of the handle
+outside it would have to have escaped it (the residual below). Completeness decides what finding
+NOTHING means. A scan is complete only when every process of this uid that could be the launch's
+pane was read; a read that fails for any reason but the process being gone is UNKNOWN, never
+"absent" (Codex round 4): an environment that stays unreadable (`EACCES` from a non-dumpable
+process, `EIO`) makes the scan incomplete. It is read again for up to 0.25 s first, since a
+process caught exiting answers `EACCES` for a moment and then is gone, and one that has exited
+but is not yet reaped (a zombie) answers it for as long as it lingers and is absent too; a
+process that vanishes mid-scan is gone, not unknown (the scan re-lists a few times for a carrier it forked just before
+it exited, which would be outside the pane's live tree: the residual below). With
+`--since <pid>` (`spawn_worker.sh` passes itself) an unreadable process that started before that
+pid is not counted, since it cannot be a pane this launch created; a runtime that handed a launch
+a pre-existing pane whose environment cannot be read is not covered. Without `/proc`, `ps -E`
+(BSD/macOS, unwitnessed) leaves out an environment it may not read without saying so, so no scan
+there is complete: finding nothing there exits 1, never 3. The same rule holds for every other
+read: an ancestor, a recorded root, host or anchor, a registry directory or a reservation that
+cannot be read is unknown (an entry whose liveness is unknown is kept, not pruned; an anchor
+counts only while it is certainly alive). On a host that hides other users' processes (`hidepid`), a caller whose
+ancestry passes through a hidden process cannot be identified while any worker root is live, so
+`whoami` exits 1 and the caller is capped at `ro`. A `/proc` that is not this process's own pid
+namespace's (a sandbox that unshares pids but keeps the host's `/proc`, so every pid read there
+is another process) answers nothing: exit 1.
+
+What it identifies is the pane's process tree. A worker process outside it is not identified
+when its environment no longer carries the pane handle: one that daemonized out of the tree
+(reparented, it descends from no recorded root or host, whether or not its root is still alive),
+a command a harness runs from a process started outside the pane, or a spawn in another pid
+namespace with its own `/proc` (its pids are not the recorded ones). Whether any harness does
+one of these as ordinary behaviour is unwitnessed.
 
 ## `spawn_worker.sh`
 
@@ -1953,9 +2223,79 @@ refused beside `--spec`); `--parent-profile` (the parent's profile, for monotoni
 `--pairing-code`, `--cli-cwd` (routing; ambient disagreement refuses, `--from`
 against `ORCA_TERMINAL_HANDLE`);
 `--task-brief` (brief spawn-time read); `--parent-profile ro|rw|danger` (monotonic narrowing:
-the most restrictive of this flag, `OPEN_FLEET_PARENT_PROFILE`/`ORCA_PARENT_PROFILE` and the
-caller's `OPEN_FLEET_SANDBOX_PROFILE`/`ORCA_SANDBOX_PROFILE` caps `PROFILE`; a wider child
-refuses, exit 2). Documented refusals, not silent drops:
+the most restrictive of this flag, `OPEN_FLEET_PARENT_PROFILE`/`ORCA_PARENT_PROFILE`, the
+caller's `OPEN_FLEET_SANDBOX_PROFILE`/`ORCA_SANDBOX_PROFILE` and the spawn registry caps
+`PROFILE`; a wider child refuses, exit 2). The spawn registry (W4-04): every launch, on both
+lanes and with or without an override, is recorded in `~/.open-fleet/spawn-profiles/<handle>`
+under the pane handle the runtime returns, which the worker's pane then carries as
+`ORCA_TERMINAL_HANDLE`, so a spawn from a recorded pane is capped at its record (an empty record
+reads `ro`, a foreign value refuses); the launch command itself is never changed, so nothing
+depends on the pane's shell. Because the worker's command runs before the runtime returns its
+handle, each launch first RESERVES its profile in `~/.open-fleet/spawn-profiles/.pending/`
+(before any task mutation or launch call; a reservation that cannot be written — `HOME` unset or
+unwritable — refuses the spawn, exit 2), and the worker's records replace it. Identity does not
+rest on the environment alone, since a harness may drop `ORCA_*` from the worker's shell (Codex's
+`shell_environment_policy` does): for a worker that runs on this host as an Orca or posix pane,
+registration also records its pane ROOT process by pid and start time
+([`spawn_identity.py`](#spawn_identitypy) finds it by the handle in the pane's initial
+environment), and every spawn walks its own process ancestry, so a recorded root among its
+ancestors caps it whatever its environment says (what that does not identify is listed below). A session that no record and no root identifies
+waits for every open reservation it is not exempt from (`RESERVATION_WAIT_SECS`, default 120) and
+is then capped at the most restrictive one still open; inside a provider's process tree (under a
+recorded pty host or tmux pane) it is capped at the most restrictive LIVE worker. Only an ANCHORED
+session is exempt: a process of a coordinator that launched a worker while uncapped (recorded at
+that launch: its ancestors below the one it shares with the worker), which no worker can descend
+from; and never from a reservation whose launch it descends from. Every response that names a
+pane handle (`worker-start`, `terminal create`, and the `request-show` triage) is read by one
+extraction before anything judges it — wherever the handle sits: the result, the error envelope
+or its `data`, a nested worker or terminal object, an effect — and each handle it names is
+registered whatever the exit code, error code or state says; a refused or failed verdict prints
+the pane it names (`HANDLE=`) and says a worker may be live there. A response that does not
+parse whole is searched for handle-shaped fields too, and one that reads two ways (a duplicate
+key at any depth, `NaN`/`Infinity`, a number that overflows) has every occurrence of a handle
+key extracted; every other reader of a runtime response (the verdict, task-list, the triage,
+terminal wait, dispatch) treats such a response as unparseable and takes its fail-closed path,
+since `json.load` would keep only the last of two equal keys. A launch that may have left a worker live
+without a complete record — a successful start whose receipt names no handle, a failure the
+receipt does not prove came before any launch effect (see below), a handle record that cannot be written, a
+handle that is not a registry key, a response that does not parse whole, or a worker whose
+process tree is UNVERIFIED (`spawn_identity.py` exits 1: nothing found by a scan that could not
+read every candidate — an environment that stayed unreadable, a host without `/proc`; or 2: a root it found but could not verify) — KEEPS its reservation and says so, and it
+caps every unanchored session until removed; on the custom-argv lane a pane whose handle record
+fails gets no task. Otherwise the reservation goes: when no launch call was made; on either
+launch path (`worker-start`, `terminal create`), on a refusal PROVEN to precede any launch effect
+— a response, naming no pane, that is exactly one refusal by a strict schema at every level: one
+error, at the top level (beside only `id` and `ok: false`) or alone in `result`, holding only a
+`code` among `task_not_found`, `task_not_startable`, `nested_worker_depth_exceeded`,
+`worktree_not_found`, `selector_not_found` and `invalid_argument`, a string `message`, and `data`
+with only the documented refusal fields (`nextSteps`, `unmetDependencies`, `retryOf`,
+`failureCount`, `reason`) in their documented types. Anything else keeps it: a second error, a
+result beside the error, any other key at any depth, `runtime_error`, an unknown or untyped code,
+and `inject_rejected`, `consumer_fenced` and `dispatch_inactive`, which can follow a pane's creation
+and still exit 2 as refusals; or once the WORKER's own pane is named (an agent-role handle:
+`agentTerminalHandle`, a terminal effect with `role: agent`, or a terminal handle on the result
+itself or in its `worker` object; any other pane, a coordinator-role, unknown-role or role-less one
+included, never releases it) and every handle
+named is recorded — with its root, or by its handle record alone when a complete scan finds no
+process carrying it (`SPAWN_ROOT_WAIT_SECS`, default 1: the worker is not a local process — it
+exited, runs remotely or in another uid's container, or the backend is a dry run) or the worker
+is not a local pane at all (another runtime's, or placed with `--environment`/`--on`). A session
+whose identity cannot be read is capped at `ro`, whether the first read failed or a later one while
+it waited on a reservation: the cap is taken from the last read. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
+`OPEN_FLEET_WORKER_ID`, `OPEN_FLEET_UNIT_WORKTREE` or an `ORCA_` alias — with no profile in its
+environment or the registry is capped at `ro`, and `--parent-profile` cannot raise that (the flag
+only narrows). A capped session cannot use a command override (`WORKER_CMD`, `CLAUDE_CMD`,
+`CODEX_CMD`): overrides are a coordinator-only facility. All of it is files the worker's uid can
+write and a process tree it runs in: it bounds the fleet's spawn path against an omitted,
+inherited or scrubbed profile, not a worker that edits the registry or calls the runtime CLI or
+an agent directly. Nor does it identify a worker process outside its pane's process tree whose
+environment no longer carries the pane handle — one that daemonized out of it (reparented, it
+descends from no recorded root or host), a command a harness runs from a process started outside
+the pane, a spawn in another pid namespace with its own `/proc` — or cover a worker whose HOME is
+not its coordinator's (it reads another registry) or a launch whose pane process itself carries
+no handle (a command that clears its environment, `env -i …`). Whether any harness does one of
+these as ordinary behaviour is unwitnessed. On a host without `/proc`, roots are found through
+`ps -E` (BSD/macOS; unwitnessed there). Documented refusals, not silent drops:
 `--task-status`/`--task-ready` (a filtered view cannot verify deps, so the DAG check
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).
@@ -2054,7 +2394,12 @@ other question — refused like upstream's `incompatible_runtime` instead of
 certifying accumulated output as the rendered screen; `screen-unavailable` is
 degraded output, likewise never certified. Successful reads print the `tail` lines
 under `--- tail` (a receipt without `tail` fails closed — the payload is the point
-of the read); tail lines and titles render through pm.py's `_visible`, inertly.
+of the read); tail lines and titles render through pm.py's `_visible`, inertly, and every
+single-line field (`HANDLE`, `SOURCE`, `TITLE`, list rows) and every tail item goes through
+`_visible_line`, its newline and tab escaped, so a receipt value cannot forge another line
+(W4-11); a tail item or list row that starts like one of the receipt's own lines (`KEY=`,
+`---`) is also indented off column 0, so a pane printing `TRUNCATED=no` cannot pass for this
+receipt's field (Codex round 2); `agent: done` and other prose keep their column.
 Mutating verbs
 (close/rename/set-pane-title/split/switch/stop/send/wait) stay out (lifecycle-risk).
 
@@ -2069,7 +2414,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 
 Drift probe against the Orca pin: has upstream moved past `runtime/pins.json`, and —
 when a binary is at hand — how do its surfaces differ from the last re-pin's receipts?
-Source `runtime/scripts/upstream_probe.py:1-59`; behavior pinned by
+Source `runtime/scripts/upstream_probe.py:1-60`; behavior pinned by
 `tests/test_upstream_probe.py`. The weekly `upstream-drift` workflow
 (`.github/workflows/upstream-drift.yml`) runs `latest` and `review-date` and opens — or
 comments on — an issue labeled `upstream-drift` when either says a re-pin is due. Neither check
@@ -2105,8 +2450,9 @@ over https or loopback http only and never across a redirect, and skips `-rc`, `
 the first component that moved; `patches_behind` counts the stable tags strictly newer
 than the pin. `--json` prints exactly `{"pin","latest","drift","patches_behind"}`.
 
-`capture` resolves the CLI the way upstream's skill stubs do — `ORCA_CLI_COMMAND` if set
-(one executable, no arguments), else `orca-dev` when `ORCA_DEV_REPO_ROOT` is set and it is
+`capture` resolves the CLI the way upstream's skill stubs do — `OPEN_FLEET_CLI_COMMAND`, else
+`ORCA_CLI_COMMAND`, if set (`orca_cli.py`'s precedence and rule: one executable, no
+arguments), else `orca-dev` when `ORCA_DEV_REPO_ROOT` is set and it is
 on PATH, else `orca-ide` on Linux, else `orca` — and refuses when it is not on PATH. It
 runs `agent-context --json`, `--help`, `terminal --help`, and for the `orchestration` and
 `orca-cli` guides `skills get <topic>`, `--references`, then one `--reference <name>` per
@@ -2216,7 +2562,13 @@ Flags: `show` takes `--dispatch` (fleet verdict: `projection.nextAction.argv`, l
 `--source` (`auto|transcript|terminal`; `transcript` certifies — a non-transcript effective
 source is exit 1; transcript reads print each message as `--- <id> (<role>)` with joined
 text blocks capped at 2000 chars, terminal reads print `--- tail` plus the lines, and a
-missing payload fails closed; all of it through pm.py's `_visible`, inertly); `stop` and
+missing payload fails closed; all of it through pm.py's `_visible`, inertly — and every
+single-line field, `STATE`/`STAGE`/`NEXT_ACTION`/`AGENT_WAIT`/`CURSOR`/`FALLBACK`, the fencing
+`DISPATCH`/`STATE`, the list rows and each tail item, through `_visible_line` (newline and tab
+escaped), a message body's continuation lines indented, and a body's first line, a tail item
+or a list row that starts like one of the receipt's own lines (`KEY=`, `---`, the
+`(unreadable message skipped)` marker) indented too, so none can pass for a `--- <id> (<role>)`
+header or a `SOURCE=`/`STATE=` field, W4-11, Codex round 2); `stop` and
 `abandon` take `--dispatch`, `--retry-request` (scripted fencing; `stop_unknown` fails,
 never claims); `release` and `retain` take `--dispatch`, `--retry-request` (reclaim; only
 `release_unknown` fails); `list` takes `--run`, `--terminal-state`, `--include-remote`,

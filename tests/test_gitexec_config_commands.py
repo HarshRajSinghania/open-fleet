@@ -17,6 +17,7 @@ is never created. Every case carries its mutation control: with the hardening re
 marker comes back, so the test proves the hardening is load-bearing, not that the channel
 was dormant. Stdlib only; no network.
 """
+import contextlib
 import importlib.util
 import json
 import os
@@ -30,6 +31,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 SCRIPTS = ROOT / "runtime" / "scripts"
 
 
@@ -117,6 +124,12 @@ class _Probe:
 
 def _sh(path):
     return "'" + str(path).replace("'", "'\\''") + "'"
+
+
+def _no_custody(repo, **_kw):
+    """The pre-custody gate, for mutation controls only: a gitexec.Custody with no git dir, so the
+    content-reading git runs in ``repo`` itself, under the repository's own config."""
+    return contextlib.nullcontext(gitexec.Custody(None, None, (), repo))
 
 
 class GitexecDriverBlanks(unittest.TestCase):
@@ -287,7 +300,9 @@ class FloorGuardWorktreeDiff(unittest.TestCase):
 
     def test_mutation_control_without_the_blanks_the_filter_fires(self):
         p, base = self._repo()
-        with mock.patch.object(floor_guard.gitexec, "driver_blanks", lambda repo: []):
+        # The pre-fix guard: no blanks AND no custody (the diff reads the repo's own config).
+        with mock.patch.object(floor_guard.gitexec, "driver_blanks", lambda repo: []), \
+                mock.patch.object(floor_guard.gitexec, "custody", _no_custody):
             self._collect(p, base)
         self.assertIn("clean", p.fired(),
                       "control: with the driver blanks removed the clean filter must fire")
@@ -312,7 +327,9 @@ class DiffScopeWorktreeDiff(unittest.TestCase):
 
     def test_mutation_control_without_the_blanks_the_filter_fires(self):
         p, base = self._repo()
-        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []):
+        # The pre-fix scope: no blanks AND no custody (the diff reads the repo's own config).
+        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []), \
+                mock.patch.object(diff_scope, "_custody", _no_custody):
             diff_scope.scope(p.repo, base)
         self.assertIn("clean", p.fired(),
                       "control: with the driver blanks removed the clean filter must fire")
@@ -342,7 +359,9 @@ class HintProvenanceWorktreeDiff(unittest.TestCase):
 
     def test_mutation_control_without_the_blanks_the_filter_fires(self):
         p, base = self._repo()
-        with mock.patch.object(hint_provenance.gitexec, "driver_blanks", lambda repo: []):
+        # The pre-fix read: no blanks AND no custody (the diff reads the repo's own config).
+        with mock.patch.object(hint_provenance.gitexec, "driver_blanks", lambda repo: []), \
+                mock.patch.object(hint_provenance.gitexec, "custody", _no_custody):
             self._changes(p, base)
         self.assertIn("clean", p.fired(),
                       "control: with the driver blanks removed the clean filter must fire")
@@ -803,7 +822,9 @@ class MergeDriverNeutralised(unittest.TestCase):
 
     def test_mutation_control_without_the_blanks_the_merge_driver_runs(self):
         p = self._repo()
-        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []):
+        # The pre-fix prediction: no blanks AND no custody (merge-tree reads the repo's config).
+        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []), \
+                mock.patch.object(diff_scope, "_custody", _no_custody):
             diff_scope.predict_merge(p.repo, self.main, "side")
         self.assertIn("merge", p.fired(),
                       "control: with the blanks removed the merge driver must run")
@@ -953,6 +974,1195 @@ class DriverQueryFailsClosed(unittest.TestCase):
                 self.assertNotIsInstance(err, evidence_run.WtreeUnverifiable)
                 self.assertIn("config", err)
                 self.assertEqual(p.fired(), set(), "wtree.sh ran a filter with no blanks")
+
+
+
+class TheAnchorRuleWalksEverySymbolicHop(unittest.TestCase):
+    """remote_tracking_commit (W3-07; Codex review round 2, P1): for-each-ref's %(symref) is a
+    symbolic chain's recursively resolved END, so a local bridge inside it was invisible. Each hop
+    is read with `symbolic-ref --no-recurse`; where that cannot run (git older than 2.39) a
+    symbolic name is refused, while a plain remote-tracking ref still resolves."""
+
+    def setUp(self):
+        self.repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        self.git_("init", "-q", "-b", "main")
+        self.git_("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+                  "-m", "c")
+        self.tip = self.git_("rev-parse", "HEAD")
+        self.git_("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.git_("update-ref", "refs/remotes/origin/retired", "HEAD")
+        self.git_("symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/retired")
+        self.git_("symbolic-ref", "refs/remotes/w/key", "refs/heads/bridge")
+        self.git_("symbolic-ref", "refs/remotes/w/hop", "refs/remotes/origin/main")
+
+    def git_(self, *args):
+        return subprocess.run(["git", "-C", str(self.repo), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def runner(self, no_recurse=True):
+        def run(*args):
+            if not no_recurse and "--no-recurse" in args:
+                return 129, ""  # git < 2.39: unknown option
+            r = subprocess.run(gitexec.argv("-C", str(self.repo), *args), capture_output=True,
+                               text=True, env=gitexec.env())
+            return r.returncode, r.stdout
+        return run
+
+    def test_a_local_bridge_is_refused_and_a_remote_only_chain_resolves(self):
+        commit, target, why = gitexec.remote_tracking_commit(self.runner(), "refs/remotes/w/key")
+        self.assertIsNone(commit, target)
+        self.assertIn("refs/heads/bridge", why)
+        commit, target, why = gitexec.remote_tracking_commit(self.runner(), "refs/remotes/w/hop")
+        self.assertEqual((commit, target, why), (self.tip, "refs/remotes/origin/main", None))
+
+    def test_without_no_recurse_a_symbolic_name_fails_closed_and_a_plain_ref_resolves(self):
+        old = self.runner(no_recurse=False)
+        for name in ("refs/remotes/w/key", "refs/remotes/w/hop"):
+            with self.subTest(name=name):
+                commit, _target, why = gitexec.remote_tracking_commit(old, name)
+                self.assertIsNone(commit)
+                self.assertIn("one hop at a time", why)
+        commit, _target, why = gitexec.remote_tracking_commit(old, "refs/remotes/origin/main")
+        self.assertEqual(commit, self.tip, why)
+
+
+class TheAnchorListingSplitsOnItsRecordTerminatorOnly(unittest.TestCase):
+    """remote_tracking_commit (independent re-attack, A): the for-each-ref listing was split with
+    str.splitlines(), which breaks on U+2028, U+2029 and U+0085 — characters git accepts in a
+    refname — and parsed into a last-wins dict, so a fetched branch `x<U+2028>refs/remotes/
+    origin/main` replaced origin/main. Records are NUL+LF-terminated and split on that only; a
+    malformed record or a refname seen twice refuses the listing."""
+
+    def setUp(self):
+        self.repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        git = ["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "init", "-q", "-b", "main"], check=True, capture_output=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "honest"], check=True)
+        self.honest = subprocess.run([*git, "rev-parse", "HEAD"], check=True,
+                                     capture_output=True, text=True).stdout.strip()
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "worker"], check=True)
+        self.worker = subprocess.run([*git, "rev-parse", "HEAD"], check=True,
+                                     capture_output=True, text=True).stdout.strip()
+        subprocess.run([*git, "update-ref", "refs/remotes/origin/main", self.honest], check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/remotes/origin/HEAD",
+                        "refs/remotes/origin/main"], check=True)
+
+    def run_(self, *args):
+        r = subprocess.run(gitexec.argv("-C", str(self.repo), *args), capture_output=True,
+                           env=gitexec.env())
+        return r.returncode, r.stdout.decode("utf-8", "surrogateescape")
+
+    def test_a_line_break_in_a_fetched_branch_name_never_replaces_the_real_ref(self):
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, self.worker)
+                try:
+                    for name in ("refs/remotes/origin/main", "refs/remotes/origin/HEAD"):
+                        commit, _target, why = gitexec.remote_tracking_commit(self.run_, name)
+                        self.assertEqual(commit, self.honest, why)
+                finally:
+                    unplant()
+
+    def test_a_refname_seen_twice_or_a_malformed_record_refuses_the_listing(self):
+        oid = "a" * 40
+        rec = f"refs/remotes/origin/main\0\0{oid}\0\n"
+        self.assertEqual(gitexec._ref_records(rec, "refs/remotes/")[0],
+                         {"refs/remotes/origin/main": ("", oid)})
+        for out in (rec + rec, rec + "refs/remotes/x\0\n", "refs/remotes/origin/main\0\0" + oid,
+                    rec.replace("\0\n", "\n")):
+            with self.subTest(out=out):
+                listed, why = gitexec._ref_records(out, "refs/remotes/")
+                self.assertIsNone(listed)
+                self.assertTrue(why)
+
+
+# W4 custody sweep (audit W4-01/W4-02 class): driver_blanks LISTS the drivers a config declares,
+# and the content-reading git then reads that config AGAIN. A sibling worker that adds a NEVER-SEEN
+# driver in between - selected for every path through the shared `info/attributes` - had it run on
+# the coordinator, whatever the listing said. floor_guard's, diff_scope's and hint_provenance's
+# content-reading git now runs against a git dir the gate builds (gitexec.custody), whose config
+# declares no driver. The racing sibling adds a fresh filter, textconv and merge driver before
+# EVERY git launch; each GREEN case has a control that restores the pre-fix gate (blanks listed,
+# no custody) under the same race and sees the late driver run.
+def _racing_sibling(p):
+    real = subprocess.run
+    seq = p.__dict__.setdefault("race_seq", [0])
+    common = p.repo / ".git"
+
+    def run(argv, *a, **kw):
+        if isinstance(argv, (list, tuple)) and argv and os.path.basename(os.fsdecode(argv[0])) == "git":
+            seq[0] += 1
+            name = f"late{seq[0]}"
+            with open(common / "config", "a", encoding="utf-8") as fh:
+                fh.write(f'[filter "{name}"]\n\tclean = "{p.probe}" {name}-clean\n'
+                         f'\tsmudge = "{p.probe}" {name}-smudge\n'
+                         f'[diff "{name}"]\n\ttextconv = "{p.probe}" {name}-textconv\n'
+                         f'[merge "{name}"]\n\tdriver = "{p.probe}" {name}-merge %O %A %B\n')
+            (common / "info").mkdir(exist_ok=True)
+            with open(common / "info" / "attributes", "a", encoding="utf-8") as fh:
+                fh.write(f"* filter={name} diff={name} merge={name}\n")
+        return real(argv, *a, **kw)
+    return mock.patch.object(subprocess, "run", run)
+
+
+class ContentGitRunsNoDriverAddedAfterTheListing(unittest.TestCase):
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        (p.repo / "b.txt").write_text("brand new\n", encoding="utf-8")
+        return p, base
+
+    def _diverged(self):
+        """Two branches changing shared.txt differently: merge-tree 3-way-merges that path."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("shared.txt", "base\n")
+        main = p._git("symbolic-ref", "--short", "HEAD").stdout.strip()
+        p._git("checkout", "-q", "-b", "side")
+        p.commit("shared.txt", "side\n")
+        p._git("checkout", "-q", main)
+        p.commit("shared.txt", "mainline\n")
+        return p, main
+
+    def _race_and_control(self, p, call, bypass):
+        with _racing_sibling(p):
+            got = call()
+        self.assertGreater(p.race_seq[0], 0, "the race never ran")
+        self.assertEqual(p.fired(), set(), "a driver added after the listing ran on the coordinator")
+        with _racing_sibling(p), contextlib.ExitStack() as stack:
+            for target, attr in bypass:
+                stack.enter_context(mock.patch.object(target, attr, _no_custody))
+            try:
+                call()
+            except Exception:  # the control only has to RUN the planted driver, not succeed
+                pass
+        self.assertTrue(p.fired(), "control: the pre-custody gate never ran the late driver")
+        return got
+
+    def test_floor_guard(self):
+        p, base = self._repo()
+        mb = floor_guard.merge_base(p.repo, base)
+        text = self._race_and_control(p, lambda: floor_guard.collect_diff(p.repo, mb),
+                                      [(floor_guard.gitexec, "custody")])
+        self.assertIn("+CHANGED", text)
+        self.assertIn("+brand new", text)
+
+    def test_diff_scope_scope(self):
+        p, base = self._repo()
+        self._race_and_control(p, lambda: diff_scope.scope(p.repo, base), [(diff_scope, "_custody")])
+        self.assertIn("a.txt", diff_scope.changed_files(p.repo, base))
+
+    def test_diff_scope_predict_merge(self):
+        p, main = self._diverged()
+        result = self._race_and_control(p, lambda: diff_scope.predict_merge(p.repo, main, "side"),
+                                        [(diff_scope, "_custody")])
+        self.assertFalse(result["clean"], "with no merge driver the divergent merge is a conflict")
+        self.assertIn("shared.txt", result["conflicts"])
+
+    def test_hint_provenance(self):
+        p, base = self._repo()
+        changes = self._race_and_control(
+            p, lambda: hint_provenance.LiveSource(str(p.repo)).changes_since(base),
+            [(hint_provenance.gitexec, "custody")])
+        self.assertEqual(changes, {"a.txt": ("M", None), "b.txt": ("A", None)})
+
+    def test_every_site_with_an_initialized_submodule_under_the_race(self):
+        # Codex on PR #724: the same race, in a repository whose checked-out submodule plants a
+        # filter, an fsmonitor and a hook in its OWN config; nothing runs from either.
+        for site, call in (
+                ("floor_guard", lambda p, base: floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base))),
+                ("diff_scope", lambda p, base: diff_scope.scope(p.repo, base)),
+                ("hint_provenance", lambda p, base: hint_provenance.LiveSource(str(p.repo)).changes_since(base))):
+            with self.subTest(site=site):
+                p, base = self._repo()
+                _plant_submodule(p)
+                with _racing_sibling(p):
+                    call(p, base)
+                self.assertGreater(p.race_seq[0], 0, "the race never ran")
+                self.assertEqual(p.fired(), set(), f"{site} ran a planted command")
+
+
+class CustodyReadsWhatTheRepositoryReads(unittest.TestCase):
+    """The custody must not change what an ordinary repository's diff says: the same tracked,
+    staged, deleted, mode and untracked changes, rendered the same way, as the gate's plain git
+    read before the custody (no driver declared, so both are the repository's own answer)."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        (p.repo / "keep.txt").write_text("keep\n", encoding="utf-8")
+        (p.repo / "gone.txt").write_text("gone\n", encoding="utf-8")
+        (p.repo / "run.sh").write_text("echo hi\n", encoding="utf-8")
+        base = p.commit("a.txt", "line1\nline2\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        (p.repo / "staged.txt").write_text("staged\n", encoding="utf-8")
+        p._git("add", "staged.txt")
+        (p.repo / "gone.txt").unlink()
+        (p.repo / "run.sh").chmod(0o755)
+        (p.repo / "sub").mkdir()
+        (p.repo / "sub" / "new file.txt").write_text("untracked\n", encoding="utf-8")
+        return p, base
+
+    def test_floor_guard_diff_is_unchanged(self):
+        p, base = self._repo()
+        mb = floor_guard.merge_base(p.repo, base)
+        got = floor_guard.collect_diff(p.repo, mb)
+        with mock.patch.object(floor_guard.gitexec, "custody", _no_custody):
+            want = floor_guard.collect_diff(p.repo, mb)
+        self.assertEqual(got, want)
+        for needle in ("+CHANGED", "+staged", "-gone", "new mode 100755", "+untracked"):
+            self.assertIn(needle, got)
+
+    def test_diff_scope_and_hint_provenance_are_unchanged(self):
+        p, base = self._repo()
+        got = diff_scope.changed_files(p.repo, base)
+        live = hint_provenance.LiveSource(str(p.repo)).changes_since(base)
+        with mock.patch.object(diff_scope, "_custody", _no_custody), \
+                mock.patch.object(hint_provenance.gitexec, "custody", _no_custody):
+            self.assertEqual(got, diff_scope.changed_files(p.repo, base))
+            self.assertEqual(live, hint_provenance.LiveSource(str(p.repo)).changes_since(base))
+        self.assertEqual(got, ["a.txt", "gone.txt", "run.sh", "staged.txt", "sub/new file.txt"])
+
+
+def _plant_submodule(p):
+    """An initialized submodule `sub` in p.repo whose OWN config and attributes name the probe on
+    every channel a child git inside it could take: core.fsmonitor, a clean/smudge filter selected
+    for every path through its info/attributes, and a post-index-change hook. Then a same-size
+    stat change inside it, so anything that refreshes its index re-hashes a file (and so runs a
+    filter). Returns the submodule's work tree."""
+    lib = p.dir / "lib"
+    lib.mkdir()
+    subprocess.run(["git", "init", "-q", str(lib)], env=_CLEAN_ENV, check=True, stdin=subprocess.DEVNULL)
+    (lib / "f.txt").write_text("library\n", encoding="utf-8")
+    for args in (("add", "f.txt"), ("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "lib")):
+        subprocess.run(["git", "-C", str(lib), *args], env=_CLEAN_ENV, check=True, stdin=subprocess.DEVNULL,
+                       capture_output=True)
+    r = p._git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), "sub")
+    assert r.returncode == 0, r.stderr
+    p._git("commit", "-qm", "add sub")
+    sub = p.repo / "sub"
+    for key, var in (("core.fsmonitor", "fsmonitor"), ("filter.sf.clean", "sub-clean"),
+                     ("filter.sf.smudge", "sub-smudge")):
+        p._git("config", key, f"{p.probe} {var}", cwd=sub)
+    sub_git = Path(p._git("rev-parse", "--absolute-git-dir", cwd=sub).stdout.strip())
+    (sub_git / "info").mkdir(exist_ok=True)
+    (sub_git / "info" / "attributes").write_text("* filter=sf\n", encoding="utf-8")
+    hook = sub_git / "hooks" / "post-index-change"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text(f"#!/bin/sh\n{_sh(p.probe)} sub-hook\n", encoding="utf-8")
+    hook.chmod(0o755)
+    later = time.time() + 30
+    os.utime(sub / "f.txt", (later, later))  # same size, new mtime: a refresh re-hashes it
+    return sub
+
+
+class NoChildGitInsideASubmodule(unittest.TestCase):
+    """Codex on PR #724 (P1): a work-tree diff of a repository with a checked-out submodule asks
+    whether the submodule is dirty by starting a child `git status` INSIDE it, under the
+    submodule's own config and attributes, which the custody never sees: a filter planted there
+    ran on the coordinator. Every custody diff now carries gitexec.NO_SUBMODULE_CHILD
+    (`--ignore-submodules=dirty`), which still reports a moved gitlink without the child."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        sub = _plant_submodule(p)
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        # Positive control: plain git's work-tree diff runs the submodule's own filter.
+        p._git("diff", "--no-ext-diff", "HEAD", "--")
+        self.assertIn("sub-clean", p.fired(), "the submodule's planted filter is not live")
+        later = time.time() + 60
+        os.utime(sub / "f.txt", (later, later))
+        return p, base, sub
+
+    SITES = {
+        "floor_guard": (lambda p, base: floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base)),
+                        lambda: floor_guard.gitexec),
+        "diff_scope": (lambda p, base: diff_scope.changed_files(p.repo, base), lambda: diff_scope.gitexec),
+        "hint_provenance": (lambda p, base: hint_provenance.LiveSource(str(p.repo)).changes_since(base),
+                            lambda: hint_provenance.gitexec),
+    }
+
+    def test_no_site_starts_a_child_git_in_the_submodule(self):
+        for site, (call, _mod) in self.SITES.items():
+            with self.subTest(site=site):
+                p, base, _sub = self._repo()
+                call(p, base)
+                self.assertEqual(p.fired(), set(), f"{site} ran a command the submodule's config names")
+
+    def test_mutation_control_probing_submodule_dirtiness_runs_its_filter(self):
+        for site, (call, mod) in self.SITES.items():
+            with self.subTest(site=site):
+                p, base, _sub = self._repo()
+                with mock.patch.object(mod(), "NO_SUBMODULE_CHILD", "--ignore-submodules=none"):
+                    call(p, base)
+                self.assertIn("sub-clean", p.fired(), f"control: {site} never probed the submodule")
+
+    def test_a_moved_submodule_commit_is_still_reported(self):
+        p, base, sub = self._repo()
+        (sub / "g.txt").write_text("new\n", encoding="utf-8")
+        for args in (("add", "g.txt"), ("commit", "-qm", "moved")):
+            r = subprocess.run(["git", "-C", str(sub), "-c", "user.email=a@b", "-c", "user.name=a",
+                                "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *args],
+                               env={**_CLEAN_ENV, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "filter.sf.clean",
+                                    "GIT_CONFIG_VALUE_0": ""},
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        p.fired()
+        later = time.time() + 90
+        os.utime(sub / "f.txt", (later, later))
+        mb = floor_guard.merge_base(p.repo, base)
+        self.assertIn("+Subproject commit", floor_guard.collect_diff(p.repo, mb))
+        self.assertIn("sub", diff_scope.changed_files(p.repo, base))
+        self.assertIn("sub", hint_provenance.LiveSource(str(p.repo)).changes_since(
+            p._git("rev-parse", "HEAD").stdout.strip()))
+        self.assertEqual(p.fired(), set(), "reporting the moved gitlink ran the submodule's commands")
+
+
+class CustodyKeepsLineEndingData(unittest.TestCase):
+    """Codex on the W4-02 branch (P1), applied to the shared custody: `info/attributes` and the
+    data settings that steer normalisation are data, not commands. Without them a clean CRLF
+    checkout of an `eol=crlf` (or `core.autocrlf`) path, once touched, read as modified in custody."""
+
+    def _repo(self, how):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        if how == "info/attributes":
+            (p.repo / ".git" / "info").mkdir(exist_ok=True)
+            (p.repo / ".git" / "info" / "attributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+        elif how.startswith("core.attributesFile"):
+            # Codex on the W4-02 branch: a repository-scope core.attributesFile, absolute or
+            # relative to the work tree top (here, beside the repository, so it is not untracked).
+            (p.dir / "attrs").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+            p._git("config", "core.attributesFile", str(p.dir / "attrs") if how.endswith("absolute") else "../attrs")
+        else:
+            p._git("config", "core.autocrlf", "true")
+        (p.repo / "a.txt").unlink()
+        p._git("checkout", "--", "a.txt")
+        self.assertEqual((p.repo / "a.txt").read_bytes(), b"line1\r\nline2\r\n", "fixture: not a CRLF checkout")
+        later = time.time() + 30
+        os.utime(p.repo / "a.txt", (later, later))  # touched: git must re-read it
+        return p, base
+
+    def test_a_clean_crlf_checkout_reads_unchanged_in_custody(self):
+        for how in ("info/attributes", "core.autocrlf", "core.attributesFile absolute",
+                    "core.attributesFile relative"):
+            with self.subTest(how=how):
+                p, base = self._repo(how)
+                diff = floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base))
+                self.assertNotIn("a.txt", diff)
+                self.assertEqual(diff_scope.changed_files(p.repo, base), [])
+                self.assertEqual(hint_provenance.LiveSource(str(p.repo)).changes_since(base), {})
+                with gitexec.custody(p.repo) as c:
+                    r = subprocess.run(c.argv("status", "--porcelain", gitexec.NO_SUBMODULE_CHILD),
+                                       env=c.env(), capture_output=True, text=True, stdin=subprocess.DEVNULL)
+                self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_the_posix_custody_status_reads_it_clean_too(self):
+        posix = _posix()
+        for how in ("info/attributes", "core.attributesFile absolute"):
+            with self.subTest(how=how):
+                p, _base = self._repo(how)
+                proc = posix._git(["status", "--porcelain"], cwd=p.repo)
+                self.assertEqual((proc.returncode, proc.stdout), (0, ""), proc.stderr)
+
+    def test_a_real_edit_still_shows(self):
+        p, base = self._repo("info/attributes")
+        (p.repo / "a.txt").write_bytes(b"line1\r\nEDITED\r\n")
+        self.assertIn("+EDITED", floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base)))
+        self.assertEqual(diff_scope.changed_files(p.repo, base), ["a.txt"])
+
+
+def _posix():
+    sys.path.insert(0, str(ROOT / "runtime"))
+    try:
+        return importlib.import_module("providers.posix")
+    finally:
+        sys.path.remove(str(ROOT / "runtime"))
+
+
+def _finishes(fn, seconds=30):
+    """fn() run in a thread; (finished, result or exception). A hang is (False, None)."""
+    import threading
+    box = {}
+
+    def target():
+        try:
+            box["ok"] = fn()
+        except Exception as exc:  # the refusal under test
+            box["err"] = exc
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(seconds)
+    return (not t.is_alive()), box.get("err", box.get("ok"))
+
+
+class AnUnreadableAttributesFileIsRefused(unittest.TestCase):
+    """Codex on the W4-02 branch: core.attributesFile is carried as CONTENT, read only as a bounded
+    regular file without blocking. A FIFO (whose open would block), a symlink, a directory or an
+    oversized file refuses every site; none hangs and none silently drops it."""
+
+    def _repo(self, kind):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("CHANGED\n", encoding="utf-8")
+        target = p.dir / "attrs"
+        if kind == "fifo":
+            os.mkfifo(target)
+        elif kind == "symlink":
+            (p.dir / "real").write_text("*.txt text\n", encoding="utf-8")
+            os.symlink(p.dir / "real", target)
+        elif kind == "directory":
+            target.mkdir()
+        else:
+            target.write_bytes(b"#" * (gitexec.ATTRIBUTES_FILE_LIMIT + 1))
+        p._git("config", "core.attributesFile", str(target))
+        return p, base
+
+    def test_every_site_refuses_and_none_hangs(self):
+        posix = _posix()
+        for kind in ("fifo", "symlink", "directory", "oversized"):
+            p, base = self._repo(kind)
+            mb = floor_guard.merge_base(p.repo, base)
+            repo = p.repo
+            for site, call, refusal in (
+                    ("custody", lambda r=repo: gitexec.custody(r).__enter__(), gitexec.GitCustodyRefused),
+                    ("floor_guard", lambda r=repo, m=mb: floor_guard.collect_diff(r, m), floor_guard.GuardError),
+                    ("diff_scope", lambda r=repo, b=base: diff_scope.changed_files(r, b), diff_scope.ScopeError),
+                    ("hint_provenance", lambda r=repo, b=base: hint_provenance.LiveSource(str(r)).changes_since(b),
+                     hint_provenance.ProvenanceError)):
+                with self.subTest(kind=kind, site=site):
+                    done, got = _finishes(call)
+                    self.assertTrue(done, f"{site} hung on a {kind} core.attributesFile")
+                    self.assertIsInstance(got, refusal)
+            with self.subTest(kind=kind, site="posix status"):
+                done, got = _finishes(lambda r=repo: posix._git(["status", "--porcelain"], cwd=r))
+                self.assertTrue(done, f"posix status hung on a {kind} core.attributesFile")
+                self.assertEqual(got.returncode, 127, got)
+                self.assertIn("core.attributesFile", got.stderr)
+
+
+class NoUserOrSystemAttributesFileIsOpened(unittest.TestCase):
+    """Codex on the W4-02 branch (round 3, P2), checked here: with no repository core.attributesFile
+    the custody named none, so git opened its default user attributes file ($XDG_CONFIG_HOME/git/
+    attributes, else ~/.config/git/attributes; the worker's to write on a one-uid host) and the
+    system one, and a FIFO there hung the call. The custody now always names its own attributes
+    file, and CUSTODY_ENV carries GIT_ATTR_NOSYSTEM=1."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")  # a diff reads attributes
+        return p, base
+
+    def _sites(self, p, base):
+        posix = _posix()
+        mb = floor_guard.merge_base(p.repo, base)
+        return (("floor_guard", lambda: floor_guard.collect_diff(p.repo, mb)),
+                ("diff_scope", lambda: diff_scope.changed_files(p.repo, base)),
+                ("hint_provenance", lambda: hint_provenance.LiveSource(str(p.repo)).changes_since(base)),
+                ("posix status", lambda: posix._git(["status", "--porcelain"], cwd=p.repo).stdout))
+
+    def test_a_fifo_at_either_default_user_attributes_file_is_never_opened(self):
+        for where in ("XDG_CONFIG_HOME", "HOME"):
+            p, base = self._repo()
+            empty = p.dir / "empty-home"
+            empty.mkdir()
+            with mock.patch.dict(os.environ, {"HOME": str(empty)}):
+                os.environ.pop("XDG_CONFIG_HOME", None)
+                want = {site: call() for site, call in self._sites(p, base)}
+            fifo_root = p.dir / "fifo-home"
+            if where == "XDG_CONFIG_HOME":
+                (fifo_root / "git").mkdir(parents=True)
+                os.mkfifo(fifo_root / "git" / "attributes")
+                env = {"HOME": str(empty), "XDG_CONFIG_HOME": str(fifo_root)}
+            else:
+                (fifo_root / ".config" / "git").mkdir(parents=True)
+                os.mkfifo(fifo_root / ".config" / "git" / "attributes")
+                env = {"HOME": str(fifo_root)}
+            for site, call in self._sites(p, base):
+                with self.subTest(where=where, site=site), mock.patch.dict(os.environ, env):
+                    if "XDG_CONFIG_HOME" not in env:
+                        os.environ.pop("XDG_CONFIG_HOME", None)
+                    done, got = _finishes(call)
+                    self.assertTrue(done, f"{site} hung opening a default attributes file at {where}")
+                    self.assertEqual(got, want[site])
+
+    def test_every_custody_git_runs_with_system_attributes_off(self):
+        p, base = self._repo()
+        seen, real = [], subprocess.run
+
+        def record(argv, *a, **kw):
+            # Every git but the driver listing (`config --list`, which reads no attributes and
+            # keeps gitexec.env's base so it resolves the repository its caller's git does).
+            if (isinstance(argv, (list, tuple)) and argv and os.path.basename(os.fsdecode(argv[0])) == "git"
+                    and "--list" not in argv):
+                seen.append((argv[-4:], (kw.get("env") or {}).get("GIT_ATTR_NOSYSTEM")))
+            return real(argv, *a, **kw)
+        with mock.patch.object(subprocess, "run", record):
+            for _site, call in self._sites(p, base):
+                call()
+        self.assertTrue(seen)
+        self.assertEqual([s for s in seen if s[1] != "1"], [],
+                         "a custody-floored git ran with the system attributes file live")
+
+
+class NoUserIgnoreFileIsOpened(unittest.TestCase):
+    """PR #724 re-attack (item 1): the custody named its own attributes file but no
+    core.excludesFile, so a custody diff (and the in-repo `ls-files --others`) opened the default user
+    ignore file ($XDG_CONFIG_HOME/git/ignore, else ~/.config/git/ignore) and a FIFO there blocked
+    every site until its timeout. The custody now always names an excludes file - the repository's
+    own core.excludesFile content, read safely, or /dev/null - and ls-files runs in custody."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        (p.repo / "new.txt").write_text("untracked\n", encoding="utf-8")  # read through the ignores
+        return p, base
+
+    def test_a_fifo_at_either_default_user_ignore_file_is_never_opened(self):
+        sites = NoUserOrSystemAttributesFileIsOpened._sites
+        for where in ("XDG_CONFIG_HOME", "HOME"):
+            p, base = self._repo()
+            empty = p.dir / "empty-home"
+            empty.mkdir()
+            with mock.patch.dict(os.environ, {"HOME": str(empty)}):
+                os.environ.pop("XDG_CONFIG_HOME", None)
+                want = {site: call() for site, call in sites(self, p, base)}
+            fifo_root = p.dir / "fifo-home"
+            if where == "XDG_CONFIG_HOME":
+                (fifo_root / "git").mkdir(parents=True)
+                os.mkfifo(fifo_root / "git" / "ignore")
+                env = {"HOME": str(empty), "XDG_CONFIG_HOME": str(fifo_root)}
+            else:
+                (fifo_root / ".config" / "git").mkdir(parents=True)
+                os.mkfifo(fifo_root / ".config" / "git" / "ignore")
+                env = {"HOME": str(fifo_root)}
+            for site, call in sites(self, p, base):
+                with self.subTest(where=where, site=site), mock.patch.dict(os.environ, env):
+                    if "XDG_CONFIG_HOME" not in env:
+                        os.environ.pop("XDG_CONFIG_HOME", None)
+                    done, got = _finishes(call, seconds=20)
+                    self.assertTrue(done, f"{site} blocked opening a default ignore file at {where}")
+                    self.assertEqual(got, want[site])
+
+    def test_the_repositorys_own_excludes_file_still_applies(self):
+        p, base = self._repo()
+        (p.dir / "ignore-new").write_text("new.txt\n", encoding="utf-8")
+        p._git("config", "core.excludesFile", str(p.dir / "ignore-new"))
+        self.assertNotIn("new.txt", diff_scope.changed_files(p.repo, base))
+        self.assertNotIn("untracked", floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base)))
+
+
+class BlockingRepositoryFilesAreRefusedUpFront(unittest.TestCase):
+    """PR #724 re-attack (item 3): every git reads the repository's config and follows its
+    includes, and a commit walk reads `shallow`, so a FIFO there blocked each site until its
+    timeout. gitexec.refuse_blocking_files checks them - without git, without blocking - before
+    any git runs, and a repository core.excludesFile is carried (read safely) rather than opened by
+    git. Each is refused at once."""
+
+    def _repo(self, kind):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        (p.repo / "new.txt").write_text("untracked\n", encoding="utf-8")
+        fifo = p.dir / "blocking"
+        os.mkfifo(fifo)
+        if kind == "shallow":
+            os.rename(fifo, p.repo / ".git" / "shallow")
+        elif kind == "include.path":
+            with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:  # `git config` would block
+                fh.write(f'[include]\n\tpath = "{fifo}"\n')
+        elif kind == "includeIf (relative)":
+            with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                fh.write(f'[includeIf "gitdir:{p.repo}/"]\n\tpath = ../../blocking\n')
+        else:
+            p._git("config", "core.excludesFile", str(fifo))
+        return p, base
+
+    def test_each_site_refuses_at_once(self):
+        for kind in ("shallow", "include.path", "includeIf (relative)", "core.excludesFile"):
+            p, base = self._repo(kind)
+            for site, call, refusal in (
+                    ("floor_guard", lambda r=p.repo, b=base: floor_guard.collect_diff(r, b), floor_guard.GuardError),
+                    ("diff_scope", lambda r=p.repo, b=base: diff_scope.changed_files(r, b), diff_scope.ScopeError),
+                    ("hint_provenance", lambda r=p.repo: hint_provenance.LiveSource(str(r)).changes_since("HEAD"),
+                     hint_provenance.ProvenanceError)):
+                with self.subTest(kind=kind, site=site):
+                    done, got = _finishes(call, seconds=20)
+                    self.assertTrue(done, f"{site} blocked on a FIFO {kind}")
+                    self.assertIsInstance(got, refusal)
+
+    def test_regular_includes_and_shallow_files_are_fine(self):
+        p, base = self._repo("core.excludesFile")
+        p._git("config", "--unset", "core.excludesFile")
+        (p.dir / "inc").write_text("[core]\n\tquotePath = false\n", encoding="utf-8")
+        p._git("config", "include.path", str(p.dir / "inc"))
+        p._git("config", "includeIf.gitdir:/nowhere/.path", str(p.dir / "absent"))
+        gitexec.refuse_blocking_files(p.repo)
+        self.assertIn("a.txt", diff_scope.changed_files(p.repo, base))
+
+
+class IncludeTargetsAreReadAsGitReadsThem(unittest.TestCase):
+    """Codex on PR #724 (round 6): the include check split config on `\n` alone, so a CRLF config
+    left `\r` on the path, checked a file that does not exist, missed the FIFO git actually opens,
+    and git blocked until its timeout. Config is now parsed as git's own parser reads it, and a
+    file it cannot read exactly refuses. Each case below names a FIFO the way git reads it; a
+    positive control proves git itself would block on that very file."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        return p
+
+    def _git_would_block(self, p):
+        try:
+            subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=_CLEAN_ENV,
+                           capture_output=True, stdin=subprocess.DEVNULL, timeout=3)
+        except subprocess.TimeoutExpired:
+            return True
+        return False
+
+    def _cases(self, d):
+        """(name, fifo file name, config text appended to .git/config)."""
+        return (
+            ("CRLF", "blocking", f"[include]\r\n\tpath = {d}/blocking\r\n"),
+            ("quoted", "block ing", f'[include]\n\tpath = "{d}/block ing"\n'),
+            ("escaped", 'bl"oc\\k', f'[include]\n\tpath = "{d}/bl\\"oc\\\\k"\n'),
+            ("continued", "blocking", f"[include]\n\tpath = {d}/blo\\\ncking\n"),
+            ("commented", "blocking", f"# path = /nowhere\n[include] ; a comment\n\tpath = {d}/blocking ; trailing # comment\n"),
+            ("mixed-case", "blocking", f'[InClUdE]\n\tPaTh = {d}/blocking\n'),
+            ("includeIf, escaped condition", "blocking", f'[IncludeIF "gitdir:{d}/\\"x/"]\n\tpath = {d}/blocking\n'),
+            ("relative", "blocking", "[include]\n\tpath = ../../blocking\n"),
+        )
+
+    def test_each_syntax_names_the_fifo_git_opens_and_is_refused(self):
+        for name, fifo_name, text in self._cases("{d}"):
+            with self.subTest(case=name):
+                p = self._repo()
+                d = str(p.dir)
+                os.mkfifo(p.dir / fifo_name)
+                text = text.replace("{d}", d)
+                with open(p.repo / ".git" / "config", "ab") as fh:
+                    fh.write(text.encode("utf-8"))
+                if name != "includeIf, escaped condition":  # a false condition: git never opens it
+                    self.assertTrue(self._git_would_block(p), f"fixture: git does not open the {name} FIFO")
+                done, got = _finishes(lambda r=p.repo: gitexec.refuse_blocking_files(r), seconds=10)
+                self.assertTrue(done)
+                self.assertIsInstance(got, gitexec.GitCustodyRefused, f"{name}: the FIFO was missed")
+                done, got = _finishes(lambda r=p.repo: floor_guard.collect_diff(r, "HEAD"), seconds=10)
+                self.assertTrue(done, f"floor_guard blocked on the {name} include")
+                self.assertIsInstance(got, floor_guard.GuardError)
+
+    def test_a_nested_include_through_a_regular_file_is_followed(self):
+        p = self._repo()
+        os.mkfifo(p.dir / "blocking")
+        (p.dir / "middle").write_bytes(f"[include]\r\n\tpath = {p.dir}/blocking\r\n".encode())
+        with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+            fh.write(f"[include]\n\tpath = {p.dir}/middle\n")
+        with self.assertRaises(gitexec.GitCustodyRefused):
+            gitexec.refuse_blocking_files(p.repo)
+
+    def test_a_config_the_check_cannot_parse_is_never_refused_on_doubt(self):
+        # Best-effort (coordinator, PR #724 round 8): no positive finding, no refusal. git itself
+        # rejects these, so nothing blocks either.
+        for bad in ('[include]\n\tpath = "unterminated\n', "[include]\n\tpath = \\q\n", "[include\n",
+                    "[include]\n\tpath = /x\0y\n"):
+            with self.subTest(config=bad):
+                p = self._repo()
+                with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                    fh.write(bad)
+                gitexec.refuse_blocking_files(p.repo)
+
+    def test_ordinary_configs_still_pass(self):
+        p = self._repo()
+        (p.dir / "inc").write_bytes(b"[core]\r\n\tquotePath = false\r\n")
+        p._git("config", "include.path", str(p.dir / "inc"))
+        p._git("config", "remote.origin.url", 'https://example.invalid/a "b".git')
+        p._git("config", "alias.x", "!echo ; # not a comment")
+        gitexec.refuse_blocking_files(p.repo)
+
+
+# Codex on PR #724 (round 7): the include parser's whitespace set was written down by hand and
+# missed what a newer git treats as space, so the check read a different path from the one git
+# opens. These compare the parser with the INSTALLED git, byte by byte and position by position
+# (they run against whatever git CI has, so a future git that reads config differently fails here).
+_BYTE_TEMPLATES = {
+    "value, leading": lambda b: b"[include]\n\tpath = " + b + b"X\n",
+    "value, trailing": lambda b: b"[include]\n\tpath = X" + b + b"\n",
+    "value, trailing, CRLF": lambda b: b"[include]\r\n\tpath = X" + b + b"\r\n",
+    "value, inside": lambda b: b"[include]\n\tpath = A" + b + b"B\n",
+    "value, doubled inside": lambda b: b"[include]\n\tpath = A" + b + b + b"B\n",
+    "value, quoted": lambda b: b'[include]\n\tpath = "A' + b + b'B"\n',
+    "value, quoted at the end": lambda b: b'[include]\n\tpath = "A' + b + b'"\n',
+    "value, after a backslash": lambda b: b"[include]\n\tpath = A\\" + b + b"B\n",
+    "value, after a backslash, quoted": lambda b: b'[include]\n\tpath = "A\\' + b + b'B"\n',
+    "value, before a comment": lambda b: b"[include]\n\tpath = A" + b + b"; c\n",
+    "value, right after =": lambda b: b"[include]\n\tpath =" + b + b"X\n",
+    "key, then the byte": lambda b: b"[include]\n\tpath" + b + b"= X\n",
+    "key, inside": lambda b: b"[include]\n\tpa" + b + b"th = X\n",
+    "key, bare then the byte": lambda b: b"[include]\n\tpath" + b + b"\n",
+    "line, leading": lambda b: b"[include]\n" + b + b"path = X\n",
+    "line, alone": lambda b: b"[include]\n" + b + b"\npath = X\n",
+    "header, then the byte": lambda b: b"[include]" + b + b"path = X\n",
+    "header name, inside": lambda b: b"[incl" + b + b"ude]\npath = X\n",
+    "header name, then the byte": lambda b: b"[include" + b + b'"s"]\npath = X\n',
+    "header, before ]": lambda b: b'[include "s"' + b + b"]\npath = X\n",
+    "subsection, inside": lambda b: b'[includeIf "a' + b + b'b"]\npath = X\n',
+    "subsection, after a backslash": lambda b: b'[includeIf "a\\' + b + b'b"]\npath = X\n',
+    "comment, leading": lambda b: b"[include]\n" + b + b"# c\npath = X\n",
+    "after a comment": lambda b: b"[include]\n# c" + b + b"path = Y\npath = X\n",
+    "file, leading": lambda b: b + b"[include]\npath = X\n",
+}
+
+
+def _git_list(path, data):
+    path.write_bytes(data)
+    got = subprocess.run(["git", "config", "-f", str(path), "--list", "-z"], env=_CLEAN_ENV,
+                         capture_output=True, stdin=subprocess.DEVNULL, cwd=str(path.parent), timeout=30)
+    if got.returncode != 0:
+        return None
+    out = []
+    for record in got.stdout.split(b"\0")[:-1]:
+        key, nl, value = record.partition(b"\n")
+        out.append((key.lower(), value if nl else None))
+    return out
+
+
+def _parsed(data):
+    try:
+        entries = gitexec._parse_config(data)
+    except gitexec._ConfigUnparseable:
+        return None
+    return [((section + (b"." + sub if sub is not None else b"") + (b"." if section else b"") + key).lower(), value)
+            for section, sub, key, value in entries]
+
+
+class TheIncludeCheckCoversWhatTheInstalledGitReads(unittest.TestCase):
+    """The up-front include check is best-effort and never gates on parity with git (coordinator,
+    PR #724 round 8): it checks every spelling a git might read. This holds the installed git to
+    that: for every byte in every position, each include path git itself reads is among the
+    spellings the check examines (a NUL byte aside: git truncates at it and the check skips it,
+    so a FIFO named that way is left to the call's timeout)."""
+
+    def test_every_byte_in_every_position_is_covered(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        missed = []
+        for where, template in _BYTE_TEMPLATES.items():
+            for byte in range(256):
+                data = template(bytes([byte]))
+                git = _git_list(tmp / "c", data) or []
+                read = {value for key, value in git if value is not None
+                        and (key == b"include.path" or (key.startswith(b"includeif.") and key.endswith(b".path")))}
+                if b"\0" in data:
+                    continue
+                uncovered = read - gitexec._include_values(data)
+                if uncovered:
+                    missed.append((where, f"{byte:#04x}", sorted(uncovered)))
+        self.assertEqual(missed, [], "an include path git reads is not one the check examines")
+
+    def test_a_git_that_counts_vertical_tab_and_form_feed_as_space_is_covered(self):
+        # What a newer git does (Codex, round 7): with \v and \f in its whitespace, it trims them and
+        # reads `A B` inside. Both readings are among the values the check examines.
+        for b in (b"\x0b", b"\x0c"):
+            data = b"[include]\n\tpath = /x/fifo" + b + b"\n" + b + b"[include]" + b + b"path = A" + b + b"B\n"
+            newer = gitexec._parse_config(data, space=gitexec._GIT_SPACE_SETS[1])
+            self.assertEqual([e[3] for e in newer], [b"/x/fifo", b"A B"])
+            self.assertTrue({b"/x/fifo", b"/x/fifo" + b, b"A B"} <= gitexec._include_values(data))
+
+    def test_whitespace_inside_a_value_is_covered_however_a_git_renders_it(self):
+        # git 2.43 turns each unquoted whitespace byte inside a value into a space; git 2.55 keeps it
+        # (config.c parse_value appends the byte and trims only the trailing run). CI's 2.55 read
+        # `A<TAB>B` where the check examined only `A B` (PR #724). Every rendering is examined now.
+        for b in (b"\t", b"\r", b"\t\t", b" \t"):
+            data = b"[include]\n\tpath = A" + b + b"B \n"
+            self.assertEqual(gitexec._parse_config(data, inner="space")[0][3], b"A" + b" " * len(b) + b"B")
+            self.assertEqual(gitexec._parse_config(data, inner="verbatim")[0][3], b"A" + b + b"B")
+            self.assertEqual(gitexec._parse_config(data, inner="collapse")[0][3], b"A B")
+            self.assertTrue({b"A" + b" " * len(b) + b"B", b"A" + b + b"B", b"A B"} <= gitexec._include_values(data))
+
+    def test_a_fifo_named_with_inside_whitespace_is_refused_at_either_rendering(self):
+        # One FIFO at the name git 2.55 reads (`blo<TAB>cking`) or the one git 2.43 reads
+        # (`blo cking`): refused at once either way; where the installed git blocks on it (the
+        # positive control), floor_guard refuses at once too.
+        for fifo_name in ("blo\tcking", "blo cking"):
+            with self.subTest(fifo=repr(fifo_name)):
+                tmp = tempfile.mkdtemp()
+                self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
+                p = _Probe(tmp)
+                p.commit("a.txt", "line1\n")
+                os.mkfifo(p.dir / fifo_name)
+                with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                    fh.write(f"[include]\n\tpath = {p.dir}/blo\tcking\n")
+                try:
+                    subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=_CLEAN_ENV,
+                                   capture_output=True, stdin=subprocess.DEVNULL, timeout=3)
+                    git_blocks = False
+                except subprocess.TimeoutExpired:
+                    git_blocks = True
+                done, got = _finishes(lambda r=p.repo: gitexec.refuse_blocking_files(r), seconds=10)
+                self.assertTrue(done)
+                self.assertIsInstance(got, gitexec.GitCustodyRefused)
+                if git_blocks:
+                    done, got = _finishes(lambda r=p.repo: floor_guard.collect_diff(r, "HEAD"), seconds=10)
+                    self.assertTrue(done, "floor_guard blocked")
+                    self.assertIsInstance(got, floor_guard.GuardError)
+
+    def test_a_trailing_whitespace_byte_is_refused_at_either_spelling(self):
+        # Each scenario puts ONE FIFO at one of the two names a trailing \v, \f, \r or space could
+        # mean: whichever a git reads, the check examines both and refuses at once; where the
+        # installed git blocks on it (the positive control), floor_guard refuses at once too.
+        # Unquoted, git keeps or trims the byte by its own whitespace set (\v and \f differ across
+        # versions; an unquoted trailing \r or space is always trimmed, so only quoted keeps those).
+        cases = [(b, q) for b in ("\x0b", "\x0c") for q in (False, True)] + [(b, True) for b in ("\r", " ")]
+        for (b, quoted), fifo_at in ((c, f) for c in cases for f in ("stripped", "kept")):
+            with self.subTest(byte=repr(b), quoted=quoted, fifo_at=fifo_at):
+                tmp = tempfile.mkdtemp()
+                self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
+                p = _Probe(tmp)
+                p.commit("a.txt", "line1\n")
+                name = "blocking" + (b if fifo_at == "kept" else "")
+                os.mkfifo(p.dir / name)
+                value = f"{p.dir}/blocking{b}"
+                with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                    fh.write(f'[include]\n\tpath = "{value}"\n' if quoted else f"[include]\n\tpath = {value}\n")
+                try:
+                    subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=_CLEAN_ENV,
+                                   capture_output=True, stdin=subprocess.DEVNULL, timeout=3)
+                    git_blocks = False
+                except subprocess.TimeoutExpired:
+                    git_blocks = True
+                done, got = _finishes(lambda r=p.repo: gitexec.refuse_blocking_files(r), seconds=10)
+                self.assertTrue(done)
+                self.assertIsInstance(got, gitexec.GitCustodyRefused,
+                                      f"the FIFO {'without' if fifo_at == 'stripped' else 'with'} "
+                                      f"the trailing {b!r} was missed")
+                if git_blocks:
+                    done, got = _finishes(lambda r=p.repo: floor_guard.collect_diff(r, "HEAD"), seconds=10)
+                    self.assertTrue(done, "floor_guard blocked")
+                    self.assertIsInstance(got, floor_guard.GuardError)
+
+
+class PredictMergeResolvesNamesExactly(unittest.TestCase):
+    """W3-07's rule, where predict-merge resolves BASE and BRANCH (rebase onto #725): `rev-parse
+    <ref>^{commit}` tried refs/heads/ before refs/remotes/, so a local branch spelled `origin/main`
+    stood in for the remote-tracking one. Each name is now resolved by its exact name."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        remote = p.commit("f.txt", "x\n")  # what refs/remotes/origin/main names
+        p._git("update-ref", "refs/remotes/origin/main", remote)
+        p._git("checkout", "-q", "-b", "work")
+        p.commit("f.txt", "z\n")  # the branch: changes f from x
+        p._git("checkout", "-q", "--detach", remote)
+        decoy = p.commit("f.txt", "y\n")  # a LOCAL branch spelled origin/main: changes f too
+        p._git("update-ref", "refs/heads/origin/main", decoy)
+        return p
+
+    def test_origin_main_is_the_remote_tracking_ref_not_a_local_branch_of_that_spelling(self):
+        p = self._repo()
+        result = diff_scope.predict_merge(p.repo, "origin/main", "work")
+        self.assertTrue(result["clean"], "the decoy local branch was merged, not refs/remotes/origin/main")
+
+    def test_a_local_name_is_refused_on_a_sound_lane(self):
+        p = self._repo()
+        with mock.patch.dict(os.environ, {"ORCA_PROVENANCE": "ci"}):
+            with self.assertRaises(diff_scope.ScopeError) as cm:
+                diff_scope.predict_merge(p.repo, "origin/main", "work")
+        self.assertEqual(cm.exception.kind, "no_base")
+        self.assertIn("sound lane", str(cm.exception))
+
+    def test_a_tag_or_revision_syntax_is_no_base(self):
+        p = self._repo()
+        p._git("tag", "v1", "work")
+        for ref in ("v1", "work~1", "refs/tags/v1"):
+            with self.subTest(ref=ref), self.assertRaises(diff_scope.ScopeError) as cm:
+                diff_scope.predict_merge(p.repo, "origin/main", ref)
+            self.assertEqual(cm.exception.kind, "no_base")
+
+
+class TheUpFrontCheckIsBestEffort(unittest.TestCase):
+    """Coordinator, PR #724 round 8: the up-front check refuses ONLY on a positive finding, runs no
+    git (a learned-whitespace probe refused every ordinary repository on CI's newer git), and
+    checks every spelling of each name it derives - including a linked worktree's commondir, which
+    git trims (Codex round 8: `../..\r\n` read as `../..`)."""
+
+    def _linked(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        wt = p.dir / "wt"
+        self.assertEqual(p._git("worktree", "add", "-q", "--detach", str(wt)).returncode, 0)
+        admin = Path(p._git("rev-parse", "--absolute-git-dir", cwd=wt).stdout.strip())
+        return p, wt, admin
+
+    def _blocks(self, cwd):
+        try:
+            subprocess.run(["git", "-C", str(cwd), "rev-parse", "HEAD"], env=_CLEAN_ENV, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=3)
+        except subprocess.TimeoutExpired:
+            return True
+        return False
+
+    def test_a_crlf_commondir_and_a_fifo_common_config_are_refused_at_once(self):
+        p, wt, admin = self._linked()
+        (admin / "commondir").write_bytes(b"../..\r\n")
+        config = p.repo / ".git" / "config"
+        config.unlink()
+        os.mkfifo(config)
+        self.assertTrue(self._blocks(wt), "fixture: git does not open the common config through it")
+        done, got = _finishes(lambda: gitexec.refuse_blocking_files(wt), seconds=10)
+        self.assertTrue(done)
+        self.assertIsInstance(got, gitexec.GitCustodyRefused)
+        done, got = _finishes(lambda: floor_guard.collect_diff(wt, "HEAD"), seconds=10)
+        self.assertTrue(done, "floor_guard blocked")
+        self.assertIsInstance(got, floor_guard.GuardError)
+
+    def test_a_trailing_whitespace_commondir_is_refused_at_either_spelling(self):
+        for b in (b"\x0b", b"\x0c", b"\r", b" "):
+            for fifo_at in ("stripped", "kept"):
+                with self.subTest(byte=b, fifo_at=fifo_at):
+                    p, wt, admin = self._linked()
+                    common = p.repo / ".git"
+                    if fifo_at == "kept":  # a second common dir, under the untrimmed name
+                        common = admin.parent.parent.parent / (".git" + b.decode("latin-1"))
+                        common.mkdir()
+                        (admin / "commondir").write_bytes(os.fsencode(str(common)) + b"\n")
+                    else:
+                        (admin / "commondir").write_bytes(b"../.." + b + b"\n")
+                    (common / "config").unlink(missing_ok=True)
+                    os.mkfifo(common / "config")
+                    done, got = _finishes(lambda w=wt: gitexec.refuse_blocking_files(w), seconds=10)
+                    self.assertTrue(done)
+                    self.assertIsInstance(got, gitexec.GitCustodyRefused)
+
+    def test_an_ordinary_repository_is_never_refused_and_no_git_is_asked(self):
+        # The check runs no git at all, so no git version can make it refuse an ordinary repository
+        # (the CI regression at 4aecdc0e). Unusual but regular configs pass too.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        (p.dir / "inc").write_bytes(b"[core]\r\n\tquotePath = false\x0c\r\n")
+        with open(p.repo / ".git" / "config", "ab") as fh:
+            fh.write(b"[include]\r\n\tpath = " + os.fsencode(str(p.dir / "inc")) + b"\x0b\r\n"
+                     b"[alias]\n\tx = \"!echo \\\\\" ; a\"\n[include]\n\tpath = \"%(prefix)/etc/x\"\n")
+        real = subprocess.run
+
+        def no_git(argv, *a, **kw):
+            if isinstance(argv, (list, tuple)) and argv and os.path.basename(os.fsdecode(argv[0])) == "git":
+                raise AssertionError(f"the up-front check ran git: {argv}")
+            return real(argv, *a, **kw)
+        with mock.patch.object(subprocess, "run", no_git):
+            gitexec.refuse_blocking_files(p.repo)
+        with mock.patch.object(gitexec, "GIT", "/nonexistent/a-git-that-reads-config-differently"):
+            gitexec.refuse_blocking_files(p.repo)
+
+
+class CustodySetupTimeoutsAreEachToolsRefusal(unittest.TestCase):
+    """Codex on PR #724 (round 6): a timeout in gitexec.custody's own setup (its rev-parse and
+    config queries) escaped hint_provenance as a raw TimeoutExpired, and predict-merge reported it
+    as "needs git >= 2.38". Each tool's documented could-not-run outcome now carries it."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        p._git("checkout", "-q", "-b", "side")
+        side = p.commit("b.txt", "two\n")
+        (p.repo / "a.txt").write_text("CHANGED\n", encoding="utf-8")
+        return p, base, side
+
+    def _timeout_in_custody_setup(self):
+        real = subprocess.run
+
+        def run(argv, *a, **kw):
+            if isinstance(argv, (list, tuple)) and "--absolute-git-dir" in argv:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 60))
+            return real(argv, *a, **kw)
+        return mock.patch.object(subprocess, "run", run)
+
+    def test_every_site_reports_it_as_its_own_refusal(self):
+        p, base, side = self._repo()
+        with self._timeout_in_custody_setup():
+            with self.assertRaises(hint_provenance.ProvenanceError):
+                hint_provenance.LiveSource(str(p.repo)).changes_since(base)
+            with self.assertRaises(floor_guard.GuardError):
+                floor_guard.collect_diff(p.repo, base)
+            with self.assertRaises(diff_scope.ScopeError):
+                diff_scope.changed_files(p.repo, base)
+            with self.assertRaises(diff_scope.ScopeError) as cm:
+                diff_scope.predict_merge(p.repo, base, side)
+        self.assertIn("timed out", str(cm.exception))
+        self.assertNotIn("2.38", str(cm.exception))
+
+
+class HintProvenanceTimeoutIsAProvenanceError(unittest.TestCase):
+    """PR #724 re-attack (item 4): a git that blocked until its timeout surfaced as a raw
+    TimeoutExpired; it is the module's own could-not-run."""
+
+    def test_a_timed_out_git_is_a_provenance_error(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        live = hint_provenance.LiveSource(str(p.repo))
+        real = subprocess.run
+
+        def slow(argv, *a, **kw):
+            if "diff" in argv:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 60))
+            return real(argv, *a, **kw)
+        with mock.patch.object(hint_provenance.subprocess, "run", side_effect=slow):
+            with self.assertRaises(hint_provenance.ProvenanceError):
+                live.changes_since(base)
+
+
+class PartialClonesAreRefused(unittest.TestCase):
+    """PR #724 re-attack (items 5, 6): git 2.43's `clone --filter` writes remote.<n>.promisor and
+    remote.<n>.partialclonefilter, never extensions.partialClone, so the custody's refusal never
+    fired. It now refuses a promisor remote; and predict-merge reports that reason, not "needs git
+    >= 2.38"."""
+
+    def _clone(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        (tmp / "s").mkdir()
+        src = _Probe(tmp / "s")
+        src.commit("a.txt", "one\n")
+        base = src._git("rev-parse", "HEAD").stdout.strip()
+        src._git("checkout", "-q", "-b", "side")
+        src.commit("b.txt", "two\n")
+        main = src._git("rev-parse", "HEAD~0").stdout.strip()
+        src._git("config", "uploadpack.allowFilter", "true")
+        clone = tmp / "clone"
+        r = subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-local", f"file://{src.repo}",
+                            str(clone)], env=_CLEAN_ENV, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        keys = subprocess.run(["git", "-C", str(clone), "config", "--list", "--name-only"], env=_CLEAN_ENV,
+                              capture_output=True, text=True).stdout
+        self.assertIn("remote.origin.promisor", keys, "fixture: not a partial clone")
+        (clone / "a.txt").write_text("changed\n", encoding="utf-8")
+        return clone, base, main
+
+    def test_every_site_refuses_a_partial_clone(self):
+        clone, base, _main = self._clone()
+        with self.assertRaises(gitexec.GitCustodyRefused):
+            with gitexec.custody(clone):
+                pass
+        with self.assertRaises(floor_guard.GuardError):
+            floor_guard.collect_diff(clone, base)
+        with self.assertRaises(diff_scope.ScopeError):
+            diff_scope.changed_files(clone, base)
+        with self.assertRaises(hint_provenance.ProvenanceError):
+            hint_provenance.LiveSource(str(clone)).changes_since(base)
+
+    def test_predict_merge_names_the_refusal(self):
+        clone, base, main = self._clone()
+        with self.assertRaises(diff_scope.ScopeError) as cm:
+            diff_scope.predict_merge(clone, base, main)
+        self.assertIn("partial clone", str(cm.exception))
+        self.assertNotIn("2.38", str(cm.exception))
+
+
+class GitexecCustody(unittest.TestCase):
+    """gitexec.custody: the coordinator-built git dir and the refusals it shares with the posix
+    provider's run_git."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        return p
+
+    def test_the_custody_dir_names_no_driver_and_reads_the_repo_objects(self):
+        p = self._repo()
+        p.arm_filter()
+        with gitexec.custody(p.repo) as c:
+            gd = Path(c.git_dir)
+            cfg = (gd / "config").read_text(encoding="utf-8")
+            self.assertNotIn("filter", cfg)
+            # info/attributes rides as data: the `filter=p` it selects names no driver here.
+            self.assertEqual((gd / "info" / "attributes").read_text(encoding="utf-8"),
+                             (p.repo / ".git" / "info" / "attributes").read_text(encoding="utf-8"))
+            self.assertEqual(Path(c.work_tree).resolve(), p.repo.resolve())
+            self.assertIn(b"objects", (gd / "objects" / "info" / "alternates").read_bytes())
+            self.assertEqual(c.lead[:2], ["-C", str(p.repo)])
+            r = subprocess.run(c.argv("cat-file", "-p", "HEAD:a.txt"), env=c.env(), capture_output=True,
+                               text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.stdout, "one\n", r.stderr)
+        self.assertFalse(gd.exists(), "the custody dir outlived its use")
+
+    def test_a_partial_clone_is_refused_not_guessed(self):
+        p = self._repo()
+        p._git("config", "core.repositoryformatversion", "1")
+        p._git("config", "extensions.partialClone", "origin")
+        with self.assertRaises(gitexec.GitCustodyRefused):
+            with gitexec.custody(p.repo):
+                pass
+
+    def test_a_planted_fifo_or_symlink_is_refused_not_followed(self):
+        p = self._repo()
+        exclude = p.repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.unlink(missing_ok=True)
+        os.symlink("/etc/passwd", exclude)
+        with self.assertRaises(gitexec.GitCustodyRefused):
+            with gitexec.custody(p.repo):
+                pass
+
+    def test_custody_env_drops_selectors_and_pins_the_floor(self):
+        env = gitexec.custody_env({"PATH": os.environ["PATH"], "GIT_DIR": "/elsewhere",
+                                   "GIT_INDEX_FILE": "/elsewhere/index", "GIT_EXEC_PATH": "/evil"})
+        for name in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_EXEC_PATH"):
+            self.assertNotIn(name, env)
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs["log.showSignature"], "false")
+        self.assertEqual(pairs["core.alternateRefsCommand"], "exit 0")
+        self.assertEqual(pairs["core.hooksPath"], os.devnull)
+        self.assertEqual((env["GIT_NO_LAZY_FETCH"], env["GIT_ALLOW_PROTOCOL"]), ("1", "file"))
+
+    def test_the_posix_provider_shares_this_custody(self):
+        sys.path.insert(0, str(ROOT / "runtime"))
+        try:
+            posix = importlib.import_module("providers.posix")
+        finally:
+            sys.path.remove(str(ROOT / "runtime"))
+        self.assertIs(posix._custody_git_dir, posix.gitexec.custody_git_dir)
+        self.assertIs(posix.GitCustodyRefused, posix.gitexec.GitCustodyRefused)
+        self.assertEqual(posix.PROVIDER_FLOOR, gitexec.CUSTODY_FLOOR)
+        self.assertEqual(posix.PROVIDER_FLOOR_ENV, gitexec.CUSTODY_ENV)
+        self.assertEqual(posix.GIT_SELECTOR_ENV, gitexec.SELECTOR_ENV)
 
 
 if __name__ == "__main__":

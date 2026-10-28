@@ -28,6 +28,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 _spec = importlib.util.spec_from_file_location("verify", ROOT / "runtime" / "scripts" / "verify.py")
 verify = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(verify)
@@ -1694,6 +1700,26 @@ class GitAuthorityChecks(unittest.TestCase):
         with self._inside_repo():
             self.assertEqual(verify.check_symbol_on_base(None, "main"), [])
             self.assertEqual(verify.check_symbol_on_base("orca_unit_symbol", None), [])
+
+    def test_symbol_is_never_read_on_a_local_branch_spelled_as_the_absent_remote(self):
+        # W3-07 class, Codex review: `git grep … refs/remotes/origin/main` with that ref ABSENT
+        # expanded the name to the local branch refs/heads/refs/remotes/origin/main — here a
+        # worker commit that adds the symbol — and the change read as "on base".
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        Path(self.repo, "planted.py").write_text("def planted_symbol():\n    pass\n",
+                                                 encoding="utf-8")
+        git("add", "planted.py")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "worker")
+        git("update-ref", "-d", "refs/remotes/origin/main")
+        git("update-ref", "refs/heads/refs/remotes/origin/main", "HEAD")
+        with self._inside_repo():
+            errs = verify.check_symbol_on_base("planted_symbol", "main")
+            self.assertTrue(any("not found on origin/main" in e for e in errs), errs)
+            errs = verify.check_symbol_on_base("planted_symbol", "main~0")
+            self.assertTrue(any("not found on origin/main~0" in e for e in errs), errs)
 
 
 class GitObjectRewriteChannelsAreClosed(RepoCase):
@@ -6121,6 +6147,27 @@ class VerifierDocsMatchTheCode(unittest.TestCase):
         self.assertIn("--nc-command", doc)
 
 
+@contextlib.contextmanager
+def _linked_control_git_dir(cls, top, head):
+    """The control's pre-custody layout, for mutation controls only: a linked worktree of `top`
+    (`worktree add --no-checkout`), whose admin dir reads the SHARED config and `info/attributes`
+    the graded worker writes. Patched over _Authority.control_git_dir, it shows the custody is
+    what keeps a planted driver from running in the control (W4 custody sweep)."""
+    holder = tempfile.mkdtemp(prefix="orca-nc-linked-")
+    wt = os.path.join(holder, "wt")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    subprocess.run(["git", "-C", top, "worktree", "add", "-q", "--no-checkout", "--detach", wt, head],
+                   check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
+    try:
+        yield subprocess.run(["git", "-C", wt, "rev-parse", "--absolute-git-dir"], check=True,
+                             capture_output=True, text=True, env=env,
+                             stdin=subprocess.DEVNULL).stdout.strip()
+    finally:
+        subprocess.run(["git", "-C", top, "worktree", "remove", "--force", wt], capture_output=True,
+                       env=env, stdin=subprocess.DEVNULL)
+        shutil.rmtree(holder, ignore_errors=True)
+
+
 class ConfigFilterNeverRunsInTheControl(MutationFixture):
     """#629: `worktree add` and `checkout <base> -- <paths>` MATERIALISE worker content, running a
     repo-config clean/smudge filter a `.gitattributes` (or, as here, `$GIT_DIR/info/attributes`,
@@ -6172,9 +6219,12 @@ class ConfigFilterNeverRunsInTheControl(MutationFixture):
                          "a repo-config filter ran inside a verifier git leg (#629)")
 
     def test_mutation_control_without_the_blanks_the_filter_fires(self):
+        # The pre-fix control: a linked worktree of the source (the shared config), no blanks.
         self._positive_control()
         with mock.patch.object(verify._Authority, "driver_blanks",
-                               classmethod(lambda cls, repo: [])):
+                               classmethod(lambda cls, repo: [])), \
+                mock.patch.object(verify._Authority, "control_git_dir",
+                                  classmethod(_linked_control_git_dir)):
             self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
                            "--lighting", "dark-eligible",
                            "--execute-nc", "--nc-command", self.proof_cmd)
@@ -6297,10 +6347,14 @@ class ConditionalIncludeFilterNeverRunsInTheControl(MutationFixture):
     def test_mutation_control_drivers_read_in_the_source_repo_miss_it(self):
         # Read the drivers where the old code read them — the source repo — whatever directory
         # the call names: the conditional filter is missing from that list and runs again.
+        # The control's pre-custody layout (a linked worktree, whose config view includes the
+        # conditional file) is restored too: in custody no filter is defined at all.
         self._positive_control()
         source, real = str(self.repo), verify._Authority.driver_blanks
         with mock.patch.object(verify._Authority, "driver_blanks",
-                               classmethod(lambda cls, repo: real(source))):
+                               classmethod(lambda cls, repo: real(source))), \
+                mock.patch.object(verify._Authority, "control_git_dir",
+                                  classmethod(_linked_control_git_dir)):
             self._run()
         self.assertTrue(self.marker.exists(),
                         "control: blanks read in the source repo must miss the linked-only filter")
@@ -6333,6 +6387,166 @@ class ConfigMergeDriverNeutralisedInTheControl(MutationFixture):
                                       "--lighting", "dark-eligible",
                                       "--execute-nc", "--nc-command", self.proof_cmd)
         self.assertEqual(rc, 0, out + err)
+
+
+class ControlRunsNoDriverAddedAfterTheListing(MutationFixture):
+    """W4 custody sweep (audit W4-01/W4-02 class): driver_blanks LISTS the drivers the control
+    worktree's config declares, then the checkout/revert/apply reads that config again. A sibling
+    worker that adds a NEVER-SEEN `filter.<n>.*`, `diff.<n>.textconv` or `merge.<n>.driver` to the
+    shared config (selected for every path through the shared `info/attributes`) between the two
+    had it run as the verifier. The control now runs in a git dir the verifier builds, whose config
+    declares no driver. The racing sibling below adds a fresh driver before EVERY git launch."""
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.dir = Path(marks.name)
+        self.marker = self.dir / "fired"
+        self.seq = 0
+
+    def _probe(self, name, passthrough):
+        probe = self.dir / f"{name}.sh"
+        probe.write_text("#!/bin/sh\necho " + shlex.quote(name) + " >> " + shlex.quote(str(self.marker))
+                         + ("\ncat\n" if passthrough else "\nexit 0\n"), encoding="utf-8")
+        probe.chmod(0o755)
+        return '"' + str(probe).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def _race(self):
+        real = subprocess.run
+        common = self.repo / ".git"
+
+        def run(argv, *a, **kw):
+            if isinstance(argv, (list, tuple)) and argv and os.path.basename(str(argv[0])) == "git":
+                self.seq += 1
+                name = f"late{self.seq}"
+                with open(common / "config", "a", encoding="utf-8") as fh:
+                    fh.write(f'[filter "{name}"]\n\tsmudge = {self._probe(name + "-smudge", True)}\n'
+                             f'\tclean = {self._probe(name + "-clean", True)}\n'
+                             f'[diff "{name}"]\n\ttextconv = {self._probe(name + "-textconv", False)}\n'
+                             f'[merge "{name}"]\n\tdriver = {self._probe(name + "-merge", False)}\n')
+                (common / "info").mkdir(exist_ok=True)
+                with open(common / "info" / "attributes", "a", encoding="utf-8") as fh:
+                    fh.write(f"* filter={name} diff={name} merge={name}\n")
+            return real(argv, *a, **kw)
+        return mock.patch.object(subprocess, "run", run)
+
+    def _fired(self):
+        return self.marker.read_text().split() if self.marker.exists() else []
+
+    def _controls(self):
+        """The revert control both ways: restoring the declared paths from base_sha (`checkout
+        <base> -- <paths>`), and the linear range revert (`revert --no-commit base..head`)."""
+        paths = self._revert_nc()
+        ranged = {k: v for k, v in paths.items() if k != "paths"}
+        return (("paths", paths), ("range", ranged))
+
+    def _execute(self, nc):
+        m = {"base_sha": self.base_sha, "head_sha": self.head_sha, "negative_control": nc}
+        return verify.execute_negative_control(m, self.proof_cmd)
+
+    def test_a_driver_added_after_every_listing_never_runs_in_the_control(self):
+        for label, nc in self._controls():
+            with self.subTest(control=label):
+                with self._race():
+                    ok, msgs = self._execute(nc)
+                self.assertGreater(self.seq, 0, "the race never ran")
+                self.assertEqual(self._fired(), [], f"a driver added mid-control ran ({label})")
+                self.assertTrue(ok, msgs)
+                self.assertTrue(any("negative control EXECUTED" in x for x in msgs), msgs)
+
+    def test_mutation_control_the_linked_worktree_runs_the_late_driver(self):
+        # The pre-custody layout, under the same race, with the real (listing) driver_blanks: the
+        # driver added after the listing runs in the control's checkout. The plant is live.
+        with self._race(), mock.patch.object(verify._Authority, "control_git_dir",
+                                             classmethod(_linked_control_git_dir)):
+            self._execute(self._revert_nc())
+        self.assertTrue(self._fired(), "control: the late driver never ran in a linked worktree")
+
+    def test_the_control_git_dir_declares_no_driver_and_writes_the_source_store(self):
+        # info/attributes is carried as DATA (line endings, encodings); the filter it selects is
+        # one the dir's config never defines.
+        self.git("config", "filter.p.clean", "false")
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("*.py filter=p eol=crlf\n", encoding="utf-8")
+        with verify._Authority.control_git_dir(str(self.repo), self.head_sha) as gd:
+            gd = Path(gd)
+            self.assertEqual((gd / "HEAD").read_text(encoding="utf-8").strip(), self.head_sha)
+            self.assertNotIn("filter", (gd / "config").read_text(encoding="utf-8"))
+            self.assertEqual((gd / "info" / "attributes").read_text(encoding="utf-8"), "*.py filter=p eol=crlf\n")
+            self.assertEqual((gd / "objects").resolve(), (self.repo / ".git" / "objects").resolve())
+        self.assertFalse(gd.exists(), "the control git dir outlived its use")
+
+    def test_the_source_attributes_file_rides_as_data_or_refuses(self):
+        # A repository-scope core.attributesFile is carried as CONTENT (a bounded regular file,
+        # never opened blocking): the CRLF repository still executes and kills; a FIFO there is
+        # the "could not create" refusal at once, never a hung control.
+        outside = Path(tempfile.mkdtemp(prefix="orca-attrs-"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "attrs").write_text("*.py text eol=crlf\n", encoding="utf-8")
+        self.git("config", "core.attributesFile", str(outside / "attrs"))
+        with verify._Authority.control_git_dir(str(self.repo), self.head_sha) as gd:
+            self.assertEqual((Path(gd) / "attributes").read_text(encoding="utf-8"), "*.py text eol=crlf\n")
+        ok, msgs = self._execute(self._revert_nc())
+        self.assertTrue(ok, msgs)
+        fifo = outside / "attrs-fifo"
+        os.mkfifo(fifo)
+        self.git("config", "core.attributesFile", str(fifo))
+        ok, msgs = self._execute(self._revert_nc())
+        self.assertFalse(ok)
+        self.assertTrue(any("could not create the control worktree" in x and "core.attributesFile" in x
+                            for x in msgs), msgs)
+
+    def test_a_timed_out_custody_query_refuses_the_control(self):
+        # Codex on PR #724 (round 6): the control dir's core.attributesFile query ran through
+        # _run_bytes, which reports a timeout as exit 1 - "unset" for `config --get` - so a
+        # timed-out query proceeded as "no attributes file". It is the "could not create" refusal.
+        real = subprocess.run
+
+        def run(argv, *a, **kw):
+            if isinstance(argv, (list, tuple)) and "core.attributesFile" in argv:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 30))
+            return real(argv, *a, **kw)
+        with mock.patch.object(subprocess, "run", run):
+            ok, msgs = self._execute(self._revert_nc())
+        self.assertFalse(ok)
+        self.assertTrue(any("could not create the control worktree" in x and "timed out" in x
+                            for x in msgs), msgs)
+
+    def test_no_user_attributes_or_ignore_file_is_opened(self):
+        # PR #724 re-attack (items 1, 2): a FIFO at ~/.config/git/ignore blocked the control's
+        # checkout, and one at ~/.config/git/attributes the phase repositories' reset --hard (each
+        # until its 120 s timeout). The control dir names its own attributes and excludes files;
+        # each phase's checkout pins both to /dev/null on its own command line.
+        import threading
+        home = Path(tempfile.mkdtemp(prefix="orca-fifo-home-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        (home / ".config" / "git").mkdir(parents=True)
+        for name in ("attributes", "ignore"):
+            os.mkfifo(home / ".config" / "git" / name)
+        box = {}
+
+        def run():
+            box["result"] = self._execute(self._revert_nc())
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+            worker.join(60)
+        self.assertFalse(worker.is_alive(), "the executed control blocked on a default user attributes "
+                         "or ignore file")
+        ok, msgs = box["result"]
+        self.assertTrue(ok, msgs)
+
+    def test_a_crlf_repository_still_executes_and_kills(self):
+        # A repository whose own attributes and config check *.py out with CRLF: the control's
+        # checkout honours them (data), the seal normalises them, and only the reverted path
+        # differs from head_sha's tree.
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("*.py text eol=crlf\n", encoding="utf-8")
+        self.git("config", "core.autocrlf", "true")
+        ok, msgs = self._execute(self._revert_nc())
+        self.assertTrue(ok, msgs)
+        self.assertTrue(any("negative control EXECUTED" in x for x in msgs), msgs)
 
 
 class DriverQueryFailureRefusesTheControl(MutationFixture):
@@ -6546,6 +6760,110 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
                 {"unit": "u1", "base_sha": self.poison}, "sha256:" + "a" * 64, "mutation",
                 None, "rec.json", "pub")
             self.assertTrue(bad and "pre-fix content was swapped" in bad[0], bad)
+
+    def _poison_spelled_as_the_absent_remote(self):
+        """W3-07 class, Codex review: refs/remotes/origin/main ABSENT, and a LOCAL branch spelled
+        refs/heads/refs/remotes/origin/main holding the poison — `rev-parse` and `merge-base`
+        expand the remote name to it."""
+        git = ["git", "-C", str(self.repo)]
+        subprocess.run([*git, "update-ref", "-d", "refs/remotes/origin/main"], check=True)
+        subprocess.run([*git, "update-ref", "refs/heads/refs/remotes/origin/main", self.poison],
+                       check=True)
+
+    def test_an_absent_remote_ref_is_not_answered_by_a_local_branch_of_its_spelling(self):
+        # The base-binding and ancestry pair on a sound lane: before, both passed the poison
+        # (it is an "ancestor" of the local branch); now the ref does not resolve, so the
+        # ancestry proof the lane asked for is fatal and base binding is left to it.
+        self._poison_spelled_as_the_absent_remote()
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            errs = verify.check_ancestry({"head_sha": self.poison}, "main")
+            self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+            self.assertIn("origin/main not found", errs[0])
+            self.assertIn("exactly that name", errs[0])
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, "main", True), [])
+
+    def test_a_local_bridge_inside_the_base_chain_is_not_the_base(self):
+        # Codex review round 2 (P1): refs/remotes/origin/main -> refs/heads/bridge ->
+        # refs/remotes/origin/side (a fetched branch holding the poison) read as remote-tracking
+        # all the way, so the poison was "on base" on a sound lane.
+        git = ["git", "-C", str(self.repo)]
+        subprocess.run([*git, "update-ref", "refs/remotes/origin/side", self.poison], check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/side"],
+                       check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/remotes/origin/main", "refs/heads/bridge"],
+                       check=True)
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            errs = verify.check_ancestry({"head_sha": self.poison}, "main")
+            self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+            self.assertIn("refs/heads/bridge", errs[0])
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, "main", True), [])
+            self.assertTrue(any("not found on origin/main" in e
+                                for e in verify.check_symbol_on_base("raise", "main")))
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_base(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # so a fetched `x<U+2028>refs/remotes/origin/main` at the poison replaced origin/main:
+        # an unmerged head and a worker-chosen base_sha both passed on a sound lane.
+        verify._Authority.lane = "provenance=ci"
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, self.poison)
+                try:
+                    with self._inside_repo():
+                        ancestry = verify.check_ancestry({"head_sha": self.poison}, "main")
+                        binding = verify.check_base_binding({"base_sha": self.poison}, "main", True)
+                finally:
+                    unplant()
+                self.assertTrue(ancestry and "not an ancestor" in ancestry[0], ancestry)
+                self.assertTrue(binding and "not an ancestor" in binding[0], binding)
+
+    def test_symbol_grep_names_the_resolved_commit_never_the_ref(self):
+        # Re-attack C(2): a mutant grepping the NAME instead of the commit survived. The grep
+        # must receive the commit the exact-name rule returned.
+        seen = []
+        real = verify._git
+
+        def spy(args, *a, **k):
+            seen.append(list(args))
+            return real(args, *a, **k)
+
+        with self._inside_repo(), mock.patch.object(verify, "_git", side_effect=spy):
+            self.assertEqual(verify.check_symbol_on_base("def f", "main"), [])
+        greps = [argv for argv in seen if argv[:1] == ["grep"]]
+        self.assertEqual(len(greps), 1, seen)
+        self.assertEqual(greps[0][-1], self.honest_base, greps)
+        self.assertFalse(any("origin/main" in tok for tok in greps[0]), greps)
+
+    def test_a_revision_suffix_on_the_base_is_not_a_base(self):
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            for base in ("main~0", "main^0", "main@{0}"):
+                with self.subTest(base=base):
+                    errs = verify.check_ancestry({"head_sha": self.honest_base}, base)
+                    self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+                    self.assertIn("not a valid ref name", errs[0])
+
+    def test_the_base_is_resolved_once_and_every_later_read_names_the_commit(self):
+        # merge-base used to re-resolve refs/remotes/origin/<base> (and expand it) after the
+        # existence check; it now receives the commit id the exact-name rule returned.
+        seen = []
+        real = verify._git
+
+        def spy(args, *a, **k):
+            seen.append(list(args))
+            return real(args, *a, **k)
+
+        with self._inside_repo(), mock.patch.object(verify, "_git", side_effect=spy):
+            self.assertEqual(verify.check_base_binding({"base_sha": self.honest_base}, "main",
+                                                       True), [])
+            self.assertEqual(verify.check_ancestry({"head_sha": self.honest_base}, "main"), [])
+        reads = [argv for argv in seen if argv[:1] == ["merge-base"]]
+        self.assertEqual(len(reads), 2, seen)
+        for argv in reads:
+            self.assertNotIn("refs/remotes/origin/main", argv)
+            self.assertEqual(argv[-1], self.honest_base, argv)
 
 
 class SiblingNamedLikeTheStdlibNeverLoads(unittest.TestCase):
@@ -6784,6 +7102,79 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         self.assertIn(f"commit {self.pinned[:12]}", out[0])
         keys = [c.args[0] for c in spy.call_args_list if "dispatch-pubkey" in c.args[0]]
         self.assertEqual(keys, [f".orca/dispatch-pubkey@{self.pinned}"], spy.call_args_list)
+
+    def assert_refused(self, ref, because):
+        out = self._check(f".orca/dispatch-pubkey@{ref}")
+        self.assertEqual(len(out), 1, out)
+        self.assertFalse(out[0].startswith("NOTE:"), out)
+        self.assertNotIn("signature verified", out[0])
+        self.assertIn("W3-03", out[0])
+        self.assertIn(because, out[0])
+
+    def test_a_local_branch_spelled_as_an_absent_remote_tracking_ref_is_refused(self):
+        # W3-07 class, Codex review (P1): with refs/remotes/worker/key ABSENT, symbolic-ref
+        # failed, the target kept the supplied spelling, and rev-parse expanded it to the local
+        # branch refs/heads/refs/remotes/worker/key — the worker's key — so its self-signed
+        # record verified on a lane claiming soundness. Same through origin/HEAD pointing at
+        # that absent spelling.
+        worker = self._worker_branch_key()
+        self.git("update-ref", "refs/heads/refs/remotes/worker/key", worker)
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/worker/key")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/origin/HEAD"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "exactly that name")
+
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_refused(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so
+        # refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/worker-pr (a fetched
+        # branch holding the worker's key) read as remote-tracking all the way and verified.
+        worker = self._worker_branch_key()
+        self.git("update-ref", "refs/remotes/origin/worker-pr", worker)
+        self.git("symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/worker-pr")
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/b", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/a", "refs/remotes/worker/b")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/worker/a"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "refs/heads/bridge")
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_key_ref(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # which git accepts in a refname, so a fetched `x<U+2028>refs/remotes/origin/main` at the
+        # worker's key replaced origin/main and its self-signed record verified.
+        worker = self._worker_branch_key()
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, worker)
+                try:
+                    out = self._check(".orca/dispatch-pubkey@refs/remotes/origin/main")
+                finally:
+                    unplant()
+                self.assertNotIn("signature verified", "\n".join(out))
+                self.assertNotIn(worker[:12], "\n".join(out))
+
+    def test_a_hex_named_branch_is_not_a_commit_id(self):
+        # 64 hex digits are no object id in a SHA-1 repository: rev-parse expands them as a ref.
+        worker = self._worker_branch_key()
+        hexname = "0f" * 32
+        self.git("update-ref", f"refs/heads/{hexname}", worker)
+        self.assert_refused(hexname, "names no commit object")
+
+    def test_a_revision_suffix_on_a_remote_tracking_ref_is_refused(self):
+        # A key rotation retired the worker's key: origin/main's parent (and the reflog entry
+        # before the rotation) still pins it, and every suffix passed the prefix check.
+        self._worker_branch_key()
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.write(".orca/dispatch-pubkey", verify._load_ed25519().publickey(self.SEED).hex() + "\n")
+        self.commit("rotate back to the coordinator key")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        for ref in ("refs/remotes/origin/main~1", "refs/remotes/origin/main^",
+                    "refs/remotes/origin/main@{1}"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "not a valid ref name")
+        # The exact name reads the current key, which did not sign the worker's record.
+        out = self._check(".orca/dispatch-pubkey@refs/remotes/origin/main")
+        self.assertNotIn("signature verified", "\n".join(out))
 
 
 class SoundLaneNeverRunsAWorkerWritableGitleaks(RepoCase):

@@ -42,7 +42,8 @@ Environment (no secret is ever read from a file)
   GITHUB_TOKEN        optional; sent as `Authorization: Bearer` to lift the API rate limit —
                       over https (or http to loopback) only, never to a rel=next on another
                       origin (that refuses, exit 2) and never across a redirect.
-  ORCA_CLI_COMMAND    the CLI executable `capture` runs (one executable, no arguments).
+  ORCA_CLI_COMMAND    the CLI executable `capture` runs (one executable, no arguments);
+                      OPEN_FLEET_CLI_COMMAND wins over it, orca_cli.py's own precedence.
   ORCA_DEV_REPO_ROOT  when set and `orca-dev` is on PATH, `capture` runs `orca-dev`.
                       Otherwise `orca-ide` on Linux, else `orca` — upstream's own resolution
                       order (its skill stubs). Not on PATH is exit 2, never a guess.
@@ -334,17 +335,22 @@ def resolve_cli(environ=None, platform=None, which=shutil.which):
     """(command, how) per upstream's resolution order; not on PATH raises, never guesses."""
     environ = os.environ if environ is None else environ
     platform = sys.platform if platform is None else platform
-    explicit = (environ.get("ORCA_CLI_COMMAND") or "").strip()
+    # The override is orca_cli's own: its precedence (OPEN_FLEET_CLI_COMMAND, else
+    # ORCA_CLI_COMMAND) and its validation, so `capture` witnesses the binary every fleet call
+    # runs (W4-15/W2-03 and its review). Then two deliberate differences, both because `capture`
+    # must reach the REAL Orca CLI and fail loudly when it cannot: the override must also be on
+    # PATH, and an ORCA_DEV_REPO_ROOT whose orca-dev is not on PATH falls through to the
+    # platform default instead of naming an absent orca-dev. OPEN_FLEET_RUNTIME is never read:
+    # on a non-Orca runtime orca_cli resolves to its own provider shim, which is not Orca.
+    var, explicit = orca_cli.configured_command(environ)
     if explicit:
-        if which(explicit) is None:
-            raise ProbeError(f"ORCA_CLI_COMMAND={explicit!r} is not on PATH "
-                             "(it must name one executable, without arguments)")
-        return explicit, "ORCA_CLI_COMMAND"
+        problem = orca_cli.cli_command_problem(explicit, var, which)
+        if problem:
+            raise ProbeError(problem)
+        return explicit, var
     if environ.get("ORCA_DEV_REPO_ROOT") and which("orca-dev") is not None:
         return "orca-dev", "ORCA_DEV_REPO_ROOT is set and orca-dev is on PATH"
-    # The platform default comes from the one resolver every fleet script shares (#510);
-    # the two overrides above are re-checked here because `capture` must fail loudly
-    # when the named executable is missing, which the resolver deliberately never does.
+    # The platform default comes from the one resolver every fleet script shares (#510).
     name = orca_cli.resolve(env={}, system="Linux" if platform.startswith("linux") else "Other")
     if which(name) is None:
         raise ProbeError(f"{name} is not on PATH — install Orca or set ORCA_CLI_COMMAND")

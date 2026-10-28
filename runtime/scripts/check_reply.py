@@ -12,8 +12,10 @@ message-check-handler.ts):
 
 --types members come from the orchestration message keyset (send spec note);
 --timeout-ms is a positive int. --from defaults to ORCA_TERMINAL_HANDLE, and an
-explicit --from that disagrees with it is refused — naming the sender is an
-identity claim, and a wrong one speaks as a sibling (terminal-identity.ts).
+explicit --from that disagrees with it is refused. Both are the caller's own, so
+this catches an ACCIDENTAL mismatch only; the sender is self-asserted here and
+the runtime is the authority (send_msg.py's docstring, W5-19). Every printed
+receipt field is inert and on one line, and a body cannot pass for a header.
 
 A clean receipt is the verdict: --wait timing out (timedOut) is exit 0 with
 TIMED_OUT=yes, not a failure. Argv is a list, never a shell string.
@@ -30,7 +32,7 @@ try:
 except ImportError:  # loaded by file path (tests): the resolver sits beside this script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
-from pm import _visible
+from pm import _indent_continuations, _visible, _visible_line
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -73,8 +75,8 @@ def resolve_from(explicit, env=None):
     if explicit is not None:
         _nonempty(explicit, "--from")
         if ambient and explicit != ambient:
-            raise Refused(f"--from '{explicit}' disagrees with "
-                          f"ORCA_TERMINAL_HANDLE='{ambient}' — passing another "
+            raise Refused(f"--from '{_visible_line(explicit)}' disagrees with "
+                          f"ORCA_TERMINAL_HANDLE='{_visible_line(ambient)}' — passing another "
                           f"pane's handle would act on its mailbox")
         return explicit
     return ambient or None
@@ -173,11 +175,12 @@ def format_messages(messages):
         if not isinstance(m, dict):
             skipped += 1
             continue
-        lines.append(f"--- {_visible(m.get('id', '?'))} "
-                     f"({_visible(m.get('type', '?'))}) "
-                     f"from {_visible(m.get('from_handle', '?'))}")
-        lines.append(f"SUBJ: {_visible(m.get('subject', '?'))}")
-        lines.append(_bounded(_visible(m.get("body", ""))))
+        lines.append(f"--- {_visible_line(m.get('id', '?'))} "
+                     f"({_visible_line(m.get('type', '?'))}) "
+                     f"from {_visible_line(m.get('from_handle', '?'))}")
+        lines.append(f"SUBJ: {_visible_line(m.get('subject', '?'))}")
+        lines.append(_indent_continuations(_bounded(_visible(m.get("body", ""))),
+                                           ("--- ", "SUBJ: ")))
     return lines, skipped
 
 
@@ -195,7 +198,7 @@ def main(argv=None, env=None):
                 raise Failed("check receipt names no messages/count")
             delivery = result.get("deliveryId") or "none"
             timed_out = "yes" if result.get("timedOut") is True else "no"
-            print(f"COUNT={count} DELIVERY={delivery} TIMED_OUT={timed_out}")
+            print(f"COUNT={count} DELIVERY={_visible_line(delivery)} TIMED_OUT={timed_out}")
             body, skipped = format_messages(messages)
             for line in body:
                 print(line)
@@ -205,13 +208,13 @@ def main(argv=None, env=None):
         else:
             result = run_orca(build_reply_argv(ns, env))
             reported = result.get("messageId") or result.get("id") or "unknown"
-            print(f"REPLIED={reported} FOR={ns.msg_id}")
+            print(f"REPLIED={_visible_line(reported)} FOR={_visible_line(ns.msg_id)}")
         return EXIT_OK
     except Refused as exc:
-        print(f"check_reply: REFUSED: {exc}", file=sys.stderr)
+        print(f"check_reply: REFUSED: {_visible_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_REFUSED
     except Failed as exc:
-        print(f"check_reply: FAILED: {exc}", file=sys.stderr)
+        print(f"check_reply: FAILED: {_visible_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_FAILED
 
 

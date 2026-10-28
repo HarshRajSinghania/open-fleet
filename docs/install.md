@@ -55,6 +55,7 @@ sh scripts/install.sh --check
 **Installer flags and safety checks:**
 - If a mission is already symlinked to a *different* `open-fleet` checkout, `install.sh` stops rather than silently repointing it. Pass `--force` to repoint existing mission symlinks to the current clone, or pass `--skills-dir=DIR` to target a custom directory.
 - Real (non-symlink) directories inside `~/.claude/skills/` are never overwritten ([troubleshooting](troubleshooting.md#installation-refuses-an-existing-mission-directory)).
+- `--skills-dir=DIR` must name a directory: an empty value, or one starting with `-` (which `mkdir`/`ln` would read as an option), is refused before anything runs — pass an absolute path, or prefix a relative one with `./`. With `HOME` unset the default `~/.claude/skills` has no location, so the installer says so and asks for `--skills-dir`.
 - If the Orca desktop app is closed or unreachable, `install.sh` prints a soft warning so headless/CI installs still succeed.
 
 ### 2. Selective symlink install

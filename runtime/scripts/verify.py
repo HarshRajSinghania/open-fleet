@@ -848,6 +848,30 @@ class _Authority:
         cls.repo_source = "inferred" if inferred else None
         return inferred
 
+    @staticmethod
+    def anchor_commit(name):
+        """gitexec.remote_tracking_commit (W3-07) run through this verifier's custody-classed git:
+        (commit, target, None) when `name` is a commit id naming that commit object or a full
+        refs/remotes/… ref that EXISTS under exactly that name (every symbolic hop
+        remote-tracking), else (None, target, why). The one exact-name rule every trust anchor
+        answers to — key_source's keys, and the refs/remotes/origin/<base> the ancestry,
+        base-binding and symbol legs resolve ONCE and then read only by the commit it returns
+        (with that ref absent, `rev-parse`/`merge-base`/`grep` expanded the name to a local
+        refs/heads/refs/remotes/… branch). A rule that does not load is no anchor, never a pass."""
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "gitexec_for_verify", Path(__file__).resolve().parent / "gitexec.py")
+            gitexec = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gitexec)
+            # RAW stdout: _git strips, and str.strip() eats U+2028/U+2029/U+0085, which a
+            # refname may end with; and its strict text decode would raise on a non-UTF-8 one.
+            def run(*args):
+                code, out, _err = _git_bytes(list(args))
+                return code, out.decode("utf-8", "surrogateescape")
+            return gitexec.remote_tracking_commit(run, name)
+        except (OSError, ImportError, SyntaxError, AttributeError) as err:
+            return None, name, f"could not be classed (gitexec.py: {err})"
+
     @classmethod
     def key_source(cls, source, what):
         """(where, the source to READ, pinned, refusal or None) for trust material named `path`
@@ -862,11 +886,16 @@ class _Authority:
         `where` says which kind it was, so the verdict and the transcript tell them apart. A
         dispatch record with an unpinned key does not open the enforcement lane at all (main()).
 
-        The class is decided by what the ref RESOLVES to, never by its spelling (PR #719 review):
-        a `refs/remotes/…` name may be a symbolic ref to a local branch. The ref is followed
-        through any symbolic chain to its final target ONCE, that target must itself be
-        remote-tracking, it is resolved to a commit ONCE, and the bytes are read at that commit —
-        nothing re-resolves the name afterwards.
+        The class is decided by what the ref RESOLVES to, never by its spelling (PR #719 review),
+        and the resolution is by EXACT name (W3-07, Codex review): gitexec.remote_tracking_commit,
+        the rule decisions.py and gate-batch.py --pin-ref and run_report's trusted base answer to,
+        run through this verifier's own custody-classed git. A commit id anchors only when it
+        names that commit object (64 hex digits in a SHA-1 repository are no object id, and
+        rev-parse expands them as a branch name); a ref only when it is a full refs/remotes/… name
+        that EXISTS under exactly that name, every symbolic hop remote-tracking too — never what
+        `rev-parse` expands it to (refs/heads/refs/remotes/… when the remote-tracking ref is
+        absent), never a revision suffix (~1, ^, @{1}). It is resolved to a commit ONCE and the
+        bytes are read at that commit — nothing re-resolves the name afterwards.
 
         What a remote-tracking ref guarantees, precisely: it is what the clone's last fetch wrote.
         On a lane claiming soundness the coordinator (or the CI runner) owns that clone, so the
@@ -880,29 +909,30 @@ class _Authority:
         elif ref.startswith("-"):
             return f"{path} at {ref!r}", source, False, None  # read_source refuses it
         else:
-            target = ref
-            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref):
-                code, out = _git(["symbolic-ref", "-q", ref])
-                target = out if code == 0 and out else ref  # the FINAL target of a symbolic chain
-            code, commit = _git(["rev-parse", "--verify", "-q", f"{target}^{{commit}}"])
-            if code != 0 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
-                # Off a sound lane the read itself reports the missing ref; on one, a name that
-                # names no commit is refused here (a tree id, say, is no commit to anchor on).
-                where, read, pinned = f"{path} at {ref!r}, which names no commit", source, False
-            elif target == ref and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref):
-                where, read, pinned = f"{path} at commit {commit[:12]}", f"{path}@{commit}", True
+            commit, target, why = cls.anchor_commit(ref)
+            if commit is not None:
+                read, pinned = f"{path}@{commit}", True
+                via = f" (a symbolic ref to {target})" if target not in (ref, commit) else ""
+                where = (f"{path} at commit {commit[:12]}" if target == commit else
+                         f"{path} at remote-tracking ref {ref}{via} = commit {commit[:12]}")
             else:
-                via = f" (a symbolic ref to {target})" if target != ref else ""
-                read, pinned = f"{path}@{commit}", target.startswith("refs/remotes/")
-                where = (f"{path} at remote-tracking ref {ref}{via} = commit {commit[:12]}"
-                         if pinned else f"{path} at {ref!r}{via} = commit {commit[:12]}, a "
-                         "local name the graded worker can move")
+                # Not an anchor. Off a sound lane the read stands where git's own resolution puts
+                # it, said to be a local name; on one it is refused below. A name that names no
+                # commit at all is reported as such (a tree id, say, is no commit to anchor on).
+                code, local = _git(["rev-parse", "--verify", "-q", f"{ref}^{{commit}}"])
+                pinned = False
+                if code != 0 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", local):
+                    where, read = f"{path} at {ref!r}, which names no commit", source
+                else:
+                    where = (f"{path} at {ref!r} = commit {local[:12]}, a local name the graded "
+                             f"worker can move ({ref!r} {why})")
+                    read = f"{path}@{local}"
         if not pinned and sound:
             return where, read, False, (f"{what} {source!r} is {where} — a lane claiming soundness "
-                                 f"({cls.lane}) reads trust material only at a commit id or a ref "
-                                 "whose final target is remote-tracking (what the coordinator's own "
-                                 "fetch wrote): path@refs/remotes/… or path@<commit id>; "
-                                 "fail-closed (W3-03)")
+                                 f"({cls.lane}) reads trust material only at a commit id or a full "
+                                 "remote-tracking ref that exists under exactly that name (what the "
+                                 "coordinator's own fetch wrote): path@refs/remotes/… or "
+                                 "path@<commit id>; fail-closed (W3-03, W3-07)")
         if pinned:
             # Said in every verdict, not only the docs (PR #719 re-attack): in the worker's own
             # clone `git update-ref refs/remotes/origin/main <its commit>` succeeds, and a commit id
@@ -1067,7 +1097,9 @@ class _Authority:
     @classmethod
     def driver_blanks(cls, repo):
         """`(key, value)` config pairs blanking every filter/diff driver command `repo`'s config
-        declares (#629), for blanked_env(). A negative-control `checkout`/`apply`/`worktree add` MATERIALISES worker content,
+        declares (#629), for blanked_env(). In the executed control `repo` is the scratch worktree,
+        whose config is the verifier's own (control_git_dir: it declares none), so this is a belt
+        there that keeps the fail-closed refusal below. A negative-control `checkout`/`apply` MATERIALISES worker content,
         which runs a clean/smudge filter a `.gitattributes` (or `$GIT_DIR/info/attributes`, past
         any `--attr-source`) line selects — the one channel git_env's fixed belt and
         `--no-textconv`/`--no-ext-diff` cannot close. The command comes only from a declared
@@ -1120,6 +1152,54 @@ class _Authority:
             env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
         env["GIT_CONFIG_COUNT"] = str(first + len(blanks))
         return env
+
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def gitexec():
+        """runtime/scripts/gitexec.py, loaded once by path (it is in _Transcript.TOOLCHAIN since
+        #608): the verifier takes only its git custody dir builder (custody_git_dir), which runs
+        no git — every verifier git leg stays on the pinned git_bin() under git_env()."""
+        spec = importlib.util.spec_from_file_location(
+            "verify_gitexec", Path(__file__).resolve().parent / "gitexec.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    @classmethod
+    def control_git_dir(cls, top, head):
+        """The git dir the executed control is checked out, applied and sealed in (W4 custody
+        sweep), as a context manager yielding its path: built by the verifier (gitexec
+        custody_git_dir), never a linked worktree of `top`. A linked worktree reads the SHARED
+        config and `info/attributes` the graded worker writes, so a filter, textconv or merge driver
+        it added after driver_blanks listed the config ran in the control's checkout, revert or
+        apply as this verifier. This dir's config declares no driver at all, so one a
+        `.gitattributes` (or the source's `info/attributes`) selects is undefined here, whenever it
+        was added. Its `objects` is the source's store ("shared"): the sealed control commit lands
+        where each phase repository's alternates already reach. HEAD is `head`; `core.bare` is
+        false, as the control's work tree reaches it through a `.git` gitfile. The source's
+        `info/attributes` and the content of its own `core.attributesFile` ride as data. Raises
+        OSError (GitCustodyRefused for an unreadable or non-regular `info/exclude`/`shallow`/
+        `info/attributes`, or a `core.attributesFile` that is not a bounded regular file)."""
+        git, env = cls.git_bin(), cls.git_env()
+        code, common, gerr = _run([git, "-C", top, "rev-parse", "--path-format=absolute",
+                                   "--git-common-dir"], timeout=30, env=env)
+        code2, fmt, gerr2 = _run([git, "-C", top, "rev-parse", "--show-object-format"],
+                                 timeout=30, env=env)
+        if code != 0 or code2 != 0 or not common.strip():
+            raise OSError(f"cannot locate the source repository's object store: {(gerr or gerr2).strip()}")
+
+        def run(args):  # the source's own core.attributesFile, read under git_env (data only)
+            # Not _run_bytes: it reports a timeout as exit 1, which `config --get` means "unset", so
+            # a timed-out query read as "no attributes file" (Codex on PR #724, round 6). A timeout
+            # here is an OSError: the "could not create the control worktree" refusal.
+            try:
+                return subprocess.run([git, "-C", top, *args], capture_output=True, timeout=30, env=env,
+                                      stdin=subprocess.DEVNULL)
+            except subprocess.TimeoutExpired as exc:
+                raise OSError(f"git {' '.join(args[:2])} timed out after {exc.timeout}s") from exc
+        attributes = cls.gitexec().custody_attributes(run, top)
+        return cls.gitexec().custody_git_dir(common.rstrip("\n"), fmt.strip(), str(head), None,
+                                             objects="shared", bare=False, attributes=attributes)
 
     @classmethod
     def api(cls, repo, endpoint, *flags, timeout=20):
@@ -2154,9 +2234,11 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
     """Apply the negative control inside the throwaway worktree `wt`. Returns an error string or
     None. Fail-closed on every git error: a control that did not apply is not a control."""
     # #629: checkout/revert/apply below materialise worker content and would run a repo-config
-    # clean/smudge filter a .gitattributes selects. Each blanks every declared driver command,
-    # read in `wt` itself immediately before the call (PR #649 review: read the drivers in the
-    # same directory and ref state as the git call that could run them, as late as possible).
+    # clean/smudge filter a .gitattributes selects. In the executed control `wt` runs against the
+    # verifier's own git dir (_Authority.control_git_dir), whose config defines no driver, so none
+    # runs however late the source's config gained it (W4 custody sweep). Each call still blanks
+    # every driver `wt`'s config declares, read in `wt` itself immediately before the call (PR
+    # #649 review: the same directory and ref state as the git call that could run them).
     if tool == "revert":
         base = m.get("base_sha")
         paths, err = _nc_paths(nc)
@@ -2337,18 +2419,26 @@ def execute_negative_control(m, nc_command=None):
         executes, so no run can reach it, and the sealed commit is content-addressed, so no run can
         alter what the control phase checks out."""
         holder = tempfile.mkdtemp(prefix="orca-nc-")
-        wt = str(Path(holder) / "wt")
-        # #629: populating the worktree from head_sha runs any repo-config smudge filter an
-        # attribute selects, so its drivers are blanked first — and they are read IN the new
-        # worktree, not in `top`. A linked worktree's config view is its own: an `includeIf
-        # "gitdir:**/worktrees/**"` (or `onbranch:`, or its own config.worktree) can declare a
-        # filter only there, which a list read in `top` missed (PR #649 review). So: create it
-        # EMPTY (--no-checkout materialises nothing), read its drivers, then check out under them.
-        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--no-checkout",
-                              "--detach", wt, str(head)], timeout=120, env=_Authority.git_env())
+        wt = Path(holder) / "wt"
+        # #629: populating the worktree from head_sha, restoring base paths, reverting and applying
+        # all materialise worker content, which runs any filter (and the revert/apply any merge
+        # driver) an attribute selects. Listing the drivers a config declares and blanking them
+        # (PR #649) left a window: one the graded worker added to the shared config after the
+        # listing ran here (W4 custody sweep). So the scratch worktree is no linked worktree of
+        # `top`: its `.git` is a gitfile naming a git dir this verifier builds
+        # (_Authority.control_git_dir), whose config defines no driver at all. driver_blanks still
+        # reads that config before each call, a belt that keeps the fail-closed refusal.
+        custody = None  # entered by hand: only BUILDING it is "could not create" (an OSError)
         try:
-            if code != 0:
-                return None, f"could not create the control worktree at head_sha: {gerr.strip()}"
+            try:
+                built = _Authority.control_git_dir(top, head)
+                gd = built.__enter__()
+                custody = built
+                wt.mkdir()
+                (wt / ".git").write_bytes(b"gitdir: " + os.fsencode(gd) + b"\n")
+            except OSError as err:
+                return None, f"could not create the control worktree at head_sha: {err}"
+            wt = str(wt)
             code, _, gerr = _run_at(wt, [_Authority.git_bin(), "checkout", "-q", "--detach",
                                          str(head)], timeout=120,
                                     env=_Authority.blanked_env(_Authority.driver_blanks(wt)))
@@ -2359,8 +2449,8 @@ def execute_negative_control(m, nc_command=None):
                 return None, apply_err
             return _seal_control(wt, head)
         finally:
-            _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
-                 env=_Authority.git_env())
+            if custody is not None:
+                custody.__exit__(None, None, None)  # removes the control git dir
             shutil.rmtree(holder, ignore_errors=True)
 
     def _tag_kind(raw):
@@ -2493,8 +2583,14 @@ def execute_negative_control(m, nc_command=None):
                                  timeout=30, env=env)
             if code != 0:
                 return f"could not set HEAD in the {phase} repository: {gerr.strip()}"
-        code, _, gerr = _run([git, "-C", repo, "reset", "--hard", "--quiet", str(commit)],
-                             timeout=120, env=env)
+        # The phase repository names no attributes or ignore file of its own, so git would open
+        # its default user ones (~/.config/git/attributes and .../ignore, the worker's to write on a
+        # one-uid host): a FIFO there blocked this checkout (PR #724 re-attack). Pinned to
+        # /dev/null on this call's own command line; the verifier's pinned environment is unchanged,
+        # so the system attributes file stays readable here (see docs/runtime-scripts.md).
+        code, _, gerr = _run([git, "-C", repo, "-c", f"core.attributesFile={os.devnull}",
+                              "-c", f"core.excludesFile={os.devnull}", "reset", "--hard", "--quiet",
+                              str(commit)], timeout=120, env=env)
         if code != 0:
             return f"could not check out the {phase} commit: {gerr.strip()}"
         return None
@@ -2876,32 +2972,42 @@ def check_ancestry(m, base):
     claiming soundness (_Authority.lane: --provenance ci|mcp|sdk|dispatch, or a signed dispatch
     record + a pinned pubkey) it is FATAL, as every other authority leg is there: the ref lives in the
     clone the worker controls, and deleting it must not turn a requested ancestry proof into a
-    skipped one (review P2)."""
+    skipped one (review P2). The ref is resolved by its exact name, once (W3-07)."""
     if not base:
         return ["NOTE: --base not given — ancestry check skipped (pre-merge/offline)"]
     # The FULL ref name: gitrevisions resolves a short `origin/<base>` through refs/tags first, so
     # a tag (or local branch) named origin/<base> that a worker can push shadowed the
-    # remote-tracking branch and put any commit "on base" (2026-10-26 review).
-    ref, shown = f"refs/remotes/origin/{base}", f"origin/{base}"
-    if _git(["rev-parse", "--verify", ref])[0] != 0:
+    # remote-tracking branch and put any commit "on base" (2026-10-26 review) — and the full name
+    # is looked up EXACTLY, never expanded (W3-07).
+    shown, ref = f"origin/{base}", f"refs/remotes/origin/{base}"
+    tip, _target, why = _Authority.anchor_commit(ref)  # once; every read below names `tip`
+    if tip is None:
+        why = f"{ref} {why}"
         if _Authority.lane:
             return [f"ancestry: {shown} not found — a lane claiming soundness ({_Authority.lane}) "
-                    "named --base and cannot skip the ancestry proof it asked for; fail-closed"]
-        return [f"NOTE: {shown} not found — ancestry check skipped"]
-    if _git(["merge-base", "--is-ancestor", m.get("head_sha", ""), ref])[0] != 0:
+                    "named --base and cannot skip the ancestry proof it asked for; fail-closed "
+                    f"({why})"]
+        return [f"NOTE: {shown} not found — ancestry check skipped ({why})"]
+    if _git(["merge-base", "--is-ancestor", m.get("head_sha", ""), tip])[0] != 0:
         return [f"head_sha is not an ancestor of {shown} (not merged / wrong base)"]
     return []
 
 
 def check_symbol_on_base(symbol, base):
-    """8. Best-effort: a unit symbol is greppable on origin/<base> (change is real on base)."""
+    """8. Best-effort: a unit symbol is greppable on origin/<base> (change is real on base),
+    read at the commit _Authority.anchor_commit resolves by exact name (W3-07)."""
     if not symbol or not base:
         return []
+    ref = f"refs/remotes/origin/{base}"
+    tip, _target, why = _Authority.anchor_commit(ref)  # once (W3-07); the grep names `tip`
+    if tip is None:
+        return [f"symbol '{symbol}' not found on origin/{base}: the base does not resolve by its "
+                f"exact name ({ref} {why})"]
     # timeout=20 is the LEGACY allowance, restored explicitly (#442 S2-R3). This leg used to
     # call _run, whose default is 20s; routing it through _git for the SHA root (#442) silently
     # halved the budget to _git's 10s default, and a grep that took 11s turned a symbol that IS
     # on base into a fatal "not found". The root selection was the change; the clock was not.
-    code, out = _git(["grep", "-l", "-e", symbol, f"refs/remotes/origin/{base}"], timeout=20)
+    code, out = _git(["grep", "-l", "-e", symbol, tip], timeout=20)
     if code != 0 or not out.strip():
         return [f"symbol '{symbol}' not found on origin/{base} (change may not be on base)"]
     return []
@@ -2918,7 +3024,9 @@ def check_base_binding(m, base, execute_nc):
     base, the gate now requires base_sha to be an ancestor of refs/remotes/origin/<base>: a commit
     the worker could not have put there. Without --base the control's pre-fix content is unbound:
     a NOTE on the advisory native lane, fatal where a lane claims soundness and executes the
-    control. A signed dispatch record may also pin base_sha outright (check_dispatch_provenance)."""
+    control. A signed dispatch record may also pin base_sha outright (check_dispatch_provenance).
+    The ref is resolved by its exact name, once (_Authority.anchor_commit, W3-07): with it absent, a local
+    refs/heads/refs/remotes/origin/<base> holding the poison used to answer for it."""
     base_sha = str(m.get("base_sha") or "")
     if not HEX40_RE.match(base_sha):
         return []  # check_shas_present / check_real_commits name that defect
@@ -2931,10 +3039,10 @@ def check_base_binding(m, base, execute_nc):
             return ["NOTE: --base not given — base_sha, the content the executed control restores, "
                     "is bound to no branch (worker-chosen on this lane)"]
         return []
-    ref = f"refs/remotes/origin/{base}"
-    if _git(["rev-parse", "--verify", ref])[0] != 0:
-        return []  # check_ancestry reports the missing ref (a NOTE or fatal by lane)
-    if _git(["merge-base", "--is-ancestor", base_sha, ref])[0] != 0:
+    tip, _target, _why = _Authority.anchor_commit(f"refs/remotes/origin/{base}")  # once (W3-07)
+    if tip is None:
+        return []  # check_ancestry reports the unresolved ref (a NOTE or fatal by lane)
+    if _git(["merge-base", "--is-ancestor", base_sha, tip])[0] != 0:
         return [f"base_sha {base_sha[:12]} is not an ancestor of origin/{base} — the control would restore "
                 "content the integration branch never held, so the worker chose its own base "
                 "(2026-10-26 review)"]

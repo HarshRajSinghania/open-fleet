@@ -20,6 +20,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 SCOPE = ROOT / "runtime" / "scripts" / "diff_scope.py"
 _spec = importlib.util.spec_from_file_location("diff_scope", SCOPE)
 diff_scope = importlib.util.module_from_spec(_spec)
@@ -154,7 +160,8 @@ class TestDiffAcquisition(ScopeBase):
                 with self.subTest(phase=phase, failure=failure):
                     def failing_read(argv, phase=phase, failure=failure, **kwargs):
                         target = ("untracked" if "ls-files" in argv else
-                                  "committed" if "main...HEAD" in argv else
+                                  # the merge-base diff names the resolved base COMMIT (W3-07)
+                                  "committed" if any(str(a).endswith("...HEAD") for a in argv) else
                                   "working-tree" if "diff" in argv and "HEAD" in argv else None)
                         if target == phase:
                             if isinstance(failure, Exception):
@@ -686,6 +693,166 @@ class PredictMergeContract(ScopeBase):
         doc = json.loads(out.getvalue())
         self.assertEqual(doc["error"], "diff_failed")
         self.assertIn("boom", doc["detail"])
+
+
+
+class TestTheBaseIsResolvedByExactNameW307(ScopeBase):
+    """W3-07 class (Codex review follow-up): resolve_base ran `rev-parse <base>^{commit}` and,
+    unnamed, cut origin/HEAD's target to the SHORT name `origin/<x>`, which gitrevisions resolves
+    through refs/tags/ and refs/heads/ first. The base decides which paths count as changed, so
+    which review lenses run: a tag or local branch spelled `origin/main` at the change's own tip
+    (or an origin/HEAD pointed at the change's branch) emptied the diff and turned the AUTH lens
+    off. The change below touches auth code; every plant used to report SCOPE_AUTH=false."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.repo, "update-ref", "refs/remotes/origin/main", "main")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        write(self.repo, "src/auth/login.py", "def login():\n    return True\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "touch auth")
+
+    def scoped(self, *args):
+        r = self.run_scope("--json", *args)
+        return json.loads(r.stdout), r
+
+    def test_a_tag_or_local_branch_spelled_origin_main_never_stands_in(self):
+        for planted in ("refs/tags/origin/main", "refs/heads/origin/main"):
+            git(self.repo, "update-ref", planted, "HEAD")
+            for args in ((), ("--base", "origin/main")):
+                with self.subTest(planted=planted, args=args):
+                    data, r = self.scoped(*args)
+                    self.assertIsNone(data["error"], r.stdout + r.stderr)
+                    self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
+            git(self.repo, "update-ref", "-d", planted)
+
+    def test_an_origin_head_pointed_at_the_change_s_branch_is_skipped(self):
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/work")
+        data, r = self.scoped()
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
+
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_no_base(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so origin/HEAD
+        # -> refs/heads/bridge -> refs/remotes/origin/tip (the change's own tip, fetched) read as
+        # remote-tracking all the way: the diff was empty and the AUTH lens off.
+        git(self.repo, "update-ref", "refs/remotes/origin/tip", "HEAD")
+        git(self.repo, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/tip")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/bridge")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/b", "refs/heads/bridge")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/a", "refs/remotes/origin/b")
+        data, r = self.scoped()  # origin/HEAD skipped: origin/main
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
+        for base in ("origin/HEAD", "origin/a"):
+            with self.subTest(base=base):
+                data, r = self.scoped("--base", base)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(data["error"], "no_base", r.stdout)
+                self.assertIn("refs/heads/bridge", r.stderr)
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_base(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # so a fetched `x<U+2028>refs/remotes/origin/main` at the change's own tip replaced
+        # origin/main: an empty diff, the AUTH lens off.
+        tip = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        for ch in refname_breaks.LINE_BREAKS:
+            for args in ((), ("--base", "origin/main")):
+                with self.subTest(ch=ch, args=args):
+                    unplant = refname_breaks.plant(self.repo, ch, tip)
+                    try:
+                        data, r = self.scoped(*args)
+                    finally:
+                        unplant()
+                    self.assertIsNone(data["error"], r.stdout + r.stderr)
+                    self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
+
+    def test_an_absent_remote_ref_is_not_answered_by_a_local_branch_of_its_spelling(self):
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        git(self.repo, "update-ref", "refs/heads/refs/remotes/origin/main", "HEAD")
+        data, r = self.scoped("--base", "refs/remotes/origin/main")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(data["error"], "no_base", r.stdout)
+        self.assertIn("exactly that name", r.stderr)
+
+    def test_a_revision_suffix_is_no_base(self):
+        for base in ("origin/main~0", "origin/main@{0}", "main^0"):
+            with self.subTest(base=base):
+                data, r = self.scoped("--base", base)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(data["error"], "no_base", r.stdout)
+                self.assertIn("not a valid ref name", r.stderr)
+
+    def test_head_and_an_abbreviated_id_are_advisory_bases_never_ref_names(self):
+        # Re-attack C(1): off a sound lane `--base HEAD` was refused and `--base <short sha>` was
+        # read as the local BRANCH of that spelling — a planted refs/heads/<short sha> at the
+        # change's tip emptied the diff. Both are advisory bases now (with the NOTE), the
+        # abbreviation read as an object id only; a sound lane refuses both.
+        main = git(self.repo, "rev-parse", "refs/heads/main").stdout.strip()
+        short = main[:9]
+        git(self.repo, "update-ref", f"refs/heads/{short}", "HEAD")
+        clean = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+
+        def scope(base, env):
+            r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo), "--json",
+                                "--base", base], capture_output=True, text=True, env=env)
+            return json.loads(r.stdout), r
+
+        data, r = scope(short, clean)
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)  # diffed against main
+        self.assertIn("abbreviated commit id", r.stderr)
+        data, r = scope("HEAD", clean)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertIn("NOTE", r.stderr)
+        for base in (short, "HEAD"):
+            with self.subTest(base=base):
+                data, r = scope(base, {**clean, "OPEN_FLEET_PROVENANCE": "ci"})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(data["error"], "no_base", r.stdout)
+
+    def test_a_local_base_is_refused_on_a_lane_claiming_soundness(self):
+        # Coordinator decision (the decisions.py / run_report.py precedent): where
+        # ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE claims soundness a local branch — the change's
+        # to move — is no base, named or as the no-remote fallback; off that lane it runs with
+        # the advisory NOTE.
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        clean = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        for var in ("ORCA_PROVENANCE", "OPEN_FLEET_PROVENANCE"):
+            for args in (("--base", "main"), ("--base", "refs/heads/main"), ()):
+                with self.subTest(var=var, args=args):
+                    r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo),
+                                        "--json", *args], capture_output=True, text=True,
+                                       env={**clean, var: "ci"})
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertEqual(json.loads(r.stdout)["error"], "no_base", r.stdout)
+                    self.assertIn(f"{var}=ci claims a sound lane", r.stderr)
+        r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo), "--json",
+                            "--base", "main"], capture_output=True, text=True, env=clean)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(json.loads(r.stdout)["flags"]["AUTH"], r.stdout)
+        self.assertIn("NOTE", r.stderr)
+        self.assertIn("LOCAL branch", r.stderr)
+
+    def test_the_diff_is_taken_against_the_resolved_commit(self):
+        tip = git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        seen = []
+        real = diff_scope.git
+
+        def spy(repo, *args, **kwargs):
+            seen.append(list(args))
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(diff_scope, "git", side_effect=spy):
+            flags, _unmatched, shown = diff_scope.scope(self.repo, "origin/main")
+        self.assertTrue(flags["AUTH"])
+        self.assertEqual(shown, "origin/main")
+        diffs = [a for a in seen if a[:1] == ["diff"] and any("..." in t for t in a)]
+        self.assertEqual(len(diffs), 1, seen)
+        self.assertIn(f"{tip}...HEAD", diffs[0])
 
 
 if __name__ == "__main__":

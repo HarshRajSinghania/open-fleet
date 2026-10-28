@@ -1775,8 +1775,12 @@ would be the parser's choice), placement claims are read in every spelling
 (`prelaunchPlacementBound`, `Ephemeral`) and at every level, and every `{ok, result}` envelope
 around the report, at every wrapping level, is held to it: its own `ok:false`, `error` or any
 finding, or a false placement claim anywhere inside it (its `metadata` included), refuses. A
-report wrapped more than once is read out of all of its wrappers, and a false placement claim
-anywhere in a report that names no portable backend refuses too. JSON transcripts read structurally (empty
+report wrapped more than once is read out of all of its wrappers (up to 16), and a false placement
+claim anywhere in a report that names no portable backend refuses too. Whatever stops the reader
+short of the report is a refusal, in the assessment and in `--require-placement` alike: more than
+16 wrappers, output nested too deep to parse, and a transcript that opens as JSON (`{`, or `[`
+opening an array of objects, arrays or strings; a byte-order mark aside) but does not parse, which
+is never read as plain text. JSON transcripts read structurally (empty
 finding collections are good news; `ok:false` is a finding); plain-text transcripts first
 strip "none of these" shapes (`"failures": []`, `failures: 0`, `0 warnings`, `no
 failures`) before matching fail/warn/error words. A transcript naming a portable `backend`
@@ -2046,11 +2050,15 @@ read every candidate — an environment that stayed unreadable, a host without `
 caps every unanchored session until removed; on the custom-argv lane a pane whose handle record
 fails gets no task. Otherwise the reservation goes: when no launch call was made; on either
 launch path (`worker-start`, `terminal create`), on a refusal PROVEN to precede any launch effect
-— one error envelope with nothing else in its result, naming no pane, whose code is
-`task_not_found`, `task_not_startable`, `nested_worker_depth_exceeded`, `worktree_not_found`,
-`selector_not_found` or `invalid_argument` (any other error keeps it: `runtime_error`, an unknown
-or untyped code, and `inject_rejected`, `consumer_fenced` and `dispatch_inactive`, which can follow
-a pane's creation and still exit 2 as refusals); or once every handle
+— a response, naming no pane, that is exactly one refusal by a strict schema at every level: one
+error, at the top level (beside only `id` and `ok: false`) or alone in `result`, holding only a
+`code` among `task_not_found`, `task_not_startable`, `nested_worker_depth_exceeded`,
+`worktree_not_found`, `selector_not_found` and `invalid_argument`, a string `message`, and `data`
+with only the documented refusal fields (`nextSteps`, `unmetDependencies`, `retryOf`,
+`failureCount`, `reason`) in their documented types. Anything else keeps it: a second error, a
+result beside the error, any other key at any depth, `runtime_error`, an unknown or untyped code,
+and `inject_rejected`, `consumer_fenced` and `dispatch_inactive`, which can follow a pane's creation
+and still exit 2 as refusals; or once every handle
 named is recorded — with its root, or by its handle record alone when a complete scan finds no
 process carrying it (`SPAWN_ROOT_WAIT_SECS`, default 1: the worker is not a local process — it
 exited, runs remotely or in another uid's container, or the backend is a dry run) or the worker

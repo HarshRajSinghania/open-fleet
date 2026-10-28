@@ -1342,6 +1342,11 @@ class CustodyKeepsLineEndingData(unittest.TestCase):
         if how == "info/attributes":
             (p.repo / ".git" / "info").mkdir(exist_ok=True)
             (p.repo / ".git" / "info" / "attributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+        elif how.startswith("core.attributesFile"):
+            # Codex on the W4-02 branch: a repository-scope core.attributesFile, absolute or
+            # relative to the work tree top (here, beside the repository, so it is not untracked).
+            (p.dir / "attrs").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+            p._git("config", "core.attributesFile", str(p.dir / "attrs") if how.endswith("absolute") else "../attrs")
         else:
             p._git("config", "core.autocrlf", "true")
         (p.repo / "a.txt").unlink()
@@ -1352,7 +1357,8 @@ class CustodyKeepsLineEndingData(unittest.TestCase):
         return p, base
 
     def test_a_clean_crlf_checkout_reads_unchanged_in_custody(self):
-        for how in ("info/attributes", "core.autocrlf"):
+        for how in ("info/attributes", "core.autocrlf", "core.attributesFile absolute",
+                    "core.attributesFile relative"):
             with self.subTest(how=how):
                 p, base = self._repo(how)
                 diff = floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base))
@@ -1364,11 +1370,89 @@ class CustodyKeepsLineEndingData(unittest.TestCase):
                                        env=c.env(), capture_output=True, text=True, stdin=subprocess.DEVNULL)
                 self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
+    def test_the_posix_custody_status_reads_it_clean_too(self):
+        posix = _posix()
+        for how in ("info/attributes", "core.attributesFile absolute"):
+            with self.subTest(how=how):
+                p, _base = self._repo(how)
+                proc = posix._git(["status", "--porcelain"], cwd=p.repo)
+                self.assertEqual((proc.returncode, proc.stdout), (0, ""), proc.stderr)
+
     def test_a_real_edit_still_shows(self):
         p, base = self._repo("info/attributes")
         (p.repo / "a.txt").write_bytes(b"line1\r\nEDITED\r\n")
         self.assertIn("+EDITED", floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base)))
         self.assertEqual(diff_scope.changed_files(p.repo, base), ["a.txt"])
+
+
+def _posix():
+    sys.path.insert(0, str(ROOT / "runtime"))
+    try:
+        return importlib.import_module("providers.posix")
+    finally:
+        sys.path.remove(str(ROOT / "runtime"))
+
+
+def _finishes(fn, seconds=30):
+    """fn() run in a thread; (finished, result or exception). A hang is (False, None)."""
+    import threading
+    box = {}
+
+    def target():
+        try:
+            box["ok"] = fn()
+        except Exception as exc:  # the refusal under test
+            box["err"] = exc
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(seconds)
+    return (not t.is_alive()), box.get("err", box.get("ok"))
+
+
+class AnUnreadableAttributesFileIsRefused(unittest.TestCase):
+    """Codex on the W4-02 branch: core.attributesFile is carried as CONTENT, read only as a bounded
+    regular file without blocking. A FIFO (whose open would block), a symlink, a directory or an
+    oversized file refuses every site; none hangs and none silently drops it."""
+
+    def _repo(self, kind):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("CHANGED\n", encoding="utf-8")
+        target = p.dir / "attrs"
+        if kind == "fifo":
+            os.mkfifo(target)
+        elif kind == "symlink":
+            (p.dir / "real").write_text("*.txt text\n", encoding="utf-8")
+            os.symlink(p.dir / "real", target)
+        elif kind == "directory":
+            target.mkdir()
+        else:
+            target.write_bytes(b"#" * (gitexec.ATTRIBUTES_FILE_LIMIT + 1))
+        p._git("config", "core.attributesFile", str(target))
+        return p, base
+
+    def test_every_site_refuses_and_none_hangs(self):
+        posix = _posix()
+        for kind in ("fifo", "symlink", "directory", "oversized"):
+            p, base = self._repo(kind)
+            mb = floor_guard.merge_base(p.repo, base)
+            for site, call, refusal in (
+                    ("custody", lambda: gitexec.custody(p.repo).__enter__(), gitexec.GitCustodyRefused),
+                    ("floor_guard", lambda: floor_guard.collect_diff(p.repo, mb), floor_guard.GuardError),
+                    ("diff_scope", lambda: diff_scope.changed_files(p.repo, base), diff_scope.ScopeError),
+                    ("hint_provenance", lambda: hint_provenance.LiveSource(str(p.repo)).changes_since(base),
+                     hint_provenance.ProvenanceError)):
+                with self.subTest(kind=kind, site=site):
+                    done, got = _finishes(call)
+                    self.assertTrue(done, f"{site} hung on a {kind} core.attributesFile")
+                    self.assertIsInstance(got, refusal)
+            with self.subTest(kind=kind, site="posix status"):
+                done, got = _finishes(lambda: posix._git(["status", "--porcelain"], cwd=p.repo))
+                self.assertTrue(done, f"posix status hung on a {kind} core.attributesFile")
+                self.assertEqual(got.returncode, 127, got)
+                self.assertIn("core.attributesFile", got.stderr)
 
 
 class GitexecCustody(unittest.TestCase):

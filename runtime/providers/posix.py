@@ -946,6 +946,14 @@ def _custody_settings(lead: list[str], cwd: str | Path | None, base: dict[str, s
     return gitexec.custody_settings(lambda args: _direct([*lead, *args], cwd, base, timeout))
 
 
+def _custody_attributes(lead: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float,
+                        top: str) -> bytes | None:
+    """gitexec.custody_attributes for the repository `lead`/`cwd` names: the CONTENT of its own
+    core.attributesFile (read only as a bounded regular file, never blocking), carried as data so a
+    custody `status`/`read-tree` normalises as the repository does; anything else refuses."""
+    return gitexec.custody_attributes(lambda args: _direct([*lead, *args], cwd, base, timeout), top)
+
+
 def _repo_facts(lead: list[str], cwd: str | Path | None, base: dict[str, str], timeout: float) -> dict[str, str | None]:
     return gitexec.custody_facts(lambda args: _direct([*lead, *args], cwd, base, timeout))
 
@@ -1035,7 +1043,8 @@ def run_git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, st
                 return subprocess.CompletedProcess(args, 128, b"", os.fsencode(f"fatal: {rev!r} is not a commit\n"))
             shas.append(sha)
         _custody_settings(lead, cwd, base, timeout)  # refuse an extension the custody dir cannot honour
-        with _custody_git_dir(str(facts["common"]), str(facts["format"]), None, None) as gd:
+        attrs = _custody_attributes(lead, cwd, base, timeout, facts["top"] or git_location(lead, cwd)[0])
+        with _custody_git_dir(str(facts["common"]), str(facts["format"]), None, None, attributes=attrs) as gd:
             proc = _direct(["--git-dir", gd, "merge-tree", *opts, *shas], None, base, timeout)
         return subprocess.CompletedProcess(args, proc.returncode, proc.stdout, proc.stderr)
     named = next((lead[i + 1] for i, tok in enumerate(lead[:-1]) if tok == "--work-tree"), None)
@@ -1044,7 +1053,9 @@ def run_git(args: list[str], *, cwd: str | Path | None = None, env: dict[str, st
         # The work tree the call names, never one config (`core.worktree`) redirects it to.
         raise GitCustodyRefused(f"git custody: `git {sub}` runs at the top of the work tree it names ({named!r})")
     settings = _custody_settings(lead, cwd, base, timeout)
-    with _custody_git_dir(str(facts["common"]), str(facts["format"]), facts["head"], str(facts["gitdir"])) as gd:
+    attrs = _custody_attributes(lead, cwd, base, timeout, str(facts["top"]))
+    with _custody_git_dir(str(facts["common"]), str(facts["format"]), facts["head"], str(facts["gitdir"]),
+                          attributes=attrs) as gd:
         # `dirty`: a submodule's recorded commit is compared, its work tree never inspected (that
         # inspection is a child git without the floor, under the submodule's own config).
         proc = _direct(["--git-dir", gd, "--work-tree", str(facts["top"]), "--no-optional-locks", "status",
@@ -1073,7 +1084,8 @@ def checkout_worktree(root: str | Path, wt: str | Path, branch: str, *, timeout:
         raise GitCustodyRefused(f"git custody: {str(wt)!r} is not a directory to check out into")
     admin = registered_admin_dir(common, wt)
     settings = _custody_settings(at_root, None, base, timeout)
-    with _custody_git_dir(common, fmt, head, admin) as gd:
+    attrs = _custody_attributes(at_root, None, base, timeout, str(wt))
+    with _custody_git_dir(common, fmt, head, admin, attributes=attrs) as gd:
         proc = _direct(["--git-dir", gd, "--work-tree", str(wt), "read-tree", "-u", "--reset", head],
                        str(wt), base, timeout, extra_blanks=settings)
         if proc.returncode == 0:

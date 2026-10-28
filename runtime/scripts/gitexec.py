@@ -589,8 +589,9 @@ CUSTODY_ENV = {"GIT_ALLOW_PROTOCOL": "file", "GIT_NO_LAZY_FETCH": "1"}
 # refuses). Read from the repository and passed as the custody call's own GIT_CONFIG pairs. NOT
 # `core.excludesFile`: honouring a worker-set ignore file could HIDE an untracked file and lose its
 # work, so the custody errs toward DIRTY there (`info/exclude`, the repo's own, is copied). NOT
-# `core.attributesFile` either (a path the worker names, which git would open and read whatever
-# it is); `info/attributes`, the repo's own, is copied (custody_git_dir).
+# `core.attributesFile` as a key (a path the worker names, which git would open whatever it is):
+# its CONTENT is read safely and carried instead (custody_attributes), and `info/attributes` is
+# copied (custody_git_dir).
 CUSTODY_CORE_KEYS = (
     "filemode", "symlinks", "ignorecase", "precomposeunicode", "protecthfs", "protectntfs",
     "sparsecheckout", "sparsecheckoutcone", "autocrlf", "eol", "safecrlf", "checkroundtripencoding",
@@ -637,20 +638,28 @@ def _c_quote(raw):
                            for c in raw) + b'"'
 
 
-def _read_regular(path):
+def _read_regular(path, limit=None):
     """A worker-writable file's bytes and stat, read without following a symlink or blocking on a
-    FIFO; None if absent. Anything but a regular file is a refusal, never a guess."""
+    FIFO; None if absent. Anything but a regular file is a refusal, never a guess, and so is one
+    larger than ``limit`` bytes when a limit is given (checked on the open file, and on what was
+    read, so a file that grows while it is read is refused too)."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise GitCustodyRefused(f"git custody: cannot read {path!r} as a regular file: {exc}") from exc
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):  # checked on the raw fd: a directory cannot even be fdopen'd
+        os.close(fd)
+        raise GitCustodyRefused(f"git custody: {path!r} is not a regular file")
     with os.fdopen(fd, "rb") as fh:
-        st = os.fstat(fh.fileno())
-        if not stat.S_ISREG(st.st_mode):
-            raise GitCustodyRefused(f"git custody: {path!r} is not a regular file")
-        return fh.read(), st
+        if limit is not None and st.st_size > limit:
+            raise GitCustodyRefused(f"git custody: {path!r} is larger than {limit} bytes")
+        data = fh.read() if limit is None else fh.read(limit + 1)
+        if limit is not None and len(data) > limit:
+            raise GitCustodyRefused(f"git custody: {path!r} is larger than {limit} bytes")
+        return data, st
 
 
 def _copy_regular(src, dst):
@@ -663,8 +672,20 @@ def _copy_regular(src, dst):
         os.utime(dst, ns=(got[1].st_atime_ns, got[1].st_mtime_ns))
 
 
+# The most a repository-scope core.attributesFile may hold before the custody refuses it.
+ATTRIBUTES_FILE_LIMIT = 1 << 20
+
+
+def _config_quote(value):
+    """``value`` as a double-quoted git config value; a newline (which no quoting carries) refuses."""
+    if "\n" in value:
+        raise GitCustodyRefused(f"git custody: cannot name {value!r} in a config file")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 @contextlib.contextmanager
-def custody_git_dir(common, object_format, head=None, gitdir=None, *, objects="alternate", bare=True):
+def custody_git_dir(common, object_format, head=None, gitdir=None, *, objects="alternate", bare=True,
+                    attributes=None):
     """A git dir the coordinator builds and no worker can name: its own config (no filter, diff or
     merge driver, so none can be added between a check and a use), the repository's objects, HEAD
     pinned to ``head`` (a commit id; None leaves it unborn), and copies of what a `status`/
@@ -682,7 +703,11 @@ def custody_git_dir(common, object_format, head=None, gitdir=None, *, objects="a
     call writes (a merge-tree result, a sealed control commit) lands where a later git in the
     repository resolves it. Objects are content-addressed data: neither mode lets the repository
     name a command. ``bare=False`` writes `core.bare = false`, for a caller that reaches the dir
-    through a `.git` gitfile in its work tree (verify.py's control) rather than `--work-tree`."""
+    through a `.git` gitfile in its work tree (verify.py's control) rather than `--work-tree`.
+    ``attributes`` (bytes, from custody_attributes) is the CONTENT of the repository's own
+    `core.attributesFile`: written to a file in the dir that the dir's config names as its
+    `core.attributesFile`, so git reads it at the same (lowest) precedence, below `.gitattributes`
+    and `info/attributes`. None names none."""
     if object_format not in ("sha1", "sha256"):
         raise GitCustodyRefused(f"git custody: unknown object format {object_format!r}")
     if objects not in ("alternate", "shared"):
@@ -693,6 +718,10 @@ def custody_git_dir(common, object_format, head=None, gitdir=None, *, objects="a
             os.makedirs(os.path.join(root, sub))
         cfg = "[core]\n\trepositoryformatversion = {v}\n\tbare = {b}\n".format(
             v=0 if object_format == "sha1" else 1, b="true" if bare else "false")
+        if attributes is not None:
+            with open(os.path.join(root, "attributes"), "wb") as fh:
+                fh.write(attributes)
+            cfg += f"\tattributesFile = {_config_quote(os.path.join(root, 'attributes'))}\n"
         if object_format != "sha1":
             cfg += f"[extensions]\n\tobjectformat = {object_format}\n"
         with open(os.path.join(root, "config"), "w", encoding="utf-8") as fh:
@@ -770,6 +799,40 @@ def custody_settings(run):
     return pairs
 
 
+def custody_attributes(run, cwd):
+    """The CONTENT of the repository's own `core.attributesFile`, as bytes for custody_git_dir's
+    ``attributes``, or None when the repository names none. It is data that steers how a work-tree
+    file reads as a blob (`*.txt text eol=crlf`): dropped, a clean CRLF checkout read as modified.
+    ``run`` is custody_facts's; it runs under a floor with global and system config off, so only
+    the repository's own value (local, worktree, includes) is seen - a global or system one stays
+    dropped. The path is expanded as git expands it (`--type=path`), a relative one taken from
+    ``cwd`` (the work tree top, where git reads it). The file is read only as a regular file of at
+    most ATTRIBUTES_FILE_LIMIT bytes, opened without following a final symlink and without
+    blocking (a FIFO or device refuses); a missing file (or an empty value) is no attributes, as
+    for git, still named so no other default is read. Anything else refuses (GitCustodyRefused):
+    never silently omitted."""
+    got = run(["config", "--type=path", "-z", "--get", "core.attributesFile"])
+    if got.returncode == 1 and not got.stdout:
+        return None
+    if got.returncode != 0 or not got.stdout.endswith(b"\0"):
+        raise GitCustodyRefused("git custody: cannot read the repository's core.attributesFile: "
+                                f"{os.fsdecode(got.stderr).strip()[:200]}")
+    path = os.fsdecode(got.stdout[:-1])
+    if not path:
+        return b""
+    if not os.path.isabs(path):
+        if not cwd:
+            raise GitCustodyRefused(f"git custody: core.attributesFile {path!r} is relative and no "
+                                    "work tree says what to")
+        path = os.path.join(str(cwd), path)
+    try:
+        read = _read_regular(path, limit=ATTRIBUTES_FILE_LIMIT)
+    except GitCustodyRefused as exc:
+        raise GitCustodyRefused(f"git custody: the repository's core.attributesFile cannot be carried "
+                                f"as data: {exc}") from exc
+    return b"" if read is None else read[0]
+
+
 class Custody:
     """Where a content-reading git runs in custody: ``lead`` is its global options - ``-C <cwd>``
     (the directory the caller named, so relative paths and pathspecs mean what they meant), then
@@ -802,17 +865,21 @@ def custody(repo, *, run=None, index=True, objects="alternate", base=None, timeo
     """A Custody for a git that reads ``repo``'s working-tree content (a `diff` of the work tree,
     a `merge-tree`): the repository's facts and data-only settings read through ``run`` (default:
     gitexec's own git under custody_env, at ``repo``), then a custody_git_dir over its objects with
-    its index (``index=True``), HEAD at its HEAD commit, and the work tree its own top. Nothing in
+    its index (``index=True``), HEAD at its HEAD commit, the content of its own core.attributesFile
+    (custody_attributes), and the work tree its own top. Nothing in
     the dir names a filter, textconv, diff or merge driver, so a `.gitattributes` or
     `info/attributes` line selecting one selects nothing, and a driver added to the repository's
     config while the call runs is never read. Raises GitCustodyRefused (an OSError) when the
-    repository cannot be resolved or declares an extension the custody cannot honour."""
+    repository cannot be resolved, declares an extension the custody cannot honour, or names a
+    core.attributesFile that is not a bounded regular file."""
     if run is None:
         def run(args):
             return subprocess.run(argv("-C", str(repo), *args), capture_output=True, timeout=timeout,
                                   env=custody_env(base), stdin=subprocess.DEVNULL)
     facts = custody_facts(run)
     pairs = custody_settings(run)
+    attributes = custody_attributes(run, facts["top"] or str(repo))
     with custody_git_dir(facts["common"], facts["format"], facts["head"],
-                         facts["gitdir"] if index else None, objects=objects) as gd:
+                         facts["gitdir"] if index else None, objects=objects,
+                         attributes=attributes) as gd:
         yield Custody(gd, facts["top"], pairs, repo)

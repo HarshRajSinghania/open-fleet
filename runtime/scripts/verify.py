@@ -1176,8 +1176,10 @@ class _Authority:
         `.gitattributes` (or the source's `info/attributes`) selects is undefined here, whenever it
         was added. Its `objects` is the source's store ("shared"): the sealed control commit lands
         where each phase repository's alternates already reach. HEAD is `head`; `core.bare` is
-        false, as the control's work tree reaches it through a `.git` gitfile. Raises OSError
-        (GitCustodyRefused for an unreadable or non-regular `info/exclude`/`shallow`)."""
+        false, as the control's work tree reaches it through a `.git` gitfile. The source's
+        `info/attributes` and the content of its own `core.attributesFile` ride as data. Raises
+        OSError (GitCustodyRefused for an unreadable or non-regular `info/exclude`/`shallow`/
+        `info/attributes`, or a `core.attributesFile` that is not a bounded regular file)."""
         git, env = cls.git_bin(), cls.git_env()
         code, common, gerr = _run([git, "-C", top, "rev-parse", "--path-format=absolute",
                                    "--git-common-dir"], timeout=30, env=env)
@@ -1185,8 +1187,13 @@ class _Authority:
                                  timeout=30, env=env)
         if code != 0 or code2 != 0 or not common.strip():
             raise OSError(f"cannot locate the source repository's object store: {(gerr or gerr2).strip()}")
+
+        def run(args):  # the source's own core.attributesFile, read under git_env (data only)
+            rc, out, err = _run_bytes([git, "-C", top, *args], timeout=30, env=env)
+            return subprocess.CompletedProcess(args, rc, out, os.fsencode(err))
+        attributes = cls.gitexec().custody_attributes(run, top)
         return cls.gitexec().custody_git_dir(common.rstrip("\n"), fmt.strip(), str(head), None,
-                                             objects="shared", bare=False)
+                                             objects="shared", bare=False, attributes=attributes)
 
     @classmethod
     def api(cls, repo, endpoint, *flags, timeout=20):

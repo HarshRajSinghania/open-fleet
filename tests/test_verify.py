@@ -6477,6 +6477,26 @@ class ControlRunsNoDriverAddedAfterTheListing(MutationFixture):
             self.assertEqual((gd / "objects").resolve(), (self.repo / ".git" / "objects").resolve())
         self.assertFalse(gd.exists(), "the control git dir outlived its use")
 
+    def test_the_source_attributes_file_rides_as_data_or_refuses(self):
+        # A repository-scope core.attributesFile is carried as CONTENT (a bounded regular file,
+        # never opened blocking): the CRLF repository still executes and kills; a FIFO there is
+        # the "could not create" refusal at once, never a hung control.
+        outside = Path(tempfile.mkdtemp(prefix="orca-attrs-"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "attrs").write_text("*.py text eol=crlf\n", encoding="utf-8")
+        self.git("config", "core.attributesFile", str(outside / "attrs"))
+        with verify._Authority.control_git_dir(str(self.repo), self.head_sha) as gd:
+            self.assertEqual((Path(gd) / "attributes").read_text(encoding="utf-8"), "*.py text eol=crlf\n")
+        ok, msgs = self._execute(self._revert_nc())
+        self.assertTrue(ok, msgs)
+        fifo = outside / "attrs-fifo"
+        os.mkfifo(fifo)
+        self.git("config", "core.attributesFile", str(fifo))
+        ok, msgs = self._execute(self._revert_nc())
+        self.assertFalse(ok)
+        self.assertTrue(any("could not create the control worktree" in x and "core.attributesFile" in x
+                            for x in msgs), msgs)
+
     def test_a_crlf_repository_still_executes_and_kills(self):
         # A repository whose own attributes and config check *.py out with CRLF: the control's
         # checkout honours them (data), the seal normalises them, and only the reverted path

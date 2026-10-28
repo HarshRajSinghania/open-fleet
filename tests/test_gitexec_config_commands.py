@@ -848,6 +848,11 @@ class WtreeKeepsLineEndingData(unittest.TestCase):
         if how == "info/attributes":
             (p.repo / ".git" / "info").mkdir(exist_ok=True)
             (p.repo / ".git" / "info" / "attributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+        elif how.startswith("core.attributesFile"):
+            # Codex on this branch (P1, round 2): a repository-scope core.attributesFile, absolute
+            # or relative to the work tree top (beside the repository, so nothing is untracked).
+            (p.dir / "attrs").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+            p._git("config", "core.attributesFile", str(p.dir / "attrs") if how.endswith("absolute") else "../attrs")
         else:
             p._git("config", "core.autocrlf", "true")
         (p.repo / "a.txt").unlink()
@@ -858,7 +863,8 @@ class WtreeKeepsLineEndingData(unittest.TestCase):
         return p, head_tree
 
     def test_a_touched_clean_crlf_checkout_fingerprints_as_head(self):
-        for how in ("info/attributes", "core.autocrlf"):
+        for how in ("info/attributes", "core.autocrlf", "core.attributesFile absolute",
+                    "core.attributesFile relative"):
             with self.subTest(how=how):
                 p, head_tree = self._repo(how)
                 r = _wtree(p.repo)
@@ -870,6 +876,48 @@ class WtreeKeepsLineEndingData(unittest.TestCase):
         r = _wtree(p.repo)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotEqual(r.stdout.strip(), head_tree)
+
+
+class WtreeRefusesAnUnreadableAttributesFile(unittest.TestCase):
+    """Codex on this branch (P1, round 2): core.attributesFile's content is carried only from a
+    regular file of at most 1 MiB, opened without blocking. A FIFO (whose open would hang the gate),
+    a symlink, a directory or a larger file is no fingerprint (exit 1) at once, never dropped."""
+
+    def test_each_is_no_fingerprint_without_hanging(self):
+        for kind in ("fifo", "symlink", "directory", "oversized"):
+            with self.subTest(kind=kind):
+                tmp = tempfile.mkdtemp()
+                self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
+                p = _Probe(tmp)
+                p.commit("a.txt", "line1\n")
+                target = p.dir / "attrs"
+                if kind == "fifo":
+                    os.mkfifo(target)
+                elif kind == "symlink":
+                    (p.dir / "real").write_text("*.txt text\n", encoding="utf-8")
+                    os.symlink(p.dir / "real", target)
+                elif kind == "directory":
+                    target.mkdir()
+                else:
+                    target.write_bytes(b"#" * ((1 << 20) + 1))
+                p._git("config", "core.attributesFile", str(target))
+                try:
+                    r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=_CLEAN_ENV,
+                                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"wtree.sh hung on a {kind} core.attributesFile")
+                self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+                self.assertIn("core.attributesFile", r.stderr)
+
+    def test_a_missing_file_is_no_attributes_as_for_git(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        p._git("config", "core.attributesFile", str(p.dir / "absent"))
+        r = _wtree(p.repo)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, p._git("rev-parse", "HEAD^{tree}").stdout.strip()),
+                         r.stderr)
 
 
 class WtreeStartsNoChildGitInASubmodule(unittest.TestCase):

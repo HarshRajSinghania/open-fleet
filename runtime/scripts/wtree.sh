@@ -43,8 +43,9 @@
 # a non-zero exit as "no fingerprint" and fail closed, never as an empty one.
 # Exit 1 too when the repository cannot be staged in custody: an `extensions.*` the custody git dir
 # cannot honour (a partial clone above all), a non-regular `info/exclude`, `info/attributes`,
-# `shallow`, shared index or `info/sparse-checkout` where git would read one, or a gitlink path
-# holding a newline; and when the exit-3 check below cannot run (its diff-index or check-attr fails).
+# `shallow`, shared index or `info/sparse-checkout` where git would read one, a repository-scope
+# `core.attributesFile` that is not a regular file of at most 1 MiB, or a gitlink path holding a
+# newline; and when the exit-3 check below cannot run (its diff-index or check-attr fails).
 # Exit 3, with the reason on stderr, when a path staged differently from HEAD is selected by a
 # filter driver a config DECLARES — the repository's, or a global/system file, which on a one-uid
 # host the worker can write as well (#629, PR #649 review, W4-02). No filter ever runs here: the
@@ -272,10 +273,69 @@ for _k in filemode symlinks ignorecase precomposeunicode protecthfs protectntfs 
   _n=$((_n + 1))
 done
 _head=$("$GIT" -C "$TOP" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || _head=
-set -- "$@" "GIT_CONFIG_COUNT=$_n"
 
 CUSTODY=$(mktemp -d "${TMPDIR:-/tmp}/orca-wtree-git-XXXXXX") || exit 1
 trap 'rm -rf "$CUSTODY"' EXIT INT TERM
+
+# core.attributesFile (Codex on this branch, P1): a repository-scope one is attribute DATA like
+# info/attributes — dropped, a clean CRLF checkout an `eol=crlf` line there steers, once touched,
+# staged unnormalised and read STALE. Its CONTENT is carried: the path as git expands it
+# (`--type=path`; a relative one is the work tree top's, where git reads it), read only as a
+# regular file of at most 1 MiB, opened without following a final symlink and without blocking (a
+# FIFO's open would hang the gate), into a file CUSTODY's own core.attributesFile names — the same
+# lowest precedence, below .gitattributes and info/attributes. A FIFO, device, directory, symlink or
+# larger file is no fingerprint (exit 1), never silently dropped; a missing file or an empty value
+# is no attributes, as for git, still named so no other default is read. The global and system
+# files stay off (their value is never read). sh cannot open without blocking, so python3 -I does
+# that one read.
+_rc=0
+_af=$("$GIT" -C "$TOP" config --type=path --get core.attributesFile 2>/dev/null) || _rc=$?
+if [ "$_rc" -eq 0 ]; then
+  if [ -z "$_af" ]; then
+    : >"$CUSTODY/attributes" || exit 1
+  else
+    case "$_af" in
+      /*) ;;
+      *) _af="$TOP/$_af" ;;
+    esac
+    PY=$(command -v python3 2>/dev/null) || PY=
+    case "$PY" in
+      /*) ;;
+      *) echo "wtree: $TOP names a core.attributesFile and no python3 resolves to read it safely; no fingerprint" >&2
+         exit 1 ;;
+    esac
+    if ! "$PY" -I -c '
+import os, stat, sys
+src, dst, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    fd = os.open(src, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+except FileNotFoundError:
+    data = b""
+except OSError:
+    sys.exit(1)
+else:
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
+        os.close(fd)
+        sys.exit(1)
+    with os.fdopen(fd, "rb") as fh:
+        data = fh.read(limit + 1)
+    if len(data) > limit:
+        sys.exit(1)
+with open(dst, "wb") as fh:
+    fh.write(data)
+' "$_af" "$CUSTODY/attributes" 1048576 2>/dev/null; then
+      echo "wtree: $TOP's core.attributesFile ($_af) is not a regular file of at most 1 MiB; no fingerprint" >&2
+      exit 1
+    fi
+  fi
+  set -- "$@" "GIT_CONFIG_KEY_$_n=core.attributesFile" "GIT_CONFIG_VALUE_$_n=$CUSTODY/attributes"
+  _n=$((_n + 1))
+elif [ "$_rc" -ne 1 ]; then
+  echo "wtree: cannot read $TOP's core.attributesFile; no fingerprint" >&2
+  exit 1
+fi
+set -- "$@" "GIT_CONFIG_COUNT=$_n"
 # A regular file is copied (mtime kept); a missing one is skipped; anything else (a symlink, a
 # FIFO) where git would read one is refused, never followed.
 copy_regular() {
@@ -301,7 +361,7 @@ printf '%s/objects\n' "$_common" >"$CUSTODY/objects/info/alternates" || exit 1
 # info/attributes is DATA (Codex on this branch, P1): `text`/`eol`/`working-tree-encoding`/`ident`
 # are built-in conversions, so without it a clean CRLF checkout of an `eol=crlf` path, once
 # touched, staged as CRLF and read STALE; a `filter=`/`diff=` it selects names a driver CUSTODY's
-# config never defines. core.attributesFile (a path the worker names) is not carried.
+# config never defines. core.attributesFile's content is carried above.
 for _pair in "info/exclude:$_common" "info/attributes:$_common" "shallow:$_common" \
     "info/sparse-checkout:$_gitdir"; do
   _rel=${_pair%%:*}
@@ -390,10 +450,10 @@ fi
 TREE=$(env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" write-tree 2>/dev/null) || exit 1
 
 # Exit 3 (see the header): a path staged differently from HEAD that a declared driver filters.
-# `diff-index --cached` compares the temp index to HEAD's tree (in custody, where the blobs it
-# staged live) and `check-attr` reads the repository's attributes (in the repository, against its
-# real index: the temp one may name a shared index only the custody dir holds); neither runs any
-# command. A driver declared only after the listing is not in DECLARED: it never ran, so its path
+# `diff-index --cached` compares the temp index to HEAD's tree and `check-attr` reads the
+# attributes, both in custody, which holds every attribute source the repository's own git reads
+# (the work tree's .gitattributes, the copied info/attributes, the carried core.attributesFile)
+# and never opens a file the worker names; neither runs any command. A driver declared only after the listing is not in DECLARED: it never ran, so its path
 # was hashed from its raw bytes and the fingerprint states that content, as for any changed file.
 # check-attr -z prints `path NUL filter NUL value NUL`: NUL and newline
 # are swapped so each field is one line (a newline inside a path becomes a NUL that `read` drops,
@@ -410,7 +470,7 @@ if [ -n "$DECLARED" ]; then
     echo "wtree: cannot list the paths staged differently from HEAD; no fingerprint" >&2
     exit 1
   fi
-  if ! GIT_INDEX_FILE=${REAL_INDEX:-$TMPIDX} "$GIT" -C "$TOP" check-attr --stdin -z filter \
+  if ! env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" check-attr --stdin -z filter \
       <"$CUSTODY/wtree-changed" >"$CUSTODY/wtree-attrs" 2>/dev/null; then
     echo "wtree: cannot read the filter attributes of the changed paths; no fingerprint" >&2
     exit 1

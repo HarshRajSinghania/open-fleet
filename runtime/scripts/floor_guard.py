@@ -376,7 +376,8 @@ def collect_diff(repo, mb):
     # blanking them is not enough: a worker adding a new one between that listing and the diff
     # had it run (W4 custody sweep). So both diffs run in git custody (gitexec.custody): against a
     # git dir the guard builds over the repo's objects and index, whose config declares no driver,
-    # with the repo's own work tree. A selected driver is undefined there, whenever it was added.
+    # with the repo's own work tree. A selected driver is undefined there, whenever it was added,
+    # and no child git is started inside a checked-out submodule (gitexec.NO_SUBMODULE_CHILD).
     # The listing stays as a belt and keeps its fail-closed contract: an unreadable driver list is
     # could-not-run, never "no drivers" (PR #649 review).
     try:
@@ -386,8 +387,10 @@ def collect_diff(repo, mb):
                          f"cannot be neutralised: {err}") from err
     try:
         with gitexec.custody(repo) as custody:
-            tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, mb, "--", blanks=blanks,
-                          custody=custody)
+            # NO_SUBMODULE_CHILD: a checked-out submodule's dirtiness is never probed (that is a
+            # child git under the submodule's own config); a moved gitlink still shows.
+            tracked = git(repo, *DIFF_RENDERING, "diff", *diff_options, gitexec.NO_SUBMODULE_CHILD,
+                          mb, "--", blanks=blanks, custody=custody)
             if tracked is None:
                 raise GuardError("tracked/staged diff acquisition failed")
             # Lists names, reads no file content: no driver can apply, so it runs in the repo.

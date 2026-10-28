@@ -1173,6 +1173,21 @@ class ContentGitRunsNoDriverAddedAfterTheListing(unittest.TestCase):
             [(hint_provenance.gitexec, "custody")])
         self.assertEqual(changes, {"a.txt": ("M", None), "b.txt": ("A", None)})
 
+    def test_every_site_with_an_initialized_submodule_under_the_race(self):
+        # Codex on PR #724: the same race, in a repository whose checked-out submodule plants a
+        # filter, an fsmonitor and a hook in its OWN config; nothing runs from either.
+        for site, call in (
+                ("floor_guard", lambda p, base: floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base))),
+                ("diff_scope", lambda p, base: diff_scope.scope(p.repo, base)),
+                ("hint_provenance", lambda p, base: hint_provenance.LiveSource(str(p.repo)).changes_since(base))):
+            with self.subTest(site=site):
+                p, base = self._repo()
+                _plant_submodule(p)
+                with _racing_sibling(p):
+                    call(p, base)
+                self.assertGreater(p.race_seq[0], 0, "the race never ran")
+                self.assertEqual(p.fired(), set(), f"{site} ran a planted command")
+
 
 class CustodyReadsWhatTheRepositoryReads(unittest.TestCase):
     """The custody must not change what an ordinary repository's diff says: the same tracked,
@@ -1215,6 +1230,103 @@ class CustodyReadsWhatTheRepositoryReads(unittest.TestCase):
             self.assertEqual(got, diff_scope.changed_files(p.repo, base))
             self.assertEqual(live, hint_provenance.LiveSource(str(p.repo)).changes_since(base))
         self.assertEqual(got, ["a.txt", "gone.txt", "run.sh", "staged.txt", "sub/new file.txt"])
+
+
+def _plant_submodule(p):
+    """An initialized submodule `sub` in p.repo whose OWN config and attributes name the probe on
+    every channel a child git inside it could take: core.fsmonitor, a clean/smudge filter selected
+    for every path through its info/attributes, and a post-index-change hook. Then a same-size
+    stat change inside it, so anything that refreshes its index re-hashes a file (and so runs a
+    filter). Returns the submodule's work tree."""
+    lib = p.dir / "lib"
+    lib.mkdir()
+    subprocess.run(["git", "init", "-q", str(lib)], env=_CLEAN_ENV, check=True, stdin=subprocess.DEVNULL)
+    (lib / "f.txt").write_text("library\n", encoding="utf-8")
+    for args in (("add", "f.txt"), ("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "lib")):
+        subprocess.run(["git", "-C", str(lib), *args], env=_CLEAN_ENV, check=True, stdin=subprocess.DEVNULL,
+                       capture_output=True)
+    r = p._git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), "sub")
+    assert r.returncode == 0, r.stderr
+    p._git("commit", "-qm", "add sub")
+    sub = p.repo / "sub"
+    for key, var in (("core.fsmonitor", "fsmonitor"), ("filter.sf.clean", "sub-clean"),
+                     ("filter.sf.smudge", "sub-smudge")):
+        p._git("config", key, f"{p.probe} {var}", cwd=sub)
+    sub_git = Path(p._git("rev-parse", "--absolute-git-dir", cwd=sub).stdout.strip())
+    (sub_git / "info").mkdir(exist_ok=True)
+    (sub_git / "info" / "attributes").write_text("* filter=sf\n", encoding="utf-8")
+    hook = sub_git / "hooks" / "post-index-change"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text(f"#!/bin/sh\n{_sh(p.probe)} sub-hook\n", encoding="utf-8")
+    hook.chmod(0o755)
+    later = time.time() + 30
+    os.utime(sub / "f.txt", (later, later))  # same size, new mtime: a refresh re-hashes it
+    return sub
+
+
+class NoChildGitInsideASubmodule(unittest.TestCase):
+    """Codex on PR #724 (P1): a work-tree diff of a repository with a checked-out submodule asks
+    whether the submodule is dirty by starting a child `git status` INSIDE it, under the
+    submodule's own config and attributes, which the custody never sees: a filter planted there
+    ran on the coordinator. Every custody diff now carries gitexec.NO_SUBMODULE_CHILD
+    (`--ignore-submodules=dirty`), which still reports a moved gitlink without the child."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        sub = _plant_submodule(p)
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        # Positive control: plain git's work-tree diff runs the submodule's own filter.
+        p._git("diff", "--no-ext-diff", "HEAD", "--")
+        self.assertIn("sub-clean", p.fired(), "the submodule's planted filter is not live")
+        later = time.time() + 60
+        os.utime(sub / "f.txt", (later, later))
+        return p, base, sub
+
+    SITES = {
+        "floor_guard": (lambda p, base: floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base)),
+                        lambda: floor_guard.gitexec),
+        "diff_scope": (lambda p, base: diff_scope.changed_files(p.repo, base), lambda: diff_scope.gitexec),
+        "hint_provenance": (lambda p, base: hint_provenance.LiveSource(str(p.repo)).changes_since(base),
+                            lambda: hint_provenance.gitexec),
+    }
+
+    def test_no_site_starts_a_child_git_in_the_submodule(self):
+        for site, (call, _mod) in self.SITES.items():
+            with self.subTest(site=site):
+                p, base, _sub = self._repo()
+                call(p, base)
+                self.assertEqual(p.fired(), set(), f"{site} ran a command the submodule's config names")
+
+    def test_mutation_control_probing_submodule_dirtiness_runs_its_filter(self):
+        for site, (call, mod) in self.SITES.items():
+            with self.subTest(site=site):
+                p, base, _sub = self._repo()
+                with mock.patch.object(mod(), "NO_SUBMODULE_CHILD", "--ignore-submodules=none"):
+                    call(p, base)
+                self.assertIn("sub-clean", p.fired(), f"control: {site} never probed the submodule")
+
+    def test_a_moved_submodule_commit_is_still_reported(self):
+        p, base, sub = self._repo()
+        (sub / "g.txt").write_text("new\n", encoding="utf-8")
+        for args in (("add", "g.txt"), ("commit", "-qm", "moved")):
+            r = subprocess.run(["git", "-C", str(sub), "-c", "user.email=a@b", "-c", "user.name=a",
+                                "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *args],
+                               env={**_CLEAN_ENV, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "filter.sf.clean",
+                                    "GIT_CONFIG_VALUE_0": ""},
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        p.fired()
+        later = time.time() + 90
+        os.utime(sub / "f.txt", (later, later))
+        mb = floor_guard.merge_base(p.repo, base)
+        self.assertIn("+Subproject commit", floor_guard.collect_diff(p.repo, mb))
+        self.assertIn("sub", diff_scope.changed_files(p.repo, base))
+        self.assertIn("sub", hint_provenance.LiveSource(str(p.repo)).changes_since(
+            p._git("rev-parse", "HEAD").stdout.strip()))
+        self.assertEqual(p.fired(), set(), "reporting the moved gitlink ran the submodule's commands")
 
 
 class GitexecCustody(unittest.TestCase):

@@ -106,8 +106,9 @@ def git(repo, *args, text=True):
     (a partial clone, say). The other subcommands never read content through attributes, so they
     run in ``repo`` itself; a ``rev-parse`` probe of a path that is not a repository still comes
     back as a failed process, not an exception. Every call runs under gitexec.custody_env: no lazy
-    fetch, no transport but ``file``, no signature-verifying or submodule child, no inherited
-    repository selector."""
+    fetch, no transport but ``file``, no signature-verifying child, no inherited
+    repository selector; a ``diff`` never probes a checked-out submodule with a child git (which
+    would run under the submodule's own config)."""
     if not args or args[0] not in READ_ONLY_GIT:
         raise ProvenanceError(f"refused git {args[0] if args else '(none)'}: hints are read-only")
     if args[0] not in CONTENT_GIT:
@@ -116,6 +117,10 @@ def git(repo, *args, text=True):
         blanks = gitexec.driver_blanks(repo)
     except gitexec.DriverQueryFailed as exc:
         raise ProvenanceError(f"cannot neutralise {repo}'s filter and diff drivers: {exc}") from exc
+    if args[0] == "diff":
+        # Never a child git inside a checked-out submodule, which would run under the submodule's
+        # own config; a moved gitlink still shows (gitexec.NO_SUBMODULE_CHILD).
+        args = ("diff", gitexec.NO_SUBMODULE_CHILD, *args[1:])
     try:
         with gitexec.custody(repo) as custody:
             return _run_git(custody.lead, args, [*custody.pairs, *blanks], text)

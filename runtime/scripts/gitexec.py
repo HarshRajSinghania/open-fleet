@@ -69,7 +69,10 @@ program: ``core.alternateRefsCommand``, submodule recursion, ``log.showSignature
 ``gpg.*.program``, auto-maintenance) and sets ``CUSTODY_ENV`` (``GIT_ALLOW_PROTOCOL=file``,
 ``GIT_NO_LAZY_FETCH=1``: no lazy fetch from a planted promisor remote, so no ``uploadpack``,
 credential helper or ssh command). floor_guard, diff_scope and hint_provenance run every git under
-it, in custody or not.
+it, in custody or not. Neither the custody nor this env reaches into a checked-out SUBMODULE: a
+git that compares the work tree probes a submodule's dirtiness with a child git that runs under
+the submodule's own config, so every such custody call also carries ``NO_SUBMODULE_CHILD``
+(``--ignore-submodules=dirty``), and a caller that stages keeps its gitlinks out of ``git add``.
 
 Unlike verify.py the rest of the environment passes: these tools are not a verifier
 stating facts against a worker, and a coordinator's locale, HOME and PATH stay theirs.
@@ -548,7 +551,8 @@ SELECTOR_ENV = frozenset({
 #   core.alternateRefsCommand - `fetch` runs it for an alternate the SHARED objects/info/alternates
 #     names (the posix sandbox sync's fetch did, as the coordinator);
 #   submodule.recurse / fetch.recurseSubmodules / status.submoduleSummary - git starts a CHILD git
-#     in a submodule WITHOUT the GIT_CONFIG_COUNT floor, under the submodule's own config;
+#     in a submodule, under the submodule's own config (and without the replace/graft belt, which
+#     git drops for it); the dirtiness probe a work-tree diff starts is NO_SUBMODULE_CHILD's;
 #   log.showSignature + gpg.*.program - `log` verifying a signed commit runs gpg.program;
 #   maintenance.auto / gc.auto - no auto-maintenance child after a fetch.
 CUSTODY_FLOOR = (
@@ -595,6 +599,16 @@ CUSTODY_CORE_KEYS = (
 # honour it, and guessing a verdict without it would be wrong (PR #720 Codex round 4).
 HONOURABLE_EXTENSIONS = frozenset(
     b"objectformat compatobjectformat worktreeconfig refstorage relativeworktrees".split())
+
+# The one option every custody git that compares the WORK TREE with a tree or the index carries.
+# For a gitlink whose submodule is checked out, `diff`, `diff-files` and `status` otherwise start a
+# child `git status` INSIDE the submodule to ask whether it is dirty, and that child runs under the
+# submodule's own config and attributes - a filter (or anything else name-indexed) the custody
+# never sees (Codex on PR #724). `dirty` still compares the submodule's checked-out commit with the
+# one recorded (read from its refs in-process) and reports a moved gitlink; only the dirtiness
+# probe - the child - is skipped. `git add` has no such option and ignores the config that would
+# set it: a caller that stages a work tree must keep its gitlinks out of `add` (see wtree.sh).
+NO_SUBMODULE_CHILD = "--ignore-submodules=dirty"
 
 
 def custody_env(base=None, blanks=()):

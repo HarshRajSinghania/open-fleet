@@ -384,7 +384,10 @@ def changed_files(repo, base):
     # Working tree (staged + unstaged); fails on a repo with no commits.
     try:
         with _custody(repo) as custody:
-            worktree = git(repo, "diff", *options, "HEAD", "--", blanks=blanks, custody=custody)
+            # No child git inside a checked-out submodule (it would run under the submodule's own
+            # config); a moved gitlink is still listed (gitexec.NO_SUBMODULE_CHILD).
+            worktree = git(repo, "diff", *options, gitexec.NO_SUBMODULE_CHILD, "HEAD", "--",
+                           blanks=blanks, custody=custody)
     except (OSError, subprocess.SubprocessError) as err:  # GitCustodyRefused is an OSError
         raise ScopeError(f"working-tree diff acquisition failed: {err}", kind="diff_failed",
                          resolved=base) from err

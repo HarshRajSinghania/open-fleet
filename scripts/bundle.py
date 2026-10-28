@@ -116,7 +116,9 @@ REQUIRED_RUNTIME = tuple(f"runtime/scripts/{name}" for name in (
     "decisions.py", "deny-hook.sh", "diff_scope.py", "dispatch-sign.py", "ed25519.py",
     "egress.py", "evidence-run.py", "floor_guard.py", "guard_text.py", "hitl-loop.template.sh",
     "inventory.py", "pm.py", "preflight.py", "proof_status.py", "quarantine_check.py",
-    "run_report.py", "sandbox_doctor.py", "spawn_worker.sh", "verify-gate.sh", "verify.py",
+    "run_report.py", "sandbox_doctor.py",
+    # spawn_worker.sh runs it beside itself: the identity a scrubbed environment cannot erase (W4-04).
+    "spawn_identity.py", "spawn_worker.sh", "verify-gate.sh", "verify.py",
     "wtree.sh",
 )) + ("runtime/one-way-doors.json", "runtime/pins.json")
 # build-change's mandatory reporting input is outside the protocol directories.

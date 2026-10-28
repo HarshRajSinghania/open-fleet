@@ -34,7 +34,8 @@ try:
 except ImportError:  # loaded by file path (tests): the resolver sits beside this script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import orca_cli
-from pm import _visible
+from pm import _off_column_0
+from pm import _visible_line as _line
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -159,7 +160,7 @@ def format_create(result):
     handle = term.get("handle") or result.get("handle")
     if not handle:
         raise Failed("terminal create returned no handle")
-    return [f"HANDLE={handle}"]
+    return [f"HANDLE={_line(handle)}"]
 
 
 def format_read(result, want_screen=False):
@@ -186,10 +187,12 @@ def format_read(result, want_screen=False):
     tail = term.get("tail") if isinstance(term, dict) else None
     if not isinstance(tail, list):
         raise Failed("terminal read receipt names no tail")
-    lines = [f"SOURCE={source}",
+    lines = [f"SOURCE={_line(source)}",
              f"TRUNCATED={'yes' if term.get('truncated') else 'no'}",
              "--- tail"]
-    lines.extend(_visible(line) for line in tail)
+    # One item, one line — and off column 0 when it starts like this receipt's own lines
+    # (Codex round 2, swept: a pane printing `SOURCE=transcript` forged the field).
+    lines.extend(_off_column_0(_line(line)) for line in tail)
     return lines
 
 
@@ -204,8 +207,8 @@ def format_list(result):
     for row in terminals:
         if not isinstance(row, dict):
             continue
-        lines.append(f"{_visible(row.get('handle') or '?')} "
-                         f"{_visible(row.get('title') or '?')}")
+        lines.append(_off_column_0(f"{_line(row.get('handle') or '?')} "
+                                   f"{_line(row.get('title') or '?')}"))
     return lines
 
 
@@ -215,8 +218,8 @@ def format_show(result):
     term = result.get("terminal")
     if not isinstance(term, dict) or not term.get("handle"):
         raise Failed("terminal show receipt names no terminal")
-    return [f"HANDLE={_visible(term.get('handle'))}",
-            f"TITLE={_visible(term.get('title') or 'none')}"]
+    return [f"HANDLE={_line(term.get('handle'))}",
+            f"TITLE={_line(term.get('title') or 'none')}"]
 
 
 def run_orca(argv):
@@ -241,10 +244,10 @@ def main(argv=None):
         print("\n".join(lines))
         return EXIT_OK
     except Refused as exc:
-        print(f"terminal_ops: REFUSED: {exc}", file=sys.stderr)
+        print(f"terminal_ops: REFUSED: {_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_REFUSED
     except Failed as exc:
-        print(f"terminal_ops: FAILED: {exc}", file=sys.stderr)
+        print(f"terminal_ops: FAILED: {_line(exc)}", file=sys.stderr)  # one inert line (Codex round 3)
         return EXIT_FAILED
 
 

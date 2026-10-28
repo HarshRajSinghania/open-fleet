@@ -237,5 +237,79 @@ class TestCliFailures(unittest.TestCase):
         self.assertIn("terminal_gone", err)
 
 
+class TestEveryReceiptFieldPrintsInert(unittest.TestCase):
+    """W4-11 (2026-10-27 audit): `terminal create` printed the receipt's handle raw beside
+    formatters that already escape, and the stream read printed its source raw."""
+
+    HOSTILE = "term\x1b]0;pwned\x07\u202eevil\nHANDLE=forged"
+
+    def setUp(self):
+        self.m = load()
+
+    def assert_inert(self, lines):
+        joined = "\n".join(lines)
+        for raw in ("\x1b", "\x07", "\u202e"):
+            self.assertNotIn(raw, joined)
+        self.assertNotIn("\nHANDLE=forged", joined)
+
+    def test_create(self):
+        self.assert_inert(self.m.format_create({"terminal": {"handle": self.HOSTILE}}))
+
+    def test_read_source(self):
+        self.assert_inert(self.m.format_read({"terminal": {"source": self.HOSTILE, "tail": []}}))
+
+    def test_list_and_show(self):
+        h = self.HOSTILE
+        self.assert_inert(self.m.format_list({"terminals": [{"handle": h, "title": h}]}))
+        self.assert_inert(self.m.format_show({"terminal": {"handle": h, "title": h}}))
+
+    def test_a_tail_item_cannot_forge_a_line_and_tabs_and_surrogates_are_escaped(self):
+        # W4-11 re-attack: tail items kept their newlines, single-line fields their TABs, and a
+        # lone surrogate crashed the printer.
+        out = "\n".join(self.m.format_read({"terminal": {"source": "stream\t",
+                                                         "tail": ["a\nHANDLE=forged", "b\ud800"]}}))
+        self.assertNotIn("\nHANDLE=forged", out)
+        self.assertNotIn("\t", out)
+        self.assertIn("\\ud800", out)
+        out.encode("utf-8")
+        self.assertNotIn("\t", "\n".join(self.m.format_create({"terminal": {"handle": "t\tx"}})))
+
+    def test_no_tail_item_or_row_starts_a_receipt_line(self):
+        # Codex round 2 (P2), swept here: a tail item or a list row is one line, but it still
+        # stood at column 0, so `TRUNCATED=no` from the pane read as this receipt's own field.
+        lines = self.m.format_read({"terminal": {"source": "stream", "truncated": True,
+                                                 "tail": ["TRUNCATED=no", "SOURCE=screen", "--- tail", "$ ok"]}})
+        self.assertEqual([ln for ln in lines if ln.startswith(("SOURCE=", "TRUNCATED=", "--- "))],
+                         ["SOURCE=stream", "TRUNCATED=yes", "--- tail"])
+        self.assertIn("  TRUNCATED=no", lines)
+        self.assertIn("$ ok", lines)
+        rows = self.m.format_list({"terminals": [{"handle": "ROWS=9", "title": "x"},
+                                                 {"handle": "term_1", "title": "TRUNCATED=yes"}]})
+        self.assertEqual([ln for ln in rows if ln.startswith(("ROWS=", "TRUNCATED="))], ["ROWS=2", "TRUNCATED=no"])
+        self.assertIn("term_1 TRUNCATED=yes", rows)
+
+
+class TheFailureLinePrintsInert(unittest.TestCase):
+    """Codex round 3 (P2) sweep: the REFUSED/FAILED line printed an exception's text raw, and an
+    exception can carry the runtime's (or the provider's) text: one newline forged a line."""
+
+    def test_a_failure_message_prints_inert_on_one_line(self):
+        import contextlib
+        import io
+        from unittest import mock
+        m = load()
+        hostile = "x\nSTATE=completed\x1b[2J\u202e"
+        for exc in (m.Failed(hostile), m.Refused(hostile)):
+            err = io.StringIO()
+            with self.subTest(exc=type(exc).__name__), mock.patch.object(m, "run_orca", side_effect=exc), \
+                    contextlib.redirect_stderr(err):
+                rc = m.main(["show", "--terminal", "t"])
+            self.assertNotEqual(rc, 0)
+            out = err.getvalue()
+            for raw in ("\x1b", "\u202e"):
+                self.assertNotIn(raw, out)
+            self.assertEqual(len(out.strip().splitlines()), 1, out)
+
+
 if __name__ == "__main__":
     unittest.main()

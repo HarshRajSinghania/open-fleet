@@ -20,6 +20,7 @@
 #
 # Usage:  orca orchestration inbox --json > inbox.json && python3 pm.py inbox.json
 import json
+import re
 import sys
 import unicodedata
 
@@ -43,7 +44,9 @@ def _has_messages_key(node):
 # guard_text.py knows this category too and does the opposite with it — NFKC-folds and REMOVES it
 # — because that is for comparing two names, where an invisible character must not make them
 # differ. Here the string is being shown to a human, so it must not silently change either.
-_INVISIBLE = ("Cf", "Zl", "Zp")
+# Cs too: a lone surrogate (JSON "\ud800") cannot be encoded, so printing it raw crashed the
+# printer with UnicodeEncodeError (2026-10-27 audit re-attack).
+_INVISIBLE = ("Cf", "Zl", "Zp", "Cs")
 
 
 def _visible(value):
@@ -62,6 +65,37 @@ def _visible(value):
         else:
             out.append(ch)
     return "".join(out)
+
+
+def _visible_line(value):
+    """A single-line receipt field (KEY=value, a header part): _visible, with the newline and the
+    tab it keeps for bodies escaped too, so the field can neither split nor forge a line."""
+    return _visible(value).replace("\n", "\\n").replace("\t", "\\t")
+
+
+# The lines a fleet printer writes at column 0 are a KEY=value receipt line (COUNT=, STATE=,
+# SOURCE=, SPAWN=), a `---` header or `===` rule, a `(…)`/`[…]` marker ("(unreadable message
+# skipped)", "[truncated N chars]"), or one of the printer's own named headers (`SUBJ: `; pm's
+# `ID:`, `BODY:`; passed as `headers`). An untrusted line that starts like one is indented off
+# column 0, so it cannot pass for a line its printer wrote; any other line (prose, `$ make`,
+# `agent: done`) cannot be mistaken for one and keeps its column, which the pinned transcript and
+# tail tests read it at.
+_LINE_SHAPED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*[ \t]*=|---|===|[(\[]")
+
+
+def _off_column_0(line, headers=()):
+    """One already-_visible line of untrusted text, indented if it starts like a printer's line."""
+    return "  " + line if _LINE_SHAPED.match(line) or line.startswith(tuple(headers)) else line
+
+
+def _indent_continuations(text, headers=()):
+    """An already-_visible multi-line body, laid out so no line of it can stand at column 0 and
+    pass for a header or a receipt line its printer writes there: every continuation line is
+    indented, and so is a first line shaped like one (_off_column_0 with `headers`: Codex round
+    2, a body opening `COUNT=99 DELIVERY=forged` printed as a second receipt line)."""
+    lines = text.split("\n")
+    first = _off_column_0(lines[0], headers)
+    return "\n".join([first] + ["  " + ln for ln in lines[1:]])
 
 
 def print_inbox(raw):
@@ -114,11 +148,16 @@ def print_inbox(raw):
     print("MESSAGES:", len(msgs))
     for m in msgs:
         print("=" * 60)
-        print("ID:", _visible(m.get("id", "?")), "| FROM:", _visible(m.get("from_handle", "?")),
-              "| TYPE:", _visible(m.get("type", "?")))
-        print("SUBJ:", _visible(m.get("subject", "?")))
-        print("BODY:", _visible(m.get("body", "")))
-        print("PAYLOAD:", _visible(m.get("payload")))
+        # One line per field (Codex round 2, swept): a newline in any of them, or a body line
+        # shaped like `ID:`/`SUBJ:`/`====`, drew the fields of a message that never arrived. The
+        # body keeps its lines, as before; only a printer-shaped one moves off column 0.
+        fields = ("ID:", "SUBJ:", "BODY:", "PAYLOAD:", "MESSAGES:")
+        print("ID:", _visible_line(m.get("id", "?")), "| FROM:", _visible_line(m.get("from_handle", "?")),
+              "| TYPE:", _visible_line(m.get("type", "?")))
+        print("SUBJ:", _visible_line(m.get("subject", "?")))
+        body = _visible(m.get("body", "")).split("\n")
+        print("BODY:", "\n".join(body[:1] + [_off_column_0(ln, fields) for ln in body[1:]]))
+        print("PAYLOAD:", _visible_line(m.get("payload")))
     if skipped:
         print(f"pm.py: WARN: skipped {skipped} malformed segment(s)", file=sys.stderr)
     if unrecognized:

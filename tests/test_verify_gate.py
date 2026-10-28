@@ -612,6 +612,34 @@ class VerifyGateDispatchPinDiscovery(GateCase):
         self.assertNotIn("signature verified", r.stdout + r.stderr)
         self.assertEqual(r.returncode, 2, r.stderr[-600:])
 
+    def test_a_local_bridge_inside_the_origin_head_chain_never_names_the_key(self):
+        # Codex review round 2 (P1): the listing's %(symref) is the chain's END, so origin/HEAD ->
+        # refs/heads/bridge -> refs/remotes/origin/worker-pr (a fetched branch holding the
+        # worker's key) read as remote-tracking all the way, and the gate handed that key on.
+        (_coordinator, worker) = self.use_repo(pin_blob=True, remote_head=True)
+        _git(self.repo, "checkout", "-q", "-b", "workerbranch")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "my key")
+        os.remove(self.repo / ".orca" / "dispatch-pubkey")
+        _git(self.repo, "update-ref", "refs/remotes/origin/worker-pr", "workerbranch")
+        _git(self.repo, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/worker-pr")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        # origin/HEAD -> bridge -> remote, then origin/HEAD -> origin/hop -> bridge -> remote
+        for chain in ((("refs/remotes/origin/HEAD", "refs/heads/bridge"),),
+                      (("refs/remotes/origin/hop", "refs/heads/bridge"),
+                       ("refs/remotes/origin/HEAD", "refs/remotes/origin/hop"))):
+            for link in chain:
+                _git(self.repo, "symbolic-ref", *link)
+            with self.subTest(chain=chain):
+                r = self._traced_gate(rec, src)
+                self.assertNotIn("PUBKEY=.orca/dispatch-pubkey@", r.stderr)
+                self.assertIn("refs/heads/bridge", r.stderr)
+                self.assertNotIn("signature verified", r.stdout + r.stderr)
+                self.assertEqual(r.returncode, 2, r.stderr[-600:])
+
     def test_a_base_with_a_revision_suffix_is_no_key_ref(self):
         # A key rotation retired the worker's key: origin/main's parent still pins it, and
         # ORCA_BASE=main~1 made refs/remotes/origin/main~1, which passed the refs/remotes/ case.

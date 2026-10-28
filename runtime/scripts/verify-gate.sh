@@ -164,7 +164,10 @@ except Exception:
 # `cat-file -e refs/remotes/origin/HEAD:…` expands the name to the LOCAL branch
 # refs/heads/refs/remotes/origin/HEAD (Codex review) — so each hop is looked up in one
 # `for-each-ref refs/remotes/` listing, by exact name, and never handed to git to expand; a
-# revision suffix (origin/$BASE = main~1, @{1}) is no ref name at all. verify.py resolves what it
+# revision suffix (origin/$BASE = main~1, @{1}) is no ref name at all. The listing's %(symref) is
+# the chain's recursively resolved END, which hid a local bridge (origin/HEAD -> refs/heads/bridge
+# -> refs/remotes/origin/<old key>; Codex review round 2), so each symbolic hop is read on its own
+# with `symbolic-ref --no-recurse` (git 2.39+; where it cannot be, the name is refused). verify.py resolves what it
 # is handed again, once, under the same rule, to the commit it reads the key at. Remote-tracking
 # means "what this clone's fetch wrote" — the coordinator's or the CI runner's on a sound lane; on
 # a worker's own machine any ref is the worker's to write, which is why that lane stays advisory.
@@ -193,6 +196,11 @@ _remote_target() {
     fi
     _rt_entry=${_rt_entry#=}
     [ -n "$_rt_entry" ] || break
+    # Non-empty: $_t is symbolic. Its NEXT hop, not the chain's end the listing shows.
+    if ! _rt_entry=$("$GIT_BIN" -C "$TOP" symbolic-ref -q --no-recurse "$_t" 2>/dev/null) || [ -z "$_rt_entry" ]; then
+      echo "verify-gate: NOTE — $1 reaches the symbolic ref '$_t', whose chain cannot be read one hop at a time here (git symbolic-ref --no-recurse, git 2.39+); no key is read there." >&2
+      return 1
+    fi
     _rt_hops=$((_rt_hops + 1))
     if [ "$_rt_hops" -gt 5 ]; then
       echo "verify-gate: NOTE — $1 is a symbolic-ref chain longer than 5 hops; no key is read there." >&2

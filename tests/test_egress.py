@@ -264,7 +264,9 @@ class TestVerify(EgressBase):
         self.assertIn("2 receipt(s)", r.stdout)
 
     def test_a_missing_ledger_is_an_empty_intact_chain(self):
-        r = self.run_egress("verify")
+        # Only when the caller says no receipts were expected (--allow-empty). By default no
+        # receipts is EXIT_NO_RECEIPTS, never a pass (W5-03; TestTheLedgerIsWhereItSays).
+        r = self.run_egress("verify", "--allow-empty")
         self.assertEqual(r.returncode, 0)
         self.assertIn("0 receipt(s)", r.stdout)
 
@@ -764,9 +766,9 @@ class TestTheLedgerIsWhereItSays(EgressBase):
     def test_no_ledger_is_not_reported_as_an_intact_chain(self):
         # Codex review of 82a2d00c: a missing (or empty) canonical ledger still verified as "chain
         # intact", so a close whose receipts went elsewhere passed. No receipts is never called
-        # intact, and the close's form (--require-receipts) fails on it; an anchor naming a receipt
-        # always fails. (Making the plain form fail too changes an origin/main assertion, so that
-        # half rides fix/secaudit-w5-03-waiver.)
+        # intact, and every form fails on it (plain verify too, W5-03) unless the caller says none
+        # were expected (--allow-empty, or a sealed empty head); an anchor naming a receipt always
+        # fails.
         for setup in ("no ledger file", "an empty ledger file"):
             with self.subTest(setup=setup):
                 if setup == "an empty ledger file":
@@ -775,6 +777,10 @@ class TestTheLedgerIsWhereItSays(EgressBase):
                 plain = self.run_egress("verify")
                 self.assertNotIn("chain intact", plain.stdout + plain.stderr)
                 self.assertIn("NO RECEIPTS", plain.stdout)
+                self.assertEqual(plain.returncode, egress.EXIT_NO_RECEIPTS, "the plain form fails too")
+                allowed = self.run_egress("verify", "--allow-empty")
+                self.assertEqual(allowed.returncode, 0, allowed.stderr)
+                self.assertIn("0 receipt(s)", allowed.stdout)
                 r = self.run_egress("verify", "--require-receipts")
                 self.assertEqual(r.returncode, egress.EXIT_NO_RECEIPTS, r.stdout + r.stderr)
                 self.assertNotEqual(egress.EXIT_NO_RECEIPTS, 0)
@@ -801,6 +807,7 @@ class TestTheLedgerIsWhereItSays(EgressBase):
         self.assertEqual(r.returncode, egress.EXIT_NO_RECEIPTS, r.stdout + r.stderr)
         self.assertNotIn("chain intact", r.stdout + r.stderr)
         self.assertNotIn("chain intact", self.bare("verify", cwd=self.repo).stdout)
+        self.assertEqual(self.bare("verify", cwd=self.repo).returncode, egress.EXIT_NO_RECEIPTS)
 
 
 class TestANonFileLedgerIsRefusedNeverWaitedOn(EgressBase):

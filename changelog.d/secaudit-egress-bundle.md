@@ -10,9 +10,10 @@
   receipts and writes them to the ledger `egress.py`'s default picks. That default is the
   repository root's `.orca/egress.jsonl`; a routed ledger is reported; a `.git` nested below the
   root refuses unless it is a linked worktree whose `.git/worktrees/<name>/gitdir` back-link
-  agrees; `grants` verifies first and takes `verify`'s anchors, saying UNANCHORED without one; a ledger that is not a regular file (a FIFO) is refused at once by every
-  command, never waited on; everything printed is inert; and no receipts is never reported
-  as an intact chain: `verify --require-receipts`, the form the close runs, exits 4 on them. Pre-v2
+  agrees; `grants` verifies first and takes `verify`'s anchors, saying UNANCHORED without one; a
+  ledger that is not a regular file (a FIFO) is refused at once by every command, never waited on;
+  everything printed is inert; and `verify` finding no receipts exits 4, never 0, unless the run
+  declares it sent nothing (`--allow-empty`). Pre-v2
   ledgers keep verifying in the exact v1 form, as a prefix, and the docs say how to recover a
   broken ledger ([runtime-scripts](../docs/runtime-scripts.md#egresspy)). `bundle.py`'s ownership
   marker only names candidates: a listed file is deleted once stale only when a build record kept

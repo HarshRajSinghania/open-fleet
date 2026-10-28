@@ -329,7 +329,8 @@ def _parse(raw):
 
 
 # The transcript's own placement claims (W4-10): read at the top level, and a report that says
-# anything but true for one of them, in any spelling or at any level, contradicts itself.
+# anything but true for one of them, in any spelling or at any level — the report's own, and every
+# envelope's around it (_envelope_findings) — contradicts itself.
 SELF_CLAIMS = ("ephemeral", "prelaunch_placement_bound")
 _SELF_CLAIMS_NORM = frozenset(_norm(c) for c in SELF_CLAIMS)
 
@@ -501,24 +502,37 @@ def names_recipe(doc, raw, recipe):
                      raw, re.IGNORECASE) is not None
 
 
+MAX_WRAPPERS = 16
+
+
+def _unwrap(doc):
+    """(the doctor report proper, every envelope around it, outermost first, each without its
+    `result`). `orca_cli.py` wraps a non-Orca provider's answer in an `{"ok": …, "result": {…}}`
+    envelope, and a wrapper can be wrapped again: reading only the top level, or only one level
+    down, skipped every portable isolation check on exactly the runtimes that need them (Codex
+    round 6: a report wrapped twice was read as its middle wrapper, which names no backend)."""
+    wrappers = []
+    while (isinstance(doc, dict) and "backend" not in doc and isinstance(doc.get("result"), dict)
+           and len(wrappers) < MAX_WRAPPERS):
+        wrappers.append({k: v for k, v in doc.items() if k != "result"})
+        doc = doc["result"]
+    return doc, wrappers
+
+
 def _portable_doc(doc):
-    """The doctor report proper. `orca_cli.py` wraps a non-Orca provider's answer in an
-    `{"ok": …, "result": {…}}` envelope; reading only the top level would skip every
-    portable isolation check on exactly the runtimes that need them."""
-    if isinstance(doc, dict) and "backend" not in doc and isinstance(doc.get("result"), dict):
-        return doc["result"]
-    return doc
+    """The doctor report proper, out of every envelope around it (_unwrap)."""
+    return _unwrap(doc)[0]
 
 
 def _envelope_findings(parsed) -> list[str]:
-    """What an `{ok, result}` envelope around the report says against it: its own `ok`, `error`
-    or any finding, or a placement claim in any spelling that is not true. The envelope used to
-    be dropped whole when the report was read out of it."""
-    if not isinstance(parsed, dict) or _portable_doc(parsed) is parsed:
-        return []
-    outer = {k: v for k, v in parsed.items() if k != "result"}
-    return findings(outer) + [f"{k}={v!r}" for k, v in outer.items()
-                              if _norm(k) in _SELF_CLAIMS_NORM and v is not True]
+    """What the envelopes around the report say against it, at EVERY wrapping level and at any
+    depth inside each (Codex round 6: `{"metadata": {"ephemeral": false}, "result": <report>}`
+    passed, since only the outer object's own keys were read): its `ok`, `error` or any finding,
+    and a placement claim in any spelling that is not true."""
+    out = []
+    for outer in _unwrap(parsed)[1]:
+        out += findings(outer) + _contradicted_claims(outer)
+    return out
 
 
 def placement_bound(raw) -> bool:
@@ -563,6 +577,8 @@ def assess(raw, recipe):
 
     if doc is not None:
         isolation = portable_findings(doc) if isinstance(doc, dict) else []
+        if not isolation:  # a report naming no portable backend may not contradict itself either
+            isolation = _contradicted_claims(doc)
         if isolation:
             return False, "sandbox isolation: " + "; ".join(isolation[:4]), True
         bad = sorted(set(findings(doc)))

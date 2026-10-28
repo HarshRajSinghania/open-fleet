@@ -101,9 +101,15 @@ The launcher starts both containers with these properties:
   taken, a new connection evicts the one that has waited longest for its own request to arrive,
   so connections trickling requests, however many a process reopens, never keep the arm's own
   model calls out; a call already read in full keeps its slot. Each request body is held once, and
-  all of them together at most 64 MiB (`BODY_BUDGET`, which with each body's JSON parse fits the
-  broker's 512m): a request takes its `Content-Length` from that budget before its body is read,
-  waits up to 30 s for room, and is otherwise answered 503 and counted as a `body-budget` refusal.
+  what the bodies take together -- their bytes and the most parsing them can allocate -- is at most
+  320 MiB (`BODY_BUDGET`), which leaves the interpreter room in the broker's 512m. A request takes
+  its `Content-Length` from that budget before its body is read; then, before the body is parsed, a
+  linear pre-scan counts its JSON values and nesting and takes that bound (each value at its
+  worst parsed size, each string character at up to four bytes) from the same budget. Either waits
+  up to 30 s for room and is otherwise answered 503 (a `body-budget` refusal); a body whose parse
+  alone could pass the budget, or that nests more than 128 deep, is answered 413 unparsed (a
+  `body-parse` refusal). Ordinary requests -- long or non-ASCII text, base64 images, thousands of
+  messages, many tools -- pass.
   Every connection closed unanswered
   (evicted, past the bound, timed out, malformed, a body cut short) is counted as a `drop`. Drops
   and faults are counted per kind and written at most once a second per kind, with the running

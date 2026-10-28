@@ -32,8 +32,11 @@
   and an oversized body, and shape-checks `--repo`; the paperclip and OpenHands adapters' keys never
   follow a redirect either. The live harness's broker cuts off idle and trickling connections and
   evicts a stalled request when its slots are full, so trickling connections never keep the arm's
-  calls out; it holds each request body once and all of them at most 64 MiB at once (a request
-  past that waits, then is refused and counted), within its container's memory; it bounds `count_tokens`, settles every call, and counts refusals, drops and faults
+  calls out; it holds each request body once, and bounds what parsing it can allocate before
+  parsing it, by a linear pre-scan of its JSON values and nesting, so the bodies held at once and
+  their parses stay within 320 MiB of its 512m container (a body over its share waits, then is
+  refused and counted; one whose parse alone could pass that, such as millions of empty objects,
+  is refused unparsed); it bounds `count_tokens`, settles every call, and counts refusals, drops and faults
   per kind with bounded text, so the arm cannot grow the host's ledger. The launcher runs only an
   image whose id its own `build` recorded (from `--iidfile`) from the committed Dockerfile unless
   `--allow-foreign-image` is passed, the committed Dockerfile's digest always the git object's

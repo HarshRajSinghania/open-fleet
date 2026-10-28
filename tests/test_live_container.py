@@ -1720,28 +1720,103 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
 
     def test_the_bodies_held_at_once_fit_the_brokers_container(self):
         # MAX_CONNECTIONS x MAX_BODY is 2 GiB; the broker's container has 512m. What every connection
-        # holds at once is BODY_BUDGET, which with its JSON parse (a few times its bytes) and the
-        # interpreter must fit that memory, and no single body may exceed it.
+        # takes at once -- bodies and the bound parse_cost puts on parsing them -- is BODY_BUDGET,
+        # which must leave the interpreter and its threads room in that memory; no body may exceed it.
+        # That the bound holds against parsing itself is measured below, with adversarial bodies.
         memory = lc.BROKER_LIMITS["memory"]
         self.assertTrue(memory.endswith("m"), memory)
         limit = int(memory[:-1]) << 20
         self.assertLessEqual(lb.MAX_BODY, lb.BODY_BUDGET)
-        self.assertLessEqual(5 * lb.BODY_BUDGET + (64 << 20), limit)
+        self.assertLessEqual(lb.BODY_BUDGET + (128 << 20), limit)
+
+    # The broker alone in a child (the test's own copies of the bodies are not its memory), under a
+    # 1 GiB data limit so a broker that parses them anyway fails there, not on the host. It prints
+    # its port, serves until a line arrives on stdin, then prints its own peak (VmHWM). argv:
+    # live_broker.py, ledger, upstream, BODY_BUDGET in MiB.
+    BROKER_CHILD = ("import importlib.util, json, resource, sys\n"
+                    "spec = importlib.util.spec_from_file_location('lb', sys.argv[1])\n"
+                    "lb = importlib.util.module_from_spec(spec); spec.loader.exec_module(lb)\n"
+                    "resource.setrlimit(resource.RLIMIT_DATA, (1 << 30, resource.getrlimit(resource.RLIMIT_DATA)[1]))\n"
+                    "lb.BODY_BUDGET = int(sys.argv[4]) << 20\n"
+                    "server, ledger = lb.serve('sk-ant-oat01-child', sys.argv[2], 5.0, port=0, upstream=sys.argv[3])\n"
+                    "print(server.server_address[1], flush=True)\n"
+                    "sys.stdin.readline()\n"
+                    "with open('/proc/self/status', encoding='ascii') as fh:\n"
+                    "    peak = next(int(line.split()[1]) for line in fh if line.startswith('VmHWM:'))\n"
+                    "print(json.dumps({'peak_kib': peak}), flush=True)\n")
+
+    def test_a_body_whose_parse_would_pass_the_budget_is_refused_unparsed_and_counted(self):
+        # Codex round 7 on 72739991: a ~60 MiB array of 20 million empty objects fits MAX_BODY and the
+        # byte budget, but answer_post json.loads()-ed it before looking at its shape, and the dicts
+        # need well over the container's 512m. parse_cost now bounds the parse first. Four bodies at
+        # once, against a 64 MiB budget: empty objects, nesting, tiny strings, numbers. Parsed, they
+        # need some 330 MB together; refused, the broker never holds more than their bytes.
+        if not sys.platform.startswith("linux"):
+            return  # the broker runs in a Linux container; VmHWM is Linux's
+        pad = {"empty objects": b"{}," * (2 << 20), "nesting": b"[" * 100_000, "tiny strings": b'"ab",' * (2 << 20),
+               "numbers": b"1000," * (2 << 20)}
+        head = b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"pad":['
+        bodies = {what: head + filler + (b"]" * 100_000 if what == "nesting" else b"0") + b"]}"
+                  for what, filler in pad.items()}
+        child = subprocess.Popen([sys.executable, "-I", "-c", self.BROKER_CHILD, str(ROOT / "scripts" / "live_broker.py"),
+                                  str(self.ledger_path), self.api.url, "64"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        for done in (child.wait, child.kill, child.stdout.close, child.stdin.close):  # run in reverse
+            self.addCleanup(done)
+        self.port = int(child.stdout.readline())
+        answers = {}
+
+        def send(what):
+            with contextlib.suppress(OSError, http.client.HTTPException):
+                answers[what] = self.post(raw=bodies[what])[0]
+        senders = [threading.Thread(target=send, args=(what,)) for what in bodies]
+        for sender in senders:
+            sender.start()
+        for sender in senders:
+            sender.join(120)
+        time.sleep(lb.DROP_RECORD_S + 0.5)  # the ledger's tally line catches up the counts
+        child.stdin.write("report\n")
+        child.stdin.flush()
+        line = child.stdout.readline()
+        self.assertTrue(line, "the broker died parsing the bodies")
+        peak = json.loads(line)["peak_kib"]
+        self.assertLess(peak, 120 * 1024, f"the broker peaked at {peak} KiB on bodies it should never parse")
+        self.assertEqual(answers, dict.fromkeys(bodies, 413), "a body was parsed rather than refused by its bound")
+        self.assertEqual(self.api.requests, [])
+        counts = [e["refused"] for e in self.events() if isinstance(e.get("refused"), dict)]
+        self.assertEqual(counts[-1].get("body-parse"), len(bodies), counts[-1:])
+
+    def test_ordinary_large_bodies_still_pass_the_parse_bound(self):
+        # Long text, non-ASCII text, a base64 image, thousands of messages and a hundred tools.
+        self.broker(cap=10_000.0)  # 20 MB of input tokens at the cache-write price passes a $5 cap
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBO" * (2 << 20)}}
+        tools = [{"name": f"tool_{i}", "description": "run it, {carefully}: [a, b]",
+                  "input_schema": {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+                                   "required": ["a"]}} for i in range(100)]
+        turns = [{"role": "user" if i % 2 == 0 else "assistant", "content": [{"type": "text", "text": f"turn {i}, {{x}}: [y]"}]}
+                 for i in range(3000)]
+        big = {"model": "claude-haiku-5-5", "max_tokens": 1000, "stream": True, "tools": tools,
+               "messages": [{"role": "user", "content": [{"type": "text", "text": "x, {y}: [z]\n" * (1 << 20)}, image]},
+                            *turns[1:], {"role": "user", "content": "é😀 " * (1 << 20)}]}
+        body = json.dumps(big, ensure_ascii=False).encode()
+        self.assertGreater(len(body), 16 << 20)
+        self.assertIsNotNone(lb.parse_cost(body, lb.BODY_BUDGET))
+        self.assertEqual(self.post(raw=body)[0], 200)
 
     def test_a_body_past_the_budget_held_at_once_waits_then_is_refused_and_counted(self):
-        for patch in (mock.patch.object(lb, "BODY_BUDGET", 4096), mock.patch.object(lb, "BODY_WAIT_S", 0.5)):
+        for patch in (mock.patch.object(lb, "BODY_BUDGET", 7000), mock.patch.object(lb, "BODY_WAIT_S", 0.5)):
             patch.start()
             self.addCleanup(patch.stop)
         server = self.served_broker()
-        self.assertEqual(server.bodies.limit, 4096)
+        self.assertEqual(server.bodies.limit, 7000)
         holder = socket.create_connection(("127.0.0.1", self.port), timeout=10)
         self.addCleanup(holder.close)
         holder.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
-                       b"Content-Length: 3000\r\n\r\n{")  # its body is still arriving: 3000 bytes held
+                       b"Content-Length: 6000\r\n\r\n{")  # its body is still arriving: 6000 bytes held
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and server.bodies.held != 3000:
+        while time.monotonic() < deadline and server.bodies.held != 6000:
             time.sleep(0.01)
-        self.assertEqual(server.bodies.held, 3000)
+        self.assertEqual(server.bodies.held, 6000)
         big = self.body(messages=[{"role": "user", "content": "y" * 1800}])
         status, data = self.post(doc=big)
         self.assertEqual(status, 503, data)

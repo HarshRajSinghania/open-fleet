@@ -22,9 +22,13 @@ connection, not a client that keeps opening them, so when every slot is taken a 
 evicts the one that has waited longest for its own request to arrive: a request still arriving
 holds its slot only until someone else needs it, and only calls already read in full (relayed to
 the API, or being refused) keep theirs. A body is held once (one buffer of its Content-Length), and
-the bodies of every connection together at most BODY_BUDGET bytes: a request takes its length from
-that budget before its body is read, waits up to BODY_WAIT_S for room, and is otherwise refused
-(503, a "body-budget" refusal), so what the slots hold fits the broker's container memory. A connection past the bound with none to evict is closed
+what the bodies of every connection take together -- their bytes and the most parsing them can
+allocate -- is at most BODY_BUDGET: a request takes its length from that budget before its body is
+read, and the bound parse_cost puts on its parse (a linear pre-scan that counts the body's JSON
+values and nesting) before json.loads sees it, each waiting up to BODY_WAIT_S for room and otherwise
+refused (503, a "body-budget" refusal); a body whose parse could pass the whole budget, or that nests
+past MAX_DEPTH, is refused unparsed (413, a "body-parse" refusal). So what the slots hold, parsed,
+fits the broker's container memory. A connection past the bound with none to evict is closed
 unanswered. Every connection closed without an answer (evicted, past the bound, timed out,
 malformed, a body cut short, or closed before its request) is counted as a "drop" (W5-16).
 count_tokens is free but bounded: FREE_CALLS_MAX calls and FREE_BYTES_MAX body bytes per broker,
@@ -119,14 +123,27 @@ FIELDS = {"model", "messages", "system", "max_tokens", "stream", "tools", "tool_
           "inference_geo", "service_tier"}
 FRAMING_TOKENS = 4096
 MAX_BODY = 64 << 20
-# The request-body bytes every connection holds AT ONCE, together. MAX_CONNECTIONS x MAX_BODY (2 GiB)
-# never fit the broker's container (BROKER_LIMITS, 512m), and four concurrent 64 MiB bodies held
-# twice each took it to 506 MB (re-attack of 2d254d0f): a body is now held once, and a request
-# takes its Content-Length from this budget before its first body byte is read, waiting up to
-# BODY_WAIT_S for room, else it is refused (503) and counted. With its JSON parse (a few times its
-# bytes) and the interpreter, the budget fits the container's memory; MAX_BODY never exceeds it.
-BODY_BUDGET = 64 << 20
+# The memory every connection's request body may take AT ONCE, together: its bytes, and what parsing
+# them can allocate. MAX_CONNECTIONS x MAX_BODY (2 GiB) never fit the broker's container
+# (BROKER_LIMITS, 512m), and four concurrent 64 MiB bodies held twice each took it to 506 MB
+# (re-attack of 2d254d0f); nor did holding each once bound the parse: a 60 MiB array of 20 million
+# empty objects fits MAX_BODY and parses to well over 1 GiB (Codex round 7). So a request takes its
+# Content-Length from this budget before its first body byte is read, and, before json.loads ever
+# sees the body, the worst its parse can allocate (parse_cost: a linear pre-scan of the bytes),
+# each waiting up to BODY_WAIT_S for room, else refused (503) and counted; a body whose parse alone
+# could pass the budget, or that nests past MAX_DEPTH, is refused (413) unparsed and counted. The
+# budget, with the interpreter and its threads, fits the container's memory; MAX_BODY never exceeds it.
+BODY_BUDGET = 320 << 20
 BODY_WAIT_S = 30
+# The most one parsed JSON value costs, its slot in its container included: measured at peak on
+# CPython 3.12 (an empty object in an array 75 bytes, an object member under a distinct key 103,
+# two-character strings 56, numbers 43); a string's characters are charged on top, at up to four
+# bytes each (one non-Latin-1 character makes the whole string UCS-4).
+VALUE_COST = 128
+MAX_DEPTH = 128  # a request's JSON nests a few levels (a tool's input schema a dozen or so)
+# One JSON token: a string (unrolled, so a long one is one C-speed match), an opening or closing
+# bracket, or a bare scalar. Commas, colons and whitespace are skipped.
+_TOKEN = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"|[\[{]|[\]}]|[^\s\[\]{},:"]+')
 UPSTREAM_TIMEOUT_S = 900
 HANDLER_TIMEOUT_S = 60  # each read or write on a client connection (W5-16)
 REQUEST_DEADLINE_S = 30  # the request line and headers, in all: a byte at a time never extends it
@@ -232,6 +249,37 @@ def content_problem(node, found):
             if why := content_problem(value, found):
                 return why
     return None
+
+
+def parse_cost(body, limit):
+    """An upper bound on the memory json.loads(body) can take, the body itself included, or None
+    when that is past `limit` or the body nests past MAX_DEPTH. Its bytes count twice (once held,
+    once as string characters), or five times when a character of a string may be wider than a byte
+    (a non-ASCII body, or a \\u escape), and every value VALUE_COST. A count from the structural
+    bytes alone (each value follows a bracket, a comma or a colon) answers when it is within bounds,
+    which covers an ordinary request at C speed; otherwise the tokens are walked once, strings
+    whole, and the walk stops as soon as the bound is passed, so it costs at most the budget's
+    worth of values whatever the body holds."""
+    wide = 1 if body.isascii() and b"\\u" not in body else 4
+    base = len(body) * (1 + wide)
+    opens = body.count(b"[") + body.count(b"{")
+    crude = 2 * opens + body.count(b",") + body.count(b":") + 1
+    if opens <= MAX_DEPTH and base + crude * VALUE_COST <= limit:
+        return base + crude * VALUE_COST
+    values = depth = 0
+    for match in _TOKEN.finditer(body):
+        first = body[match.start()]
+        if first in b"[{":
+            depth += 1
+            if depth > MAX_DEPTH:
+                return None
+        elif first in b"]}":
+            depth -= 1
+            continue
+        values += 1
+        if base + values * VALUE_COST > limit:
+            return None
+    return base + values * VALUE_COST
 
 
 def terms(doc):
@@ -524,9 +572,30 @@ class Broker(BaseHTTPRequestHandler):
             if not self.ledger.free(len(body)):
                 return self.fail(403, "permission_error", "the count_tokens bound would be passed")
             return self.relay(body, None, None, False)
+        # What parsing may allocate is bounded BEFORE json.loads sees the body, and taken from the
+        # same budget as its bytes: holding the body once never bounded its parse (Codex round 7).
+        bodies = self.server.bodies
+        cost = parse_cost(body, bodies.limit)
+        if cost is None:
+            self.ledger.refuse("body-parse", f"a {len(body)}-byte body whose parse could pass the "
+                                             f"{bodies.limit}-byte budget, or that nests past {MAX_DEPTH}")
+            return self.fail(413, "invalid_request_error", "the body's JSON is too large or too deeply nested "
+                                                           "for the broker to parse within its memory")
+        extra = max(0, cost - len(body))
+        if not bodies.take(extra, time.monotonic() + BODY_WAIT_S):
+            self.ledger.refuse("body-budget", f"a parse of up to {extra} bytes past the {bodies.limit} held at once")
+            return self.fail(503, "overloaded_error", "the broker holds as many request bodies as it can; retry")
+        try:
+            self.price_and_relay(body)
+        finally:
+            bodies.give(extra)
+
+    def price_and_relay(self, body):
+        """Parse a body parse_cost has bounded and whose bound is taken, check its terms, reserve
+        its worst case, and relay it."""
         try:
             doc = json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):
             doc = None
         why, mult, images = terms(doc)
         model = doc.get("model") if isinstance(doc, dict) else None

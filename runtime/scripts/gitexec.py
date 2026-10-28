@@ -344,6 +344,19 @@ def _exact_ref_commit(git, name, namespace, kind, outside):
     return commit, target, None
 
 
+# A caller that sets one of these claims a sound (off-worker) lane: the predicate decisions.py,
+# gate-batch.py and run_report.py already apply (each keeps its copy), here for floor_guard.py and
+# diff_scope.py, which refuse a LOCAL base on such a lane.
+PROVENANCE_VARS = ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
+
+
+def sound_lane(environ=None):
+    """`VAR=value` for the first provenance variable set (a lane claiming soundness), or None."""
+    env = os.environ if environ is None else environ
+    return next((f"{var}={env[var]}" for var in PROVENANCE_VARS
+                 if (env.get(var) or "").strip()), None)
+
+
 # --- A diff base by exact names (floor_guard.py, diff_scope.py; W3-07 class) -------------------
 # Both resolved a base with `rev-parse <base>^{commit}` and, unnamed, cut origin/HEAD's target to
 # the SHORT name `origin/<x>`: gitrevisions tries refs/tags/ and refs/heads/ before refs/remotes/,
@@ -367,7 +380,7 @@ def base_commit(git, base=None):
     Every name is looked up EXACTLY; nothing is handed to git to expand, and the caller diffs and
     reads at ``commit``, never at the name. ``shown`` is the human label; ``local`` is True when
     the base is a local branch — not a trust anchor (the checked change can move one), so the
-    caller says so.
+    caller refuses it on a lane claiming soundness (sound_lane) and says so in a NOTE elsewhere.
 
     Named: a commit id or a full ``refs/remotes/…`` ref goes through remote_tracking_commit; a
     short name with a slash (``origin/main``) is the remote-tracking ref ``refs/remotes/<name>``

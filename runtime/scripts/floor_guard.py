@@ -237,8 +237,6 @@ GUARD_SURFACE_KEYS = (
     ("bench/vf-bench/gate.py", re.compile(r"\bEXPECTED_CORPUS_SHA256\s*=")),
 )
 
-DEFAULT_BASES = ("origin/main", "origin/master", "main", "master")
-
 # Diff RENDERING pins, at command-line precedence over the guarded repo's own config
 # (2026-10-23 review, P2-4). A repo-local `diff.mnemonicPrefix` (c/ i/ w/), `diff.srcPrefix`/
 # `dstPrefix` or `diff.noprefix` relabels the a/ b/ that strip_prefix removes, so every path
@@ -310,7 +308,9 @@ def resolve_base(repo, base):
     branch, and this base is where the waivers are read; an origin/HEAD pointed at a local branch
     was used as-is. Now a remote-tracking name (`origin/main`, `refs/remotes/…`) or a commit id
     goes through gitexec.remote_tracking_commit; a bare `main` is that local branch by its exact
-    name, said in a NOTE to be advisory (the change can move a local branch)."""
+    name — refused on a lane claiming soundness (gitexec.sound_lane: ORCA_PROVENANCE /
+    OPEN_FLEET_PROVENANCE set, as decisions.py and run_report.py read it), and said in a NOTE to
+    be advisory elsewhere (the change can move a local branch)."""
     def run(*args):
         out = git(repo, *args)
         return (0, out) if out is not None else (1, "")
@@ -322,6 +322,12 @@ def resolve_base(repo, base):
                              f"or missing fetch?): {base!r} {why}")
         raise GuardError(f"no base ref could be resolved (tried {shown}): {why}")
     if local:
+        lane = gitexec.sound_lane()
+        if lane:
+            raise GuardError(f"{lane} claims a sound lane, but base {shown!r} is a LOCAL branch "
+                             f"({commit[:12]}), which the change under check can move: there the "
+                             "waivers and the human-grant pin are read only at a remote-tracking "
+                             "ref or a commit id — --base origin/<branch> or a commit id (W3-07)")
         print(f"floor-guard: NOTE — base {shown!r} is a LOCAL branch ({commit[:12]}): the change "
               "under check can move one, so the waivers and the human-grant pin read there are "
               "advisory; --base origin/<branch> (or a commit id) reads them where it cannot write",

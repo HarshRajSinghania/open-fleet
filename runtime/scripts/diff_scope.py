@@ -119,7 +119,6 @@ FLAGS = (
     "MIGRATIONS", "API", "AUTH", "SECURITY", "A11Y", "PERF",
 )
 
-DEFAULT_BASES = ("origin/main", "origin/master", "main", "master")
 
 FRONTEND_EXT = {".css", ".scss", ".less", ".sass", ".pcss", ".styl",
                 ".tsx", ".jsx", ".vue", ".svelte", ".astro",
@@ -286,8 +285,10 @@ def resolve_base(repo, base):
     expanded the name (refs/tags/ and refs/heads/ before refs/remotes/), so a tag or local branch
     spelled `origin/main` stood in for the remote-tracking branch, and an origin/HEAD pointed at
     a local branch was used as-is — and the base decides which paths count as changed, so which
-    review lenses run. gitexec.py is loaded here only: verify.py loads this file for SCOPE_TESTS
-    and never resolves a base (gitexec.py is in the verifier toolchain since #608 all the same)."""
+    review lenses run. A local-branch base is refused on a lane claiming soundness
+    (gitexec.sound_lane: ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set) and NOTE'd elsewhere.
+    gitexec.py is loaded here only: verify.py loads this file for SCOPE_TESTS and never resolves a
+    base (gitexec.py is in the verifier toolchain since #608 all the same)."""
     try:
         spec = importlib.util.spec_from_file_location(
             "gitexec_for_diff_scope", Path(__file__).resolve().parent / "gitexec.py")
@@ -307,6 +308,12 @@ def resolve_base(repo, base):
         print(f"diff_scope: base {shown!r} {why}", file=sys.stderr)
         raise ScopeError(base or "origin/HEAD")
     if local:
+        lane = gitexec.sound_lane()
+        if lane:
+            print(f"diff_scope: {lane} claims a sound lane, but base {shown!r} is a LOCAL branch "
+                  f"({commit[:12]}), which the change under check can move — name origin/<branch> "
+                  "or a commit id (W3-07)", file=sys.stderr)
+            raise ScopeError(base or shown)
         print(f"diff_scope: NOTE — base {shown!r} is a LOCAL branch ({commit[:12]}), which the "
               "change under check can move; --base origin/<branch> (or a commit id) is one it "
               "cannot", file=sys.stderr)

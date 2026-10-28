@@ -1903,6 +1903,30 @@ class TestTheBaseIsResolvedByExactNameW307(FloorGuardBase):
         self.assertEqual(code, 1, err)
         self.assertIn("LOCAL branch", err)
 
+    def test_a_local_base_is_refused_on_a_lane_claiming_soundness(self):
+        # Coordinator decision (the decisions.py / run_report.py precedent): a local branch is the
+        # change's to move, so where ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE claims soundness the
+        # waivers are never read there — named, or as the no-remote fallback. Off that lane the
+        # same base runs with the advisory NOTE.
+        self.waiver_on("refs/heads/main")
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        clean = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        for var in ("ORCA_PROVENANCE", "OPEN_FLEET_PROVENANCE"):
+            for args in (("--base", "main"), ("--base", "refs/heads/main"), ()):
+                with self.subTest(var=var, args=args), \
+                        mock.patch.dict(os.environ, {**clean, var: "ci"}, clear=True):
+                    code, out, err = run_main(self.repo, *args)
+                    self.assertEqual(code, 2, f"{out}{err}")
+                    self.assertIn(f"{var}=ci claims a sound lane", err)
+                    self.assertNotIn("waived", out)
+        with mock.patch.dict(os.environ, clean, clear=True):
+            code, out, err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 0, err)
+        self.assertIn("(1 waived)", out)
+        self.assertIn("NOTE", err)
+        self.assertIn("LOCAL branch", err)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

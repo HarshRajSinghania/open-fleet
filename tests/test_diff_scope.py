@@ -743,6 +743,30 @@ class TestTheBaseIsResolvedByExactNameW307(ScopeBase):
                 self.assertEqual(data["error"], "no_base", r.stdout)
                 self.assertIn("not a valid ref name", r.stderr)
 
+    def test_a_local_base_is_refused_on_a_lane_claiming_soundness(self):
+        # Coordinator decision (the decisions.py / run_report.py precedent): where
+        # ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE claims soundness a local branch — the change's
+        # to move — is no base, named or as the no-remote fallback; off that lane it runs with
+        # the advisory NOTE.
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        clean = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        for var in ("ORCA_PROVENANCE", "OPEN_FLEET_PROVENANCE"):
+            for args in (("--base", "main"), ("--base", "refs/heads/main"), ()):
+                with self.subTest(var=var, args=args):
+                    r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo),
+                                        "--json", *args], capture_output=True, text=True,
+                                       env={**clean, var: "ci"})
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertEqual(json.loads(r.stdout)["error"], "no_base", r.stdout)
+                    self.assertIn(f"{var}=ci claims a sound lane", r.stderr)
+        r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo), "--json",
+                            "--base", "main"], capture_output=True, text=True, env=clean)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(json.loads(r.stdout)["flags"]["AUTH"], r.stdout)
+        self.assertIn("NOTE", r.stderr)
+        self.assertIn("LOCAL branch", r.stderr)
+
     def test_the_diff_is_taken_against_the_resolved_commit(self):
         tip = git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip()
         seen = []

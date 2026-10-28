@@ -585,13 +585,16 @@ CUSTODY_ENV = {"GIT_ALLOW_PROTOCOL": "file", "GIT_NO_LAZY_FETCH": "1"}
 # exec bit or a symlink the filesystem cannot keep), `ignorecase`/`precomposeunicode`/`protecthfs`/
 # `protectntfs` (name folding), `sparsecheckout`/`sparsecheckoutcone` (cone matching for
 # `info/sparse-checkout`), `autocrlf`/`eol` (built-in line-ending conversion), `checkstat`/
-# `trustctime` (which stat fields count). Read from the repository and passed as the custody call's
-# own GIT_CONFIG pairs. NOT `core.excludesFile`: honouring a worker-set ignore file could HIDE an
-# untracked file and lose its work, so the custody errs toward DIRTY there (`info/exclude`, the
-# repo's own, is copied).
+# `trustctime` (which stat fields count), `safecrlf`/`checkroundtripencoding` (when a conversion
+# refuses). Read from the repository and passed as the custody call's own GIT_CONFIG pairs. NOT
+# `core.excludesFile`: honouring a worker-set ignore file could HIDE an untracked file and lose its
+# work, so the custody errs toward DIRTY there (`info/exclude`, the repo's own, is copied). NOT
+# `core.attributesFile` either (a path the worker names, which git would open and read whatever
+# it is); `info/attributes`, the repo's own, is copied (custody_git_dir).
 CUSTODY_CORE_KEYS = (
     "filemode", "symlinks", "ignorecase", "precomposeunicode", "protecthfs", "protectntfs",
-    "sparsecheckout", "sparsecheckoutcone", "autocrlf", "eol", "checkstat", "trustctime",
+    "sparsecheckout", "sparsecheckoutcone", "autocrlf", "eol", "safecrlf", "checkroundtripencoding",
+    "checkstat", "trustctime",
 )
 # Repository-format extensions the custody git dir reproduces (object format is written into its
 # config; the others do not change the objects it reads through the alternate or the index it
@@ -666,7 +669,8 @@ def custody_git_dir(common, object_format, head=None, gitdir=None, *, objects="a
     merge driver, so none can be added between a check and a use), the repository's objects, HEAD
     pinned to ``head`` (a commit id; None leaves it unborn), and copies of what a `status`/
     `read-tree`/`diff` there must read to match the repository's own verdict: the common
-    `info/exclude` and `shallow`, and - when ``gitdir`` names the per-worktree admin dir - its
+    `info/exclude`, `info/attributes` and `shallow`, and - when ``gitdir`` names the per-worktree
+    admin dir - its
     `index` (mtime kept, so racy-git reads it as the repository does), every `sharedindex.<hash>`
     the index references (a split index, PR #720 Codex round 4) and `info/sparse-checkout`. The
     data-only `core.*` settings (filemode, ignorecase, sparse, ...) ride as the call's own
@@ -702,6 +706,10 @@ def custody_git_dir(common, object_format, head=None, gitdir=None, *, objects="a
             with open(os.path.join(root, "objects", "info", "alternates"), "wb") as fh:
                 fh.write(_c_quote(os.fsencode(os.path.join(common, "objects"))) + b"\n")
         _copy_regular(os.path.join(common, "info", "exclude"), os.path.join(root, "info", "exclude"))
+        # Data: `text`/`eol`/`working-tree-encoding`/`ident` steer how a work-tree file reads as a
+        # blob (a CRLF checkout of an `eol=crlf` path is unchanged, not modified), and a line that
+        # selects `filter=`/`diff=`/`merge=<name>` names a driver this config never defines.
+        _copy_regular(os.path.join(common, "info", "attributes"), os.path.join(root, "info", "attributes"))
         _copy_regular(os.path.join(common, "shallow"), os.path.join(root, "shallow"))
         if gitdir is not None:
             _copy_regular(os.path.join(gitdir, "index"), os.path.join(root, "index"))

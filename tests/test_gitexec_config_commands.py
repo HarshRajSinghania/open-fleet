@@ -1329,6 +1329,48 @@ class NoChildGitInsideASubmodule(unittest.TestCase):
         self.assertEqual(p.fired(), set(), "reporting the moved gitlink ran the submodule's commands")
 
 
+class CustodyKeepsLineEndingData(unittest.TestCase):
+    """Codex on the W4-02 branch (P1), applied to the shared custody: `info/attributes` and the
+    data settings that steer normalisation are data, not commands. Without them a clean CRLF
+    checkout of an `eol=crlf` (or `core.autocrlf`) path, once touched, read as modified in custody."""
+
+    def _repo(self, how):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        if how == "info/attributes":
+            (p.repo / ".git" / "info").mkdir(exist_ok=True)
+            (p.repo / ".git" / "info" / "attributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+        else:
+            p._git("config", "core.autocrlf", "true")
+        (p.repo / "a.txt").unlink()
+        p._git("checkout", "--", "a.txt")
+        self.assertEqual((p.repo / "a.txt").read_bytes(), b"line1\r\nline2\r\n", "fixture: not a CRLF checkout")
+        later = time.time() + 30
+        os.utime(p.repo / "a.txt", (later, later))  # touched: git must re-read it
+        return p, base
+
+    def test_a_clean_crlf_checkout_reads_unchanged_in_custody(self):
+        for how in ("info/attributes", "core.autocrlf"):
+            with self.subTest(how=how):
+                p, base = self._repo(how)
+                diff = floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base))
+                self.assertNotIn("a.txt", diff)
+                self.assertEqual(diff_scope.changed_files(p.repo, base), [])
+                self.assertEqual(hint_provenance.LiveSource(str(p.repo)).changes_since(base), {})
+                with gitexec.custody(p.repo) as c:
+                    r = subprocess.run(c.argv("status", "--porcelain", gitexec.NO_SUBMODULE_CHILD),
+                                       env=c.env(), capture_output=True, text=True, stdin=subprocess.DEVNULL)
+                self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_a_real_edit_still_shows(self):
+        p, base = self._repo("info/attributes")
+        (p.repo / "a.txt").write_bytes(b"line1\r\nEDITED\r\n")
+        self.assertIn("+EDITED", floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base)))
+        self.assertEqual(diff_scope.changed_files(p.repo, base), ["a.txt"])
+
+
 class GitexecCustody(unittest.TestCase):
     """gitexec.custody: the coordinator-built git dir and the refusals it shares with the posix
     provider's run_git."""

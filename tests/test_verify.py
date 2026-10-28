@@ -6464,13 +6464,29 @@ class ControlRunsNoDriverAddedAfterTheListing(MutationFixture):
         self.assertTrue(self._fired(), "control: the late driver never ran in a linked worktree")
 
     def test_the_control_git_dir_declares_no_driver_and_writes_the_source_store(self):
+        # info/attributes is carried as DATA (line endings, encodings); the filter it selects is
+        # one the dir's config never defines.
+        self.git("config", "filter.p.clean", "false")
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("*.py filter=p eol=crlf\n", encoding="utf-8")
         with verify._Authority.control_git_dir(str(self.repo), self.head_sha) as gd:
             gd = Path(gd)
             self.assertEqual((gd / "HEAD").read_text(encoding="utf-8").strip(), self.head_sha)
             self.assertNotIn("filter", (gd / "config").read_text(encoding="utf-8"))
-            self.assertFalse((gd / "info" / "attributes").exists())
+            self.assertEqual((gd / "info" / "attributes").read_text(encoding="utf-8"), "*.py filter=p eol=crlf\n")
             self.assertEqual((gd / "objects").resolve(), (self.repo / ".git" / "objects").resolve())
         self.assertFalse(gd.exists(), "the control git dir outlived its use")
+
+    def test_a_crlf_repository_still_executes_and_kills(self):
+        # A repository whose own attributes and config check *.py out with CRLF: the control's
+        # checkout honours them (data), the seal normalises them, and only the reverted path
+        # differs from head_sha's tree.
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("*.py text eol=crlf\n", encoding="utf-8")
+        self.git("config", "core.autocrlf", "true")
+        ok, msgs = self._execute(self._revert_nc())
+        self.assertTrue(ok, msgs)
+        self.assertTrue(any("negative control EXECUTED" in x for x in msgs), msgs)
 
 
 class DriverQueryFailureRefusesTheControl(MutationFixture):

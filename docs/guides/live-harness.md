@@ -155,11 +155,14 @@ when its sha256 is the pinned one, and the build fails unless the installed bina
 the 2.1.304 release manifest gives for the platform (x86_64 or aarch64) and reports that version.
 A version bump re-pins both digests. The apt packages (git, curl, certificates) are the base's
 distribution's current ones, not pinned. This is
-the only step that downloads anything. The image carries the Dockerfile's sha256 as a label, and
-the build records the image ID it produced (the one docker writes to its `--iidfile`, never what
+the only step that downloads anything. The build refuses unless the Dockerfile on disk is
+byte for byte the one your checkout's HEAD commits (read from the git object, not the working copy),
+before docker reads it and after; commit an edit before you build. The image carries that committed
+Dockerfile's sha256 as a label, and the build records the image ID it produced (the one docker writes to its `--iidfile`, never what
 the tag names once the build is over), with that sha256, in `~/of-live/images.json`, outside the
 image. A launch refuses an image whose ID this launcher's build did not record from the
-committed Dockerfile, or whose label differs, unless you pass `--allow-foreign-image`; the receipt
+committed Dockerfile, or whose label differs, where the committed Dockerfile is the one the commit
+being run holds (its git object; an edit hidden from the dirty check changes nothing), unless you pass `--allow-foreign-image`; the receipt
 records all three (`built_by_this_launcher`, `from_committed_dockerfile`, `foreign_image_allowed`).
 The label alone is not enough: docker copies it into any image built `FROM` this one. Both checks
 guard against accidents, a stale or derived image run by mistake. Anyone who can run docker is

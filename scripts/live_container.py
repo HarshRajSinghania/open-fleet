@@ -50,7 +50,9 @@ written outside every mount, is always written. The container's output is saved 
 redactor to a 0600 file: no byte of the token reaches the disk. The image must be one this
 launcher's `build` recorded (IMAGES: its id and the Dockerfile digest it was built from) AND carry
 the committed Dockerfile's digest label, unless --allow-foreign-image names the exception, which
-the receipt records (W5-13): a label alone is inherited by any image built FROM this one. Both
+the receipt records (W5-13): a label alone is inherited by any image built FROM this one. The
+committed digest is always the git object's (the pinned commit's for a launch, HEAD's for a build,
+which refuses a working copy that differs), never the file on disk's. Both
 guard against accidents; docker access is root-equivalent and can forge either. Every path that
 goes into a --mount, derived staging paths included, passes one
 rule: no comma, quote or line break (W5-14).
@@ -91,6 +93,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT  # the checkout whose HEAD runs (a Python-level seam for the launcher's own tests)
 DOCKERFILE = ROOT / "scripts" / "live_container.Dockerfile"
+DOCKERFILE_REL = "scripts/live_container.Dockerfile"  # where a commit holds it: the digest a launch trusts
 CLAUDE_CODE = "2.1.304"
 IMAGE = f"open-fleet-live:claude-{CLAUDE_CODE}"
 LABEL = "org.open-fleet.live-harness"  # every harness container carries it: its value is the nonce
@@ -255,15 +258,36 @@ def record_build(path, image_id, ref, dockerfile_sha256):
     os.replace(tmp, path)
 
 
-def image_facts(image, images=None):
+def committed_blob(cwd, spec):
+    """The bytes of the blob `spec` (`<commit>:<path>`; a `./` path is relative to `cwd`) as the
+    repository at `cwd` committed them -- the git object, read by the hardened git, never a working
+    copy -- or None when that commit holds no such file (or `cwd` is no checkout)."""
+    try:
+        proc = subprocess.run(gitexec.argv("-C", str(cwd), "cat-file", "blob", spec), env=gitexec.env(),
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def committed_dockerfile_sha256(repo, commit):
+    """The sha256 of the Dockerfile as `commit` holds it (DOCKERFILE_REL), or None. The working copy
+    is never read: hashing the file on disk recorded an uncommitted edit (one `git update-index
+    --skip-worktree` hides from the dirty check) as `from_committed_dockerfile: true` (re-attack of
+    2d254d0f, W5-13)."""
+    data = committed_blob(repo, f"{commit}:{DOCKERFILE_REL}")
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+def image_facts(image, images=None, committed=None):
     """The image's id, digests and labels, and whether THIS launcher built that id from the committed
-    Dockerfile (`images`, its build record); Refused when it is not built."""
+    Dockerfile (`committed`, the sha256 of the Dockerfile the pinned commit holds; `images`, the
+    launcher's build record); Refused when it is not built."""
     proc = docker("image", "inspect", "--format", "{{json .}}", image)
     if proc.returncode != 0:
         raise Refused(f"no image {image}: build it first (live_container.py build): {proc.stderr.strip()[:200]}")
     doc = json.loads(proc.stdout)
     labels = (doc.get("Config") or {}).get("Labels") or {}
-    committed = sha256_file(DOCKERFILE) if DOCKERFILE.is_file() else None
     built = built_images(images or IMAGES).get(doc.get("Id")) or {}
     return {"ref": image, "id": doc.get("Id"), "repo_digests": doc.get("RepoDigests") or [], "labels": labels,
             "dockerfile_sha256": labels.get(DOCKERFILE_LABEL), "committed_dockerfile_sha256": committed,
@@ -537,7 +561,7 @@ def run(args):
                           "keep the token outside both")
     token = read_token(token_file)  # its value only to check the file and to redact the output
     commit = pinned_commit(repo)
-    image = image_facts(args.image, args.images)
+    image = image_facts(args.image, args.images, committed_dockerfile_sha256(repo, commit))
     # The receipt names where the image came from; that fact gates the launch, not just the record
     # (2026-10-27 audit, W5-13). The gate is this launcher's own build record of the image ID beside
     # the label, which an image built FROM it inherits. An image built elsewhere runs only when the
@@ -593,6 +617,8 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
     try:
         export, attestation = staging / "repo", staging / "attestation.json"
         # Every derived mount source passes the same rule as the caller's, before anything is made.
+        # broker_argv and arm_argv apply it again, but only after the export is cloned and the
+        # results, receipts and ledger directories exist: checked here, a refused start leaves none.
         for derived in (export, attestation, staging / "claude.json", ledger_dir):
             mount(derived, "/")
         export_checkout(repo, commit, export)
@@ -687,17 +713,40 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
     return code if code >= 0 else 128 - code  # the attach client died of signal -code
 
 
+def _read_dockerfile(path):
+    """A regular file's bytes, never through a link; None for anything else."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read() if stat.S_ISREG(os.fstat(fh.fileno()).st_mode) else None
+
+
 def build(args):
     """docker build of the committed Dockerfile, from an empty context, labelled with its digest.
+
+    Only a Dockerfile exactly as the checkout's HEAD commits it is built: the bytes on disk must be
+    that blob's (read from the git object, by the hardened git), before the build and after it, or
+    nothing is built or recorded. Hashing the file on disk labelled and recorded an uncommitted edit
+    as the committed Dockerfile (re-attack of 2d254d0f, W5-13).
 
     What is recorded (IMAGES, the launch gate) is the id THIS build wrote to its --iidfile, then
     inspected by that id: inspecting the tag after the build recorded whatever the tag named by
     then, so a tag moved in between (a second build of a changed Dockerfile, a `docker tag`) was
     recorded as built from the committed one (2026-10-27 re-attack of 4b24dfde, W5-13)."""
-    dockerfile = Path(args.dockerfile).resolve()
-    if not dockerfile.is_file():
-        raise Refused(f"no Dockerfile at {dockerfile}")
-    digest = sha256_file(dockerfile)
+    dockerfile = Path(args.dockerfile or DOCKERFILE).resolve()
+    data = _read_dockerfile(dockerfile)
+    if data is None:
+        raise Refused(f"no Dockerfile at {dockerfile} (or not a regular file)")
+    committed = committed_blob(dockerfile.parent, f"HEAD:./{dockerfile.name}")
+    if committed is None:
+        raise Refused(f"{dockerfile} is not committed at HEAD of its checkout: `build` builds only the committed "
+                      "Dockerfile, so the digest it labels and records is the commit's")
+    if data != committed:
+        raise Refused(f"{dockerfile} differs from the copy committed at HEAD: commit or restore it; `build` builds "
+                      "only the committed Dockerfile, so the digest it labels and records is the commit's")
+    digest = hashlib.sha256(committed).hexdigest()
     with tempfile.TemporaryDirectory(prefix="of-live-build-") as ctx, \
             tempfile.TemporaryDirectory(prefix="of-live-iid-") as meta:
         context = Path(args.context).resolve() if args.context else Path(ctx)
@@ -709,6 +758,9 @@ def build(args):
             raise Refused("no `docker` on PATH (OrbStack or Docker Engine)")
         rc = subprocess.run([exe, *argv], stdin=subprocess.DEVNULL).returncode
         built = iidfile.read_text(encoding="ascii", errors="replace").strip() if iidfile.is_file() else ""
+    if rc == 0 and _read_dockerfile(dockerfile) != committed:
+        raise Refused(f"{dockerfile} changed while docker built it, so what docker read is unknown: the image "
+                      f"({built[:80] or 'no id'}) is not recorded and a launch will refuse it")
     if rc == 0:
         image_id = None
         if re.fullmatch(r"sha256:[0-9a-f]{64}", built):
@@ -729,7 +781,7 @@ def parser():
     sub = p.add_subparsers(dest="command", required=True)
     b = sub.add_parser("build", help="build the harness image (downloads the base and Claude Code)")
     b.add_argument("--image", default=IMAGE)
-    b.add_argument("--dockerfile", default=str(DOCKERFILE), help=argparse.SUPPRESS)
+    b.add_argument("--dockerfile", default=None, help=argparse.SUPPRESS)
     b.add_argument("--context", default=None, help=argparse.SUPPRESS)
     b.add_argument("--images", default=IMAGES, help=argparse.SUPPRESS)
     r = sub.add_parser("run", help="run one arm in a fresh container, then destroy it")

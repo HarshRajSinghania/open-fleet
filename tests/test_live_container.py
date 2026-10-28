@@ -93,6 +93,9 @@ if argv[:1] == ["create"]:
             fh.write("".join(json.dumps(line) + "\n" for line in scenario["ledger_lines"]))
 if argv[:1] == ["build"]:
     entry["context"] = sorted(os.listdir(argv[-1]))
+    if scenario.get("edit_during_build"):  # the Dockerfile changes while docker reads it
+        with open(argv[argv.index("-f") + 1], "ab") as fh:
+            fh.write(b"RUN echo changed during the build\n")
     if "--iidfile" in argv and not scenario.get("build_exit"):  # the id THIS build produced
         with open(argv[argv.index("--iidfile") + 1], "w") as fh:
             fh.write(scenario.get("built_id") or (scenario.get("image") or {}).get("Id") or "")
@@ -159,6 +162,8 @@ class Harness(unittest.TestCase):
             path.write_text("print('arm')\n", encoding="utf-8")
         (self.repo / WRAPPER.parent.relative_to(ROOT)).mkdir(parents=True)
         shutil.copy2(WRAPPER, self.repo / WRAPPER.relative_to(ROOT))
+        # The commit holds the Dockerfile: a launch trusts the digest of the copy its commit holds.
+        shutil.copy2(lc.DOCKERFILE, self.repo / lc.DOCKERFILE_REL)
         git(self.repo.parent, "init", "-q", str(self.repo))
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "fixture")
@@ -652,6 +657,55 @@ class RefusalsCreateNothing(Harness):
         self.assertIn("not built by this launcher", err)
         self.assertEqual(self.creates(), [])
 
+    def test_an_uncommitted_dockerfile_edit_never_builds_or_runs_as_the_committed_one(self):
+        # Re-attack of 2d254d0f (W5-13): `build` labelled and recorded the digest of the Dockerfile
+        # ON DISK, and a launch compared the label to the same file, so an uncommitted edit -- one
+        # `git update-index --skip-worktree` keeps out of the dirty check -- was built, recorded and
+        # run with `from_committed_dockerfile: true`. Both digests are now the git object's.
+        dockerfile = self.repo / lc.DOCKERFILE_REL
+        edited = dockerfile.read_bytes() + b"RUN echo an uncommitted edit\n"
+        dockerfile.write_bytes(edited)
+        git(self.repo, "update-index", "--skip-worktree", lc.DOCKERFILE_REL)
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "", "the edit is not hidden from the dirty check")
+        committed = hashlib.sha256(subprocess.run(["git", "-C", str(self.repo), "cat-file", "blob",
+                                                  f"HEAD:{lc.DOCKERFILE_REL}"], capture_output=True,
+                                                 check=True).stdout).hexdigest()
+        digest = hashlib.sha256(edited).hexdigest()
+        self.assertNotEqual(digest, committed)
+        with mock.patch.object(lc, "DOCKERFILE", dockerfile):  # the launcher's own checkout, as in use
+            before = self.images.read_bytes()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = lc.main(["build"])
+            self.assertEqual(rc, 2, err.getvalue())
+            self.assertIn("committed at HEAD", err.getvalue())
+            self.assertEqual([c for c in self.calls() if c["argv"][:1] == ["build"]], [], "an uncommitted edit was built")
+            self.assertEqual(self.images.read_bytes(), before, "an uncommitted edit was recorded")
+            # Built by hand and recorded with its own digest, the edit still never runs as committed.
+            self.images.write_text(json.dumps({IMAGE_ID: {"ref": lc.IMAGE, "dockerfile_sha256": digest}}),
+                                   encoding="utf-8")
+            self.scenario({"image": {"Id": IMAGE_ID, "RepoDigests": [], "Config": {"Labels": {lc.DOCKERFILE_LABEL: digest}}}})
+            rc, err = self.launch()
+            self.assertEqual(rc, 2, err)
+            self.assertIn("committed Dockerfile", err)
+            self.assertEqual(self.creates(), [])
+            rc, err = self.launch("--allow-foreign-image")
+        self.assertEqual(rc, 0, err)
+        image = self.receipt()["image"]
+        self.assertIs(image["from_committed_dockerfile"], False)
+        self.assertEqual(image["committed_dockerfile_sha256"], committed)
+
+    def test_a_dockerfile_changed_while_docker_builds_it_is_not_recorded(self):
+        dockerfile = self.repo / lc.DOCKERFILE_REL
+        self.scenario({"edit_during_build": True})
+        self.images.unlink()
+        err = io.StringIO()
+        with mock.patch.object(lc, "DOCKERFILE", dockerfile), contextlib.redirect_stderr(err):
+            rc = lc.main(["build"])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn("changed while docker built it", err.getvalue())
+        self.assertFalse(self.images.exists(), "an image built from bytes nobody checked was recorded")
+
     def test_a_build_that_reports_no_image_id_records_nothing(self):
         self.scenario({"built_id": "not-an-id"})
         self.images.unlink()
@@ -674,6 +728,22 @@ class RefusalsCreateNothing(Harness):
                 self.assertIn("--mount", err)
                 self.assertEqual(self.creates(), [])
                 self.assertEqual(list(staging.iterdir()), [], "the staging directory outlived the refusal")
+
+    def test_a_refused_staging_path_makes_nothing_outside_the_staging_directory(self):
+        # Why the derived mount sources are checked before the export, though broker_argv and
+        # arm_argv would refuse the same path before any `docker create` (re-attack of 2d254d0f
+        # called the check redundant): the launch makes the results directory, the receipts
+        # directory and this launch's broker-ledger directory before it builds either argv, and a
+        # refused start leaves none of them behind, nor runs the export's clone.
+        staging = self.tmp / "tmp,with-comma"
+        staging.mkdir()
+        with mock.patch.object(tempfile, "tempdir", str(staging)), \
+                mock.patch.object(lc, "export_checkout", side_effect=AssertionError("the export was cloned")):
+            rc, err = self.launch()
+        self.assertEqual(rc, 2, err)
+        self.assertIn("--mount", err)
+        self.assertFalse(self.results.exists(), "a refused start made the results directory")
+        self.assertFalse(self.receipts.exists(), "a refused start made the receipts directory and a ledger in it")
 
     def test_a_staging_path_with_a_line_break_is_refused_before_anything_is_created(self):
         # W5-14's rule names a comma, a quote and a line break: docker reads a --mount as CSV, where

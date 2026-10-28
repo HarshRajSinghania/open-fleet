@@ -35,7 +35,8 @@
   calls out; it bounds `count_tokens`, settles every call, and counts refusals, drops and faults
   per kind with bounded text, so the arm cannot grow the host's ledger. The launcher runs only an
   image whose id its own `build` recorded (from `--iidfile`) from the committed Dockerfile unless
-  `--allow-foreign-image` is passed, and refuses any `--mount` path docker would split; the image
+  `--allow-foreign-image` is passed, the committed Dockerfile's digest always the git object's
+  (`build` refuses a working copy that differs from HEAD's, before docker reads it and after), and refuses any `--mount` path docker would split; the image
   pins the Claude Code installer and binary by sha256 ([live harness](../docs/guides/live-harness.md)).
   `search_sessions.py` reads only regular files (a link, FIFO or device is said, never opened) and
   only a SQLite store's plain tables' stored columns (never a view, virtual table or generated

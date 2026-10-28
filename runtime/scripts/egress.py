@@ -703,10 +703,12 @@ def cmd_verify(args):
     expected = getattr(args, "expect_head", None)
     # No receipts is not a clean bill (W5-03): a close whose receipts were routed elsewhere, or
     # never written, finds none here. It passes only when the caller says none were expected:
-    # --allow-empty, or a sealed empty head (--expect-head "(empty)").
+    # --allow-empty, or a sealed empty head (--expect-head "(empty)"). The result line goes to
+    # stdout as every verify result does; the failure and what to do about it go to stderr.
     sealed_empty = expected is not None and _anchored_value(expected) == ""
     if count == 0 and not sealed_empty:
         if not getattr(args, "allow_empty", False):
+            _print(f"egress: NO RECEIPTS, 0 receipt(s) in {where} — nothing was verified")
             _print(f"egress: NO RECEIPTS in {where} — a close that expects receipts must find them here; if "
                    "this run sent nothing, say so with --allow-empty", file=sys.stderr)
             return EXIT_NO_RECEIPTS

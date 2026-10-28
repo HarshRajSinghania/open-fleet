@@ -766,9 +766,9 @@ class TestTheLedgerIsWhereItSays(EgressBase):
     def test_no_ledger_is_not_reported_as_an_intact_chain(self):
         # Codex review of 82a2d00c: a missing (or empty) canonical ledger still verified as "chain
         # intact", so a close whose receipts went elsewhere passed. No receipts is never called
-        # intact, and the close's form (--require-receipts) fails on it; an anchor naming a receipt
-        # always fails. (Making the plain form fail too changes an origin/main assertion, so that
-        # half rides fix/secaudit-w5-03-waiver.)
+        # intact, and every form fails on it (plain verify too, W5-03) unless the caller says none
+        # were expected (--allow-empty, or a sealed empty head); an anchor naming a receipt always
+        # fails.
         for setup in ("no ledger file", "an empty ledger file"):
             with self.subTest(setup=setup):
                 if setup == "an empty ledger file":
@@ -776,6 +776,7 @@ class TestTheLedgerIsWhereItSays(EgressBase):
                     self.ledger.write_bytes(b"")
                 plain = self.run_egress("verify")
                 self.assertNotIn("chain intact", plain.stdout + plain.stderr)
+                self.assertIn("NO RECEIPTS", plain.stdout)
                 self.assertEqual(plain.returncode, egress.EXIT_NO_RECEIPTS, "the plain form fails too")
                 allowed = self.run_egress("verify", "--allow-empty")
                 self.assertEqual(allowed.returncode, 0, allowed.stderr)
@@ -805,6 +806,7 @@ class TestTheLedgerIsWhereItSays(EgressBase):
         r = self.bare("verify", "--require-receipts", cwd=self.repo)
         self.assertEqual(r.returncode, egress.EXIT_NO_RECEIPTS, r.stdout + r.stderr)
         self.assertNotIn("chain intact", r.stdout + r.stderr)
+        self.assertNotIn("chain intact", self.bare("verify", cwd=self.repo).stdout)
         self.assertEqual(self.bare("verify", cwd=self.repo).returncode, egress.EXIT_NO_RECEIPTS)
 
 

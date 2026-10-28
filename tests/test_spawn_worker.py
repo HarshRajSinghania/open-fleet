@@ -2802,6 +2802,49 @@ class TestOnlyAProvenRefusalReleases(unittest.TestCase):
                 self.assertEqual(rc, 2, text)
                 self.assertEqual(left, [], text)
 
+    # Codex round 7 (P1): the WHOLE response must be exactly one pre-launch refusal.
+    NOT_ONE_REFUSAL = (
+        ("an allowlisted outer error beside a runtime_error in result",
+         {"error": {"code": "task_not_found"}, "result": {"error": {"code": "runtime_error"}}}),
+        ("the same the other way round",
+         {"error": {"code": "runtime_error"}, "result": {"error": {"code": "task_not_found"}}}),
+        ("an allowlisted code nested inside another error",
+         {"error": {"code": "runtime_error", "data": {"cause": {"code": "task_not_found"}}}}),
+        ("another error nested inside an allowlisted one",
+         {"error": {"code": "task_not_found", "data": {"cause": {"error": {"code": "runtime_error"}}}}}),
+        ("an extra key in the error", {"error": {"code": "task_not_found", "handle": "term_x"}}),
+        ("an extra key beside the error", {"error": {"code": "worktree_not_found"}, "state": "ready"}),
+        ("an extra key in the result's error", {"result": {"error": {"code": "worktree_not_found"}, "state": "failed"}}),
+        ("an undocumented data field", {"error": {"code": "task_not_found", "data": {"nextSteps": ["x"], "effects": []}}}),
+        ("a documented data field of the wrong shape",
+         {"error": {"code": "task_not_found", "data": {"nextSteps": [{"run": "orca worker-start"}]}}}),
+        ("ok:true beside the refusal", {"ok": True, "error": {"code": "task_not_found"}}),
+        ("a code that is not a string", {"error": {"code": ["task_not_found"]}}))
+    ONE_REFUSAL = (
+        {"id": "req_1", "ok": False, "error": {"code": "task_not_found", "message": "no such task", "data": {
+            "nextSteps": ["orca orchestration task-list"], "unmetDependencies": ["task_a"], "retryOf": "task_b",
+            "failureCount": 3, "reason": "missing"}}},
+        {"result": {"error": {"code": "worktree_not_found", "message": "no"}}})
+
+    def test_only_a_response_that_is_exactly_one_refusal_releases(self):
+        for path, fname, env, rc_ in (("terminal create", "terminal-create.json", {"PROFILE": "ro"}, None),
+                                      ("worker-start", "receipt.json", self.RW, 1)):
+            for i, (name, answer) in enumerate(self.NOT_ONE_REFUSAL):
+                with self.subTest(path=path, shape=name):
+                    rc, text, left, pty, tmp = self.launch(
+                        f"{fname}-{i}", {fname: answer}, env, ws_rc=rc_ or 0)
+                    self.assertNotEqual(rc, 0, text)
+                    self.assertEqual(len(left), 1, text)
+                    if i == 0:  # the Codex input: the live pane's scrubbed child is capped
+                        cap = "parent profile 'ro'" if path == "terminal create" else "exceeds parent profile 'rw'"
+                        self.assert_capped(self.child(pty, tmp, self.RW if path == "terminal create" else self.DANGER),
+                                           cap)
+            for i, answer in enumerate(self.ONE_REFUSAL):
+                with self.subTest(path=path, refusal=answer):
+                    rc, text, left, _pty, _tmp = self.launch(f"{fname}-ok{i}", {fname: answer}, env, ws_rc=rc_ or 0)
+                    self.assertNotEqual(rc, 0, text)
+                    self.assertEqual(left, [], text)
+
 
 class TestNonOrcaDanger(unittest.TestCase):
     """#585: off Orca, danger is decided by the runtime's own doctor — proven isolation AND

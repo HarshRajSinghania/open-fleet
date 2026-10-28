@@ -401,6 +401,62 @@ class EveryEnvelopeLevelIsHeldToTheReport(unittest.TestCase):
         self.assertTrue(sandbox_doctor.assess(json.dumps(doc), "lane-7")[0])
 
 
+class NothingStopsTheReaderShortOfTheReport(unittest.TestCase):
+    """W4-10, Codex round 7 (P2): _unwrap stopped after 16 envelopes and took the 17th for the
+    report; it names no backend, so a privileged report inside 17 `{"ok": true, "result": …}`
+    envelopes read as clear. Whatever stops the reader before the report proper is now a refusal,
+    in the assessment and in placement alike: the wrapper limit, nesting too deep to parse, and a
+    transcript that opens as JSON but does not parse (read as plain text it skipped every check)."""
+
+    @staticmethod
+    def wrapped(report, n):
+        for _ in range(n):
+            report = {"ok": True, "result": report}
+        return json.dumps(report)
+
+    def test_the_wrapper_limit_is_a_refusal(self):
+        limit = sandbox_doctor.MAX_WRAPPERS
+        self.assertEqual(limit, 16)
+        good, bad = GOOD["docker"], dict(GOOD["docker"], privileged=True)
+        # At the limit the report is read: the bad one refused for what it is, the good one clear.
+        raw = self.wrapped(bad, limit)
+        clear, reason, exposes = sandbox_doctor.assess(raw, "lane-7")
+        self.assertFalse(clear)
+        self.assertTrue(exposes, reason)
+        self.assertIn("privileged", reason)
+        self.assertTrue(sandbox_doctor.assess(self.wrapped(good, limit), "lane-7")[0])
+        self.assertTrue(sandbox_doctor.placement_bound(self.wrapped(good, limit)))
+        # Past it, nothing is read and nothing is clear, good report or bad.
+        for n in (limit + 1, limit + 2, 100, 3000):
+            for name, report in (("bad", bad), ("good", good)):
+                with self.subTest(n=n, report=name):
+                    raw = self.wrapped(report, n)
+                    clear, reason, _ = sandbox_doctor.assess(raw, "lane-7")
+                    self.assertFalse(clear)
+                    self.assertIn("16 levels deep", reason)
+                    self.assertFalse(sandbox_doctor.placement_bound(raw))
+
+    def test_output_nested_too_deep_to_parse_is_a_refusal(self):
+        raw = "[" * 200000 + "]" * 200000
+        clear, reason, _ = sandbox_doctor.assess(raw, "lane-7")
+        self.assertFalse(clear)
+        self.assertIn("too deep", reason)
+        self.assertFalse(sandbox_doctor.placement_bound(raw))
+
+    def test_json_that_does_not_parse_is_never_read_as_text(self):
+        bad = json.dumps(dict(GOOD["docker"], privileged=True))
+        for name, raw in (("truncated", bad[:-1]), ("a byte-order mark", "\ufeff" + bad),
+                          ("an array cut short", "[" + bad), ("trailing text", bad + " trailing")):
+            with self.subTest(name):
+                clear, reason, _ = sandbox_doctor.assess(raw, "lane-7")
+                self.assertFalse(clear)
+                self.assertIn("does not parse", reason)
+                self.assertFalse(sandbox_doctor.placement_bound(raw))
+        # A plain-text doctor whose lines open with a bracketed tag is still read as text.
+        self.assertTrue(sandbox_doctor.assess("[PASS] recipe lane-7 is healthy\n", "lane-7")[0])
+        self.assertFalse(sandbox_doctor.assess("[FAIL] recipe lane-7 failed a check\n", "lane-7")[0])
+
+
 class PortableBackends(unittest.TestCase):
     """#585: a portable sandbox must PROVE its isolation, per backend, and fail with exit 2."""
 

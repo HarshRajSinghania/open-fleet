@@ -1911,24 +1911,55 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 ## `spawn_identity.py`
 
 Who is spawning, by process tree: the identity `spawn_worker.sh` reads when an environment says
-nothing (W4-04, Codex round 3). Source `runtime/scripts/spawn_identity.py`; behavior pinned by
-`tests/test_spawn_worker.py` (`TestIdentitySurvivesAScrubbedEnvironment`).
+nothing (W4-04, Codex rounds 3 and 4). Source `runtime/scripts/spawn_identity.py`; behavior pinned
+by `tests/test_spawn_worker.py` (`TestIdentitySurvivesAScrubbedEnvironment`,
+`TestUnknownIsNeverAbsent`).
 
 Usage: `spawn_identity.py whoami --registry <dir> --pid <pid>` (one line per fact: `ROOT <profile>
 <key>` for each recorded worker root among the pid's ancestors, `INTREE`, `ANCHORED`, `LIVE
 <profile>` per live worker, `RESERVATION <profile> <in-flight> <path>` per open launch reservation
 the caller is not exempt from, `SELF <key>`); `spawn_identity.py record-root --registry <dir>
---handle <h> --profile <p> [--launcher <pid>] [--wait <secs>]` (record the topmost process whose
+--handle <h> --profile <p> [--launcher <pid>] [--since <pid>] [--wait <secs>]` (record the topmost process whose
 initial environment names pane `h` as a root, its parent as a host, and — with `--launcher`, for
 an uncapped launch only — the launcher's own ancestors below the one it shares with the worker
 as anchors). A key is `<pid>.<start time>`, so a reused pid never matches; dead roots, hosts and
 anchors are pruned on read, and an anchor stops counting once a live root or a host descends
 from it.
 
-Exits: 0 answered/recorded · 3 the lookup worked and no process carries the handle (no local
-worker process: `spawn_worker.sh` drops the reservation, the handle record stands) · 1 the
-processes cannot be listed or the ancestry is unreadable (`spawn_worker.sh` keeps the
-reservation, or caps the caller at `ro`).
+Exits: 0 answered, or the pane's root recorded · 2 (`record-root`) a root recorded but not
+verified: a carrier's start time or parent could not be read, or a root with no parent to record
+as its host (reparented to init) was found by a scan that was not complete, so it may be a carrier
+that escaped a pane whose own process could not be read · 3 a COMPLETE scan found no process
+carrying the handle (no local worker process: `spawn_worker.sh` drops the reservation, the handle
+record stands) · 1 nothing found by a scan that was not complete, or a read the answer needs
+failed (`spawn_worker.sh` keeps the reservation on 2 and 1, and caps a `whoami` caller at `ro`
+on 1).
+
+A pane found is recorded: its process tree is identified, and another carrier of the handle
+outside it would have to have escaped it (the residual below). Completeness decides what finding
+NOTHING means. A scan is complete only when every process of this uid that could be the launch's
+pane was read; a read that fails for any reason but the process being gone is UNKNOWN, never
+"absent" (Codex round 4): an environment that cannot be read (`EACCES` from a non-dumpable
+process, `EIO`) makes the scan incomplete, and so do processes that keep vanishing mid-scan. With
+`--since <pid>` (`spawn_worker.sh` passes itself) an unreadable process that started before that
+pid is not counted, since it cannot be a pane this launch created; a runtime that handed a launch
+a pre-existing pane whose environment cannot be read is not covered. Without `/proc`, `ps -E`
+(BSD/macOS, unwitnessed) leaves out an environment it may not read without saying so, so no scan
+there is complete: finding nothing there exits 1, never 3. The same rule holds for every other
+read: an ancestor, a recorded root, host or anchor, a registry directory or a reservation that
+cannot be read is unknown (an entry whose liveness is unknown is kept, not pruned; an anchor
+counts only while it is certainly alive). On a host that hides other users' processes (`hidepid`), a caller whose
+ancestry passes through a hidden process cannot be identified while any worker root is live, so
+`whoami` exits 1 and the caller is capped at `ro`. A `/proc` that is not this process's own pid
+namespace's (a sandbox that unshares pids but keeps the host's `/proc`, so every pid read there
+is another process) answers nothing: exit 1.
+
+What it identifies is the pane's process tree. A worker process outside it is not identified
+when its environment no longer carries the pane handle: one that daemonized out of the tree
+(reparented, it descends from no recorded root or host, whether or not its root is still alive),
+a command a harness runs from a process started outside the pane, or a spawn in another pid
+namespace with its own `/proc` (its pids are not the recorded ones). Whether any harness does
+one of these as ordinary behaviour is unwitnessed.
 
 ## `spawn_worker.sh`
 
@@ -1984,33 +2015,47 @@ rest on the environment alone, since a harness may drop `ORCA_*` from the worker
 registration also records its pane ROOT process by pid and start time
 ([`spawn_identity.py`](#spawn_identitypy) finds it by the handle in the pane's initial
 environment), and every spawn walks its own process ancestry, so a recorded root among its
-ancestors caps it whatever its environment says. A session that no record and no root identifies
+ancestors caps it whatever its environment says (what that does not identify is listed below). A session that no record and no root identifies
 waits for every open reservation it is not exempt from (`RESERVATION_WAIT_SECS`, default 120) and
 is then capped at the most restrictive one still open; inside a provider's process tree (under a
 recorded pty host or tmux pane) it is capped at the most restrictive LIVE worker. Only an ANCHORED
 session is exempt: a process of a coordinator that launched a worker while uncapped (recorded at
 that launch: its ancestors below the one it shares with the worker), which no worker can descend
-from; and never from a reservation whose launch it descends from. A launch that may have left a
-worker live unrecorded — a receipt that names no handle, a handle record that cannot be written,
-or a host where the processes carrying a handle cannot be listed — KEEPS its reservation and
-says so, and it caps every unanchored session until removed; on the custom-argv
-lane a pane whose handle record fails gets no task. A lookup that works and finds no process
-carrying the handle (`SPAWN_ROOT_WAIT_SECS`, default 1) means the worker is not a local process
-(it exited, runs remotely or in another uid's container, or the backend is a dry run): its
-handle record is its record. A worker-start response that names a handle
-is registered whatever its exit code or verdict. A session whose identity cannot be read at all
-is capped at `ro`. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
+from; and never from a reservation whose launch it descends from. Every response that names a
+pane handle (`worker-start`, `terminal create`, and the `request-show` triage) is read by one
+extraction before anything judges it — wherever the handle sits: the result, the error envelope
+or its `data`, a nested worker or terminal object, an effect — and each handle it names is
+registered whatever the exit code, error code or state says; a refused or failed verdict prints
+the pane it names (`HANDLE=`) and says a worker may be live there. A response that does not
+parse whole is searched for handle-shaped fields too. A launch that may have left a worker live
+without a complete record — a successful start whose receipt names no handle, a failure the
+receipt cannot explain (no typed refusal, no handle), a handle record that cannot be written, a
+handle that is not a registry key, a response that does not parse whole, or a worker whose
+process tree is UNVERIFIED (`spawn_identity.py` exits 1: nothing found by a scan that could not
+read every candidate — an environment it could not read, processes that kept vanishing, a host
+without `/proc`; or 2: a root it found but could not verify) — KEEPS its reservation and says so, and it
+caps every unanchored session until removed; on the custom-argv lane a pane whose handle record
+fails gets no task. Otherwise the reservation goes: when no launch call was made, on a typed
+policy refusal or a `terminal create` error envelope that names no pane, or once every handle
+named is recorded — with its root, or by its handle record alone when a complete scan finds no
+process carrying it (`SPAWN_ROOT_WAIT_SECS`, default 1: the worker is not a local process — it
+exited, runs remotely or in another uid's container, or the backend is a dry run) or the worker
+is not a local pane at all (another runtime's, or placed with `--environment`/`--on`). A session
+whose identity cannot be read at all is capped at `ro`. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
 `OPEN_FLEET_WORKER_ID`, `OPEN_FLEET_UNIT_WORKTREE` or an `ORCA_` alias — with no profile in its
 environment or the registry is capped at `ro`, and `--parent-profile` cannot raise that (the flag
 only narrows). A capped session cannot use a command override (`WORKER_CMD`, `CLAUDE_CMD`,
 `CODEX_CMD`): overrides are a coordinator-only facility. All of it is files the worker's uid can
 write and a process tree it runs in: it bounds the fleet's spawn path against an omitted,
-inherited or scrubbed profile, not a worker that edits the registry, calls the runtime CLI or an
-agent directly, or daemonizes out of its process tree after its root has exited (reparented to
-init, it descends from no recorded root or host). A worker whose HOME is not its coordinator's
-reads another registry, and a launch command that clears its own environment (`env -i …`)
-leaves no process carrying the handle; both are the coordinator's or the worker's own doing. On a host without `/proc`, roots are found through `ps -E` (BSD/macOS;
-unwitnessed there). CLI or an agent directly. Documented refusals, not silent drops:
+inherited or scrubbed profile, not a worker that edits the registry or calls the runtime CLI or
+an agent directly. Nor does it identify a worker process outside its pane's process tree whose
+environment no longer carries the pane handle — one that daemonized out of it (reparented, it
+descends from no recorded root or host), a command a harness runs from a process started outside
+the pane, a spawn in another pid namespace with its own `/proc` — or cover a worker whose HOME is
+not its coordinator's (it reads another registry) or a launch whose pane process itself carries
+no handle (a command that clears its environment, `env -i …`). Whether any harness does one of
+these as ordinary behaviour is unwitnessed. On a host without `/proc`, roots are found through
+`ps -E` (BSD/macOS; unwitnessed there). Documented refusals, not silent drops:
 `--task-status`/`--task-ready` (a filtered view cannot verify deps, so the DAG check
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).

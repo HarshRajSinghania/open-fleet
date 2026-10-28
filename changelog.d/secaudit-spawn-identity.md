@@ -7,12 +7,24 @@
   (`~/.open-fleet/spawn-profiles/`), so a spawn from that pane is capped at it on Orca as well as
   posix. Each launch reserves its profile there before any launch call (an unwritable registry or
   an unset `HOME` refuses the spawn), and registration records the worker's pane root process by
-  pid and start time (`spawn_identity.py`), so a spawn is capped by its own process ancestry
-  even when its harness drops `ORCA_*`; a session nothing identifies waits on open reservations
+  pid and start time (`spawn_identity.py`), so a spawn inside the worker's pane process tree is
+  capped by its ancestry even when its harness drops `ORCA_*`; a session nothing identifies waits on open reservations
   and is capped at any still open, and inside a provider's process tree at the live workers,
-  unless it is an anchored coordinator. A launch that may have left a worker live unrecorded
-  keeps its reservation, and a worker-start response that names a handle is registered whatever
-  its exit code. A session carrying fleet worker identity with no profile is
+  unless it is an anchored coordinator. Every response that names a pane handle (`worker-start`,
+  `terminal create`, the `request-show` triage) is read by one extraction before anything judges
+  it, wherever the handle sits (an error envelope beside a ready result included, and a response
+  that does not parse whole), and each handle is registered whatever the exit code, error code or
+  state; a refused or failed verdict prints the pane it names. A launch that may have left a
+  worker live without a complete record keeps its reservation. A process environment the scan
+  cannot read (`EACCES`, `EIO`) or processes vanishing mid-scan leave the scan incomplete, so
+  finding nothing is unknown, never "no process", and the same holds without `/proc` (`ps -E`); a
+  pane that is found is recorded. Any other identity read that fails, a `/proc` of another pid
+  namespace included, is unknown rather than absent: the reservation stays, or the caller is
+  capped at `ro`. Not covered: a
+  worker process outside its pane's process tree whose environment drops the handle (daemonized
+  out, run from a process outside the pane, or in another pid namespace), a worker whose `HOME`
+  differs, and a pane process that carries no handle; whether a harness does these as ordinary
+  behaviour is unwitnessed. A session carrying fleet worker identity with no profile is
   capped at `ro` and a `--parent-profile` flag cannot raise that; a capped session cannot use a
   command override. These are the worker's own environment and files: a guard on the spawn path,
   not a sandbox.

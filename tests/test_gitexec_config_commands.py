@@ -1249,6 +1249,74 @@ class WtreeTrustsNoSameUidConfigOrEnvironment(unittest.TestCase):
         self.assertIn("command -v git", code)
 
 
+class WtreeFingerprintsTheRepositoryItIsGiven(unittest.TestCase):
+    """Codex, round 5 (P1): `TOP=$(git rev-parse --show-toplevel)` stripped the trailing newline of
+    the repository's path, so wtree.sh pointed at /tmp/repo<NL> fingerprinted /tmp/repo, ANOTHER
+    repository, and printed that one's tree. Every path git hands wtree.sh (the toplevel, the git
+    dir, the common dir, the index) is now read byte-exact, and so is every core.* value it carries."""
+
+    def _repo_at(self, path, body):
+        path.mkdir()
+        _quiet_git(path, "init", "-q")
+        (path / "a.txt").write_text(body, encoding="utf-8")
+        _quiet_git(path, "add", "-A")
+        _quiet_git(path, "commit", "-qm", "c")
+        return _quiet_git(path, "rev-parse", "HEAD^{tree}").stdout.strip()
+
+    def _dir(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        return Path(os.path.realpath(tmp))
+
+    def test_a_repository_path_ending_in_a_newline_never_fingerprints_the_other_one(self):
+        d = self._dir()
+        requested = self._repo_at(d / "repo\n", "the requested repository\n")
+        other = self._repo_at(d / "repo", "a different repository\n")
+        self.assertNotEqual(requested, other, "fixture: the two repositories hold the same tree")
+        r = _wtree(d / "repo\n")
+        self.assertNotEqual(r.stdout.strip(), other, "wtree.sh fingerprinted the repository at the stripped path")
+        # Its common dir holds the newline, which an alternates file cannot name: no fingerprint.
+        self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+        self.assertIn("no fingerprint", r.stderr)
+
+    def test_a_linked_worktree_path_ending_in_a_newline_fingerprints_itself(self):
+        # Its common dir is the main repository's, which an alternates file names, so the exact path
+        # stages THIS work tree and prints its own tree, never the neighbour's.
+        d = self._dir()
+        head_tree = self._repo_at(d / "main", "the requested work tree\n")
+        other = self._repo_at(d / "wt", "a different repository\n")
+        add = _quiet_git(d / "main", "worktree", "add", "-q", "--detach", str(d / "wt\n"))
+        self.assertEqual(add.returncode, 0, add.stderr)
+        r = _wtree(d / "wt\n")
+        self.assertNotEqual(r.stdout.strip(), other, "wtree.sh fingerprinted the repository at the stripped path")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, head_tree), r.stderr)
+
+    def test_a_core_value_reaches_the_custody_byte_exact(self):
+        # `core.eol = "lf\n"` is no eol setting to the repository's own git (it is not `lf`); the
+        # stripped `lf` carried a different setting into custody. A git first on PATH records the
+        # GIT_CONFIG pairs of every call wtree.sh makes.
+        d = self._dir()
+        self._repo_at(d / "repo", "one\n")
+        _quiet_git(d / "repo", "config", "core.eol", "lf\n")
+        bindir = d / "envbin"
+        bindir.mkdir()
+        log = d / "pairs.jsonl"
+        (bindir / "git").write_text(
+            f"#!{sys.executable} -I\nimport json, os, sys\n"
+            f"with open({str(log)!r}, 'a', encoding='utf-8') as fh:\n"
+            "    fh.write(json.dumps({k: v for k, v in os.environ.items() if k.startswith('GIT_CONFIG_')}) + '\\n')\n"
+            f"os.execv({_REAL_GIT!r}, [{_REAL_GIT!r}] + sys.argv[1:])\n", encoding="utf-8")
+        (bindir / "git").chmod(0o755)
+        r = _wtree(d / "repo", env={**_CLEAN_ENV, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        carried = set()
+        for line in log.read_text(encoding="utf-8").splitlines():
+            env = json.loads(line)
+            carried |= {env.get(f"GIT_CONFIG_VALUE_{i}") for i in range(int(env.get("GIT_CONFIG_COUNT", 0)))
+                        if env.get(f"GIT_CONFIG_KEY_{i}") == "core.eol"}
+        self.assertEqual(carried, {"lf\n"}, "core.eol did not reach the custody as the repository declares it")
+
+
 # PR #649 review (PRRT_kwDOTWxN9c6vxaeq): an `includeIf` makes the effective config depend on WHERE
 # and in WHAT ref state git runs — `gitdir:` (a linked worktree's own git dir), `onbranch:` (the
 # checked-out branch), `hasconfig:remote.*.url:` (another key's value). The rule is to read the

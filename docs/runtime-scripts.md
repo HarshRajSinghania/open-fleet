@@ -1238,7 +1238,9 @@ Callers: the posix provider's `run_git` (`status`, `merge-tree`, `checkout_workt
 diff_scope's working-tree diff and `--predict-merge` (`objects="shared"`, so the merged tree
 `merge_queue.py` commits is in the repository), hint_provenance's `diff` and `log`, and verify.py's
 negative-control checkout, apply, revert and seal (`objects="shared"`, `bare=False`, reached
-through a `.git` gitfile). floor_guard, diff_scope and hint_provenance run every other git under
+through a `.git` gitfile; its git runs under verify.py's own pinned environment, not
+`custody_env`, so the custody's own attributes file closes the default user one there but
+`GIT_ATTR_NOSYSTEM` is not set: the system attributes file is still read, as data). floor_guard, diff_scope and hint_provenance run every other git under
 `custody_env` too.
 
 Exits: n/a (library).

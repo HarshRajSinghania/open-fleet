@@ -22,8 +22,9 @@
   planted there ran too. A moved submodule commit is still reported; uncommitted changes inside a
   submodule no longer are. The custody also carries the repository's `info/attributes`, the
   content of its own `core.attributesFile` (read only as a regular file of at most 1 MiB, never
-  opened blocking; a FIFO, symlink or larger file refuses; no user or system attributes file is
-  opened) and its
+  opened blocking; a FIFO, symlink or larger file refuses; no user attributes file is opened, and
+  no system one except by verify.py's negative control, whose pinned git environment does not set
+  `GIT_ATTR_NOSYSTEM`) and its
   `core.safecrlf`/`core.checkRoundtripEncoding` as data, so a CRLF (`eol=crlf`) checkout no longer
   reads as modified. Also:
   the `_external.py` runner docstring no longer claims `reset --hard` runs in custody (it is

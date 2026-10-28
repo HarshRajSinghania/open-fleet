@@ -6497,6 +6497,22 @@ class ControlRunsNoDriverAddedAfterTheListing(MutationFixture):
         self.assertTrue(any("could not create the control worktree" in x and "core.attributesFile" in x
                             for x in msgs), msgs)
 
+    def test_a_timed_out_custody_query_refuses_the_control(self):
+        # Codex on PR #724 (round 6): the control dir's core.attributesFile query ran through
+        # _run_bytes, which reports a timeout as exit 1 - "unset" for `config --get` - so a
+        # timed-out query proceeded as "no attributes file". It is the "could not create" refusal.
+        real = subprocess.run
+
+        def run(argv, *a, **kw):
+            if isinstance(argv, (list, tuple)) and "core.attributesFile" in argv:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 30))
+            return real(argv, *a, **kw)
+        with mock.patch.object(subprocess, "run", run):
+            ok, msgs = self._execute(self._revert_nc())
+        self.assertFalse(ok)
+        self.assertTrue(any("could not create the control worktree" in x and "timed out" in x
+                            for x in msgs), msgs)
+
     def test_no_user_attributes_or_ignore_file_is_opened(self):
         # PR #724 re-attack (items 1, 2): a FIFO at ~/.config/git/ignore blocked the control's
         # checkout, and one at ~/.config/git/attributes the phase repositories' reset --hard (each

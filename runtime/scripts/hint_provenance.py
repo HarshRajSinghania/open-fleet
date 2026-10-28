@@ -135,6 +135,10 @@ def git(repo, *args, text=True):
             return _run_git(custody.lead, args, [*custody.pairs, *blanks], text)
     except gitexec.GitCustodyRefused as exc:
         raise ProvenanceError(f"cannot read {repo} in git custody: {exc}") from exc
+    except subprocess.SubprocessError as exc:
+        # A git the custody's own setup ran (rev-parse, config) that timed out: unknown, never a
+        # raw TimeoutExpired (Codex on PR #724, round 6).
+        raise ProvenanceError(f"cannot set up git custody for {repo}: {exc}") from exc
 
 
 def _run_git(lead, args, pairs, text):

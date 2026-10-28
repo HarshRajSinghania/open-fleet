@@ -1624,6 +1624,45 @@ class BlockingRepositoryFilesAreRefusedUpFront(unittest.TestCase):
         self.assertIn("a.txt", diff_scope.changed_files(p.repo, base))
 
 
+class CustodySetupTimeoutsAreEachToolsRefusal(unittest.TestCase):
+    """Codex on PR #724 (round 6): a timeout in gitexec.custody's own setup (its rev-parse and
+    config queries) escaped hint_provenance as a raw TimeoutExpired, and predict-merge reported it
+    as "needs git >= 2.38". Each tool's documented could-not-run outcome now carries it."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        p._git("checkout", "-q", "-b", "side")
+        side = p.commit("b.txt", "two\n")
+        (p.repo / "a.txt").write_text("CHANGED\n", encoding="utf-8")
+        return p, base, side
+
+    def _timeout_in_custody_setup(self):
+        real = subprocess.run
+
+        def run(argv, *a, **kw):
+            if isinstance(argv, (list, tuple)) and "--absolute-git-dir" in argv:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 60))
+            return real(argv, *a, **kw)
+        return mock.patch.object(subprocess, "run", run)
+
+    def test_every_site_reports_it_as_its_own_refusal(self):
+        p, base, side = self._repo()
+        with self._timeout_in_custody_setup():
+            with self.assertRaises(hint_provenance.ProvenanceError):
+                hint_provenance.LiveSource(str(p.repo)).changes_since(base)
+            with self.assertRaises(floor_guard.GuardError):
+                floor_guard.collect_diff(p.repo, base)
+            with self.assertRaises(diff_scope.ScopeError):
+                diff_scope.changed_files(p.repo, base)
+            with self.assertRaises(diff_scope.ScopeError) as cm:
+                diff_scope.predict_merge(p.repo, base, side)
+        self.assertIn("timed out", str(cm.exception))
+        self.assertNotIn("2.38", str(cm.exception))
+
+
 class HintProvenanceTimeoutIsAProvenanceError(unittest.TestCase):
     """PR #724 re-attack (item 4): a git that blocked until its timeout surfaced as a raw
     TimeoutExpired; it is the module's own could-not-run."""

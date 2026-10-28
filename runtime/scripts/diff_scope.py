@@ -589,9 +589,10 @@ def predict_merge(repo, base, branch):
                 capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
                 timeout=60, env=_git_env([*custody.pairs, *blanks]), stdin=subprocess.DEVNULL,
             )
-    except gitexec.GitCustodyRefused as err:
+    except (gitexec.GitCustodyRefused, subprocess.TimeoutExpired) as err:
         # The custody's own reason (a partial clone, an unhonourable extension, a file git would
-        # block on), never the "needs git >= 2.38" guess below (PR #724 re-attack).
+        # block on) or a git that timed out, in its setup or the merge itself - never the "needs
+        # git >= 2.38" guess below (PR #724 re-attack; Codex round 6).
         raise ScopeError(f"predict-merge: {err}", kind="diff_failed") from err
     except (OSError, subprocess.SubprocessError):
         r = None

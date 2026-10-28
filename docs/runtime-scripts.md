@@ -2245,12 +2245,19 @@ So `read-tree`, `add -A`, `write-tree` and the exit-3 `diff-index` run in git cu
 custody of `runtime/scripts/gitexec.py` (`custody_git_dir`), spelled in sh: a git dir wtree.sh
 builds in a temp dir with its own config (object format only, no driver of any kind), HEAD at the
 repository's HEAD commit, the repository's objects as a read-only alternate and regular-file copies
-of its `info/exclude`, `shallow`, `info/sparse-checkout` and split-index `sharedindex.*` (anything
-but a regular file there is exit 1), with the repository's own work tree (`--work-tree`). A driver
-any config gains at any moment is undefined there. The repository's data-only `core.*` settings
-(line endings, file modes, name folding, stat fields, sparse flags) ride as command-line pairs so a
-checkout still fingerprints as its committed tree; a repository-scope `core.excludesFile` does
-not (an untracked file only it hid counts and reads STALE). An `extensions.*` the custody dir cannot
+of its `info/exclude`, `info/attributes`, `shallow`, `info/sparse-checkout` and split-index
+`sharedindex.*` (anything but a regular file there is exit 1), with the repository's own work tree
+(`--work-tree`). A driver any config gains at any moment is undefined there. `info/attributes` is
+data: `text`/`eol`/`working-tree-encoding` are built-in conversions a clean CRLF checkout needs to
+fingerprint as its tree, and a `filter=` it selects names a driver the custody never defines. The
+repository's data-only `core.*` settings (line endings and `safecrlf`, file modes, name folding,
+stat fields, sparse flags, `checkRoundtripEncoding`) ride as command-line pairs for the same
+reason; a repository-scope `core.excludesFile` or `core.attributesFile` does not (an untracked file
+only it hid counts and reads STALE). A checked-out submodule is never entered: `git add` would ask
+whether it is dirty with a child git under the submodule's OWN config, and nothing turns that off,
+so every gitlink whose path is a directory is left out of `add -A` and refreshed with
+`update-index`, which reads the submodule's HEAD in-process (a moved submodule still changes the
+value; uncommitted changes inside one do not). An `extensions.*` the custody dir cannot
 reproduce (a partial clone above all) is exit 1, never a guess, and `GIT_NO_LAZY_FETCH=1` +
 `GIT_ALLOW_PROTOCOL=file` keep a planted promisor remote from running anything through a lazy fetch. The
 trade-off: a file a declared driver filters (Git LFS included) can be compared to the committed
@@ -2258,7 +2265,8 @@ tree only by running that driver. While its stat is unchanged, git reuses the in
 and the fingerprint is exact. Once its stat changes (a touch, an edit), git would re-clean it, and
 the raw bytes it stages instead would make a good run read as STALE. So for any such path staged
 differently from HEAD (found with `diff-index --cached --no-ext-diff` and `check-attr filter`,
-which run nothing) wtree.sh exits 3 with the reason instead of printing a misleading value. A
+which run nothing, each status checked: either failing is exit 1, never a value) wtree.sh exits 3
+with the reason instead of printing a misleading value. A
 driver declared only after the listing is not reported: it never ran, so its path is hashed from
 its raw bytes and the value states that content (a changed file reads STALE, never FRESH).
 `evidence-run.py` records that reason as `wtree_unverifiable`, and `verify.py check_commands`
@@ -2273,8 +2281,8 @@ config channels that outrank or blind the belt (`GIT_CONFIG_PARAMETERS`, `GIT_CO
 (`"$GIT"`); a git that does not resolve to one is exit 1.
 
 Exits: 0 prints the hash · 1 outside a git repo, no commits and no usable index, no absolute
-git on PATH, or a repository the custody cannot stage (an unhonourable extension, a non-regular
-file where git reads one) · 3 a path staged differently from HEAD is filtered by a declared driver, reason on
+git on PATH, a repository the custody cannot stage (an unhonourable extension, a non-regular
+file where git reads one, a gitlink path holding a newline), or an exit-3 check that could not run · 3 a path staged differently from HEAD is filtered by a declared driver, reason on
 stderr, nothing on stdout (callers fail closed on nonzero — never treat it as an empty fingerprint).
 
 > Why this and not `HEAD^{tree}`: committing identical content must not invalidate a

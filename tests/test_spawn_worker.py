@@ -2457,19 +2457,58 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
         self.assertNotIn("UNVERIFIED", err)
         self.assertEqual(self.pending(), [])
 
-    def test_processes_that_keep_vanishing_leave_the_scan_unknown(self):
+    def test_a_process_that_vanishes_is_gone_and_the_scan_still_ends(self):
+        # A host whose processes never stop coming and going (other sessions' commands): each one
+        # that vanished before it was read is GONE, not unknown. The scan re-lists a bounded number
+        # of times for children such a process forked, then ends complete.
         mod = self.identity()
         fake = Path(self.tmp) / "fake-proc"
         fake.mkdir()
         counter = iter(range(10_000, 20_000))
+        listings = []
 
         class Vanishing(type(fake)):
             def iterdir(self):  # every listing names a pid that is gone by the time it is read
+                listings.append(1)
                 return iter([type(fake)(fake / str(next(counter)))])
         with mock.patch.object(mod, "PROC", Vanishing(fake)):
             found, complete = mod.processes_with_handle("term_x")
         self.assertEqual(found, [])
-        self.assertFalse(complete)
+        self.assertTrue(complete)
+        self.assertEqual(len(listings), mod.VANISHED_ROUNDS)
+
+    def test_an_environment_unreadable_for_a_moment_is_read_again(self):
+        # A process caught exiting (or mid-exec) answers EACCES for a moment: read again before it
+        # counts, so a busy host does not make every scan inconclusive. One that stays unreadable
+        # counts (test_an_environment_read_error_is_unknown_not_no_process).
+        mod = self.identity()
+        pid = self.tree().spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_blink"})
+        real = mod._read_environ
+        for handle, want in (("term_blink", 0), ("term_none", 3)):
+            with self.subTest(handle=handle):
+                failures = [PermissionError(13, "Permission denied")] * 3
+
+                def reader(p):
+                    if p == pid and failures:
+                        raise failures.pop()
+                    return real(p)
+                with mock.patch.object(mod, "_read_environ", side_effect=reader), \
+                        mock.patch.object(mod, "PROC", self.only(pid)), quiet():
+                    self.assertEqual(mod.main(["record-root", "--registry", str(self.registry()), "--handle", handle,
+                                               "--profile", "ro", "--wait", "0"]), want)
+                self.assertEqual(failures, [])
+
+    def only(self, *pids):
+        """/proc as this process sees it, listing only `pids`: a host with nothing else running."""
+        real = Path("/proc")
+
+        class Only(type(real)):
+            def iterdir(self):
+                return iter([real / str(p) for p in pids])
+
+            def __truediv__(self, other):
+                return real / other
+        return Only("/proc")
 
     def fake_proc(self, layout):
         """A /proc of `{pid: (ppid, start, mode)}` stat files (mode 0 = unreadable), whose `self`

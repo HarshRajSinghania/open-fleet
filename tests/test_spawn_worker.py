@@ -2493,12 +2493,12 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
                         raise failures.pop()
                     return real(p)
                 with mock.patch.object(mod, "_read_environ", side_effect=reader), \
-                        mock.patch.object(mod, "PROC", self.only(pid)), quiet():
+                        mock.patch.object(mod, "PROC", self.proc_listing(pid)), quiet():
                     self.assertEqual(mod.main(["record-root", "--registry", str(self.registry()), "--handle", handle,
                                                "--profile", "ro", "--wait", "0"]), want)
                 self.assertEqual(failures, [])
 
-    def only(self, *pids):
+    def proc_listing(self, *pids):
         """/proc as this process sees it, listing only `pids`: a host with nothing else running."""
         real = Path("/proc")
 

@@ -202,7 +202,11 @@ sys.stdout.write("".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in t
 orca_json() {
   local out="$1"; shift
   "$ORCA_BIN" "$@" --json > "$out"
-  python3 -I - "$out" <<'PY'
+  envelope_check "$out"
+}
+# envelope_check <file>: fail (exit 1, the error printed inert) on an error envelope.
+envelope_check() {
+  python3 -I - "$1" <<'PY'
 import json, sys
 def _f(v):
     """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
@@ -504,8 +508,9 @@ profile_rank() { case "$1" in ro) echo 0 ;; rw) echo 1 ;; danger) echo 2 ;; *) e
 # reservation cannot be written is refused. And a harness may drop ORCA_* from the worker's shell
 # (Codex's shell_environment_policy does), so the handle is not the only identity: registration
 # also records the worker's pane ROOT process by pid and start time (spawn_identity.py, found by
-# the handle in the pane's initial environment), and a spawn walks its own ancestry, so a ro
-# worker is capped at ro whatever its environment says. A session no record and no root identifies:
+# the handle in the pane's initial environment), and a spawn walks its own ancestry, so a process
+# in a ro worker's pane tree is capped at ro whatever its environment says. A session no record
+# and no root identifies:
 #   - waits for every open reservation it is not exempt from (RESERVATION_WAIT_SECS, default 120),
 #     re-reading its identity each time, and is then capped at the most restrictive one still open;
 #   - is capped at the most restrictive LIVE worker when it runs inside a provider's process tree
@@ -514,7 +519,12 @@ profile_rank() { case "$1" in ro) echo 0 ;; rw) echo 1 ;; danger) echo 2 ;; *) e
 #     anchored session is exempt from a reservation, and never from one whose launch it descends
 #     from. A reservation whose launcher is gone is not waited on: it was kept because its worker
 #     may be live unrecorded, and it caps until removed.
-# The residual: a worker that daemonizes out of its process tree AND whose root has exited.
+# Not covered (residuals; whether any harness does one as ordinary behaviour is unwitnessed): a
+# worker process outside its pane's tree — one that daemonized out of it (reparented, it descends
+# from no recorded root or host, root alive or not), a command a harness runs from a process
+# started outside the pane, a spawn in another pid namespace — when its environment no longer
+# carries the pane handle; a worker whose HOME is not its coordinator's; a launch whose pane
+# process itself carries no handle (a command that clears its environment, `env -i …`).
 SPAWN_HOME="${HOME:-}"
 if [ -z "$SPAWN_HOME" ]; then  # a scrubbed HOME still reads the uid's registry
   SPAWN_HOME=$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)
@@ -557,7 +567,7 @@ identify() {
 identify
 if [ "$identity_ok" = "0" ]; then
   registered_profiles=(ro)
-  echo "SPAWN=NOTE task=${tname} this session's spawn identity cannot be read (no registry location, or its process ancestry is unreadable): the child is capped at ro rather than left uncapped (W4-04)" >&2
+  echo "SPAWN=NOTE task=${tname} this session's spawn identity cannot be read (no registry location, or a read it needs failed: its process ancestry, the spawn registry, or a /proc that is not this pid namespace's): the child is capped at ro rather than left uncapped (W4-04)" >&2
 elif [ "${#registered_profiles[@]}" -eq 0 ]; then
   _rwait="${RESERVATION_WAIT_SECS:-120}"
   case "$_rwait" in ""|*[!0-9]*) _rwait=120 ;; esac
@@ -618,9 +628,12 @@ fi
 # under the worker's pane ROOT process (spawn_identity.py: the process whose initial environment
 # names the handle; an uncapped launcher also records its own anchors), THEN drop the reservation
 # (that order, so a reader never sees neither). Returns 1 when the handle record cannot be
-# written and 2 when the processes carrying the handle cannot be listed: either way the
-# reservation stays, still capping every session nothing else identifies. A scan that finds no
-# process (SPAWN_ROOT_WAIT_SECS, default 1) means no local worker process to record.
+# written and 2 when the worker's process tree is not verified (spawn_identity.py exits 1:
+# nothing found by a scan that was not complete, or no scan at all; or 2: a root it found but
+# could not verify): either way the reservation stays, still capping every session nothing else
+# identifies. Only a COMPLETE scan that finds no process (SPAWN_ROOT_WAIT_SECS, default 1) means
+# no local worker process to record; an environment the scan cannot read is unknown, never "no
+# process" (Codex round 4).
 register_spawn() {
   if ! registry_key_ok "$1"; then
     echo "SPAWN=WARNING task=${task} the launched pane's handle is not a registry key, so its PROFILE=${PROFILE} cannot be recorded under it (W4-04)" >&2
@@ -640,34 +653,203 @@ register_spawn() {
   # and its handle record is its record.
   if { [ "$ACTIVE_RUNTIME" != "orca" ] && [ "$ACTIVE_RUNTIME" != "posix" ]; } \
      || [ "$ENV_GIVEN" = "1" ] || [ "$ON_GIVEN" = "1" ]; then
-    if [ -z "$launch_reservation" ] || rm -f -- "$launch_reservation" 2>/dev/null; then
-      launch_reservation=""; keep_reservation=0
-    fi
     return 0
   fi
   if [ -z "$eff_parent_profile" ]; then _anchor=(--launcher "$$"); fi  # only an uncapped launcher anchors
   local _rr=0
   python3 -I "$HERE/spawn_identity.py" record-root --registry "$SPAWN_REGISTRY" --handle "$1" \
-    --profile "$PROFILE" --wait "$_wait" ${_anchor[@]+"${_anchor[@]}"} >/dev/null 2>&1 || _rr=$?
-  # 3: the scan worked and no process carries the handle — the worker is not a local process (it
-  # exited, runs remotely or in another uid's container, or the backend is a dry run), so nothing
-  # on this host can spawn under it and its handle record is its record. Anything else unproven
-  # (1: no way to scan) keeps the reservation.
+    --profile "$PROFILE" --wait "$_wait" --since "$$" ${_anchor[@]+"${_anchor[@]}"} >/dev/null 2>&1 || _rr=$?
+  # 3: a complete scan found no process carrying the handle — the worker is not a local process
+  # (it exited, runs remotely or in another uid's container, or the backend is a dry run), so its
+  # handle record is its record. 1 (nothing found, the scan not complete or impossible: without
+  # /proc it never is) and 2 (a root found but not verified) keep the reservation.
   if [ "$_rr" != "0" ] && [ "$_rr" != "3" ]; then
-    echo "SPAWN=WARNING task=${task} pane $1 is recorded, but the processes carrying its handle could not be listed, so its worker's process tree is NOT: the launch reservation stays, capping every session nothing else identifies, until it is removed (W4-04)" >&2
+    echo "SPAWN=WARNING task=${task} pane $1 is recorded, but its worker's process tree is UNVERIFIED (record-root exit ${_rr}: nothing carrying it was found by a scan that could not read every candidate — an environment it could not read, processes that kept vanishing, no /proc — or a root it found could not be verified): the launch reservation stays, capping every session nothing else identifies, until it is removed (W4-04)" >&2
     return 2
   fi
+  return 0
+}
+# receipt_handles <receipt> [terminal]: THE one extraction of the pane handles a response names
+# (Codex round 4: the verdict parser left at its error-code branch before it read the handle, so
+# an error envelope beside a live worker's handle lost both its record and its reservation).
+# Every receipt reader below takes its handle from here, and it runs FIRST, before anything judges
+# the response: registration, the verdict parser's HANDLE= line, terminal create's pane. It reads
+# every place a runtime puts one — result, error, error.data, nested worker/terminal objects,
+# effects[] (any terminal effect; role agent is the worker's pane) — whatever the exit code, error
+# code or state says. One line per handle, `<role> <status> <value>`: role `agent` (the worker's
+# pane, in the parser's order: result.agentTerminalHandle, then the agent terminal effect; for
+# terminal create, result.terminal.handle then the bare result.handle older hosts answer) or
+# `other`; status `ok` (a registry key), `unprintable` (a control character or a space) or
+# `notkey` (anything else, a non-string included); the value always inert. A response that does
+# not parse whole (truncated, two documents, a warning line before it) is still searched for
+# handle-shaped fields and ends with `PARTIAL`: what it names is registered, but it may name more.
+# The last line is `END`; a reader that never sees it treats the response as PARTIAL.
+receipt_handles() {
+  python3 -I - "$1" "${2:-}" <<'PY'
+import json, re, sys
+KEYS = ("agentTerminalHandle", "terminalHandle", "terminal_handle")
+KEY_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*\Z")
+terminal_mode = sys.argv[2] == "terminal"
+named, partial = [], False
+
+
+def inert(s):
+    return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in s)
+
+
+def add(role, v):
+    if v is None or v is False or v == "" or v == [] or v == {}:
+        return  # names nothing
+    if isinstance(v, str):
+        status = "ok" if KEY_OK.match(v) else (
+            "unprintable" if any(not c.isprintable() or c.isspace() for c in v) else "notkey")
+        named.append((role, status, inert(v)))
+    else:
+        named.append((role, "notkey", inert(json.dumps(v, sort_keys=True, default=str))))
+
+
+def effect(e):
+    if isinstance(e, dict) and e.get("kind") in ("terminal", "dispatch_input"):
+        role = "agent" if e.get("role") in (None, "agent") else "other"
+        if e.get("kind") == "dispatch_input" and role != "agent":
+            return
+        add(role, e.get("id"))
+        add(role, e.get("handle"))
+
+
+def walk(o, depth=0):
+    global partial
+    if depth > 64:
+        partial = True  # nested past what is read: it may name more
+        return
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k in KEYS:
+                add("agent", v)
+            elif k == "terminal" and isinstance(v, dict):
+                add("agent", v.get("handle"))
+            elif k == "effects" and isinstance(v, list):
+                for e in v:
+                    effect(e)
+            walk(v, depth + 1)
+    elif isinstance(o, list):
+        for v in o:
+            walk(v, depth + 1)
+
+
+try:
+    raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+except OSError:
+    raw = ""
+try:
+    d = json.loads(raw)
+except ValueError:
+    d, partial = None, True
+if not partial:
+    r = d.get("result") if isinstance(d, dict) else None
+    if not isinstance(r, dict):
+        r = d if isinstance(d, dict) else {}
+    if terminal_mode:  # the order terminal create's pane was always read in
+        t = r.get("terminal")
+        add("agent", t.get("handle") if isinstance(t, dict) else None)
+        add("agent", r.get("handle"))
+    else:  # the order the verdict parser always read the worker's pane in
+        add("agent", r.get("agentTerminalHandle"))
+        for e in r.get("effects") if isinstance(r.get("effects"), list) else []:
+            if isinstance(e, dict) and e.get("kind") == "terminal" and e.get("role") == "agent":
+                add("agent", e.get("id"))
+    walk(d)
+else:
+    # Not one whole document: every handle-shaped field in the text, so a live worker's handle
+    # in a truncated or doubled response is still registered.
+    s = r'"((?:[^"\\]|\\.)*)"'
+    for m in re.finditer(r'"(%s|handle)"\s*:\s*%s' % ("|".join(KEYS), s), raw):
+        try:
+            add("agent", json.loads('"%s"' % m.group(2)))
+        except ValueError:
+            add("agent", m.group(2))
+    for obj in re.finditer(r"\{[^{}]*\}", raw):
+        if re.search(r'"kind"\s*:\s*"terminal"', obj.group(0)):
+            for m in re.finditer(r'"(?:id|handle)"\s*:\s*%s' % s, obj.group(0)):
+                add("agent", m.group(1))
+seen = set()
+for role, status, value in named:
+    if value not in seen:
+        seen.add(value)
+        print(f"{role} {status} {value}")
+if partial:
+    print("PARTIAL")
+print("END")
+PY
+}
+# read_named <receipt> [terminal]: run receipt_handles once into named_lines (`<status> <value>`),
+# agent_handle/agent_status (the worker's pane, if named) and receipt_partial.
+named_lines=(); agent_handle=""; agent_status=""; receipt_partial=0
+read_named() {
+  named_lines=(); agent_handle=""; agent_status=""; receipt_partial=1
+  local _role _st _v _end=0 _partial=0
+  while read -r _role _st _v; do
+    case "$_role" in
+      END) _end=1 ;;
+      PARTIAL) _partial=1 ;;
+      agent|other)
+        named_lines+=("$_st $_v")
+        if [ "$_role" = "agent" ] && [ -z "$agent_status" ]; then agent_handle="$_v"; agent_status="$_st"; fi ;;
+    esac
+  done < <(receipt_handles "$1" "${2:-}")
+  if [ "$_end" = "1" ] && [ "$_partial" = "0" ]; then receipt_partial=0; fi
+}
+# register_named: register every handle read_named found (never this session's own). named_count
+# counts them across every response this launch read; named_unrecorded is 1 when any could not be
+# recorded completely (its record not written, its process tree unverified, not a registry key,
+# or a response that did not parse whole), and named_record_failed when a handle record itself
+# could not be written.
+named_count=0; named_unrecorded=0; named_record_failed=0
+register_named() {
+  local _line _st _h _rs _mine _ph _n=0
+  for _line in ${named_lines[@]+"${named_lines[@]}"}; do
+    _st="${_line%% *}"; _h="${_line#* }"
+    _mine=0
+    for _ph in ${own_handles[@]+"${own_handles[@]}"}; do
+      if [ "$_st" = "ok" ] && [ "$_h" = "$_ph" ]; then _mine=1; fi
+    done
+    [ "$_mine" = "0" ] || continue
+    _n=$((_n + 1))
+    if [ "$_st" != "ok" ]; then
+      named_unrecorded=1; named_record_failed=1
+      echo "SPAWN=WARNING task=${task} the response names a worker pane whose handle is not a registry key ($_h), so it cannot be recorded: the launch reservation stays (W4-04)" >&2
+      continue
+    fi
+    _rs=0; register_spawn "$_h" || _rs=$?
+    case "$_rs" in
+      0) : ;;
+      1) named_unrecorded=1; named_record_failed=1 ;;
+      *) named_unrecorded=1 ;;
+    esac
+  done
+  named_count=$((named_count + _n))
+  if [ "$receipt_partial" = "1" ]; then
+    named_unrecorded=1
+    if [ "$_n" -gt 0 ]; then
+      echo "SPAWN=WARNING task=${task} the response did not parse whole, so it may name a worker pane beyond the ${_n} recorded: the launch reservation stays (W4-04)" >&2
+    fi
+  fi
+}
+# release_after_registration: every handle the response named is recorded, so the reservation goes.
+release_after_registration() {
   if [ -z "$launch_reservation" ] || rm -f -- "$launch_reservation" 2>/dev/null; then
     launch_reservation=""; keep_reservation=0
   fi
-  return 0
 }
 # release_reservation (EXIT trap): drop the reservation unless a worker may be live with no record.
 # A typed terminal-create refusal created no pane, so it is dropped too.
 launch_reservation=""; keep_reservation=0
 release_reservation() {
   [ -n "$launch_reservation" ] || return 0
-  if [ "$keep_reservation" = "1" ] && [ "$step" = "create-terminal" ] && [ -s "${tj:-}" ] \
+  if [ "$keep_reservation" = "1" ] && [ "$named_count" -gt 0 ] && [ "$named_unrecorded" = "0" ]; then
+    keep_reservation=0  # every worker the response named is recorded
+  fi
+  if [ "$keep_reservation" = "1" ] && [ "$named_count" = "0" ] && [ "$step" = "create-terminal" ] && [ -s "${tj:-}" ] \
      && python3 -I - "$tj" <<'PY'
 import json, sys
 try:
@@ -1351,6 +1533,13 @@ if [ "$custom_lane" = "0" ]; then
   # into UNPARSEABLE_RECEIPT / OUTCOME_UNKNOWN and lost a live worker's handle (2026-10-26 review).
   # stderr is kept beside it ($ws.stderr) for forensics.
   "$ORCA_BIN" orchestration worker-start --task "$task" --worktree "$sel" ${name_args[@]+"${name_args[@]}"} --agent "$agent" ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} ${WS_ARGS[@]+"${WS_ARGS[@]}"} --json > "$ws" 2> "$ws.stderr" || ws_rc=$?
+  # Every handle the response names may be a live worker, whatever its exit code, error code or
+  # state says, so it is read once and registered BEFORE the response is judged (Codex rounds 3
+  # and 4); the verdict parser prints the same handle rather than reading its own.
+  step=register-spawn
+  read_named "$ws"
+  register_named
+  ws_handle="$agent_handle"
 
   # The flag the requested PROFILE implies, read back out of the map above so the two cannot
   # drift: worker-start takes its args from the HOST, so this is what the host must have used.
@@ -1375,7 +1564,7 @@ if [ "$custom_lane" = "0" ]; then
   # Line 1 is the machine verdict; the remaining stdout lines are the caller-facing receipt
   # fields. nextSteps / nextCommands go to stderr verbatim — they are the runtime's own
   # recovery text, not ours to paraphrase.
-  ws_out=$(python3 -I - "$ws" "$profile_flag" <<'PY'
+  ws_out=$(python3 -I - "$ws" "$profile_flag" "$ws_handle" <<'PY'
 import json, sys
 
 # Every typed preflight refusal is a POLICY/usage answer, not a transport failure: the
@@ -1436,26 +1625,21 @@ if not isinstance(err, dict):
     err = {}
 code = _f(err.get("code") or "")
 data = err.get("data") if isinstance(err.get("data"), dict) else {}
+w = r.get("worker")
+state = r.get("state") or (w.get("state") if isinstance(w, dict) else None)
+did = r.get("dispatchId") or r.get("dispatch_id") or ""
+# The worker's pane handle, read ONCE by receipt_handles before this parser runs (the agent
+# terminal effect, agentTerminalHandle, or wherever else the response names one, error envelope
+# included), so no branch below can lose it: every verdict prints it when the response names one.
+h = sys.argv[3] if len(sys.argv) > 3 else ""
 # Older hosts may omit `data` entirely — treat every field as optional.
 for s in data.get("nextSteps") or []:
     print(f"nextStep: {_f(s)}", file=sys.stderr)
-if code in POLICY_CODES:
-    print(f"VERDICT=refused CODE={code}")
+if code in POLICY_CODES or code:
+    print(f"VERDICT={'refused' if code in POLICY_CODES else 'failed'} CODE={code}")
+    if h:  # an error envelope beside a handle: a worker may be live there
+        print(f"HANDLE={_f(h)} READY={_f(state or 'error')}")
     raise SystemExit(0)
-if code:
-    print(f"VERDICT=failed CODE={code}")
-    raise SystemExit(0)
-
-state = r.get("state") or (r.get("worker") or {}).get("state")
-did = r.get("dispatchId") or r.get("dispatch_id") or ""
-# The agent terminal is the effects[] entry kind=terminal role=agent; agentTerminalHandle is a
-# worker-list/worker-show field, kept as a harmless fallback.
-h = r.get("agentTerminalHandle") or ""
-if not h:
-    for e in r.get("effects") or []:
-        if isinstance(e, dict) and e.get("kind") == "terminal" and e.get("role") == "agent":
-            h = e.get("id") or ""
-            break
 
 if state == "outcome_unknown":
     # NOT a failure: the start neither proved nor disproved the worker. The receipt names the
@@ -1563,6 +1747,12 @@ PY
       rq="$SP/rq-$safe_title.json"
       rq_rc=0
       "$ORCA_BIN" orchestration request-show --request "$RETRY_REQUEST" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$rq" 2> "$rq.stderr" || rq_rc=$?
+      # A landed mutation's record may name the worker's pane that the start response did not:
+      # registered like any other response that names one.
+      step=register-spawn
+      read_named "$rq"
+      register_named
+      step=triage-request
       rq_state=$(python3 -I - "$rq" <<'PY'
 import json, sys
 try:
@@ -1596,30 +1786,38 @@ PY
     fi
   fi
 
-  # A worker may be live in every one of these: record its profile under its pane (W4-04). It
-  # already has its task, so a record that cannot be written (or a receipt naming no handle)
-  # keeps the reservation, which goes on capping every unrecorded session; refused and failed
-  # verdicts started no worker, and drop it.
-  # Any response that NAMES a handle may have a live worker behind it, whatever the exit code and
-  # whatever the verdict (Codex round 3: a ready receipt from a call that exited nonzero read as
-  # failed, skipped registration and dropped the reservation, so a live worker had neither).
-  step=register-spawn
-  ws_handle=$(printf '%s\n' "$payload" | sed -n 's/^HANDLE=\([^ ]*\) READY=.*/\1/p' | head -n 1)
-  if [ -n "$ws_handle" ]; then
-    _rs=0; register_spawn "$ws_handle" || _rs=$?
-    if [ "$_rs" = "1" ]; then
-      echo "SPAWN=WARNING task=${task} worker ${ws_handle} may be live with no spawn record; its launch reservation stays instead (W4-04)" >&2
+  # W4-04: any response that NAMES a handle may have a live worker behind it, whatever the exit
+  # code, error code or verdict (Codex round 3: a ready receipt from a call that exited nonzero;
+  # round 4: an error envelope beside a ready result). Each was registered above, before the
+  # verdict. With every named worker recorded completely the reservation goes; with any record
+  # incomplete it stays, capping every session nothing else identifies. With none named, only a
+  # typed policy refusal (the runtime started nothing) lets it go: a failure the receipt cannot
+  # explain is unknown, and unknown means a worker may be live.
+  if [ "$named_count" -gt 0 ]; then
+    if [ "$named_unrecorded" = "0" ]; then
+      release_after_registration
+    else
+      echo "SPAWN=WARNING task=${task} a worker the response names may be live without a complete spawn record; its launch reservation stays instead (W4-04)" >&2
     fi
-  else
-    case "$verdict" in ready|unknown|unusable) : ;; *) keep_reservation=0 ;; esac
+  elif [ "$verdict" = "refused" ]; then
+    keep_reservation=0
   fi
 
   step=verify-ready
+  # A refused or failed verdict whose response still names a pane: print it, and say a worker may
+  # be live there, so nothing respawns beside it uninspected.
+  named_pane_note() {
+    if [ -n "$ws_handle" ]; then
+      printf '%s\n' "$payload" | grep '^HANDLE=' || true
+      echo "SPAWN=WARNING task=${task} the response names pane ${ws_handle} beside its error: a worker may be live there (its PROFILE=${PROFILE} is registered, or the launch reservation stays). INSPECT it (worker-list, worker-show) before any retry (W4-04)" >&2
+    fi
+  }
   case "$verdict" in
     ready)
       printf '%s\n' "$payload"
       ;;
     refused)
+      named_pane_note
       echo "SPAWN=REFUSED task=${task} worker-start refused: ${verdict_line#VERDICT=refused } (policy/usage — nextSteps above; receipt in $ws)" >&2
       exit 2
       ;;
@@ -1645,6 +1843,7 @@ PY
       exit 5
       ;;
     *)
+      named_pane_note
       echo "SPAWN=FAILED task=${task} step=${step} rc=${ws_rc} — worker-start failed: ${verdict_line#VERDICT=failed } (receipt in $ws)" >&2
       exit 1
       ;;
@@ -1658,30 +1857,38 @@ else
   step=create-terminal
   tj="$SP/sw-$safe_title.json"
   keep_reservation=1  # the command may be running before terminal create returns its handle
-  orca_json "$tj" terminal create --worktree "$sel" --title "$title" --command "$cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
-  h=$(python3 -I - "$tj" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-if d.get("error"):
-    print("terminal create error: " + "".join(c if c.isprintable() else f"\\u{ord(c):04x}"
-                                              for c in str(d["error"])), file=sys.stderr)
-    raise SystemExit(1)
-r = d.get("result", d)
-h = (r.get("terminal") or {}).get("handle") or r.get("handle")
-if not h or h == "None":
-    print("terminal create returned no handle", file=sys.stderr)
-    raise SystemExit(1)
-if not isinstance(h, str) or not all(c.isprintable() and not c.isspace() for c in h):
-    print("terminal create returned a handle that is not one printable token", file=sys.stderr)
-    raise SystemExit(1)
-print(h)
-PY
-)
+  tc_rc=0
+  "$ORCA_BIN" terminal create --worktree "$sel" --title "$title" --command "$cmd" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$tj" || tc_rc=$?
+  # Any pane the response names may be live, whatever it says next (Codex round 4): it is read once
+  # (receipt_handles, the one extraction) and registered FIRST; then a nonzero exit or an error
+  # envelope fails as orca_json did, naming the pane it leaves behind.
+  step=register-spawn
+  read_named "$tj" terminal
+  register_named
+  h="$agent_handle"
+  step=create-terminal
+  tc_err=0
+  if [ "$tc_rc" != "0" ]; then tc_err="$tc_rc"; elif ! envelope_check "$tj"; then tc_err=1; fi
+  if [ "$tc_err" != "0" ]; then
+    if [ -n "$h" ]; then
+      echo "SPAWN=WARNING task=${task} terminal create failed but names pane ${h}: it may be live (its PROFILE=${PROFILE} is registered, or the launch reservation stays); close it (${ORCA_BIN} terminal close --terminal ${h}) (W4-04)" >&2
+    fi
+    (exit "$tc_err")
+  fi
+  if [ -z "$h" ] || [ "$h" = "None" ]; then
+    named_unrecorded=1  # a pane may be live that nothing names: its reservation stays
+    echo "terminal create returned no handle" >&2
+    (exit 1)
+  fi
+  if [ "$agent_status" = "unprintable" ]; then
+    echo "terminal create returned a handle that is not one printable token (${h})" >&2
+    (exit 1)
+  fi
   # The record replaces the reservation before anything is injected. If it cannot be written the
   # pane gets no task, and its reservation stays (the EXIT trap says so), capping it regardless.
   step=register-spawn
-  _rs=0; register_spawn "$h" || _rs=$?
-  if [ "$_rs" = "1" ]; then
+  if [ "$named_unrecorded" = "0" ] && [ "$named_count" -gt 0 ]; then release_after_registration; fi
+  if [ "$named_record_failed" = "1" ] || [ "$named_count" = "0" ]; then
     echo "SPAWN=FAILED task=${task} step=${step} rc=1 — pane ${h} is LIVE but its PROFILE=${PROFILE} could not be recorded, so nothing was injected into it: close it (${ORCA_BIN} terminal close --terminal ${h}) (W4-04)" >&2
     exit 1
   fi

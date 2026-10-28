@@ -1246,26 +1246,28 @@ child git that runs under the submodule's OWN config, so every custody diff carr
 `NO_SUBMODULE_CHILD` (`--ignore-submodules=dirty`: a moved gitlink is still reported, read from the
 submodule's refs in-process; uncommitted changes inside it are not), and a caller that stages a
 work tree keeps its gitlinks out of `git add`, which has no such option (`wtree.sh`).
-`refuse_blocking_files(path)` runs before any git in floor_guard, diff_scope and hint_provenance:
-every git reads the repository's config and follows its includes, and a commit walk reads
-`shallow`, so a FIFO (or device) there blocked each gate until its timeout. It finds the git dir
-without running git, reads `config` and `config.worktree` (and, recursively, every
-`[include]`/`[includeIf]` `path` they name, conditions not evaluated) without blocking, and refuses
-(`GitCustodyRefused`) any of them, or the common `shallow`, that exists and is not a regular file.
-Each file is parsed as git's own config parser reads it — CRLF line endings, a UTF-8 BOM, quoted
-values with escapes, `\`-continued lines, `#`/`;` comments, case-insensitive section and key
-names, quoted subsections with escapes, `~`/`~user` and relative include paths — so the path it
-checks is the path git opens; a file git itself would reject (a bad header or escape, an
-unterminated quote, a NUL byte, a `%(prefix)/` path) refuses rather than being guessed at. Which
-bytes count as whitespace is not written down: it is learned once per process from the installed
-git (one `git config -f <probe> --list -z` over a probe of every byte), because git versions
-differ (a newer git trims `\v` and `\f`, 2.43 keeps them). `tests/test_gitexec_config_commands.py`
-compares the parser with the installed git for every byte in 25 positions, so a git that reads
-config differently fails the suite.
-What can still block: a FIFO the worker swaps in after that check, and one at a work tree's own
-`.gitignore` or `.gitattributes`, which git opens itself path by path. Those are bounded by the
-call's own timeout (60 s in floor_guard, diff_scope and hint_provenance; up to 120 s in verify.py's
-control) and then fail closed: exit 2, `diff_failed`, a `ProvenanceError`, a refused control.
+`refuse_blocking_files(path)` runs before any git in floor_guard, diff_scope and hint_provenance.
+It is BEST-EFFORT and never refuses on doubt: every git reads the repository's config and follows
+its includes, and a commit walk reads `shallow`, so a FIFO (or device) there blocked each gate
+until its timeout. It runs no git and opens nothing blocking (stat, then a non-blocking read). It
+finds the git dir the way git discovers one, and refuses (`GitCustodyRefused`) ONLY when it
+positively finds a `config`, `config.worktree`, `shallow`, `commondir` or include target that
+exists and is not a regular file. Every name it derives — a gitfile's `gitdir:`, a linked
+worktree's `commondir`, each `[include]`/`[includeIf]` `path` (config parsed like git's parser:
+CRLF, BOM, quotes and escapes, `\`-continued lines, comments, case-insensitive names,
+subsections, `~`/`~user` and relative paths; conditions not evaluated) — is checked in EVERY
+spelling a git might read it as: raw, and with any of space, `\t`, `\n`, `\v`, `\f`, `\r`
+trimmed from either end, with config parsed under git 2.43's whitespace and a newer git's (which
+also counts `\v` and `\f`). Exact parity with each git version is not attempted, and nothing about
+a git version can make it refuse an ordinary repository: config it cannot parse, a value it
+cannot expand, an oversized file, add nothing. `tests/test_gitexec_config_commands.py` checks, for
+every byte in 25 positions, that each include path the installed git reads is among the spellings
+the check examines.
+The security property does not rest on it: no repository-named command runs either way. What it
+misses — a name it cannot follow, a FIFO swapped in after it, one at a work tree's own `.gitignore`
+or `.gitattributes`, which git opens itself path by path — is bounded by the git call's own
+timeout (60 s in floor_guard, diff_scope and hint_provenance; up to 120 s in verify.py's control),
+after which the call is refused: exit 2, `diff_failed`, a `ProvenanceError`, a refused control.
 Callers: the posix provider's `run_git` (`status`, `merge-tree`, `checkout_worktree`; see
 `docs/runtimes.md`, "`posix` git custody"), floor_guard's tracked and untracked diffs,
 diff_scope's working-tree diff and `--predict-merge` (`objects="shared"`, so the merged tree

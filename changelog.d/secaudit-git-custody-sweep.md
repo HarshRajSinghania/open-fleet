@@ -27,14 +27,16 @@
   environment does not set `GIT_ATTR_NOSYSTEM`), the content of its own `core.excludesFile` (read
   the same way) and its
   `core.safecrlf`/`core.checkRoundtripEncoding` as data, so a CRLF (`eol=crlf`) checkout no longer
-  reads as modified. Before any git runs, floor_guard, diff_scope and hint_provenance refuse a
-  repository whose config, config include or `shallow` is a FIFO or other non-regular file (git
-  would block opening it), and any promisor remote is refused as a partial clone (git 2.43 never
-  writes `extensions.partialClone`). A FIFO at a work tree `.gitignore` or `.gitattributes`, which
-  git opens itself, still blocks a call until its timeout (60 s; up to 120 s in the verifier) and
-  is then refused. The include check parses config exactly as git does (CRLF, quotes, escapes,
-  continuations, comments, case, and the installed git's own whitespace set, learned from it) and
-  refuses a file it cannot. predict-merge reports a custody
+  reads as modified. No repository-named command runs at these sites; a file git would BLOCK on
+  is handled best-effort. Before any git runs, floor_guard, diff_scope and hint_provenance refuse a
+  repository in which they positively find a config, config include, `commondir` or `shallow`
+  that is a FIFO or other non-regular file, checking every spelling of each name a git might
+  read (whitespace trimmed or not, either git's config whitespace), without running git and
+  without ever refusing on doubt. Any promisor remote is refused as a partial clone (git 2.43
+  never writes `extensions.partialClone`). A blocking file that check misses (one it cannot
+  parse, a FIFO swapped in after it, one at a work tree `.gitignore` or `.gitattributes`) blocks
+  the git call until its timeout (60 s; up to 120 s in the verifier), and the call is then
+  refused. predict-merge reports a custody
   refusal or a timeout as such, hint_provenance any git timeout (custody setup included) as a
   `ProvenanceError`, and verify.py's control a timed-out custody query as its could-not-create
   refusal. Also:

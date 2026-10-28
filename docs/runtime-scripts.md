@@ -342,19 +342,27 @@ Exits: 0 ok · 1 validation failure · 2 could-not-run or usage.
 ## `deny-hook.sh`
 
 PreToolUse guard for read-write workers (Bash, Edit, Write). Reads the hook event JSON
-on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-184`;
+on stdin, writes one decision object on stdout. Source `runtime/scripts/deny-hook.sh:1-200`;
 behavior pinned by `tests/test_deny_hook.py`, `tests/test_deny_hook_multi_harness.py` and the
 differential corpus `tests/test_deny_hook_conformance.py` (#598, below).
 
 Usage: hook mode reads stdin (no arguments); `deny-hook.sh --settings <worktree>` prints
-the settings.json registration block with the worktree boundary resolved;
+the settings.json registration block with the worktree boundary resolved — the hook path is
+shell-quoted so a space or `$` in the install path cannot tear the command the host runs (W1-07),
+and both `OPEN_FLEET_UNIT_WORKTREE` and `ORCA_UNIT_WORKTREE` are pinned to the worktree so a stale
+inherited value cannot override the per-worktree pin (W1-08);
 `deny-hook.sh --verify-settings <file> [--harness <name>] [--boundary <dir>]` proves a
 registration is armed by running deny and allow probes in that harness's own tool names;
 `--boundary` requires the registration to bound exactly that worktree. A registration may
 name only this hook (`[VAR=value ...] [sh] <path>/deny-hook.sh`, the same bytes), and the
 probes run it under a scrubbed environment, never through `sh -c`.
 
-Flags: `--help`, `--settings`, `--verify-settings`, `--harness`, `--boundary`.
+Flags: `--help`, `--settings`, `--readonly`, `--verify-settings`, `--harness`, `--boundary`.
+`--settings <wt> --readonly` adds the ro-tier write floor (`OPEN_FLEET_HOOK_READONLY`): the hook
+then denies every write it can see (a redirect, `tee`, file-tool edit or `apply_patch`, in a `-c`
+body, a substitution or a program fed to a shell too) regardless of the boundary, and a shell fed a
+program it cannot read (`cat f | sh`, `sh < f`), while read-only shell still runs —
+defense-in-depth over those channels, not a filesystem sandbox (W4-05; `runtime/sandbox-policy.md`).
 
 Every Bash segment is judged after one peeler strips what launches it — `VAR=`, `env`, `sudo`,
 `doas`, `nohup`, `nice`, `time`, `timeout`, `exec`, `setsid`, `stdbuf`, `ionice`, `chrt`,
@@ -424,8 +432,13 @@ a guard file only when the whole AND-chain of tests proves it unmatched (`-iname
 case, `-path` matches the path as `find` prints it, a negation or `-o` or `-regex` proves
 nothing) — and interpreter code (`python -c`, `perl -e`, `node -e`, …) naming a guard path
 beside a write call, whether from `-c` or fed on stdin or a heredoc; `touch` is not guarded and
-reading an anchor stays free (PR #648 review). A `grep`, `sed` or `tr`
-that is missing or errors denies: a matcher's exit 2 or 127 is never read as no-match.
+reading an anchor stays free (PR #648 review). A `tar`/`patch` naming a guard file as its own
+output (`tar -cf`, `patch -o`) is denied; an archive extraction (`tar -x`, `unzip`, `cpio -i`,
+`patch`) is ASKED when its destination covers the guard region (the root, a directory above it,
+or a guard directory or guard file's directory wherever its symlinks resolve, inside the worktree
+or out), since the archive's member names are not visible to the hook and it cannot prove the
+guard files untouched (W1-05). A `grep`,
+`sed` or `tr` that is missing or errors denies: a matcher's exit 2 or 127 is never read as no-match.
 
 Who reads a body (PR #648 review). Reader identification is structural, not positional: each
 simple command is its words plus its redirections, wherever they sit among the words, and each
@@ -2190,12 +2203,30 @@ one of these as ordinary behaviour is unwitnessed.
 
 Fail-closed Orca worker dispatch for fleet coordinators: supervised lane
 (`worker-start`: worktree + agent terminal + readiness + dispatch) and custom-argv lane
-(`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-171`;
-behavior pinned by `tests/test_spawn_worker.py`. For non-`ro` profiles it also checks
-deny-hook arming (#562): with `OPEN_FLEET_DENY_HOOK_SETTINGS` (legacy alias
-`ORCA_DENY_HOOK_SETTINGS`) naming the operator-wired settings file, the file must register
-`runtime/scripts/deny-hook.sh` and the hook must answer a deny probe, else `SPAWN=REFUSED`;
-unset, the spawn proceeds with a loud `UNVERIFIED` warning — the guard is never claimed unchecked. On Orca the custom-argv lane's
+(`terminal create` + `dispatch --inject`). Source `runtime/scripts/spawn_worker.sh:1-179`;
+behavior pinned by `tests/test_spawn_worker.py`. For EVERY profile, `ro` included, it checks
+deny-hook arming (#562; W4-06: `ro` used to skip the block entirely): with
+`OPEN_FLEET_DENY_HOOK_SETTINGS` (legacy alias `ORCA_DENY_HOOK_SETTINGS`) naming the
+operator-wired settings file, the file must register
+`runtime/scripts/deny-hook.sh` and the hook must answer a deny probe, else `SPAWN=REFUSED`.
+It must also bound the tree the spawn launches into: every selector that names an existing
+tree reaches the gate as `--boundary` (`path:`, `id:<repoId>::<path>`, and `current`/`active`/
+`name:`/`branch:` resolved through the runtime's `worktree show`; a tree it cannot resolve
+refuses), and only `new-child`/`new-top-level` are checked without one (W4-03).
+When the settings var is unset, `OPEN_FLEET_REQUIRE_DENY_HOOK=1` (legacy `ORCA_REQUIRE_DENY_HOOK`)
+`SPAWN=REFUSED`s first, on every runtime, before any provider deferral or opt-out. Otherwise the
+enforcement point moves. The posix provider installs the registration inside `worker-start` and
+verifies it there (`posix.verify_installed_guard`), after install and before the agent starts; the
+openhands provider runs the same `--verify-settings` on the `hook_config` the agent-server executes
+(`openhands.verify_conversation_guard`), before creating the conversation for a named worktree and
+before its `/run` for a server-cut one; both abort with `deny_hook_unverified` on any failure — so a
+`new-child` spawn that has no settings file at this pre-launch gate is still enforced, and the gate
+**defers** with a NOTE (no opt-out; `first_run.py` and `scripts/wip_curve.py` need none). Any other
+non-Orca provider installs the guard without that check, so the gate proceeds with an `UNVERIFIED`
+warning naming the runtime. On Orca `worker-start` wires no open-fleet guard, so an unset var
+`SPAWN=REFUSED`s, every profile including `ro`; `OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1` (legacy
+`ORCA_ALLOW_UNVERIFIED_DENY_HOOK`) is the Orca-lane opt-out to a loud `UNVERIFIED` warning, which
+REQUIRE overrides. On Orca the custom-argv lane's
 `terminal create` needs an existing worktree (`path:`, `id:`, `current`): `new-child` and
 `new-top-level` there are refused before any task is created, since only `worker-start` creates a
 worktree. When `terminal wait` reports the agent blocked on its own prompt (`wait.blockedReason`,

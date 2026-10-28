@@ -12,12 +12,14 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -154,7 +156,18 @@ class TestOpenHandsProvider(unittest.TestCase):
         gone = run_hook(missing["pre_tool_use"][0]["hooks"][0]["command"], {"tool_name": "terminal", "tool_input": {"command": "ls"}})
         self.assertEqual(gone.returncode, 2, "a missing hook script must block (fail closed)")
 
+    def _local_dir(self, path: str) -> None:
+        # The server's worktree must be a real local directory: the guard is verified against it
+        # before /run (W4-06), and a path that does not exist here cannot be (see below).
+        top = Path(path)
+        while not top.parent.exists():
+            top = top.parent
+        if not top.exists():
+            self.addCleanup(shutil.rmtree, top, True)
+        Path(path).mkdir(parents=True, exist_ok=True)
+
     def test_new_child_uses_server_worktree_and_records_real_path(self) -> None:
+        self._local_dir("/tmp/conversation-worktrees/conv-99/repo")
         self.http.routes[("POST", "/api/conversations")] = {
             "id": "conv-99", "workspace": {"working_dir": "/tmp/conversation-worktrees/conv-99/repo"},
         }
@@ -164,6 +177,58 @@ class TestOpenHandsProvider(unittest.TestCase):
         self.assertIn("$OPENHANDS_PROJECT_DIR", body["hook_config"]["pre_tool_use"][0]["hooks"][0]["command"])
         self.assertEqual(res["worktree"], "/tmp/conversation-worktrees/conv-99/repo")
         self.assertNotEqual(res["worktree"], "new-child")
+
+    def _stand_ins(self) -> dict[str, Path]:
+        # A hook that cannot load, and one that loads but is not this repo's hook: it answers
+        # every call -- --verify-settings included -- with exit 0 and no decision.
+        permissive = self.tmp / "stand-in" / "deny-hook.sh"
+        permissive.parent.mkdir()
+        permissive.write_text("exit 0\n", encoding="utf-8")
+        return {"missing": self.tmp / "missing" / "deny-hook.sh", "permissive": permissive}
+
+    def test_a_named_worktree_guard_is_verified_before_the_conversation_exists(self) -> None:
+        # W4-06 (Codex g1 r3 P1): the agent-server flow never reached the installed-guard check, so
+        # a broken hook_config accompanied an autonomous launch. A named worktree is now verified
+        # before POST /api/conversations: nothing is created and no agent starts.
+        for kind, hook in self._stand_ins().items():
+            for profile in ("ro", "rw"):
+                with self.subTest(kind=kind, profile=profile):
+                    self.http.reqs.clear()
+                    with mock.patch.object(openhands, "DENY_HOOK", hook):
+                        with self.assertRaises(ProviderError) as ctx:
+                            self.prov.worker_start(task_id="", worktree=str(self.wt), prompt=SPEC,
+                                                   profile=profile)
+                    self.assertEqual(ctx.exception.code, "deny_hook_unverified")
+                    self.assertFalse(self.http.find("POST", "/api/conversations"))
+                    self.assertFalse(self.http.find("POST", "/api/conversations/conv-99/run"))
+        # This repo's own hook passes, and the agent then starts.
+        self.http.reqs.clear()
+        self.prov.worker_start(task_id="", worktree=str(self.wt), prompt=SPEC, profile="rw")
+        self.assertTrue(self.http.find("POST", "/api/conversations/conv-99/run"))
+
+    def test_a_server_cut_worktree_is_verified_before_run_starts_the_agent(self) -> None:
+        # The server cuts the worktree, so $OPENHANDS_PROJECT_DIR is known only once the conversation
+        # exists (created with run=False). The guard is verified against it before /run; a broken
+        # hook, or a working dir that is absent or not a local directory, never reaches /run.
+        server_wt = self.tmp / "server-wt"
+        server_wt.mkdir()
+        cases = [(name, hook, str(server_wt)) for name, hook in self._stand_ins().items()]
+        cases += [("no-such-dir", None, str(self.tmp / "nowhere")), ("no-workspace", None, None)]
+        for name, hook, reported in cases:
+            with self.subTest(case=name):
+                self.http.reqs.clear()
+                reply: dict[str, Any] = {"id": "conv-99"}
+                if reported is not None:
+                    reply["workspace"] = {"working_dir": reported}
+                self.http.routes[("POST", "/api/conversations")] = reply
+                with mock.patch.object(openhands, "DENY_HOOK", hook or openhands.DENY_HOOK):
+                    with self.assertRaises(ProviderError) as ctx:
+                        self.prov.worker_start(task_id="", prompt=SPEC, profile="rw")
+                self.assertEqual(ctx.exception.code, "deny_hook_unverified")
+                self.assertEqual(ctx.exception.data.get("conversationId"), "conv-99")
+                self.assertTrue(self.http.find("POST", "/api/conversations"))
+                self.assertFalse(self.http.find("POST", "/api/conversations/conv-99/run"),
+                                 "the agent must not start on an unverified guard")
 
     def test_danger_requires_docker_conversation_runtime(self) -> None:
         with self.assertRaises(ProviderError) as ctx:

@@ -1428,6 +1428,8 @@ class Run:
         return task
 
     def spawn(self, store_task, worktree: Path, title, profile, key=None, nonce=None):
+        # Off Orca the provider verifies the deny hook inside worker-start (W4-06), so the
+        # pre-launch gate defers and this flow needs no opt-out.
         env = {"PROFILE": profile}
         if profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"

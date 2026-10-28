@@ -384,6 +384,59 @@ class TestHighTierDenies(HookBase):
         self.assertEqual(block["permissionDecision"], "ask",
                          "a named path inside the tree is an ask, not a hard deny")
 
+    def test_the_root_and_home_class_denies_past_the_canonical_spellings(self):
+        # W1-06 (2026-10-27 audit): the HIGH tier matched a literal token set, so `/*/`, `~/.`,
+        # `~/*`, `${HOME}/*` and `${HOME}/.` were a root/home wipe downgraded to a never-list ask.
+        # The class is normalised now: . and .. collapse, a single trailing glob segment means
+        # "everything here", and ~/$HOME/${HOME} are the home root.
+        for command in (
+            "rm -rf /*/", "rm -rf ~/.", "rm -rf ~/*", "rm -rf ${HOME}/*", "rm -rf ${HOME}/.",
+            "rm -rf $HOME/*", "rm -rf /dev/../", "rm -rf /./", "rm -rf //*", "rm -rf /*//",
+            "rm -rf ~/foo/..", "sudo rm -rf /*/", "rm -rf ${HOME}/./",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+
+    def _isolated_home(self):
+        # A HOME whose parent holds neither this hook nor the fixture repo. The runner's HOME is
+        # /home/runner with the checkout under it, so there `~/..` (/home) holds deny-hook.sh
+        # itself and the self-guard rightly denies the delete: the verdict below would depend on
+        # where the checkout sits, not on the root/home class the test is about.
+        home = Path(tempfile.mkdtemp(prefix="denyhook-home-")) / "home" / "u"
+        home.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, home.parent.parent, True)
+        return {"HOME": str(home)}
+
+    def test_a_scoped_delete_below_root_or_home_is_not_the_root_class(self):
+        # The class is root/home itself or everything one level under it, not a named child and
+        # not the parent above it (`~/..` is /home, a different target the HIGH tier does not own).
+        env = self._isolated_home()
+        for command in (
+            "rm -rf /etc", "rm -rf /etc/*", "rm -rf ~/.ssh", "rm -rf ${HOME}/project",
+            "rm -rf /var/log/*", "rm -rf ~/../", "rm -rf ~/foo/../../",
+        ):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env_extra=env))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "ask", command)
+
+    def test_a_delete_above_home_that_holds_the_guard_is_denied(self):
+        # The other side of the test above: `~/..` is not the home CLASS, but when it holds this
+        # hook (the CI layout: HOME=/home/runner, checkout under it) or the unit worktree, the
+        # delete removes the guard with it, so the self-guard denies it rather than asking.
+        holds_hook = {"HOME": str(HOOK.parent / "no-such-home")}
+        holds_unit = {"HOME": str(self.repo.parent / "no-such-home"),
+                      "OPEN_FLEET_UNIT_WORKTREE": str(self.repo)}
+        for env in (holds_hook, holds_unit):
+            for command in ("rm -rf ~/../", "rm -rf ~/foo/../../"):
+                with self.subTest(command=command, env=env):
+                    block = self.decision(self.fire(event("Bash", command=command), env_extra=env))
+                    self.assertIsNotNone(block, command)
+                    self.assertEqual(block["permissionDecision"], "deny", command)
+                    self.assertIn("own guard", block["permissionDecisionReason"], command)
+
     def test_a_refused_shape_is_refused_in_a_later_segment_too(self):
         # Was "falls through to ask" until #297. `ask` is the wrong answer for a
         # shape the HIGH tier refuses outright: the tier exists because none of
@@ -1240,6 +1293,34 @@ class TestBashWritesAreBounded(HookBase):
         # the devices would have waived it along with the bit bucket.
         self._deny("echo x > /dev/sda")
 
+    def test_a_path_segment_is_a_name_never_a_pattern_in_the_hooks_cwd(self):
+        # W4-09 (2026-10-27 audit): lexical_abs split the target with globbing ON, so a literal
+        # `.?` segment matched `..` in the HOOK's cwd and an in-boundary write was denied -- an
+        # answer that moved with the coordinator's cwd. Quoted, the shell writes these names
+        # literally, inside the worktree.
+        target = self.wt / "x" / ".?" / ".?" / ".?" / "f"
+        for cwd in (self.wt, self.tmp):
+            with self.subTest(cwd=cwd):
+                r = self.fire(event("Bash", command=f"echo x > '{target}'"),
+                              env_extra={"ORCA_UNIT_WORKTREE": str(self.wt)}, cwd=cwd)
+                self.assertEqual(r.stdout.strip(), "")
+                r = self.fire(event("Write", file_path=str(target)),
+                              env_extra={"ORCA_UNIT_WORKTREE": str(self.wt)}, cwd=cwd)
+                self.assertEqual(r.stdout.strip(), "")
+
+    def test_an_unquoted_glob_target_is_judged_by_every_path_it_expands_to(self):
+        # W4-09 sweep: the shell expands a glob in a redirect or tee target against the
+        # filesystem before it writes. The hook judged only the literal, so `> wt/lin*/secret`
+        # with wt/link -> outside/ was ALLOWED while the shell overwrote outside/secret.
+        (self.wt / "link").symlink_to(self.outside)
+        for command in (f"echo x > {self.wt}/lin*/secret", f"echo x | tee {self.wt}/l?nk/secret",
+                        f"echo x >> {self.wt}/[l]ink/secre?"):
+            with self.subTest(command=command):
+                self._deny(command)
+        for command in (f"echo x > {self.wt}/su*/f", f"echo x > {self.wt}/no-match*/f"):
+            with self.subTest(command=command):
+                self.assertEqual(self._fire_bash(command).stdout.strip(), "", command)
+
     def test_a_descriptor_duplication_does_not_swallow_the_next_redirect(self):
         """PR #308 review, P1 — reported as a bypass; it is not one, and this pins that.
 
@@ -1283,6 +1364,61 @@ class TestBashWritesAreBounded(HookBase):
         text = HOOK.read_text(encoding="utf-8")
         self.assertIn("ABSOLUTE targets only", text)
         self.assertIn("every relative path", text)
+
+    def _fire_home(self, payload, home, cwd):
+        return self.fire(payload, env_extra={"ORCA_UNIT_WORKTREE": str(self.wt), "HOME": str(home)},
+                         cwd=cwd)
+
+    def test_a_home_relative_target_is_judged_where_the_shell_puts_it(self):
+        # W1-01 (P0, 2026-10-27 audit): no write path expanded a leading ~. A redirect or tee
+        # to `~/...` was classed RELATIVE and never judged, and an Edit/Write file_path `~/...`
+        # resolved to $PWD/~/... -- inside the worktree -- so both were silently ALLOWED while
+        # the shell wrote into the home directory. $HOME and ${HOME} were read the same way.
+        home = self.tmp / "home"
+        home.mkdir()
+        for command in ("echo x > ~/.bashrc", "echo x >> ~/.bashrc", "echo x | tee ~/.bashrc",
+                        "echo x | tee -a ~/.config/x", "echo x > $HOME/.profile",
+                        "echo x > ${HOME}/.profile", "echo x 2>> ~/err.log", "echo x > ~root/x"):
+            with self.subTest(command=command):
+                block = self.decision(self._fire_home(event("Bash", command=command), home, self.wt))
+                self.assertIsNotNone(block, f"{command!r} wrote outside the boundary and was allowed")
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        # The file-tool half depended on the hook's cwd (verify-v1 A1): inside the worktree it
+        # allowed, outside it denied. It is the home directory from anywhere now.
+        for tool in ("Write", "Edit", "MultiEdit"):
+            for path in ("~/.bashrc", "$HOME/.bashrc", "~root/x"):
+                for cwd in (self.wt, self.tmp):
+                    with self.subTest(tool=tool, path=path, cwd=cwd):
+                        block = self.decision(self._fire_home(event(tool, file_path=path), home, cwd))
+                        self.assertIsNotNone(block, f"{tool} {path} from {cwd} was allowed")
+                        self.assertEqual(block["permissionDecision"], "deny")
+
+    def test_a_quoted_tilde_or_single_quoted_home_stays_a_literal_relative_target(self):
+        # Codex g1 P2 (W1-01): the shell leaves a QUOTED leading ~ (and a single-quoted $HOME)
+        # literal, writing a relative `./~/...` inside the tree; expanding it anyway over-denied a
+        # legitimate write. Expansion is quote-aware now, matching bash.
+        home = self.tmp / "home"
+        home.mkdir()
+        for command in ("echo x > '~/.notes'", 'echo x > "~/.notes"', "echo x > \\~/.notes",
+                        "echo x > '$HOME/.notes'", "echo x | tee '~/.notes'"):
+            with self.subTest(command=command):
+                r = self._fire_home(event("Bash", command=command), home, self.wt)
+                self.assertEqual(r.stdout.strip(), "", command)
+        # the live (unquoted, or double-quoted $HOME) spellings still deny
+        for command in ("echo x > ~/.notes", 'echo x > "$HOME/.notes"'):
+            with self.subTest(command=command):
+                block = self.decision(self._fire_home(event("Bash", command=command), home, self.wt))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+
+    def test_a_home_inside_the_boundary_stays_writable(self):
+        # The control: the expansion is the shell's, not a refusal of every `~`.
+        for command in ("echo x > ~/sub/new.txt", "echo x | tee ~/real.txt"):
+            with self.subTest(command=command):
+                r = self._fire_home(event("Bash", command=command), self.wt, self.wt)
+                self.assertEqual(r.stdout.strip(), "", command)
+        r = self._fire_home(event("Write", file_path="~/sub/new.txt"), self.wt, self.tmp)
+        self.assertEqual(r.stdout.strip(), "")
 
     def test_without_the_boundary_variable_a_redirect_is_unrestricted(self):
         r = self.fire(event("Bash", command=f"echo x > {self.outside / 'landed'}"))
@@ -1662,6 +1798,43 @@ class TestScriptShape(unittest.TestCase):
         block = json.loads(r.stdout)  # invalid JSON fails here
         self.assertEqual(block["env"]["ORCA_UNIT_WORKTREE"], str(wt.resolve()),
                          "the boundary must round-trip byte for byte")
+
+    def test_settings_mode_pins_both_boundary_names_so_a_stale_one_cannot_win(self):
+        # W1-08 (2026-10-27 audit): --settings pinned only the legacy ORCA_UNIT_WORKTREE, while
+        # the reader prefers OPEN_FLEET_UNIT_WORKTREE. A stale inherited OPEN_FLEET_UNIT_WORKTREE
+        # then silently replaced the per-worktree pin. The block pins BOTH names to the same
+        # worktree (as install_worktree_hooks does), so the explicit pin wins over any inherited
+        # value and the reader's preferred name carries it.
+        wt = self.tmp / "unit-worktree"
+        wt.mkdir()
+        r = subprocess.run(["sh", str(HOOK), "--settings", str(wt)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        env = json.loads(r.stdout)["env"]
+        self.assertEqual(env.get("OPEN_FLEET_UNIT_WORKTREE"), str(wt.resolve()))
+        self.assertEqual(env.get("ORCA_UNIT_WORKTREE"), str(wt.resolve()))
+
+    def test_settings_mode_shell_quotes_a_hook_path_with_a_space(self):
+        # W1-07 (2026-10-27 audit): the emitted `command` was the bare hook path, and the host
+        # runs a hook command through its shell -- so a space (or `$`) in the install path tore
+        # the command and the hook never started, silently disabling every control. The path is
+        # shell-quoted now (print-settings-snippet.sh / #382), and a quoted command round-trips
+        # through `sh -c`. A space-free path stays byte-identical (shlex.quote adds nothing).
+        spaced = self.tmp / "a b$dir"
+        spaced.mkdir()
+        hook_copy = spaced / "deny-hook.sh"
+        hook_copy.write_bytes(HOOK.read_bytes())
+        hook_copy.chmod(0o755)
+        wt = self.tmp / "unit"
+        wt.mkdir()
+        r = subprocess.run(["sh", str(hook_copy), "--settings", str(wt)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        command = json.loads(r.stdout)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertEqual(shlex.split(command), [str(hook_copy)],
+                         "the command must parse back to exactly the hook path")
+        self.assertNotEqual(command, str(hook_copy),
+                            "a path with a space or $ has to be quoted in the command string")
 
     def test_settings_mode_refuses_a_worktree_that_is_not_there(self):
         r = subprocess.run(["sh", str(HOOK), "--settings", str(self.tmp / "nope")],
@@ -2717,3 +2890,399 @@ class TestVerifySettingsRunsOnlyThisHook(unittest.TestCase):
         self.assertIn("PASS_THROUGH = (\"PATH\", \"HOME\", \"LANG\", \"TMPDIR\"", text)
         self.assertIn("never run through `sh -c`", text)
         self.assertNotIn('["sh", "-c", command]', text)
+
+
+class TestIfsSeparatedWordsKeepTheirArguments(ReviewHookBase):
+    """W1-02 (P1, 2026-10-27 audit): `rm$IFS-rf$IFS/` is one word with no blank in it, so the
+    reader kept the flags and operands inside the head word, could not resolve the head, and
+    judged each refused head with NO arguments -- the HIGH tier, the never list, the self-guard
+    (no G record at all) and the boundary all missed it, while the shell field-splits an unquoted
+    $IFS expansion into separate words."""
+
+    BOTH = (False, True)
+
+    def test_an_unquoted_ifs_expansion_separates_words_like_a_blank(self):
+        self.expect("deny", (
+            "rm$IFS-rf$IFS/", "rm${IFS}-rf${IFS}/", "rm${IFS:0:1}-rf${IFS:0:1}/",
+            "rm$IFS-rf$IFS--no-preserve-root${IFS}/tmp/x",
+            "git${IFS}push${IFS}--force${IFS}origin${IFS}main", "git push$IFS--force origin main",
+            "gh${IFS}pr${IFS}merge${IFS}34", "orca${IFS}orchestration${IFS}reset",
+        ), bounded_modes=self.BOTH)
+        self.expect("ask", ("rm${IFS}-r${IFS}-f${IFS}./build",), bounded_modes=self.BOTH)
+
+    def test_an_ifs_separator_inside_a_shell_body_is_split_there_too(self):
+        # Inside double quotes the shell drops the backslash of \$, so the body sh -c runs
+        # holds a live $IFS; the reader kept the backslash and read the body as one word.
+        self.expect("deny", ('sh -c "rm\\${IFS}-rf\\${IFS}/"', "sh -c 'rm${IFS}-rf${IFS}/'",
+                             'bash -c "git\\${IFS}push\\${IFS}--force\\${IFS}origin\\${IFS}main"'),
+                    bounded_modes=self.BOTH)
+
+    def test_ifs_separated_guard_writes_reach_the_self_guard(self):
+        self.expect("deny", ("rm$IFS-rf$IFS.claude", "cp${IFS}x${IFS}.claude/settings.json"),
+                    bounded_modes=self.BOTH, reason="own guard")
+
+    def test_an_ifs_separated_redirect_target_is_bounded(self):
+        outside = Path(tempfile.mkdtemp(prefix="dh-ifs-out-"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        self.expect("deny", (f"echo x >$IFS{outside}/f", f"echo x | tee$IFS{outside}/f"),
+                    bounded_modes=(True,))
+
+    def test_a_quoted_ifs_is_one_word_as_in_the_shell(self):
+        self.expect("allow", ('echo "rm${IFS}-rf${IFS}/"', "printf '%s' \"a${IFS}b\"",
+                              "echo $IFSX", "echo ${IFSX}"), bounded_modes=self.BOTH)
+
+
+class TestInterpreterTableCoversTheClass(ReviewHookBase):
+    """W1-03 (P1, 2026-10-27 audit): the inline-interpreter table stopped at php and missed awk,
+    so `awk 'BEGIN{system("rm -rf /")}'` ran arbitrary shell as a silent ALLOW; the whole class
+    of one-liner interpreters that launch a shell was open."""
+
+    BOTH = (False, True)
+
+    def test_an_interpreter_launching_a_root_wipe_is_denied(self):
+        self.expect("deny", (
+            "awk 'BEGIN{system(\"rm -rf /\")}'", "gawk 'BEGIN{system(\"rm -rf /\")}'",
+            "mawk 'BEGIN{system(\"rm -rf /\")}'", "nawk 'BEGIN{system(\"rm -rf /\")}'",
+            "busybox awk 'BEGIN{system(\"rm -rf /\")}'",
+            "lua -e 'os.execute(\"rm -rf /\")'", "luajit -e 'os.execute(\"rm -rf /\")'",
+            "julia -e 'run(`rm -rf /`)'", "Rscript -e 'system(\"rm -rf /\")'",
+            "deno eval 'Deno.run({cmd:[\"rm\",\"-rf\",\"/\"]})'",
+        ), bounded_modes=self.BOTH)
+
+    def test_an_interpreter_launching_a_refused_git_or_reset_is_denied(self):
+        self.expect("deny", (
+            "gawk 'BEGIN{system(\"git push --force origin main\")}'",
+            "awk 'BEGIN{system(\"orca orchestration reset\")}'",
+            "Rscript -e 'system(\"git push --force origin main\")'",
+        ), bounded_modes=self.BOTH)
+
+    def test_sqlite3_shell_and_sed_e_are_judged_not_downgraded(self):
+        # sqlite3 .shell/.system and sed's `e` command/flag both hand a line to a shell.
+        self.expect("deny", (
+            "sqlite3 d '.shell rm -rf /'", "sqlite3 d '.system rm -rf /'",
+            "sed 'e rm -rf /' f", "sed -i 'e rm -rf /' f",
+            "sed 'e git push --force origin main' f",
+        ), bounded_modes=self.BOTH)
+
+    def test_sed_substitute_execute_flag_is_extracted(self):
+        # Codex g1 P1 (W1-03): the `e` FLAG on an s/// command executes the substituted text
+        # through a shell; only the standalone `e COMMAND` was extracted. The replacement of an
+        # s-command carrying `e` (incl. combined flags, and via -e/--expression) is read now.
+        self.expect("deny", (
+            "sed 's/.*/git push --force origin main/e' f",
+            "sed 's/.*/rm -rf \\//e' f",
+            "sed 's|x|orca orchestration reset|ge' f",
+            "sed -e 's/.*/git push --force origin main/e' f",
+            "sed --expression='s/.*/git push --force origin main/e' f",
+            "sed 's#a#git push --force origin main#pe' f",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "sed 's/a/b/e' f", "sed 's/a/b/ge' f", "sed 's/foo/bar/g' f",
+        ), bounded_modes=self.BOTH)
+
+    def test_awk_pipe_and_coprocess_shell_channels_are_judged(self):
+        # Re-attacker g1 #1 (W1-03): awk's output pipe `print | "cmd"`, input pipe `"cmd" | getline`
+        # and `|&` coprocess all hand a string to a shell; only system() was scanned by name.
+        self.expect("deny", (
+            "awk 'BEGIN{print \"x\" | \"rm -rf /\"}'",
+            "awk 'BEGIN{\"rm -rf /\" | getline line}'",
+            "awk 'BEGIN{print \"x\" |& \"git push --force origin main\"}'",
+            "awk 'BEGIN{print \"rm -rf /\" | \"sh\"}'",
+            "gawk 'BEGIN{\"orca orchestration reset\" |& getline}'",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "awk 'BEGIN{print $1 | \"sort\"}' f", "awk 'BEGIN{\"date\" | getline d}' f",
+        ), bounded_modes=self.BOTH)
+
+    def test_versioned_and_variant_interpreter_heads_are_matched(self):
+        # Re-attacker g1 #1 (W1-03): versioned/variant interpreter names and gawk's option spellings
+        # were missed by the exact-name table.
+        self.expect("deny", (
+            "lua5.4 -e 'os.execute(\"rm -rf /\")'", "lua5.1 -e 'os.execute(\"rm -rf /\")'",
+            "luajit2.1 -e 'os.execute(\"rm -rf /\")'",
+            "R -e 'system(\"rm -rf /\")'", "julia -E 'run(`rm -rf /`)'",
+            "goawk 'BEGIN{system(\"rm -rf /\")}'", "original-awk 'BEGIN{system(\"rm -rf /\")}'",
+            "toybox awk 'BEGIN{system(\"rm -rf /\")}'",
+            "gawk --source='BEGIN{system(\"rm -rf /\")}'",
+            "gawk --source 'BEGIN{system(\"rm -rf /\")}'",
+            "gawk -e 'BEGIN{system(\"rm -rf /\")}'",
+            "gawk -i inplace 'BEGIN{system(\"rm -rf /\")}'",
+            # the same canonical name where the program is fed on stdin (sweep)
+            "printf 'os.execute(\"git push --force origin main\")' | lua5.4",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "lua5.4 -e 'print(1+1)'", "goawk '{print $1}' f", "R -e 'cat(1:3)'",
+        ), bounded_modes=self.BOTH)
+
+    def test_a_program_file_option_never_discards_the_inline_programs(self):
+        # Re-attacker g1 r2 (W1-03): gawk runs EVERY program source, so `-e '<inline>' -f file`
+        # (either order) must still judge the inline program, not drop it at the -f. And a -f/-E
+        # program file the hook cannot read is unknown, so it fails closed HIGH, not "no code".
+        self.expect("deny", (
+            "gawk -e 'BEGIN{system(\"git push --force origin main\")}' -f benign.awk",
+            "gawk -f benign.awk -e 'BEGIN{system(\"git push --force origin main\")}'",
+            "gawk -f benign.awk", "awk -f prog.awk data.txt", "gawk -E cgi.awk",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "gawk -e '{print $1}' f", "awk '{print $1}' f",
+        ), bounded_modes=self.BOTH)
+
+    def test_an_option_with_a_separate_argument_does_not_hide_python_c(self):
+        # Re-attacker g1 r2 (W1-03): `python -W error -c CODE` read `error` as the script path and
+        # stopped, so the -c code after an arg-taking option was never scanned.
+        self.expect("deny", (
+            "python3 -W error -c 'import os;os.system(\"git push --force origin main\")'",
+            "python3 -X faulthandler -c 'import os;os.system(\"rm -rf /\")'",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", ("python3 -W error script.py", "python3 -c 'print(1)'"),
+                    bounded_modes=self.BOTH)
+
+    def test_an_interpreter_writing_a_guard_path_is_denied(self):
+        self.expect("deny", (
+            "awk 'BEGIN{print \"x\" > \".claude/settings.json\"}'",
+            "lua -e 'io.open(\".codex/hooks.json\", \"w\")'",
+            "Rscript -e 'writeLines(\"x\", \".claude/settings.json\")'",
+        ), bounded_modes=(True,), reason="own guard")
+
+    def test_benign_interpreter_use_stays_allowed(self):
+        self.expect("allow", (
+            "awk '{print $1}' f.txt", "awk -F, '{print $2}' data.csv",
+            "gawk 'END{print NR}' f", "lua -e 'print(1+1)'",
+            "Rscript -e 'cat(1:10)'", "sed -n '1,5p' f.txt", "sed 's/a/b/g' f.txt",
+            "sqlite3 d 'select count(*) from t'",
+        ), bounded_modes=self.BOTH)
+
+
+class TestArchiveAndPatchWritersReachTheGuard(ReviewHookBase):
+    """W1-05 (P2, 2026-10-27 audit): tar/unzip/patch/busybox were absent from the self-guard, so
+    an archive or patch extracted over the worktree replaced the guard file with no deny and no
+    prompt. Member names are not visible to the hook, so an extraction whose destination covers
+    the guard region is asked about; a destination that cannot reach it stays allowed."""
+
+    BOTH = (False, True)
+
+    def test_an_extraction_over_the_guard_region_is_asked(self):
+        self.expect("ask", (
+            "tar -xf /tmp/e.tar", "tar -xzf e.tgz", "tar --extract --file e.tar",
+            "tar -C . -xf e.tar", "tar -C .. -xf e.tar", "unzip -o e.zip",
+            "unzip e.zip -d .", "patch -p1 < d.patch", "patch < d.patch",
+            "busybox tar -xf e.tar", "busybox unzip e.zip",
+        ), bounded_modes=self.BOTH)
+
+    def test_an_archive_overwriting_a_guard_file_outright_is_denied(self):
+        self.expect("deny", (
+            "tar -cf .claude/settings.json x", "tar -czf .orca/dispatch-pubkey src",
+            "tar --create --file=.codex/hooks.json x", "patch -o .claude/settings.json < d.patch",
+        ), bounded_modes=(True,), reason="own guard")
+
+    def test_extraction_straight_into_a_guard_directory_is_asked(self):
+        # Codex g1 r2 P1 (W1-05): _dest_covers_guard only asked whether the destination contained
+        # the worktree ROOT, so an extract INTO a guard directory (`tar -C .claude …`) dropped a
+        # member onto the guard with no prompt. A destination equal to, inside, or containing any
+        # guard directory covers the guard -- across every archive/patch tool and its -C/-d/
+        # --directory spelling, plus cpio/pax/bsdtar/gtar.
+        self.expect("ask", (
+            "tar -C .claude -xf e.tar", "unzip e.zip -d .claude", "patch -d .claude -p1 < d.patch",
+            "tar --directory=.codex -xf e.tar", "bsdtar -C .agents -xf e.tar",
+            "gtar -C .open-fleet/hooks -xf e.tar", "cpio -i -D .claude < e.cpio",
+            "pax -r -C .claude < e.pax",
+        ), bounded_modes=self.BOTH)
+        # A neighbouring non-guard directory still extracts freely.
+        self.expect("allow", ("tar -C .claudex -xf e.tar", "pax -r -w src .claude"),
+                    bounded_modes=(True,))
+
+    def test_an_extraction_that_cannot_reach_the_guard_stays_allowed(self):
+        self.expect("allow", (
+            "tar -C build -xf e.tar", "tar -C sub/dir --extract -f e.tar",
+            "unzip e.zip -d build", "unzip -d out e.zip", "patch -d build -p1 < d.patch",
+            "tar -czf out.tar src", "tar -tf e.tar", "tar -cf dist/app.tar build",
+        ), bounded_modes=(True,))
+
+    def test_a_relative_destination_symlinked_to_the_root_is_resolved(self):
+        # Codex g1 P1 (W1-05): `_dest_covers_guard` returned False for a relative `-C` before
+        # resolving it, so `tar -C build -xf e.tar` with build -> the worktree root reached the
+        # guard. The destination is resolved (symlinks followed) against the root now.
+        wt = Path(tempfile.mkdtemp(prefix="dh-destlink-"))
+        self.addCleanup(shutil.rmtree, wt, True)
+        (wt / "build").symlink_to(wt)       # build resolves back to the worktree root
+        (wt / "safe").mkdir()
+        env = {"OPEN_FLEET_UNIT_WORKTREE": str(wt)}
+        for command, want in (("tar -C build -xf e.tar", "deny"),
+                              ("tar xf e.tar -C build", "deny"),
+                              ("unzip e.zip -d build", "deny"),
+                              ("tar -C safe -xf e.tar", "allow")):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env, cwd=wt))
+                got = block["permissionDecision"] if block else "allow"
+                self.assertEqual(got, "ask" if want == "deny" else "allow", command)
+
+    def test_a_guard_directory_symlinked_outside_the_worktree_is_still_the_guard(self):
+        # Codex g1 r3 P1 (W1-05): `_dest_covers_guard` returned False for any resolved destination
+        # outside the worktree root before comparing it with the guard directories, so with
+        # `.claude` -> a shared directory elsewhere, `tar -C <that dir> -xf e.tar` replaced its
+        # settings.json silently. A guard directory, and the directory of a guard FILE that is
+        # itself a symlink, are guards wherever they resolve.
+        wt = Path(tempfile.mkdtemp(prefix="dh-guardout-wt-"))
+        shared = Path(tempfile.mkdtemp(prefix="dh-guardout-claude-"))
+        hooks_home = Path(tempfile.mkdtemp(prefix="dh-guardout-codex-"))
+        elsewhere = Path(tempfile.mkdtemp(prefix="dh-guardout-other-"))
+        for d in (wt, shared, hooks_home, elsewhere):
+            self.addCleanup(shutil.rmtree, d, True)
+        (wt / ".claude").symlink_to(shared)
+        (wt / ".codex").mkdir()
+        (wt / ".codex" / "hooks.json").symlink_to(hooks_home / "hooks.json")
+        q = shlex.quote
+        asked = (f"tar -C {q(str(shared))} -xf e.tar", f"tar xf e.tar -C {q(str(shared))}",
+                 f"tar --directory={q(str(shared))} -xf e.tar",
+                 f"unzip e.zip -d {q(str(shared))}", f"unzip -d {q(str(shared))} e.zip",
+                 f"patch -d {q(str(shared))} -p1 < d.patch",
+                 f"patch --directory={q(str(shared))} -p1 < d.patch",
+                 f"tar -C {q(str(shared / 'sub'))} -xf e.tar",
+                 f"tar -C {q(str(hooks_home))} -xf e.tar", f"unzip e.zip -d {q(str(hooks_home))}",
+                 "tar -C .claude -xf e.tar", "unzip e.zip -d .claude",
+                 "patch -d .claude -p1 < d.patch")
+        allowed = (f"tar -C {q(str(elsewhere))} -xf e.tar", f"unzip e.zip -d {q(str(elsewhere))}",
+                   f"patch -d {q(str(elsewhere))} -p1 < d.patch")
+        for env in ({"OPEN_FLEET_UNIT_WORKTREE": str(wt)}, {}):
+            for command, want in [(c, "ask") for c in asked] + [(c, "allow") for c in allowed]:
+                with self.subTest(command=command, bounded=bool(env)):
+                    block = self.decision(self.fire(event("Bash", command=command), env, cwd=wt))
+                    got = block["permissionDecision"] if block else "allow"
+                    self.assertEqual(got, want, command)
+
+    def test_tars_dashless_option_bundle_is_recognised(self):
+        # Codex g1 P1 (W1-05): tar's traditional syntax puts the option bundle in the first
+        # operand with no leading dash -- `tar cf FILE src` overwrites FILE, `tar xf e.tar`
+        # extracts. Neither tar parser read the dashless bundle, so both were silent ALLOWs.
+        self.expect("deny", (
+            "tar cf .claude/settings.json src", "tar cvf .orca/dispatch-pubkey src",
+            "tar cfz .codex/hooks.json src", "busybox tar cf .claude/settings.json src",
+        ), bounded_modes=(True,), reason="own guard")
+        self.expect("ask", (
+            "tar xf e.tar", "tar xvf e.tar", "tar xzf e.tgz", "tar xf e.tar -C .",
+            "busybox tar xf e.tar",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "tar cf out.tar src", "tar xf e.tar -C build", "tar cCf sub out.tar src",
+        ), bounded_modes=(True,))
+
+
+class TestReadOnlyTierWriteFloor(HookBase):
+    """W4-05 (2026-10-27 audit): ``ro`` was a tool filter, not a filesystem one, so plan-mode
+    Bash still wrote (``sh -c 'echo x > f'``). OPEN_FLEET_HOOK_READONLY denies every write the
+    hook can see -- a redirect, a tee, a file tool, an apply_patch -- regardless of the boundary,
+    while read-only shell still runs. It is defense in depth over those channels, not a filesystem
+    sandbox: a mutation the hook does not model as a write (cp/mv/rm, a package install) is beyond
+    it, and the disposable sandbox is the boundary for those."""
+
+    RO = {"OPEN_FLEET_HOOK_READONLY": "1"}
+
+    def _fire(self, payload):
+        return self.fire(payload, env_extra=self.RO)
+
+    def test_a_shell_write_is_denied_even_inside_the_boundary(self):
+        wt = self.tmp / "rowt"
+        wt.mkdir()
+        env = {**self.RO, "ORCA_UNIT_WORKTREE": str(wt)}
+        for command in ("echo x > in.txt", "echo x >> in.txt", "echo x | tee t.txt",
+                        "sh -c 'echo x > f'", "echo x > /tmp/anywhere.txt",
+                        "printf y | tee -a log"):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env_extra=env,
+                                                cwd=wt))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+                self.assertIn("READONLY", block["permissionDecisionReason"])
+
+    def test_file_tools_are_denied_under_readonly(self):
+        for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+                block = self.decision(self._fire(event(tool, **{key: "/tmp/whatever.py"})))
+                self.assertIsNotNone(block, tool)
+                self.assertEqual(block["permissionDecision"], "deny", tool)
+
+    def test_an_apply_patch_heredoc_is_denied_under_readonly(self):
+        command = ("apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: note.txt\n"
+                   "+hi\n*** End Patch\nEOF")
+        block = self.decision(self._fire(event("Bash", command=command)))
+        self.assertIsNotNone(block)
+        self.assertEqual(block["permissionDecision"], "deny")
+
+    def test_a_numeric_redirect_target_is_a_file_not_a_descriptor(self):
+        # Codex g1 P1 (W4-05 floor): `_has_write` excluded every numeric target, but a number is a
+        # descriptor only for the duplication ops (>&N); `> 123` writes a file named 123.
+        for command in ("echo pwned > 123", "echo pwned >> 7", "echo x >| 42"):
+            with self.subTest(command=command):
+                block = self.decision(self._fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        # an fd duplication is not a file write
+        for command in ("make 2>&1 | tail", "echo hi >&2", "cat 0<&3"):
+            with self.subTest(command=command):
+                r = self._fire(event("Bash", command=command))
+                self.assertEqual(r.stdout.strip(), "", command)
+
+    def test_a_dash_redirect_target_is_a_file_not_a_descriptor_close(self):
+        # Codex g1 r2 P2 (W4-05 floor): `echo x > -` writes a file named `-`; a dash closes a
+        # descriptor only for the duplication ops (`>&-`/`<&-`), not for a plain redirect.
+        for command in ("echo x > -", "echo x >> -", "echo x >| -"):
+            with self.subTest(command=command):
+                block = self.decision(self._fire(event("Bash", command=command)))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        # closing a descriptor writes nothing
+        for command in ("exec 3>&-", "exec 4<&-"):
+            with self.subTest(command=command):
+                r = self._fire(event("Bash", command=command))
+                self.assertEqual(r.stdout.strip(), "", command)
+
+    def test_a_write_in_a_program_fed_to_a_shell_is_denied(self):
+        # Re-attacker g1 #2 (W4-05): the floor descended `sh -c` and heredoc bodies but not a
+        # program fed to a shell through a pipe, `-s` or stdin; all four forms must agree.
+        wt = self.tmp / "fedwt"
+        wt.mkdir()
+        env = {**self.RO, "ORCA_UNIT_WORKTREE": str(wt)}
+        for command in ("echo 'echo x > f' | sh", "printf 'echo x>f' | sh -s",
+                        "sh -c 'echo x > f'", "sh <<EOF\necho x > f\nEOF",
+                        "cat <<'EOF' | bash\necho x > f\nEOF",
+                        "sh -c \"echo 'echo x > f' | sh\""):   # fed inside a -c body
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env_extra=env,
+                                                cwd=wt))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+        for command in ("echo hello | cat", "echo 'ls -la' | sh"):
+            with self.subTest(command=command):
+                r = self.fire(event("Bash", command=command), env_extra=env, cwd=wt)
+                self.assertEqual(r.stdout.strip(), "", command)
+
+    def test_a_program_a_shell_reads_that_the_hook_cannot_read_is_denied(self):
+        # W4-05 fail-closed half: a shell reading its program from a pipe source, a < file or a
+        # substitution the hook cannot read would hide any write inside it, and a body the
+        # hook cannot split is a write it cannot rule out. A pipe into a non-shell still runs.
+        wt = Path(tempfile.mkdtemp(prefix="ro-blind-"))
+        self.addCleanup(shutil.rmtree, wt, True)
+        env = {**self.RO, "ORCA_UNIT_WORKTREE": str(wt)}
+        for command in ("cat prog.sh | sh", "sh < prog.sh", 'echo "$(cat prog.sh)" | sh',
+                        "bash -c \"echo 'x > f\""):
+            with self.subTest(command=command):
+                block = self.decision(self.fire(event("Bash", command=command), env_extra=env,
+                                                cwd=wt))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block["permissionDecision"], "deny", command)
+                self.assertIn("READONLY", block["permissionDecisionReason"], command)
+        r = self.fire(event("Bash", command="cat prog.sh | grep x"), env_extra=env, cwd=wt)
+        self.assertEqual(r.stdout.strip(), "")
+
+    def test_read_only_shell_still_runs_under_readonly(self):
+        for command in ("git diff", "git log --oneline -5", "cat README.md", "ls -la",
+                        "grep -rn needle .", "make 2>&1 | tail", "echo hello"):
+            with self.subTest(command=command):
+                r = self._fire(event("Bash", command=command))
+                self.assertEqual(r.stdout.strip(), "", command)
+
+    def test_the_header_states_the_readonly_floor_and_its_limit(self):
+        text = HOOK.read_text(encoding="utf-8")
+        self.assertIn("OPEN_FLEET_HOOK_READONLY", text)
+        self.assertIn("NOT a filesystem sandbox", text)

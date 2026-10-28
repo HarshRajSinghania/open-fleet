@@ -118,6 +118,12 @@ def run(title, agent="claude", effort="high", task="task_test"):
     return p.returncode, p.stdout, p.stderr
 
 
+# The named opt-out of the deny-hook arming gate (W4-06): an unset ORCA_DENY_HOOK_SETTINGS refuses
+# every spawn without it. The spawn harnesses below exercise other behaviour, so they carry it;
+# TestSpawnWorkerRefusals asserts the refusal with it set to 0.
+UNVERIFIED_OK = {"OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
+
+
 def run_spawn(args, env_extra=None, task_list=None):
     """Invoke spawn_worker.sh past the selftest hook; return (rc, stdout, stderr).
 
@@ -126,7 +132,7 @@ def run_spawn(args, env_extra=None, task_list=None):
     (written to a file the stub cats, so no shell quoting of the JSON).
     """
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca"}
+        env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca"}
         if task_list is not None:
             payload = Path(tmp) / "task-list.json"
             payload.write_text(json.dumps(task_list))
@@ -433,6 +439,53 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
                 **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
             self.assert_refused(rc, err, "not the worktree this spawn is about")
 
+    def _spawn_resolving(self, tmp, selector, settings, show=None):
+        """Spawn through a stub runtime CLI that answers only `worktree show` (with `show`, or
+        an error envelope when show is None)."""
+        bindir = Path(tmp) / "bin"
+        bindir.mkdir(exist_ok=True)
+        receipt = Path(tmp) / "show.json"
+        receipt.write_text(json.dumps(show if show is not None else {"error": "no such worktree"}))
+        stub = bindir / "orca"
+        stub.write_text('#!/bin/sh\ncase "$*" in\n  *"worktree show"*) cat "%s" ;;\n'
+                        '  *) echo \'{"error": "stub"}\'; exit 1 ;;\nesac\n' % receipt)
+        stub.chmod(0o755)
+        return run_spawn(["task_test", selector, "t"], env_extra={
+            **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings), "PATH": f"{bindir}:/usr/bin:/bin"})
+
+    def test_every_selector_that_names_a_tree_gives_the_gate_its_boundary(self):
+        # W4-03 (2026-10-27 audit): only a `path:` selector reached the gate as --boundary, so an
+        # `id:<repoId>::<path>` spawn (the form the script's own refusal recommends), and every
+        # current/name:/branch: spawn, was certified with a registration bounding another tree.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            wt, other = Path(tmp) / "wt", Path(tmp) / "other"
+            other.mkdir()
+            rc, _, err = run_spawn(["task_test", f"id:repo1::{other}", "t"], env_extra={
+                **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assert_refused(rc, err, "not the worktree this spawn is about")
+            for selector in ("current", "name:feature", "branch:feature", "active"):
+                with self.subTest(selector=selector):
+                    rc, _, err = self._spawn_resolving(tmp, selector, settings, {"result": {
+                        "worktree": {"id": f"repo1::{other}", "displayName": "other"}}})
+                    self.assert_refused(rc, err, "not the worktree this spawn is about")
+                    _rc, _, err = self._spawn_resolving(tmp, selector, settings, {"result": {
+                        "worktree": {"id": f"repo1::{wt}", "path": str(wt)}}})
+                    self.assertNotIn("not armed", err)
+            _rc, _, err = run_spawn(["task_test", f"id:repo1::{wt}", "t"], env_extra={
+                **self.RW, "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assertNotIn("not armed", err)
+
+    def test_a_tree_the_runtime_cannot_resolve_refuses_the_arming_gate(self):
+        # Fail closed: a selector that names an existing tree but whose path the runtime does not
+        # give back cannot be checked against the registration, so the spawn does not proceed.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            for show in (None, {"result": {"worktree": {"displayName": "no path"}}}):
+                with self.subTest(show=show):
+                    rc, _, err = self._spawn_resolving(tmp, "current", settings, show)
+                    self.assert_refused(rc, err, "deny-hook not armed")
+
     def test_the_arming_gate_is_told_which_harness_launches(self):
         # A claude registration proves nothing for a codex worker: the gate now learns the agent
         # and refuses when the registration does not cover that harness's tools.
@@ -473,10 +526,93 @@ class TestSpawnWorkerRefusals(unittest.TestCase):
             self.assert_refused(rc, err, "not armed")
 
     def test_unverified_arming_warns_but_proceeds_past_the_gate(self):
-        # Unset: the spawn must SAY the guard is unverified (then go on to
-        # fail later for want of a real orca — the warning is what we pin).
+        # With the named opt-out run_spawn carries: the spawn SAYS the guard is unverified and
+        # proceeds (then goes on to fail later for want of a real orca — the warning is what we pin).
         _rc, _, err = run_spawn(self.BASE_ARGS, env_extra=dict(self.RW))
         self.assertIn("deny-hook arming UNVERIFIED", err)
+
+    def test_an_unset_guard_refuses_every_profile_without_the_optout(self):
+        # W4-06 (2026-10-27 audit): an unset settings var only WARNED, and ro skipped the gate,
+        # so a default spawn ran a worker on an unverified PreToolUse guard. Every profile
+        # refuses now unless the named opt-out is set; the legacy alias opts out too.
+        for env in (dict(self.RW), {"PROFILE": "ro"}):
+            with self.subTest(profile=env["PROFILE"]):
+                rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+                    **env, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "0"})
+                self.assert_refused(rc, err, "deny-hook arming UNVERIFIED")
+                self.assertIn("OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1", err)
+        _rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+            **self.RW, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "", "ORCA_ALLOW_UNVERIFIED_DENY_HOOK": "1"})
+        self.assertIn("deny-hook arming UNVERIFIED", err)
+        self.assertNotIn("SPAWN=REFUSED task=task_test deny-hook arming", err)
+
+    def test_require_deny_hook_ignores_the_optout(self):
+        # The hardened lock: with REQUIRE set an inherited opt-out cannot reopen the warning path.
+        rc, _, err = run_spawn(self.BASE_ARGS, env_extra={
+            **self.RW, "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1", "OPEN_FLEET_REQUIRE_DENY_HOOK": "1"})
+        self.assert_refused(rc, err, "no opt-out is honoured")
+
+    def test_require_deny_hook_refuses_an_rw_spawn_with_an_unset_guard(self):
+        # W4-06 (2026-10-27 audit): an unset settings var only WARNED, so a default rw spawn ran a
+        # bypass worker on an unverified PreToolUse guard. A hardened coordinator sets
+        # OPEN_FLEET_REQUIRE_DENY_HOOK=1 to make that a refusal.
+        rc, _, err = run_spawn(self.BASE_ARGS,
+                               env_extra={**self.RW, "OPEN_FLEET_REQUIRE_DENY_HOOK": "1"})
+        self.assert_refused(rc, err, "deny-hook arming UNVERIFIED")
+        self.assertIn("OPEN_FLEET_REQUIRE_DENY_HOOK", err)
+
+    def test_require_deny_hook_is_checked_before_any_provider_deferral(self):
+        # W4-06 (Codex g1 r3 P1): the off-Orca deferral was checked FIRST, so with the settings var
+        # unset OPEN_FLEET_REQUIRE_DENY_HOOK=1 could not stop an OPEN_FLEET_RUNTIME=openhands (or
+        # posix, or any other non-Orca) launch. REQUIRE is the hardened lock: it refuses before
+        # any deferral, on every runtime.
+        for runtime, agent in (("openhands", "openhands"), ("posix", "claude"),
+                               ("gastown", "claude")):
+            for env in (dict(self.RW), {"PROFILE": "ro"}):
+                with self.subTest(runtime=runtime, profile=env["PROFILE"]):
+                    rc, _, err = run_spawn(self.BASE_ARGS + [agent], env_extra={
+                        **env, "OPEN_FLEET_RUNTIME": runtime, "OPEN_FLEET_REQUIRE_DENY_HOOK": "1"})
+                    self.assert_refused(rc, err, "deny-hook arming UNVERIFIED")
+                    self.assertIn("OPEN_FLEET_REQUIRE_DENY_HOOK", err)
+                    self.assertNotIn("NOTE deny-hook arming is verified", err)
+
+    def test_a_provider_that_does_not_verify_is_not_announced_as_verified(self):
+        # Only posix and openhands verify the installed guard before the agent starts; another
+        # non-Orca provider's deferral is named UNVERIFIED rather than claimed verified (W4-06).
+        for runtime, agent, verified in (("openhands", "openhands", True), ("posix", "claude", True),
+                                         ("gastown", "claude", False)):
+            with self.subTest(runtime=runtime):
+                _rc, _, err = run_spawn(self.BASE_ARGS + [agent], env_extra={
+                    **self.RW, "OPEN_FLEET_RUNTIME": runtime})
+                self.assertEqual("NOTE deny-hook arming is verified" in err, verified, err)
+                self.assertEqual(f"UNVERIFIED for PROFILE=rw on runtime {runtime}" in err,
+                                 not verified, err)
+
+    def test_require_deny_hook_still_verifies_a_named_guard(self):
+        # With the flag set, a correctly wired guard still passes (the refusal is only for unset).
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._armed_settings(tmp)
+            _rc, _, err = run_spawn(["task_test", f"path:{Path(tmp) / 'wt'}", "t"], env_extra={
+                **self.RW, "OPEN_FLEET_REQUIRE_DENY_HOOK": "1", "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assertNotIn("SPAWN=REFUSED", err.split("\n")[0] if err else "")
+            self.assertNotIn("not armed", err)
+
+    def test_a_ro_spawn_verifies_a_named_guard_rather_than_skipping_it(self):
+        # W4-06: ro used to skip the arming block entirely, so a wired guard went unchecked and a
+        # ro worker (which can still write through Bash, W4-05) never even saw the warning. ro now
+        # verifies a named registration, and refuses when it is not armed.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / "settings.json"
+            settings.write_text("{}")
+            rc, _, err = run_spawn(["task_test", f"path:{Path(tmp) / 'wt'}", "t", "claude"],
+                                   env_extra={"PROFILE": "ro", "ORCA_DENY_HOOK_SETTINGS": str(settings)})
+            self.assert_refused(rc, err, "not armed")
+
+    def test_a_ro_spawn_without_a_guard_proceeds_with_a_note(self):
+        # Under the named opt-out run_spawn carries (without it ro refuses, above).
+        _rc, _, err = run_spawn(self.BASE_ARGS, env_extra={"PROFILE": "ro"})
+        self.assertNotIn("SPAWN=REFUSED", err.split("\n")[0] if err else "")
+        self.assertIn("PROFILE=ro", err)
 
     def test_danger_without_optin_refused(self):
         rc, _, err = run_spawn(self.BASE_ARGS, env_extra={"PROFILE": "danger"})
@@ -617,7 +753,7 @@ esac
         return log
 
     def _run(self, tmp, args, env_extra=None):
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(SPAWN), *args], env=env,
@@ -1006,7 +1142,7 @@ esac
             shutil.copytree(ROOT / "runtime", root / "runtime",
                             ignore=shutil.ignore_patterns("__pycache__"))
         (root / "runtime" / "pins.json").write_text(json.dumps(pins))
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1"}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(root / "runtime" / "scripts" / "spawn_worker.sh"), *args],
@@ -1442,7 +1578,7 @@ provider_base = importlib.import_module("providers.base")
 def run_launch(agent, profile, env_extra=None, selector="path:/tmp/of-wt", effort="high", args=None):
     """Run spawn_worker.sh up to its resolved launch (SW_PRINT_LAUNCH) on a NON-Orca runtime."""
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", tmp), "SP": tmp,
+        env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", tmp), "SP": tmp,
                "OPEN_FLEET_RUNTIME": "posix", "OPEN_FLEET_STATE_DB": str(Path(tmp) / "s.db"),
                "SW_PRINT_LAUNCH": "1", "PROFILE": profile}
         env.update(env_extra or {})
@@ -1496,7 +1632,7 @@ class TestNonOrcaLaunchTableIsBasePy(unittest.TestCase):
 
     def test_orca_runtime_launch_rows_are_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+            env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                    "SW_PRINT_LAUNCH": "1", "PROFILE": "ro"}
             p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                env=env, capture_output=True, text=True)
@@ -1543,7 +1679,7 @@ class TestParentProfileNarrowing(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --dangerously-skip-permissions"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "rw",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "OPEN_FLEET_SANDBOX_PROFILE": "rw",
                    "OPEN_FLEET_PARENT_PROFILE": "danger"}
@@ -1659,7 +1795,7 @@ class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
 
     def as_worker(self, tmp, handle, env_extra, args=("task_child", "current", "child", "claude", "high")):
         """spawn_worker.sh run FROM the pane `handle` (its ORCA_TERMINAL_HANDLE), to the print hook."""
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": handle, **env_extra}
         return subprocess.run(["bash", str(SPAWN), *args], env=env, capture_output=True, text=True)
 
@@ -1776,7 +1912,7 @@ class TestTheCapReachesTheWorkerOnOrca(unittest.TestCase):
                             'case "$*" in *task-list*) echo \'{"result":{"tasks":[{"id":"task_x","status":"ready"}]}}\' ;;'
                             ' *) echo \'{"result":{"state":"ready","dispatchId":"d1","launch":{"effective":"claude -p --permission-mode plan"}}}\' ;; esac\n')
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "ro", "OPEN_FLEET_WORKER_ID": "w1"}
             p = subprocess.run(["bash", str(SPAWN), "task_x", "path:/tmp/of-wt", "t", "claude"],
                                env=env, capture_output=True, text=True)
@@ -1801,7 +1937,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
 
     def _run(self, tmp, args, env_extra=None):
         """The lane harness, with HOME=tmp unless env_extra says otherwise (None unsets it)."""
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SETTLE_SECS": "0", "SUBMIT_SECS": "1", **(env_extra or {})}
         return subprocess.run(["bash", str(SPAWN), *args], env={k: v for k, v in env.items() if v is not None},
                               capture_output=True, text=True)
@@ -1839,7 +1975,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
         (rc, stdout, stderr) reader for child i."""
         lines = ["#!/bin/sh", before]
         for i, env in enumerate(children):
-            child = {"PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "ORCA_CLI_COMMAND": "orca",
+            child = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "HOME": tmp, "SP": tmp, "ORCA_CLI_COMMAND": "orca",
                      "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": handle, **env}
             out = shlex.quote(f"{tmp}/nested{i}")
             lines.append("env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in child.items())
@@ -1947,7 +2083,7 @@ class TestNoWorkerRunsBeforeItsCapExists(unittest.TestCase):
         # ro, the record that replaces it says rw, and the child is judged against rw.
         with tempfile.TemporaryDirectory() as tmp:
             reservation = self.reserve(tmp, "ro", "term_coord", os.getpid())
-            env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+            env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                    "SW_PRINT_LAUNCH": "1", "ORCA_TERMINAL_HANDLE": "term_new",
                    "RESERVATION_WAIT_SECS": "60", **self.DANGER}
             p = subprocess.Popen(["bash", str(SPAWN), "task_child", "current", "child", "claude", "high"],
@@ -2050,12 +2186,12 @@ class TestIdentitySurvivesAScrubbedEnvironment(unittest.TestCase):
 
     def lane(self, **extra):
         """A coordinator's launch environment (the stubbed runtime)."""
-        return {"PATH": f"{self.tmp}:/usr/bin:/bin", "SP": self.tmp, "HOME": self.tmp,
+        return {**UNVERIFIED_OK, "PATH": f"{self.tmp}:/usr/bin:/bin", "SP": self.tmp, "HOME": self.tmp,
                 "ORCA_CLI_COMMAND": "orca", "SETTLE_SECS": "0", "SUBMIT_SECS": "1", **extra}
 
     def scrubbed(self, **extra):
         """What survives a harness that drops ORCA_*: no pane handle, no profile, no worker id."""
-        return {"PATH": "/usr/bin:/bin", "HOME": self.tmp, "SP": self.tmp, "SW_PRINT_LAUNCH": "1",
+        return {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "HOME": self.tmp, "SP": self.tmp, "SW_PRINT_LAUNCH": "1",
                 "OPEN_FLEET_CLI_COMMAND": "orca", **extra}
 
     def roots(self):
@@ -2207,6 +2343,18 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
     assert_capped = TestIdentitySurvivesAScrubbedEnvironment.assert_capped
     RW = TestIdentitySurvivesAScrubbedEnvironment.RW
     DANGER = TestIdentitySurvivesAScrubbedEnvironment.DANGER
+
+    def armed(self, **extra):
+        """A launch through a VERIFIED deny-hook arming (W4-06): its own worktree and a registration
+        bounding it, so stderr carries no arming warning and an UNVERIFIED there is the scan's."""
+        wt = Path(self.tmp) / "armed-wt"
+        wt.mkdir(exist_ok=True)
+        settings = Path(self.tmp) / "armed-settings.json"
+        settings.write_text(subprocess.run(["sh", str(HOOK), "--settings", str(wt)], capture_output=True,
+                                           text=True, check=True).stdout)
+        env = {k: v for k, v in self.lane(**extra).items() if k not in UNVERIFIED_OK}
+        env["ORCA_DENY_HOOK_SETTINGS"] = str(settings)
+        return ["bash", str(SPAWN), "task_test", f"path:{wt}", "t"], env
     CHILD = TestIdentitySurvivesAScrubbedEnvironment.CHILD
     LAUNCH = TestIdentitySurvivesAScrubbedEnvironment.LAUNCH
 
@@ -2442,7 +2590,7 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
         text = stub.read_text()
         self.assertIn(marker, text)
         stub.write_text(text.replace(marker, marker[:-3] + start, 1))
-        rc, out, err = self.tree().run(self.LAUNCH, self.lane(PROFILE="ro"))
+        rc, out, err = self.tree().run(*self.armed(PROFILE="ro"))
         self.assertEqual(rc, 0, out + err)
         self.assertIn("UNVERIFIED", err)
         self.assertEqual(len(self.pending()), 1, err)
@@ -2452,7 +2600,7 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
         self.hidden_pane("term_unrelated")
         pty = self.tree()
         pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_shell1"})
-        rc, out, err = self.tree().run(self.LAUNCH, self.lane(PROFILE="ro"))
+        rc, out, err = self.tree().run(*self.armed(PROFILE="ro"))
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("UNVERIFIED", err)
         self.assertEqual(self.pending(), [])
@@ -3002,7 +3150,7 @@ case "$*" in
 esac
 """)
             stub.chmod(0o755)
-            env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": os.environ["HOME"], "OPEN_FLEET_RUNTIME": "posix",
+            env = {**UNVERIFIED_OK, "PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": os.environ["HOME"], "OPEN_FLEET_RUNTIME": "posix",
                    "ORCA_CLI_COMMAND": str(stub), "PROFILE": "danger",
                    "ORCA_COORD_ALLOW_AUTONOMOUS_WRITE": "1", "ORCA_COORD_ALLOW_DANGER": "1",
                    "ORCA_SANDBOX_RECIPE": "lane-7"}
@@ -3081,7 +3229,7 @@ class TestRuntimeNameIsCaseInsensitive(unittest.TestCase):
         for spelled in ("ORCA", "Orca", " orca "):
             for var in ("OPEN_FLEET_RUNTIME", "ORCA_FLEET_RUNTIME"):
                 with self.subTest(runtime=spelled, var=var), tempfile.TemporaryDirectory() as tmp:
-                    env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+                    env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                            "SW_PRINT_LAUNCH": "1", "PROFILE": "ro", var: spelled}
                     p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", "claude", "high"],
                                        env=env, capture_output=True, text=True)
@@ -3225,7 +3373,7 @@ esac
 def run_orca_launch(agent, profile="ro", env_extra=None):
     """spawn_worker.sh up to its resolved launch (SW_PRINT_LAUNCH) ON ORCA: the custom-argv rows."""
     with tempfile.TemporaryDirectory() as tmp:
-        env = {"PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
+        env = {**UNVERIFIED_OK, "PATH": "/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "ORCA_CLI_COMMAND": "orca",
                "SW_PRINT_LAUNCH": "1", "PROFILE": profile, **(env_extra or {})}
         p = subprocess.run(["bash", str(SPAWN), "t1", "current", "t", agent, "high"],
                            env=env, capture_output=True, text=True)

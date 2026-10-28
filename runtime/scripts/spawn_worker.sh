@@ -153,7 +153,16 @@
 #   ORCA_COORD_ALLOW_AUTONOMOUS_WRITE  must be 1 for PROFILE=rw (accept autonomous bypass workers)
 #   ORCA_DENY_HOOK_SETTINGS   settings file registering deny-hook.sh for workers; named →
 #                             verified armed (registration + live deny probe) or the spawn
-#                             refuses; unset → spawn proceeds with an UNVERIFIED warning
+#                             refuses, for EVERY profile incl. ro (W4-06). Unset → the posix and
+#                             openhands providers install AND verify the guard before the agent
+#                             starts, so the spawn proceeds; another non-Orca provider proceeds
+#                             with an UNVERIFIED warning; on Orca (no open-fleet guard in
+#                             worker-start) it REFUSES, every profile, unless the opt-out below
+#                             is set
+#   ORCA_ALLOW_UNVERIFIED_DENY_HOOK  the Orca-lane opt-out: 1 lets an unset-guard spawn proceed
+#                             with an UNVERIFIED warning (W4-06). Off Orca it is not needed
+#   ORCA_REQUIRE_DENY_HOOK    1 (hardened coordinator): an unset ORCA_DENY_HOOK_SETTINGS always
+#                             refuses, on every runtime, before any provider deferral or opt-out
 #   ORCA_COORD_ALLOW_DANGER   must be 1 for PROFILE=danger (implies the above + ephemeral sandbox)
 #   ORCA_SANDBOX_RECIPE       PROFILE=danger only: the orca-per-workspace-env recipe id the lane
 #                             runs in. Required — the opt-in above is intent, this is evidence.
@@ -1477,12 +1486,28 @@ fi
 # nothing checked it was actually wired into the worker's settings — the claim
 # was doctrinal. When the operator names the wired settings file, verify
 # fail-closed: it must register deny-hook.sh AND the hook must answer a deny
-# probe. Unnamed, proceed but say UNVERIFIED out loud; never claim a guard
-# nobody checked. ro needs no guard (no write surface to bound); a ro-profile
-# WORKER_CMD override keeps its own semantics behind its own opt-in.
-if [ "$PROFILE" != "ro" ]; then
-  step=deny-hook-arming
-  DENY_HOOK_SETTINGS="${OPEN_FLEET_DENY_HOOK_SETTINGS:-${ORCA_DENY_HOOK_SETTINGS:-}}"
+# probe. The gate now runs for EVERY profile including ro, so a wired guard is
+# verified rather than skipped (W4-06: ro skipped the block entirely, so a ro
+# worker -- which can still write through Bash, W4-05 -- never even saw the
+# warning). Where the settings var is UNSET, OPEN_FLEET_REQUIRE_DENY_HOOK=1 (legacy
+# ORCA_REQUIRE_DENY_HOOK) refuses first, on every runtime, before any deferral or
+# opt-out (W4-06). Otherwise the behaviour splits on the runtime. The posix and
+# openhands providers install the registration and verify it before the agent
+# starts (posix.verify_installed_guard; openhands.verify_conversation_guard before
+# the conversation's /run): a new-child spawn has no worktree or settings file at
+# this pre-launch gate, so the gate cannot check one and defers to that enforcement
+# -- ordinary dispatch needs no opt-out. Any other non-Orca provider installs but
+# does not verify, so the gate proceeds with an UNVERIFIED warning. ON ORCA
+# worker-start is Orca's own and wires no open-fleet guard, so an unset var
+# REFUSES, every profile (ro too: a ro claude/gemini worker still writes through
+# Bash, W4-05). OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1 (legacy
+# ORCA_ALLOW_UNVERIFIED_DENY_HOOK) is the Orca-lane opt-out to a loud warning,
+# which REQUIRE overrides so an inherited value cannot reopen the warning path.
+step=deny-hook-arming
+DENY_HOOK_SETTINGS="${OPEN_FLEET_DENY_HOOK_SETTINGS:-${ORCA_DENY_HOOK_SETTINGS:-}}"
+REQUIRE_DENY_HOOK="${OPEN_FLEET_REQUIRE_DENY_HOOK:-${ORCA_REQUIRE_DENY_HOOK:-0}}"
+ALLOW_UNVERIFIED_HOOK="${OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK:-${ORCA_ALLOW_UNVERIFIED_DENY_HOOK:-0}}"
+if true; then
   if [ -n "$DENY_HOOK_SETTINGS" ]; then
     # The hook verifies its own registration: parses the settings, then runs
     # the REGISTERED command (not this repo's copy) under its configured env
@@ -1495,13 +1520,84 @@ if [ "$PROFILE" != "ro" ]; then
     case "$agent" in
       claude|codex|openhands|goose|crush|hermes|opencode|omp|pi|jcode) _vs_args+=(--harness "$agent") ;;
     esac
-    case "$sel" in path:*) _vs_args+=(--boundary "${sel#path:}") ;; esac
+    # The tree this spawn launches into, for EVERY selector that names an existing one (W4-03,
+    # 2026-10-27 audit): only path: used to reach the gate, so an id:<repoId>::<path> spawn (the
+    # form the custom-lane refusal recommends) and every current/active/name:/branch: spawn was
+    # certified against a registration bounding any tree at all. path: and <repoId>::<path>
+    # carry the path; a lookup form is resolved by the runtime's own `worktree show` (off Orca,
+    # current/active as base_launch resolved them above). Only new-child/new-top-level name no
+    # tree yet. A tree the runtime does not resolve refuses: nothing shows the registration
+    # bounds it.
+    _vs_wt=""
+    case "$sel" in
+      new-child|new-top-level) : ;;
+      path:*) _vs_wt="${sel#path:}" ;;
+      *::*) _vs_wt="${sel##*::}" ;;
+      *)
+        if [ "$ACTIVE_RUNTIME" != "orca" ] && [ -n "${_launch_wt:-}" ] && [ "$_launch_wt" != "$sel" ]; then
+          _vs_wt=$_launch_wt
+        else
+          _vs_show=$(mktemp)
+          if orca_json "$_vs_show" worktree show --worktree "$sel" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} 2>/dev/null; then
+            _vs_wt=$(python3 -I - "$_vs_show" <<'PY' || true
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(1)
+r = d.get("result", d) if isinstance(d, dict) else {}
+wt = r.get("worktree") if isinstance(r, dict) else None
+wt = wt if isinstance(wt, dict) else {}
+p = wt.get("path")
+if not isinstance(p, str) or not p.startswith("/"):
+    wid = wt.get("id")
+    p = wid.split("::", 1)[1] if isinstance(wid, str) and "::" in wid else ""
+if not p.startswith("/"):
+    raise SystemExit(1)
+print(p)
+PY
+)
+          fi
+          rm -f "$_vs_show"
+          if [ -z "$_vs_wt" ]; then
+            echo "SPAWN=REFUSED task=${task} deny-hook not armed: the runtime did not resolve worktree '${sel}' to a path, so the registration cannot be checked against the tree this spawn launches into (W4-03) — pass path:<abs-path> or id:<repoId>::<path>" >&2
+            exit 2
+          fi
+        fi ;;
+    esac
+    [ -z "$_vs_wt" ] || _vs_args+=(--boundary "$_vs_wt")
     if ! _arming=$(sh "$HERE/deny-hook.sh" --verify-settings "$DENY_HOOK_SETTINGS" ${_vs_args[@]+"${_vs_args[@]}"} 2>&1); then
       echo "SPAWN=REFUSED task=${task} deny-hook not armed: ${_arming} — wire it (deny-hook.sh --settings <worktree>) or unset ORCA_DENY_HOOK_SETTINGS to proceed UNVERIFIED" >&2
       exit 2
     fi
+  elif [ "$REQUIRE_DENY_HOOK" != "0" ] && [ -n "$REQUIRE_DENY_HOOK" ]; then
+    # Checked BEFORE any deferral (W4-06, Codex g1 r3 P1): the hardened lock means this gate
+    # itself verifies a named registration, on every runtime. It used to sit after the off-Orca
+    # deferral, so REQUIRE could not stop a launch the provider never verified.
+    echo "SPAWN=REFUSED task=${task} deny-hook arming UNVERIFIED for PROFILE=${PROFILE} on runtime ${ACTIVE_RUNTIME}: OPEN_FLEET_REQUIRE_DENY_HOOK is set and ORCA_DENY_HOOK_SETTINGS is unset, so the PreToolUse guard this tier's safety story names is not verified here: no opt-out is honoured, and no provider deferral either (W4-06). Wire it (deny-hook.sh --settings <worktree>) and name it with ORCA_DENY_HOOK_SETTINGS." >&2
+    exit 2
+  elif [ "$ACTIVE_RUNTIME" = "posix" ] || [ "$ACTIVE_RUNTIME" = "openhands" ]; then
+    # These providers install the deny-hook registration and verify it before the agent starts
+    # (W4-06): posix inside worker-start (posix.verify_installed_guard), openhands on the
+    # hook_config the agent-server runs, before the conversation's /run (verify_conversation_guard).
+    # A new-child spawn has no worktree and no settings file at this pre-launch gate, so the gate
+    # cannot and need not check one; it defers to that enforcement rather than demand an opt-out
+    # for ordinary dispatch.
+    echo "spawn_worker: NOTE deny-hook arming is verified by the ${ACTIVE_RUNTIME} provider inside worker-start for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset); the agent does not start unless its installed registration is armed (W4-06)" >&2
+  elif [ "$ACTIVE_RUNTIME" != "orca" ]; then
+    # Every other non-Orca provider installs the registration but does not re-verify it before
+    # the agent starts, so the deferral is named for what it is; OPEN_FLEET_REQUIRE_DENY_HOOK=1
+    # (above) refuses it.
+    echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} on runtime ${ACTIVE_RUNTIME}: its provider installs the guard in worker-start but does not verify it before the agent starts (ORCA_DENY_HOOK_SETTINGS unset); name the registration in ORCA_DENY_HOOK_SETTINGS, or set OPEN_FLEET_REQUIRE_DENY_HOOK=1 to refuse (W4-06)" >&2
+  elif [ "$ALLOW_UNVERIFIED_HOOK" != "0" ] && [ -n "$ALLOW_UNVERIFIED_HOOK" ]; then
+    if [ "$PROFILE" = "ro" ]; then
+      echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=ro (ORCA_DENY_HOOK_SETTINGS unset, OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK set) — ro relies on the tool filter, which a shell tier writes past; wire deny-hook.sh --settings <worktree> --readonly for the in-hook write floor (W4-05)" >&2
+    else
+      echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset, OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK set) — worktree + review are the only safety layer this gate can vouch for (W4-06)" >&2
+    fi
   else
-    echo "spawn_worker: WARNING deny-hook arming UNVERIFIED for PROFILE=${PROFILE} (ORCA_DENY_HOOK_SETTINGS unset) — worktree + review are the safety layer for this spawn" >&2
+    echo "SPAWN=REFUSED task=${task} deny-hook arming UNVERIFIED for PROFILE=${PROFILE}: the Orca runtime's worker-start wires no open-fleet guard and ORCA_DENY_HOOK_SETTINGS is unset, so the PreToolUse guard this tier's safety story names is not verified (W4-06). Wire it (deny-hook.sh --settings <worktree>, --readonly for ro) and name it with ORCA_DENY_HOOK_SETTINGS, or set OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK=1 to proceed on an unverified guard." >&2
+    exit 2
   fi
 fi
 

@@ -649,6 +649,9 @@ class FirstRun:
         return task
 
     def dispatch(self) -> str:
+        # Off Orca (OPEN_FLEET_RUNTIME=posix) the provider installs and verifies the deny hook
+        # inside worker-start, before the agent starts, so spawn_worker's pre-launch gate defers
+        # for a new-child spawn with no opt-out (W4-06); the `guard` step below re-checks it.
         env = {"PROFILE": self.args.profile}
         if self.args.profile == "rw":
             env["ORCA_COORD_ALLOW_AUTONOMOUS_WRITE"] = "1"

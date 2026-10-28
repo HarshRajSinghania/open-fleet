@@ -90,7 +90,9 @@ def write_stub(tmp, *, receipt=None, request_show=None, task_create=None,
 def run_spawn(args, env_extra=None, **stub_kw):
     with tempfile.TemporaryDirectory() as tmp:
         log, env_rec = write_stub(tmp, **stub_kw)
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "SETTLE_SECS": "0", "ORCA_CLI_COMMAND": "orca"}
+        # The deny-hook arming gate's named opt-out (W4-06): these tests drive the lanes past it.
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "SETTLE_SECS": "0",
+               "ORCA_CLI_COMMAND": "orca", "OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK": "1"}
         env.update(env_extra or {})
         p = subprocess.run(["bash", str(SPAWN), *args], env=env,
                            capture_output=True, text=True)

@@ -31,8 +31,10 @@
 # or `eval` body, a trap action, an alias value, a gh shell alias, the string or
 # command of flock, su, runuser, script, watch, parallel (its template completed
 # with each ::: argument), ssh, find -exec, fd -x/-X, entr and zsh repeat,
-# interpreter code handing a literal to os.system/subprocess (from -c, stdin or a
-# heredoc), a program a shell reads on stdin or from a file written in the same
+# interpreter code handing a literal to os.system/subprocess (from python/perl/
+# ruby/node/bun/php -c/-e, lua/luajit/julia/Rscript -e, the awk family program,
+# deno eval, from stdin or a heredoc), a sqlite3 `.shell`/`.system` line, a sed
+# `e` command, a busybox applet (W1-03), a program a shell reads on stdin or from a file written in the same
 # command, and a head built from a variable or a substitution (its literal value
 # on the line, what echo prints, else each refused head). Who reads a body is
 # structural (PR #648 review): each simple command is its words plus its
@@ -42,7 +44,8 @@
 # pass it on, and a group, loop, exec, function, xargs, read, <(...) or $(cat)
 # hands it to what it runs. Sources are unioned, as zsh (MULTIOS) reads them all.
 # printf/echo escapes (\xHH, \NNN, \n …) are decoded before the fed program is
-# read. Words are quote-removed as the shell does it, ANSI-C $'...' decoded. So a
+# read. Words are quote-removed as the shell does it, ANSI-C $'...' decoded, and an
+# unquoted $IFS/${IFS...} expansion separates words as a blank does (W1-02). So a
 # refused shape is refused wherever it sits (#297; 2026-10-23 review, P1-3, P2-10;
 # PR #648 review). An egress receipt &&-before a command arms the send it runs now
 # — including one fed to a shell by a pipe or heredoc, where every heredoc and
@@ -55,8 +58,11 @@
 # disk, a program a download or decoder produces, an alias or function defined in
 # an EARLIER command, and a value computed at run time stay beyond it, and the
 # Never list and the sandbox are the net for those. The refused shapes:
-#   1. recursive delete whose every target is /, ~, $HOME or /*, or any
-#      recursive delete carrying --no-preserve-root
+#   1. recursive delete whose every target is the root or home CLASS -- /, ~,
+#      $HOME or ${HOME}, or everything one level under them, judged after `.`/`..`
+#      collapse and a trailing glob (so /*/, /dev/../, ~/., ~/*, ${HOME}/* all
+#      count, not just the canonical spellings, W1-06) -- or any recursive delete
+#      carrying --no-preserve-root
 #   2. force-push to the default branch, including the +main refspec form that
 #      needs no flag at all — and deleting it outright, which carries no flag
 #      either: `:main`, `git push -d`, `git push --delete` (#297). An effective
@@ -117,6 +123,12 @@
 # /etc/cron.d/x`, a Bash redirect or `tee` destination naming an ABSOLUTE path. Both go
 # through one resolver, which follows the whole symlink chain, so an in-boundary
 # name pointing out is judged by where it ends up however many links that takes.
+# Path segments are names, never patterns; a glob in a shell target is also judged
+# by every existing path the shell would expand it to (W4-09). A leading ~, ~user,
+# $HOME or ${HOME} is expanded first (W1-01): `> ~/.bashrc` is a write to the home
+# directory, not to ./~. A file-tool path carries no shell quoting, so it always
+# expands; a shell word expands only when the lead is UNQUOTED, as bash does -- a
+# quoted `'~/x'` (or single-quoted `'$HOME/x'`) stays the literal relative path (W1-01).
 #
 # What the Bash half does NOT cover, and says so at the block itself: a relative
 # target (the hook is not told the worker's cwd, and the segment before it may
@@ -158,6 +170,12 @@
 # directory above this file counts too. Inline interpreter code (python -c,
 # perl -e, node -e, ...) naming a guard path beside a write call is judged a
 # write to it; touch is not guarded (it changes no content or permission).
+# A tar/patch that names a guard file as its own output (tar -cf, patch -o) is
+# denied; an archive EXTRACTION (tar -x, unzip, cpio -i, patch) is asked when its
+# destination covers the guard region -- the root, a directory above it, or any
+# guard directory (or a guard file's directory) wherever its symlinks resolve, in
+# the worktree or outside it -- since the member names are not visible here and
+# the hook cannot prove the guard files untouched (W1-05).
 #
 # File touches (#590). With OPEN_FLEET_STATE_DB set, an allowed edit is recorded
 # with its line range, the path RELATIVE to the unit worktree so two workers'
@@ -188,12 +206,14 @@ usage() {
   cat <<'USAGE'
 deny-hook.sh — PreToolUse deny/ask guard for read-write workers.
 
-Usage: deny-hook.sh [--help] [--settings <worktree>]
+Usage: deny-hook.sh [--help] [--settings <worktree> [--readonly]]
        deny-hook.sh --verify-settings <file> [--harness <name>] [--boundary <dir>]
   Reads a PreToolUse event JSON object on stdin; writes a decision object on
   stdout when the action is denied or must be asked, nothing when it is allowed.
   --settings <worktree> prints the settings.json block that registers this hook
   for one worker, with the boundary path resolved. Nothing registers it for you.
+  --readonly adds the ro-tier write floor (OPEN_FLEET_HOOK_READONLY): every write
+  the hook can see is then denied regardless of the boundary.
   --verify-settings proves a registration is armed by running it against deny
   and allow probes in the harness's own tool names. <name> is claude, codex,
   openhands, goose, crush, hermes (config.yaml), opencode/omp/pi (the .ts
@@ -210,6 +230,14 @@ Environment:
                       naming an absolute path. ORCA_UNIT_WORKTREE is its legacy
                       alias, read only when OPEN_FLEET_UNIT_WORKTREE is unset
                       or empty.
+  OPEN_FLEET_HOOK_READONLY (or ORCA_HOOK_READONLY)  ro-tier write floor: every
+                      write the hook can see (a redirect, tee, file-tool edit or
+                      apply_patch, in a -c body or a program fed to a shell
+                      too) is denied regardless of the boundary, and so is a
+                      shell fed a program the hook cannot read (cat f | sh),
+                      while read-only shell still runs. Defense-in-depth, not an
+                      fs sandbox (cp/mv/rm and an interpreter's own write are
+                      beyond it). See runtime/sandbox-policy.md.
   OPEN_FLEET_HOOK_STRICT_EXIT=1, OPEN_FLEET_HOOK_EXIT2=1 or the legacy
   ORCA_HOOK_STRICT_EXIT=1  strict mode (any one): ask becomes deny, deny exits 2.
   CODEX_CI, CODEX_SANDBOX or OPEN_FLEET_HEADLESS_STRICT  set to anything but
@@ -223,16 +251,27 @@ USAGE
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
 
-# --settings <worktree>: print the registration block, boundary resolved. This is
+# --settings <worktree> [--readonly]: print the registration block, boundary resolved. This is
 # the whole answer to "how do I turn this on" — there is no dispatcher step that
 # does it for you, and saying so in a --help is cheaper than a doc nobody reads.
+# --readonly emits the ro-tier write floor (OPEN_FLEET_HOOK_READONLY): every write the hook
+# can see is then denied regardless of the boundary (W4-05).
 if [ "${1:-}" = "--settings" ]; then
-  if [ -z "${2:-}" ]; then
+  _settings_ro=0
+  _settings_wt=""
+  for _sa in "$2" "${3:-}"; do
+    case "$_sa" in
+      --readonly) _settings_ro=1 ;;
+      "") : ;;
+      *) [ -n "$_settings_wt" ] || _settings_wt=$_sa ;;
+    esac
+  done
+  if [ -z "$_settings_wt" ]; then
     echo "deny-hook.sh --settings needs the worker's worktree path" >&2
     exit 2
   fi
-  _wt=$(cd "$2" 2>/dev/null && pwd -P) || {
-    echo "deny-hook.sh --settings: '$2' is not a directory" >&2
+  _wt=$(cd "$_settings_wt" 2>/dev/null && pwd -P) || {
+    echo "deny-hook.sh --settings: '$_settings_wt' is not a directory" >&2
     exit 2
   }
   _self=$(cd "$(dirname -- "$0")" && pwd -P)/$(basename -- "$0")
@@ -241,13 +280,25 @@ if [ "${1:-}" = "--settings" ]; then
   # string yields either invalid JSON or a DIFFERENT path — a boundary silently
   # set somewhere else is worse than no boundary (PR #277 review, P2). Same
   # json.dumps the decision path below already uses.
-  python3 -I -c 'import json,sys; print(json.dumps({
-      "env": {"ORCA_UNIT_WORKTREE": sys.argv[1]},
-      "hooks": {"PreToolUse": [{
-          "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit",
-          "hooks": [{"type": "command", "command": sys.argv[2]}],
-      }]},
-  }, indent=2))' "$_wt" "$_self" || {
+  # The COMMAND is also shell-quoted (shlex.quote), because the host runs a hook
+  # command through its shell: a space or `$` in the install path would tear the
+  # command and the hook would never start, silently disabling every control
+  # (W1-07; print-settings-snippet.sh / #382). A space-free path is unchanged.
+  # Both boundary names are pinned to the same worktree (W1-08): the reader prefers
+  # OPEN_FLEET_UNIT_WORKTREE, so pinning only the legacy ORCA_UNIT_WORKTREE let a stale inherited
+  # OPEN_FLEET_UNIT_WORKTREE silently replace the per-worktree pin. install_worktree_hooks pins
+  # both for the same reason; an explicit pin must win over anything inherited.
+  python3 -I -c 'import json,shlex,sys
+env = {"OPEN_FLEET_UNIT_WORKTREE": sys.argv[1], "ORCA_UNIT_WORKTREE": sys.argv[1]}
+if sys.argv[3] == "1":
+    env["OPEN_FLEET_HOOK_READONLY"] = "1"
+print(json.dumps({
+    "env": env,
+    "hooks": {"PreToolUse": [{
+        "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit",
+        "hooks": [{"type": "command", "command": shlex.quote(sys.argv[2])}],
+    }]},
+}, indent=2))' "$_wt" "$_self" "$_settings_ro" || {
     echo "deny-hook.sh --settings: python3 is required to emit valid JSON" >&2
     exit 2
   }
@@ -806,6 +857,21 @@ if truthy "${ORCA_HOOK_STRICT_EXIT:-}" || truthy "${OPEN_FLEET_HOOK_STRICT_EXIT:
   || truthy "${OPEN_FLEET_HOOK_EXIT2:-}" || [ -n "${JCODE_HOOK_TOOL_NAME:-}" ]; then
   HOOK_STRICT=1
 fi
+# READ-ONLY tier (W4-05). When OPEN_FLEET_HOOK_READONLY (or ORCA_HOOK_READONLY) is set, every
+# write this hook can see is DENIED regardless of the boundary: the file tools, and a Bash
+# redirect, tee or apply_patch in ANY command the line runs -- a -c body, a substitution, a
+# program fed to a shell by a pipe, -s, a heredoc or a here-string. A shell reading a program on
+# stdin that the hook cannot read (cat f | sh, sh < f, echo "$(cat f)" | sh) is denied too, and
+# so is a body the hook cannot split: a write inside either would be unseen. This is the `ro`
+# tier's defense-in-depth write floor -- plan-mode Bash still runs read-only shell (git
+# diff/log, cat, ls, running tests). It is a write floor, NOT a filesystem sandbox: a mutation
+# the hook does not model as a write record (cp/mv/rm without a redirect, a package install, an
+# interpreter writing through its own API, a script already on disk run as sh f) is out of its
+# reach, and the disposable sandbox is the real boundary for those (sandbox-policy.md).
+HOOK_READONLY=0
+if truthy "${OPEN_FLEET_HOOK_READONLY:-}" || truthy "${ORCA_HOOK_READONLY:-}"; then
+  HOOK_READONLY=1
+fi
 
 # One decision object, with the reason JSON-encoded via argv (never interpolated).
 decide() {
@@ -1050,12 +1116,18 @@ def policy_word(word):
                    else ch for ch in word) or "\\000"
 
 
-def shell_tokens(seg, with_fd=False):
+# An UNQUOTED $IFS expansion: $IFS, ${IFS}, ${IFS:0:1} and kin (W1-02, 2026-10-27 audit).
+_IFS_EXPANSION = re.compile(r"[$](?:IFS(?![A-Za-z0-9_])|[{]IFS(?:[^A-Za-z0-9_}][^}]*)?[}])")
+
+
+def shell_tokens(seg, with_fd=False, raw=False):
     # Keep operator identity BEFORE quote removal: quoted/escaped > is data.
     # A descriptor is optional and may have several digits. After an operator,
     # however, the next word is its target: in 10>&1>file, 1 is not another fd.
     # with_fd: every token carries a third item, the descriptor a redirection opens
     # (0 for <-forms, 1 for >-forms, "&" for &> and &>>; None for a word).
+    # raw: a trailing item carrying the RAW (pre-unquote) slice, so a caller can tell a quoted
+    # leading ~ from a live one (Codex g1 P2). A word split on $IFS carries the raw of each piece.
     ops = r"(?:&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)"
     i, target = 0, False
     while i < len(seg):
@@ -1068,13 +1140,17 @@ def shell_tokens(seg, with_fd=False):
             if with_fd:
                 num = op[0][:len(op[0]) - len(name)]
                 fd = int(num) if num else ("&" if name[0] == "&" else int(name[0] == ">"))
-                yield "redirect", name, fd
+                yield ("redirect", name, fd) + ((op[0],) if raw else ())
             else:
-                yield "redirect", name
+                yield ("redirect", name) + ((op[0],) if raw else ())
             i += len(op[0])
             target = True
             continue
         start, quote, ansi, dollar = i, "", False, False
+        # An unquoted $IFS expansion is field-split by the shell exactly like a blank:
+        # rm$IFS-rf$IFS/ runs rm with -rf and /. Read as one word, every argument stayed inside
+        # the head and each refused head was judged bare (W1-02). Inside quotes it is one word.
+        cuts = []
         while i < len(seg):
             ch = seg[i]
             if ch == "\\" and (quote != SQ or ansi):
@@ -1088,11 +1164,19 @@ def shell_tokens(seg, with_fd=False):
                 quote, ansi = ch, ch == SQ and dollar
             elif ch in BLANKS or ch in "<>&":
                 break
+            elif ch == "$" and _IFS_EXPANSION.match(seg, i):
+                end = _IFS_EXPANSION.match(seg, i).end()
+                cuts.append((i, end))
+                i, dollar = end, False
+                continue
             dollar = not quote and ch == "$"
             i += 1
         if i == start:
             raise ValueError("unexpected operator")
-        yield ("word", _unquote(seg[start:i])) + ((None,) if with_fd else ())
+        edges = [start] + [x for cut in cuts for x in cut] + [i]
+        pieces = [seg[edges[k]:edges[k + 1]] for k in range(0, len(edges), 2)]
+        for piece in [pc for pc in pieces if pc] or [seg[start:i]]:
+            yield ("word", _unquote(piece)) + ((None,) if with_fd else ()) + ((piece,) if raw else ())
         target = False
 
 
@@ -1149,7 +1233,10 @@ def _unquote(text):
             quote = "" if ch == SQ else quote
         elif quote == DQ:
             if ch == "\\" and i + 1 < n:
-                out.append(text[i:i + 2])
+                # The shell drops the backslash of \$ and of an escaped backtick inside double
+                # quotes; shlex keeps it. A body sh -c runs is read as the shell hands it over:
+                # sh -c "rm\${IFS}-rf\${IFS}/" holds a live $IFS (W1-02).
+                out.append(text[i + 1] if text[i + 1] in "$" + chr(96) else text[i:i + 2])
                 i += 2
                 continue
             quote = "" if ch == DQ else quote
@@ -2271,9 +2358,41 @@ def _tokenize(seg):
 
 
 _SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh")
-# Interpreters that run code straight from argv, and the option letters that carry it.
+# Interpreters that run code straight from argv, and the option letters that carry it. awk has
+# no code flag -- its program is the first non-option word (-f takes a file) -- and deno takes a
+# code operand after its `eval` subcommand, so both are read in _inline_code own branches,
+# not here (W1-03, 2026-10-27 audit).
 _INLINE_FLAGS = {"python": "c", "perl": "eE", "ruby": "e", "node": "ep", "nodejs": "ep",
-                 "bun": "e", "php": "r"}
+                 "bun": "e", "php": "r", "lua": "e", "luajit": "e", "julia": "eE", "Rscript": "e",
+                 "R": "e"}
+_AWKS = ("awk", "gawk", "mawk", "nawk")
+# busybox <applet> ARGS runs the applet: peel it so `busybox awk …` is judged as awk (W1-03/W1-05).
+# toybox is the same multi-call shape.
+_BUSYBOX_APPLETS = set(_AWKS) | {"sh", "ash", "sed", "tar", "unzip", "cpio", "rm", "rmdir", "cp",
+                                 "mv", "dd", "tee", "wget", "vi", "ln", "install", "chmod"}
+
+
+def _is_awk(head):
+    """Any awk build: awk/gawk/mawk/nawk/goawk/original-awk, etc. (re-attacker g1 #1)."""
+    return head in _AWKS or head in ("goawk", "original-awk") or bool(re.fullmatch(r"[a-z]*awk", head))
+
+
+def _canon_interp(head):
+    """Canonical _INLINE_FLAGS key for a versioned or variant interpreter spelling (g1 #1):
+    python3.12 -> python, lua5.4 -> lua, luajit2.1 -> luajit, ruby3 -> ruby, R -> R."""
+    for pat, key in ((r"python[0-9.]*", "python"), (r"luajit[0-9.]*", "luajit"),
+                     (r"lua[0-9.]*", "lua"), (r"ruby[0-9.]*", "ruby"), (r"php[0-9.]*", "php"),
+                     (r"perl[0-9.]*", "perl")):
+        if re.fullmatch(pat, head):
+            return key
+    return head
+
+
+def _peel_busybox(head, rest):
+    """(head, rest) with a leading busybox/toybox applet peeled: busybox awk PROG -> awk PROG."""
+    if head in ("busybox", "busybox.static", "toybox") and rest and rest[0] in _BUSYBOX_APPLETS:
+        return rest[0], rest[1:]
+    return head, rest
 _CODE_LITERAL = re.compile(r"\x22((?:[^\x22\\]|\\.)*)\x22|\x27([^\x27]*)\x27", re.DOTALL)
 _CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmod|chown|truncate"
                           r"|symlink|link|copy|move|system|popen|spawn|exec|subprocess|FileUtils"
@@ -2288,6 +2407,7 @@ _SIMPLE_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-
 _DECLARERS = ("export", "declare", "typeset", "local", "readonly")
 _FED_SUB = []    # set when a substitution feeds a shell on stdin: echo "$(curl ...)" | sh
 _FED_INTERP = []  # interpreter programs fed on stdin (python3 <<EOF ...): judged for guard writes
+_FED_BLIND = []   # shell stages whose stdin program the hook cannot read (ro floor only, W4-05)
 # Launchers outside the peel table: each runs a -c string, a vector after operands of its own,
 # or a string it hands to a shell (_launcher_bodies, #598).
 _BODY_LAUNCHERS = ("su", "runuser", "flock", "script", "watch", "parallel", "ssh", "find", "fd",
@@ -2303,9 +2423,91 @@ _PARALLEL_LONG = ("--jobs", "--max-procs", "--sshlogin", "--sshloginfile", "--sl
 _PARALLEL_SEPS = (":::", "::::", ":::+", "::::+")
 
 
+def _awk_sources(rest):
+    """(inline programs, saw_program_file) for an awk command (re-attacker g1 #2, W1-03).
+
+    awk takes its program from the first bare word, from every -e/--source[=] (which REPEAT),
+    and from every -f/--file/-E/--exec program FILE. gawk runs ALL of them together, so a -f
+    must never discard the -e programs already collected, in either order. -v/-F/-i/-l consume
+    an operand. saw_program_file is True when any -f/-E program file is named: its contents are
+    not visible here, so the program is partly unknown and the caller fails closed (HIGH)."""
+    progs, saw_file, i, seen_src = [], False, 0, False
+    _takes = ("-v", "--assign", "-F", "--field-separator", "-i", "--include", "-l", "--load")
+    while i < len(rest):
+        w = rest[i]
+        if w == "--":
+            if i + 1 < len(rest) and not seen_src:
+                progs.append(rest[i + 1])
+            break
+        if w in ("-f", "--file", "-E", "--exec"):
+            saw_file, seen_src = True, True
+            i += 2                                          # skip the program-file operand
+            continue
+        if w.startswith(("--file=", "--exec=")):
+            saw_file, seen_src = True, True
+            i += 1
+            continue
+        if w in ("-e", "--source") and i + 1 < len(rest):
+            progs.append(rest[i + 1])
+            seen_src = True
+            i += 2
+            continue
+        if w.startswith("--source="):
+            progs.append(w.split("=", 1)[1])
+            seen_src = True
+            i += 1
+            continue
+        if w.startswith("-e") and len(w) > 2 and not w.startswith("--"):
+            progs.append(w[2:])
+            seen_src = True
+            i += 1
+            continue
+        if w in _takes or w.startswith(("--assign=", "--field-separator=", "--include=",
+                                        "--load=")):
+            i += 2 if w in _takes else 1
+            continue
+        if w.startswith("-") and len(w) > 1:
+            # A short cluster: -f/-E inside it also names a program file (its operand follows).
+            if "f" in w[1:] or "E" in w[1:]:
+                saw_file, seen_src = True, True
+            i += 1
+            continue
+        if not seen_src:
+            progs.append(w)                                 # the first bare word is the program
+        break
+    return progs, saw_file
+
+
+def _awk_program_file(ws):
+    """A reason when an awk command names a -f/-E program file whose contents this hook cannot
+    read (W1-03, re-attacker g1 #2): the program is unknown, so a refused command could sit in
+    it beside a benign inline -e. Fail closed -- unknown awk code is HIGH, never read as no code."""
+    if not ws:
+        return None
+    head, rest = _peel_busybox(ws[0].rsplit("/", 1)[-1], ws[1:])
+    if not _is_awk(head):
+        return None
+    if _awk_sources(rest)[1]:
+        return ("awk is given a program FILE (-f/-E) this hook cannot read, so the program it "
+                "runs is unknown and may launch a refused command. Inline the program with -e, "
+                "or run it where the sandbox is the boundary.")
+    return None
+
+
 def _inline_code(head, rest):
-    """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, ..."""
-    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    """The code strings an interpreter runs from argv: python -c, perl -e, node --eval, awk
+    program, the operand of deno `eval`, ... (W1-03). The code is scanned by _code_commands for the
+    shell lines it hands the system, so an interpreter laundering a refused command is seen."""
+    head, rest = _peel_busybox(head, rest)
+    if _is_awk(head):
+        progs, _file = _awk_sources(rest)
+        return progs
+    if head == "deno":
+        ops = [w for w in rest if not w.startswith("-")]
+        if ops[:1] == ["eval"] and len(ops) > 1:
+            return [ops[1]]
+        return []
+    key = _canon_interp(head)
     letters = _INLINE_FLAGS.get(key)
     codes, i = [], 0
     while letters and i < len(rest):
@@ -2322,6 +2524,9 @@ def _inline_code(head, rest):
                 i += 1
             if key == "python":
                 break  # -c ends the python option list
+        elif key == "python" and w in ("-W", "-X", "--check-hash-based-pycs") and i + 1 < len(rest):
+            i += 1  # these take a SEPARATE operand -- python -W error -c CODE -- so it is not
+                    # read as the script path, which would hide the -c that follows (g1 #2)
         elif key == "python" and not w.startswith("-"):
             break  # a script path: what follows are its own arguments
         i += 1
@@ -2375,6 +2580,27 @@ def _code_commands(code):
         out += [lm[1] if lm[1] is not None else lm[2] for lm in _CODE_LITERAL.finditer(argtext)]
     out += re.findall(r"\x60([^\x60]*)\x60", code)
     return [line for line in out if line.strip()]
+
+
+_AWK_STR = r"(\x22(?:[^\x22\\]|\\.)*\x22|\x27[^\x27]*\x27)"
+_AWK_PIPE_TOK = r"\|(?!\|)&?"   # a single `|` (not the logical `||`), optional coprocess `&`
+# A string that is the command on either side of an awk pipe/coprocess: `"cmd" | getline` (before)
+# and `print … | "cmd"` (after). Two passes so one match does not consume the pipe of the other.
+_AWK_PIPE_BEFORE = re.compile(_AWK_STR + r"[ \t]*" + _AWK_PIPE_TOK)
+_AWK_PIPE_AFTER = re.compile(_AWK_PIPE_TOK + r"[ \t]*" + _AWK_STR)
+
+
+def _awk_pipe_cmds(code):
+    """Shell command strings an awk program pipes to or from (re-attacker g1 #1): the output pipe
+    `print … | "cmd"`, the input pipe `"cmd" | getline`, and the `|&` coprocess. The string on
+    either side of a pipe may be the command (or the data fed to a shell), so both are judged."""
+    out = []
+    for rx in (_AWK_PIPE_BEFORE, _AWK_PIPE_AFTER):
+        for m in rx.finditer(code):
+            cm = _CODE_LITERAL.match(m[1])
+            if cm:
+                out.append(cm[1] if cm[1] is not None else cm[2])
+    return [c for c in out if c and c.strip()]
 
 
 def _note_assigns(assigns, ws):
@@ -2591,6 +2817,100 @@ def _gh_alias(ws):
     return ops[0], None, None, False
 
 
+def _sed_s_execs(script):
+    """Replacement texts of sed s/// commands that carry the `e` flag -- the substitution-execute
+    form `s/.*/CMD/e` runs the substituted text through a shell (Codex g1 P1, W1-03). The flag may
+    be combined (`ge`, `pe`, a numeric count) and the delimiter may be any punctuation char."""
+    out, i, n = [], 0, len(script)
+    while i < n:
+        ch = script[i]
+        if ch == "s" and i + 1 < n and not (script[i + 1].isalnum() or script[i + 1] in " \t\n"):
+            delim, j, parts, cur = script[i + 1], i + 2, [], []
+            while j < n and len(parts) < 2:
+                c = script[j]
+                if c == "\\" and j + 1 < n:
+                    cur.append(script[j + 1] if script[j + 1] == delim else script[j:j + 2])
+                    j += 2
+                    continue
+                if c == "\n":
+                    break
+                if c == delim:
+                    parts.append("".join(cur))
+                    cur = []
+                    j += 1
+                    continue
+                cur.append(c)
+                j += 1
+            flags = []
+            while j < n and script[j] not in " \t\n;":
+                flags.append(script[j])
+                j += 1
+            if len(parts) == 2 and "e" in flags:
+                out.append(parts[1])
+            i = j
+            continue
+        i += 1
+    return out
+
+
+def _shell_launcher_lines(head, rest):
+    """Shell command lines a non-interpreter tool hands to a shell by its own syntax (W1-03):
+    sqlite3 `.shell`/`.system` dot-commands and sed `e <command>` / `s///e`. Not exec-call code,
+    so _code_commands does not see them; read here so a command launched this way is judged.
+    A sed script given with -f names a FILE this hook cannot read -- that is the on-disk-script
+    limit the header already states, not covered here.
+    """
+    lines = []
+    if head == "sqlite3":
+        texts = []
+        i = 0
+        while i < len(rest):
+            w = rest[i]
+            if w in ("-cmd", "-init") and i + 1 < len(rest):
+                texts.append(rest[i + 1])
+                i += 2
+                continue
+            if not w.startswith("-"):
+                texts.append(w)   # the DB name too; a bare word there is harmless to scan
+            i += 1
+        for text in texts:
+            for ln in text.split(chr(10)):
+                m = re.match(r"\s*\.(shell|system)\s+(.+)", ln)
+                if m:
+                    lines.append(m[2].strip())
+    elif head == "sed":
+        scripts, i = [], 0
+        while i < len(rest):
+            w = rest[i]
+            if w in ("-e", "--expression") and i + 1 < len(rest):
+                scripts.append(rest[i + 1])
+                i += 2
+                continue
+            if w in ("-f", "--file", "-l", "--line-length"):
+                i += 2
+                continue
+            if w.startswith("--expression="):
+                scripts.append(w.split("=", 1)[1])
+            elif re.fullmatch(r"-[A-Za-z]*e", w):
+                if i + 1 < len(rest):
+                    scripts.append(rest[i + 1])
+                    i += 2
+                    continue
+            elif not w.startswith("-"):
+                scripts.append(w)   # the first bare word is the script when no -e/-f gave one
+                break
+            i += 1
+        for script in scripts:
+            # An `e COMMAND` sed command (optionally after an address) executes COMMAND in a
+            # shell. Split on newline and `;`; a leading address/label is stripped to the verb.
+            for piece in re.split(r"[;\n]", script):
+                m = re.match(r"\s*(?:[0-9]+|\$|/(?:[^/\\]|\\.)*/|,)*\s*e\s+(\S.*)", piece)
+                if m:
+                    lines.append(m[1].strip())
+            lines += _sed_s_execs(script)   # the s///e substitution-execute form (g1 P1)
+    return lines
+
+
 def _inner_body(ws):
     """The command text ws runs as a command line of its own, or None.
 
@@ -2640,9 +2960,14 @@ def _inner_body(ws):
         alias = _gh_alias(ws)
         if alias and alias[0] == "set" and alias[3]:
             bodies.append(alias[2])
+    elif head in ("sqlite3", "sed") or _peel_busybox(head, ws[1:])[0] == "sed":
+        bodies += _shell_launcher_lines(*_peel_busybox(head, ws[1:]))
     else:
+        _awk = _is_awk(_peel_busybox(head, ws[1:])[0])
         for code in _inline_code(head, ws[1:]):
             bodies += _code_commands(code)
+            if _awk:
+                bodies += _awk_pipe_cmds(code)   # print | "cmd", "cmd" | getline, |& (g1 #1)
     bodies += _head_bodies(ws)
     if not bodies:
         return None
@@ -2674,7 +2999,7 @@ def _stdin_kind(ws):
             else:
                 break
         return "shell" if from_stdin or i >= len(ws) else None
-    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
+    key = _canon_interp(head)   # python3.12, lua5.4, perl5.36 read stdin too (g1 #1 sweep)
     if key in _INLINE_FLAGS and not _inline_code(head, ws[1:]):
         ops = [w for w in ws[1:] if not w.startswith("-") or w == "-"]
         flags = [w for w in ws[1:] if w.startswith("-") and w != "-"]
@@ -2951,8 +3276,7 @@ def _reader_kind(ws):
         return None
     if head in _SHELLS or head in ("source", "."):
         return "shell"
-    key = "python" if re.fullmatch(r"python[0-9.]*", head) else head
-    return "interp" if key in _INLINE_FLAGS else None
+    return "interp" if _canon_interp(head) in _INLINE_FLAGS else None
 
 
 def _xargs_lines(args, ws, stdin):
@@ -3040,7 +3364,7 @@ def _flow(surface, docs, inherit=(), written=None):
             prev = pipes[-1][1][-1] if join == "|" and pipes else None
             if prev is None:
                 pipes.append((join, []))
-            fds, writes = {}, []
+            fds, writes, unread = {}, [], False
             for fd, op, target in redirs:
                 if op in ("<<", "<<-"):
                     src = [(docs[k_doc][2], True)] if not stray and k_doc < len(docs) else []
@@ -3055,9 +3379,13 @@ def _flow(surface, docs, inherit=(), written=None):
                     if fd in (1, "&") and target != "-" and not target.isdigit():
                         writes.append((target, op))
                     continue
+                unread = unread or (fd == 0 and not src)   # < FILE this line never wrote
                 fds.setdefault(fd, []).extend(src)
             own = (prev["out"] if prev else []) + fds.get(0, [])   # zsh order: the pipe first
             stdin = own + list(inherit) + later + extra.get(idx, [])
+            # blind: some of what reaches fd 0 cannot be read here -- a pipe from a stage whose
+            # output is unknown, or a < file the line never wrote (W4-05, ro floor only).
+            blind = unread or (prev is not None and prev["blind"])
             head = ws[0].rsplit("/", 1)[-1] if ws else ""
             data = _echo_data(ws)
             if data is not None:
@@ -3068,9 +3396,13 @@ def _flow(surface, docs, inherit=(), written=None):
                     flags.append(a)
                 newline = head == "echo" and not any("n" in f for f in flags)
                 out = [(data + (chr(10) if newline else ""), True)]
+                out_blind = False
             elif head in _PASS_THROUGH:
                 ops = [a for a in ws[1:] if not a.startswith("-")]
                 out = list(stdin)
+                out_blind = blind or not stdin
+                if head != "tee" and ops:   # cat FILE reads the file, not its stdin
+                    out_blind = any(not _file_texts(f, local) for f in ops)
                 # tee -a, and any short cluster holding a (-ai, -ia), appends (#654).
                 append = any(a == "--append" or re.fullmatch(r"-[A-Za-z]*a[A-Za-z]*", a)
                              for a in ws[1:])
@@ -3080,7 +3412,7 @@ def _flow(surface, docs, inherit=(), written=None):
                     else:
                         out += _file_texts(f, local)
             else:
-                out = []
+                out, out_blind = [], True
             for f, op in writes:
                 _write_file(local, f, [t for t, _a in out], op in (">>", "&>>"))
             kind, feeds = _reader_kind(ws), []
@@ -3109,7 +3441,9 @@ def _flow(surface, docs, inherit=(), written=None):
                             else shlex.join(ws[:i] + [new] + ws[i + 1:])
                         feeds.append(("shell", line.strip(), all(a for _t, a in stdin)))
             st = {"seg": seg, "args": args, "ws": ws, "stdin": stdin, "out": out,
-                  "reads": bool(kind), "feeds": feeds, "prev": prev}
+                  "reads": bool(kind), "feeds": feeds, "prev": prev, "blind": out_blind,
+                  "fed_blind": kind == "shell" and (blind or not stdin
+                                                    or any(_unread_heads(t) for t, _a in stdin))}
             pipes[-1][1].append(st)
             quiet = [(t, False) for t, _a in own]
             first = args[0] if args else ""
@@ -3128,7 +3462,22 @@ def _flow(surface, docs, inherit=(), written=None):
             break
         extra = given
     written.update(local)
+    _FED_BLIND.extend(st["seg"] for _j, stages in pipes for st in stages if st["fed_blind"])
     return pipes
+
+
+def _unread_heads(text):
+    """True when a program fed to a shell names a command the hook cannot read: a head built
+    from a variable or a substitution ($X, $(cat f), `...`), or text this reader cannot split.
+    Feeds the ro floor only (W4-05): the write such a program makes is invisible here."""
+    try:
+        for _j, seg in _split(text.replace(_QNL, chr(10))):
+            ws = _command_words(_tokenize(seg)[0])
+            if ws and ("$" in ws[0] or chr(96) in ws[0] or _SUB_MARK in ws[0]):
+                return True
+    except ValueError:
+        return True
+    return False
 
 
 def _flow_output(body, inherit=()):
@@ -3215,14 +3564,68 @@ def _views(args, depth=0):
     return out
 
 
+def _home_path(p):
+    """p with a leading ~, ~user, $HOME or ${HOME} expanded the way the shell expands it (W1-01,
+    2026-10-27 audit). The boundary held two meanings of ~: the self-guard expanded it, the
+    write boundary read it as a directory named ~ under the cwd, so `> ~/.bashrc` was never
+    judged and the `~/.bashrc` of a file tool resolved inside the worktree. A ~name no account
+    owns stays literal, as it does in the shell. A file-tool path carries no shell quoting, so
+    this expands unconditionally; a shell word is expanded QUOTE-AWARE through _sh_home_path."""
+    if p.startswith("~"):
+        return os.path.expanduser(p)
+    m = re.match(r"[$](?:HOME|[{]HOME[}])(?=/|$)", p)
+    if m:
+        return (os.environ.get("HOME") or os.path.expanduser("~")) + p[m.end():]
+    return p
+
+
+def _sh_home_path(unq, raw):
+    """A shell word home expansion, quote-aware (Codex g1 P2): bash expands a leading tilde only
+    when it is UNQUOTED, and a leading $HOME/${HOME} only when it is not single-quoted. So a
+    quoted tilde path stays the literal relative path the shell writes, not an over-denied home
+    path. raw is the pre-unquote slice."""
+    if unq.startswith("~"):
+        return _home_path(unq) if raw.startswith("~") else unq
+    if re.match(r"[$](?:HOME|[{]HOME[}])(?=/|$)", unq):
+        inner = raw[1:] if raw[:1] == DQ else raw     # a leading " still allows $HOME to expand
+        return _home_path(unq) if inner[:1] == "$" else unq
+    return unq
+
+
+def _write_targets(seg):
+    """[(unquoted, raw)] for file-write redirect targets and tee operands in one segment, the raw
+    slice kept so home expansion can be quote-aware (Codex g1 P2)."""
+    toks, redirs, pending = [], [], None
+    for kind, val, rawslice in shell_tokens(seg, raw=True):
+        if kind == "redirect":
+            pending = val
+        elif pending is not None:
+            if pending in (">", ">>", ">|", ">&", "&>", "&>>", "<>"):
+                redirs.append((val, rawslice))
+            pending = None
+        else:
+            toks.append((val, rawslice))
+    out = list(redirs)
+    ws = _command_words([v for v, _r in toks])
+    if ws and ws[0].rsplit("/", 1)[-1] == "tee":
+        seen = False
+        for v, rawslice in toks:
+            if not seen:
+                seen = v.rsplit("/", 1)[-1] == "tee"
+                continue
+            if v in ("-", "--") or not (v.startswith("-") and len(v) > 1):
+                out.append((v, rawslice))
+    return out
+
+
 _parts, heredoc_patches = _expand(raw_command)
 _judged, _subs = chr(10).join(_parts), _parts[1:]
 heredoc_targets = [p for _hb in heredoc_patches for p in patch_targets(_hb)]
 print(s(norm_tool))
 print(c(_judged))
-print(s(target_paths[0] if target_paths else ""))
+print(s(_home_path(target_paths[0]) if target_paths else ""))
 for _extra_p in target_paths[1:]:
-    record("F", s(_extra_p))
+    record("F", s(_home_path(_extra_p)))
 # Pass 1 learns every literal NAME=value on the line before any head is resolved (#598): an
 # assignment in a later segment, or inside a body, still names what `$c` may run.
 for _join, seg in _split(_judged):
@@ -3237,8 +3640,6 @@ for _join, seg in _split(_judged):
     # anchor at its head (2026-10-23 review, P1-3). Assignments ride in front for git_redirected.
     _seg_views = _views(args)
     record("C", " ".join(policy_word(word) for word in _seg_views[0][0] + _seg_views[0][1]))
-    for path in writes:
-        record("W", path)
     for word in args:
         record("A", word)
     for _va, _vw in _seg_views[1:]:
@@ -3450,6 +3851,10 @@ GUARD_SAMPLES = (".claude/settings.json", ".claude/settings.local.json", ".codex
                  ".open-fleet/bridges/omp_pi_deny_bridge.ts", ".crush/crush.json",
                  ".crush-orca-ro/crush.json", ".hermes-open-fleet/config.yaml",
                  ".orca/human-grant-pubkey", ".orca/dispatch-pubkey")
+# The directory holding each guard file, relative to the worktree root. An extraction or patch
+# whose destination equals, contains or sits inside any of these can write a guard file with an
+# ordinary member name, so the destination check (W1-05, Codex g1 r2 P1) covers all three.
+_GUARD_DIRS_REL = sorted({os.path.dirname(_s) for _s in GUARD_SAMPLES if os.path.dirname(_s)})
 _GW = os.environ.get("OPEN_FLEET_UNIT_WORKTREE") or os.environ.get("ORCA_UNIT_WORKTREE") or ""
 _GROOT = os.path.realpath(_GW) if _GW else os.path.realpath(os.getcwd())
 _GSELF = {os.path.realpath(_p) for _p in (os.environ.get("DH_SELF"),
@@ -3794,6 +4199,58 @@ def _find_may_match(tests, shown, name):
     return True
 
 
+_TAR_TAKES = set("fCbLVXTIgG")   # tar option letters that consume an operand
+
+
+def _tar_info(rest):
+    """(letters, long-names, -f file target, -C destination) for a tar command, reading BOTH the
+    dashed form and tar traditional dashless bundle -- `tar cf FILE src` / `tar xf e.tar`, where
+    the first operand is the option bundle and its arg-taking letters consume the operands that
+    follow, in order (Codex g1 P1, W1-05)."""
+    letters, longs, pos, pending, dashed = "", [], [], [], {}
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w == "--":
+            pos.extend(rest[i + 1:])
+            break
+        if w.startswith("--"):
+            name, eq, val = w[2:].partition("=")
+            longs.append(name)
+            if name in ("file", "directory"):
+                if eq:
+                    dashed[name] = val
+                elif i + 1 < len(rest):
+                    dashed[name] = rest[i + 1]
+                    i += 1
+            i += 1
+            continue
+        if w.startswith("-") and len(w) > 1:
+            cluster = w[1:]
+            letters += cluster
+            k = next((k for k, c in enumerate(cluster) if c in _TAR_TAKES), None)
+            if k is not None:
+                glued = cluster[k + 1:]
+                if glued:
+                    dashed[cluster[k]] = glued
+                elif i + 1 < len(rest):
+                    dashed[cluster[k]] = rest[i + 1]
+                    i += 1
+            i += 1
+            continue
+        if not letters and not pos and re.fullmatch(r"[A-Za-z]+", w):
+            letters += w                       # the traditional dashless bundle
+            pending = [c for c in w if c in _TAR_TAKES]
+            i += 1
+            continue
+        pos.append(w)
+        i += 1
+    trad = dict(zip(pending, pos))
+    file_t = dashed.get("f") or dashed.get("file") or trad.get("f")
+    dest = dashed.get("C") or dashed.get("directory") or trad.get("C")
+    return letters, longs, file_t, dest
+
+
 def guard_targets(words, depth=0):
     """(path, deleting) pairs a shell command writes or removes, as far as text shows.
 
@@ -3804,6 +4261,24 @@ def guard_targets(words, depth=0):
     if not ws:
         return []
     head, rest, out = ws[0].rsplit("/", 1)[-1], ws[1:], []
+    head, rest = _peel_busybox(head, rest)   # busybox tar -> tar, so an applet is judged (W1-05)
+    if head in ("bsdtar", "gtar"):
+        head = "tar"                          # same create/extract flags (Codex g1 r2 P1)
+    if head == "tar":
+        # A create/append/update with -f FILE overwrites FILE: `tar -cf .claude/settings.json x`
+        # (or `tar cf …`, the dashless bundle) replaces the guard with a tarball (W1-05).
+        # Extraction is handled in the never list, since the member names are not visible here.
+        letters, longs, fval, _dest = _tar_info(rest)
+        if any(c in letters for c in "cru") or any(x in longs for x in ("create", "append",
+                                                                        "update")):
+            if fval and fval != "-":
+                out.append((fval, True))
+    elif head == "patch":
+        for i, w in enumerate(rest):
+            if w in ("-o", "--output") and i + 1 < len(rest):
+                out.append((rest[i + 1], False))
+            elif w.startswith("--output="):
+                out.append((w.split("=", 1)[1], False))
     if head == "find":
         # find ROOT... -delete, or -exec CMD {} (#598, PR #648 review): each guard file under a
         # starting point is deleted unless the AND-chain of tests before the action PROVES it
@@ -3932,6 +4407,15 @@ def _code_guard_targets(code, depth=0):
     return out
 
 
+# W: the write targets the boundary judges, in the path model of the shell: every redirect target
+# and every tee operand, a leading ~/$HOME expanded QUOTE-AWARE (W1-01; Codex g1 P2 -- a quoted
+# ~ is left literal, as bash does). Read off the segment text so the raw (pre-unquote) word is
+# available to decide the expansion.
+for _wj, _wseg in _split(_judged):
+    for _wu, _wraw in _write_targets(_wseg):
+        record("W", _sh_home_path(_wu, _wraw))
+
+
 _guard_hits = []
 if norm_tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     _guard_hits += [p for p in target_paths if guarded(p, False)]
@@ -3959,12 +4443,200 @@ if _guard_hits:
 if strict_payload:
     record("S", "1")
 for _hp in heredoc_targets:
-    record("P", s(_hp))
+    record("P", s(_home_path(_hp)))
 
 
 # --- Never list, the shapes a regex over the line cannot read (2026-10-23 review) ----------
 # N records: the shell asks on the first one. Judged on the peeled words of every command.
 _WHOLE_TREE = (".", "./", "./*", "*", ":/", ":/*", ":(top)", ":(top).")
+
+
+def _dest_covers_guard(dest):
+    """True when an extraction into dest could write a guard path (W1-05, Codex g1 r2 P1). The
+    guard files sit at known directories under the worktree root, so a destination that EQUALS,
+    CONTAINS or sits INSIDE any guard directory reaches a guard file with an ordinary member
+    name -- `tar -C .claude -xf e.tar` drops `settings.json` straight onto the guard, which the
+    old contain-the-root test missed. An unknown destination (no -C/-d; the worker cwd
+    this hook is not told) is assumed to be the root. A RELATIVE destination is resolved against
+    the root and its symlinks followed; an unresolvable one asks rather than allows.
+    The guard directories are resolved too, WHEREVER they land (Codex g1 r3 P1): with `.claude`
+    a symlink to /tmp/shared-claude, `tar -C /tmp/shared-claude -xf e.tar` replaces the guard
+    settings.json although the destination is outside the worktree, so the destination is
+    compared with every guard directory and the directory of every guard file (this hook
+    included), lexical and resolved, never only with the part of them under the root."""
+    if dest is None:
+        return True
+    d = _home_path(dest)
+    if d in (".", "./") or ".." in d.split("/"):
+        return True
+    base = d if d.startswith("/") else os.path.join(_GROOT, d)
+    try:
+        real = os.path.realpath(base).rstrip("/") or "/"
+        guard_dirs = _guard_dirs_resolved()
+    except (OSError, ValueError):
+        return True   # cannot resolve -> ask, never a silent allow
+    root = _GROOT.rstrip("/") or "/"
+    if _within(root, real):
+        return True   # the root itself, or any directory above it (/ included)
+    for gd in guard_dirs:
+        if _within(real, gd) or _within(gd, real):
+            return True   # equals / inside / contains a guard directory, wherever it resolves
+    return False
+
+
+def _within(path, top):
+    """True when path is top or sits under it; top `/` holds every absolute path."""
+    return path == top or path.startswith(top.rstrip("/") + "/")
+
+
+def _guard_dirs_resolved():
+    """Every guard directory and the directory holding every guard file, as the root spells it
+    and with its symlinks followed, so one resolving outside the worktree is still a guard."""
+    out = set()
+    for rel in _GUARD_DIRS_REL:
+        lexical = os.path.join(_GROOT, rel)
+        out.update((lexical, os.path.realpath(lexical)))
+    for g in [os.path.join(_GROOT, x) for x in GUARD_SAMPLES] + sorted(_GSELF):
+        out.add(os.path.dirname(os.path.realpath(g)))
+    return {p.rstrip("/") or "/" for p in out}
+
+
+def _extracts_over_guard(ws):
+    """A reason when ws extracts an archive (tar/bsdtar/gtar -x, unzip, cpio -i, pax -r, patch)
+    into a directory that covers the guard region, else None. The members are not visible, so
+    this asks rather than denies (W1-05; Codex g1 r2 P1 widened the destinations and tools)."""
+    if not ws:
+        return None
+    head, rest = _peel_busybox(ws[0].rsplit("/", 1)[-1], ws[1:])
+    letters = "".join(w[1:] for w in rest if re.fullmatch(r"-[A-Za-z]+", w))
+    longs = [w.split("=", 1)[0] for w in rest if w.startswith("--")]
+
+    def dest_of(shorts, longnames):
+        # The operand of -C/-d/-D (per `shorts`) or --directory[=], separate or glued.
+        for i, w in enumerate(rest):
+            if w in longnames and i + 1 < len(rest):
+                return rest[i + 1]
+            for ln in longnames:
+                if w.startswith(ln + "="):
+                    return w.split("=", 1)[1]
+            if shorts and re.fullmatch(r"-[%s]" % shorts, w) and i + 1 < len(rest):
+                return rest[i + 1]
+            if shorts and re.fullmatch(r"-[%s].+" % shorts, w):
+                return w[2:]
+        return None
+
+    _DIR_LONGS = ("--directory", "--cd", "--chdir")
+    if head in ("tar", "bsdtar", "gtar"):
+        tletters, tlongs, _f, tdest = _tar_info(rest)   # reads the dashless bundle too (g1 P1)
+        if not ("x" in tletters or any(x in tlongs for x in ("extract", "get"))):
+            return None
+        dest = tdest
+    elif head == "unzip":
+        dest = dest_of("d", ())
+    elif head in ("cpio", "pax") and ("i" in letters or "r" in letters
+                                      or "--extract" in longs or "--read" in longs):
+        if head == "pax" and ("w" in letters or "--write" in longs):
+            return None   # pax -r -w copies between trees, not an extract into a dir
+        dest = dest_of("Cd", _DIR_LONGS)
+    elif head == "patch":
+        dest = dest_of("d", _DIR_LONGS)
+        if any(w in ("-o", "--output") or w.startswith("--output=") for w in rest):
+            return None   # -o FILE is a named write, judged by the self-guard instead
+    else:
+        return None
+    if _dest_covers_guard(dest):
+        return ("Extracting an archive or applying a patch into a directory that holds the hook "
+                "guard. Its member names are not visible to this hook, so it cannot prove the "
+                "guard files are untouched; extract into a subdirectory or name the targets.")
+    return None
+
+
+def _rooty(tok):
+    """"root" or "home" when a delete target denotes all of / or all of $HOME at the CLASS level,
+    else None (W1-06). The HIGH tier matched a literal spelling set, so `/*/`, `~/.`, `~/*`,
+    `${HOME}/*` and `${HOME}/.` were a root/home wipe downgraded to a never-list ask. Here `.` and
+    `..` collapse, a single trailing glob segment (*, ?, [) is "everything directly here", and
+    ~, $HOME and ${HOME} are the home root -- so the class is judged, not the spelling."""
+    if not tok:
+        return None
+    m = re.match(r"\$\{HOME\}|\$HOME(?![A-Za-z0-9_])", tok)
+    if tok == "~" or tok.startswith("~/"):
+        base, body = "home", tok[1:]
+    elif m:
+        base, body = "home", tok[m.end():]
+    elif tok.startswith("/"):
+        base, body = "root", tok
+    else:
+        return None
+    segs = []
+    for s in body.split("/"):
+        if s in ("", "."):
+            continue
+        if s == "..":
+            if segs:
+                segs.pop()
+            elif base == "home":
+                return None   # the parent of $HOME is not the home class
+            continue   # above / stays /
+        segs.append("*" if any(ch in s for ch in "*?[") else s)
+    if not segs:
+        return base
+    return base if segs == ["*"] else None
+
+
+def _root_wipe(ws):
+    """True when ws is a recursive rm whose every target is root/home-class (W1-06)."""
+    if not ws or ws[0].rsplit("/", 1)[-1] != "rm":
+        return False
+    rest = ws[1:]
+    recursive = any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", w) or w == "--recursive"
+                    for w in rest if w.startswith("-"))
+    targets = _operands(rest)
+    return bool(recursive and targets and all(_rooty(t) for t in targets))
+
+
+# File-write redirect operators (NOT the fd-duplication ops): a numeric target is a filename
+# for these, while for >& / <& a number is a descriptor (Codex g1 P1).
+_FILE_WRITE_OPS = (">", ">>", ">|", "&>", "&>>", "<>")
+
+
+def _has_write(text, depth=0):
+    """True when text performs a file write the hook can see -- a redirect to a file (not an fd
+    dup like 2>&1), or a tee -- anywhere, descending shell/-c bodies. The ro tier write floor
+    (W4-05) reads this, so a write hidden in a shell -c body is caught too. A body is descended
+    through _expand, so a program the body feeds a shell (sh -c "echo CMD | sh") is judged as
+    well; text this reader cannot split counts as a write (fail closed)."""
+    try:
+        segs = _split(text)
+    except ValueError:
+        return True
+    for _j, seg in segs:
+        try:
+            words, redirs = _redirs(seg)
+        except ValueError:
+            return True
+        for _fd, op, target in redirs:
+            if not target:
+                continue
+            if op in _FILE_WRITE_OPS:
+                return True                       # `> 123` / `> -` writes a file named 123 / -
+            if op == ">&" and target != "-" and not target.isdigit():
+                return True                       # `>&out` writes a file; `>&1`/`>&-` is an fd op
+        ws = _command_words(words)
+        if not ws:
+            continue
+        if ws[0].rsplit("/", 1)[-1] == "tee" and _operands(ws[1:]):
+            return True
+        if depth < 4:
+            body = _inner_body(ws)
+            if body:
+                try:
+                    parts = _expand(body)[0]
+                except ValueError:
+                    return True
+                if any(_has_write(part, depth + 1) for part in parts):
+                    return True
+    return False
 
 
 def _never_git(ws):
@@ -4025,7 +4697,7 @@ _RUNNERS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh", "
 def _code_words(ws):
     """The words a runner executes as code: a -c/-e string, else its script operand."""
     head = ws[0].rsplit("/", 1)[-1] if ws else ""
-    if not (head in _RUNNERS or re.fullmatch(r"python[0-9.]*", head)):
+    if not (head in _RUNNERS or _canon_interp(head) in ("python", "perl", "ruby", "php")):
         return None
     if head in ("eval", "source", "."):
         return ws[1:]
@@ -4072,18 +4744,22 @@ def _fetch_runs():
 
 
 _never = [why for why in (_never_git(_vw) for _vw, _w, _sg in _all_views) if why]
+_never += [why for why in (_extracts_over_guard(_vw) for _vw, _w, _sg in _all_views) if why]
 if _fetch_runs():
     _never.append("Running a script fetched from the network in the same command.")
 if _never:
     record("N", _never[0])
 _hard = [why for why in (_alias_refusal(_vw) for _vw, _w, _sg in _all_views) if why]
+_hard += [why for why in (_awk_program_file(_vw) for _vw, _w, _sg in _all_views) if why]
 _hard += [why for why in (_git_alias_laundering(_all_assigns[_k], _vw)
                           for _k, (_vw, _w, _sg) in enumerate(_all_views)) if why]
 if _BRACE_REFUSAL:
     _hard.insert(0, _BRACE_REFUSAL)
 if _hard:
     record("D", _hard[0])
-
+# Y: a recursive rm whose every target is the root or home CLASS (W1-06), judged by the HIGH tier.
+if any(_root_wipe(_vw) for _vw, _w, _sg in _all_views):
+    record("Y", "1")
 
 # R: the line the as-written never-list pass reads (#598, from #602). That pass ran over the raw
 # text so curl … | sh still read as a pipe, and so it ASKED about a never-list shape that was
@@ -4141,6 +4817,15 @@ def _rline(text, depth=0):
 
 
 record("R", "=" + _rline(_judged))
+# Z: the ro write floor (W4-05), recorded LAST so the extra reads it makes move no other record.
+# "write": a file write the hook can see in any command the line runs -- the surface, every
+# substitution, every program fed to a shell or interpreter (_parts) and every -c body inside
+# them. "blind": a shell reads a program on stdin that the hook cannot read (_FED_BLIND), so a
+# write inside it would be unseen.
+if any(_has_write(_part) for _part in _parts):
+    record("Z", "write")
+elif _FED_BLIND:
+    record("Z", "blind")
 '
 FIELDS=$(printf '%s' "$PAYLOAD" | { printf '%s' "$_READER" | python3 -I - 3<&4 4<&- 2>/dev/null; } 4<&0) || {
   # Exit 2 UNCONDITIONALLY: OpenHands and jcode fail OPEN on exit 1 and on an
@@ -4210,6 +4895,9 @@ lexical_abs() {
   _out=""
   _oldifs=$IFS
   IFS='/'
+  # A segment is a NAME, never a pattern: with globbing on, a `.?` or `q*` segment matched
+  # entries of the HOOK's cwd (`.?` matches `..`), so the answer moved with that cwd (W4-09).
+  set -f
   for _seg in $_p; do
     case "$_seg" in
       ''|.) : ;;
@@ -4217,6 +4905,7 @@ lexical_abs() {
       *) _out="$_out/$_seg" ;;
     esac
   done
+  set +f
   IFS=$_oldifs
   printf '%s' "${_out:-/}"
 }
@@ -4514,6 +5203,10 @@ case "$TOOL" in
   Edit|Write|NotebookEdit|MultiEdit)
     [ -n "$FILE" ] || exit 0
     guard_check
+    if [ "$HOOK_READONLY" = "1" ]; then
+      decide deny "deny-hook[READONLY]: this worker runs read-only (ro tier) and may not edit, write or create files. Run it under the rw tier if it needs to change the tree."
+      exit 0
+    fi
     if [ -n "$BOUND" ]; then
       check_edit_target "$FILE"
       while IFS= read -r _FREC; do
@@ -5066,7 +5759,37 @@ for _SEG in "$@"; do
   fi
 done
 
+# A recursive rm whose every target is the root or home CLASS (W1-06): the reader normalised the
+# spellings (/*/, ~/., ${HOME}/*, /dev/../, …) the per-token case above only matched literally.
+# After the loop, so --no-preserve-root and the canonical spellings keep their own reasons.
+if [ -n "$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^Y //p' | sed -n '1p')" ]; then
+  decide deny "deny-hook[HIGH]: recursive delete of / or the home directory is refused. Delete a named path inside the unit worktree instead."
+  exit 0
+fi
+
 guard_check
+
+# READ-ONLY tier (W4-05): a ro worker may read and run read-only shell, but any write this hook
+# can see -- a redirect or a tee in any command the line runs, a -c body or a program fed to a
+# shell included (a Z record), or an apply_patch (a P record) -- is denied regardless of the
+# boundary. A shell reading a program on stdin that the hook cannot read (cat f | sh, sh < f, a
+# substitution or variable as its head) is denied too: a write inside it would be unseen. A
+# command the hook does not model as a write (cp/mv/rm, a package install, an interpreter's
+# own file write, a script already on disk) is beyond this; the sandbox is the fs boundary for
+# those (sandbox-policy.md). Runs after the HIGH tier and the self-guard so a refused shape
+# keeps its own, more specific reason.
+if [ "$HOOK_READONLY" = "1" ]; then
+  _RO_Z=$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^Z //p' | sed -n '1p')
+  if [ "$_RO_Z" = "blind" ]; then
+    decide deny "deny-hook[READONLY]: this worker runs read-only (ro tier), and this line feeds a shell a program on its standard input that the hook cannot read (a pipe from a file or command, a < file, a substitution or variable). A write inside it would be unseen, so it is refused; run the commands directly."
+    exit 0
+  fi
+  if [ -n "$_RO_Z" ] \
+    || [ -n "$(printf '%s\n' "$FIELDS" | sed -n '4,$s/^P //p' | sed -n '1p')" ]; then
+    decide deny "deny-hook[READONLY]: this worker runs read-only (ro tier) and may not write to a file. A shell redirect, tee or apply_patch is refused; read-only shell (git diff/log, cat, running tests) is fine."
+    exit 0
+  fi
+fi
 
 # --- worktree boundary for Bash writes ---------------------------------------
 # The boundary used to be applied only to an Edit/Write payload, so a bounded
@@ -5090,9 +5813,8 @@ if [ -n "${UNIT_WORKTREE:-}" ]; then
     exit 0
   fi
 
-  bounded_write() {
+  bounded_one() {
     _t=$1
-    case "$_t" in /*) : ;; *) return 0 ;; esac
     # The process's own standard streams and the bit bucket. `make > /dev/null`
     # is the most common redirect there is and writes nothing anyone can read;
     # refusing it would make the boundary a thing workers route around. Named
@@ -5106,6 +5828,33 @@ if [ -n "${UNIT_WORKTREE:-}" ]; then
     case "$RESOLVED/" in "$BOUND"/*) return 0 ;; esac
     decide deny "deny-hook: this worker may only write inside its own worktree. A shell redirect or tee destination names an absolute path outside the unit boundary."
     exit 0
+  }
+
+  bounded_write() {
+    _t=$1
+    case "$_t" in /*) : ;; *) return 0 ;; esac
+    # An unquoted glob in a target is expanded by the shell against the filesystem before
+    # it writes, so the literal alone is not the target: `> wt/lin*/f` with wt/link -> /x
+    # writes /x/f (W4-09). Every existing match is judged too (a quoted glob is written
+    # literally, so judging its matches can only add a refusal). IFS empty: matches are not
+    # field-split. Past 64 matches the expansion is more than this reads: refused.
+    case "$_t" in
+      *[*?[]*)
+        _bw_ifs=$IFS
+        IFS=''
+        _bw_n=0
+        for _bw_m in $_t; do
+          [ "$_bw_m" = "$_t" ] && continue
+          _bw_n=$((_bw_n + 1))
+          if [ "$_bw_n" -gt 64 ]; then
+            decide deny "deny-hook: a write target glob expands to more paths than the boundary check reads. Fail-closed: name the target."
+            exit 0
+          fi
+          bounded_one "$_bw_m"
+        done
+        IFS=$_bw_ifs ;;
+    esac
+    bounded_one "$_t"
   }
 
   # Consume typed records without splitting paths on whitespace. The here-doc

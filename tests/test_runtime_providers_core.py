@@ -538,6 +538,8 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
             "OPEN_FLEET_POSIX_MUX": "dry-run",
             "OPEN_FLEET_CLI_CWD": str(self.repo),
             "OPEN_FLEET_COORD_ALLOW_AUTONOMOUS_WRITE": "1",
+            # No OPEN_FLEET_ALLOW_UNVERIFIED_DENY_HOOK: off Orca the provider installs and verifies
+            # the guard inside worker-start, so the pre-launch gate defers (W4-06).
             "PROFILE": "rw",
             "SP": str(scratch),
             "HOME": self.tmp.name,  # the spawn registry, never the developer's own
@@ -553,6 +555,23 @@ class TestPosixProviderAndSpawnIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("READY=ready", p.stdout)
         self.assertIn("DISPATCH=disp_", p.stdout)
+
+    def test_worker_start_refuses_before_launch_when_the_installed_guard_is_unarmed(self):
+        # W4-06 (Codex g1 r2 P1): the deny-hook registration is verified at worker-start, after it
+        # is installed and BEFORE the agent process starts -- the real enforcement point a
+        # new-child spawn's pre-launch gate cannot reach. A registration naming a hook that cannot
+        # load aborts the launch: ProviderError, and the agent process (the runner) never runs.
+        env = {"OPEN_FLEET_STATE_DB": str(Path(self.tmp.name) / "guard.db")}
+        runner = mock.Mock(return_value={"pid": 0, "backend": "runner"})
+        provider = self.posix_mod.PosixWorktreeProvider(repo_root=self.repo, env=env, runner=runner)
+        task = provider.task_create(spec="x", title="Guard")["task"]
+        with mock.patch.object(self.posix_mod, "CANONICAL_DENY_HOOK",
+                               Path(self.tmp.name) / "missing" / "deny-hook.sh"):
+            with self.assertRaises(self.posix_mod.ProviderError) as caught:
+                provider.worker_start(task_id=task["id"], worktree="current", agent="claude",
+                                      profile="ro")
+        self.assertEqual(caught.exception.code, "deny_hook_unverified")
+        self.assertFalse(runner.called, "the agent must not start when the installed guard is unarmed")
 
     def test_inject_claim_excludes_worker_start_during_delivery(self):
         # The delivery callback fixes the interleaving: a second provider competes

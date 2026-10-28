@@ -6631,6 +6631,23 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
                 self.assertTrue(ancestry and "not an ancestor" in ancestry[0], ancestry)
                 self.assertTrue(binding and "not an ancestor" in binding[0], binding)
 
+    def test_symbol_grep_names_the_resolved_commit_never_the_ref(self):
+        # Re-attack C(2): a mutant grepping the NAME instead of the commit survived. The grep
+        # must receive the commit the exact-name rule returned.
+        seen = []
+        real = verify._git
+
+        def spy(args, *a, **k):
+            seen.append(list(args))
+            return real(args, *a, **k)
+
+        with self._inside_repo(), mock.patch.object(verify, "_git", side_effect=spy):
+            self.assertEqual(verify.check_symbol_on_base("def f", "main"), [])
+        greps = [argv for argv in seen if argv[:1] == ["grep"]]
+        self.assertEqual(len(greps), 1, seen)
+        self.assertEqual(greps[0][-1], self.honest_base, greps)
+        self.assertFalse(any("origin/main" in tok for tok in greps[0]), greps)
+
     def test_a_revision_suffix_on_the_base_is_not_a_base(self):
         verify._Authority.lane = "provenance=ci"
         with self._inside_repo():

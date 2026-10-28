@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -1330,6 +1331,7 @@ class TestARefusedFileIsSaid(_Base):
             self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
         self.assertIn(f"first {link}: recall is partial", err.getvalue())
 
+
     def test_a_fifo_or_a_link_to_dev_zero_named_like_a_transcript_is_said(self):
         # Re-attack of 2d254d0f: _glob kept only what is_file() accepted, so a FIFO, or a link to
         # /dev/zero, named like a transcript was left out in silence, never reaching the read that
@@ -1348,6 +1350,171 @@ class TestARefusedFileIsSaid(_Base):
                 self.assertIn("not a regular file", err.getvalue())
                 (where / name).unlink()
 
+
+# A recall run in a child of its own, which measures its own peak and its children's (the contained
+# scans', reaped by it): VmHWM for itself, RUSAGE_CHILDREN's ru_maxrss for them (KiB on Linux).
+# argv: module, env (JSON), main's argv (JSON), the memory knob in MiB, and "zstd" to stand in for
+# Python 3.14's compression.zstd with _FrameZstd's frames.
+AMPLIFY_CHILD = ("import contextlib, importlib.util, io, json, os, resource, sys, types\n"
+                 "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+                 "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+                 "mod.SCAN_MEMORY_BYTES = int(sys.argv[4]) << 20\n"
+                 "os.environ.clear(); os.environ.update(json.loads(sys.argv[2]))\n"
+                 "if sys.argv[5:] == ['zstd']:\n"
+                 "    class D:\n"
+                 "        def __init__(self):\n"
+                 "            self.eof, self.needs_input, self.unused_data = False, True, b''\n"
+                 "        def decompress(self, data, max_length=-1):\n"
+                 "            data = bytes(data)\n"
+                 "            count, size = int.from_bytes(data[2:6], 'big'), int.from_bytes(data[6:10], 'big')\n"
+                 "            out = data[10:10 + size] * count\n"
+                 "            self.eof, self.needs_input, self.unused_data = True, False, data[10 + size:]\n"
+                 "            return out[:max_length] if max_length >= 0 else out\n"
+                 "    zstd = types.ModuleType('compression.zstd'); zstd.ZstdDecompressor = D\n"
+                 "    pkg = types.ModuleType('compression'); pkg.zstd = zstd\n"
+                 "    sys.modules['compression'], sys.modules['compression.zstd'] = pkg, zstd\n"
+                 + PEAK_KIB +
+                 "err, out = io.StringIO(), io.StringIO()\n"
+                 "with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):\n"
+                 "    rc = mod.main(json.loads(sys.argv[3]))\n"
+                 "children = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
+                 "print(json.dumps({'rc': rc, 'err': err.getvalue(), 'out': out.getvalue(), 'own_kib': peak_kib(),\n"
+                 "                  'children_kib': children // (1024 if sys.platform == 'darwin' else 1)}))\n")
+
+# 16 bytes of JSON that parse to three dicts (~360 bytes): the re-attack's amplifier.
+AMPLIFIER = b'{"a":{},"b":{}}\n'
+
+
+class TestParsingNeverMultipliesPastTheScansMemory(_Base):
+    """Re-attack of 2d254d0f (W5-21): the byte caps held, but parsing multiplies them, and the
+    comment calling them "the memory a scan can hold" was false. One 63 MiB .jsonl of
+    {"a":{},"b":{}} lines held 1.71 GB (eight held 3.12 GB over 87 s), a 5.6 KB .zst 1.81 GB, a
+    60 MiB --runs-dir manifest 1.81 GB, and a 62 MB opencode.db whose schema holds a 31M-item IN
+    list 5.61 GB -- rc 0, nothing said. Every scan of untrusted stores now runs in a forked child
+    under SCAN_MEMORY_BYTES (RLIMIT_DATA, which Linux enforces) and SOURCE_SECONDS per source, and a
+    store's schema statement is held to MAX_SQL_BYTES. Each case runs here at 20 MiB against a
+    128 MiB limit, and the whole recall -- the child and every scan it forked -- must stay under
+    300 MiB, say the skip, and still read everything else."""
+
+    LIMIT_MIB, BOUND_KIB = 128, 300 * 1024
+
+    def recall(self, env, argv, zstd=False):
+        proc = subprocess.run([sys.executable, "-I", "-c", AMPLIFY_CHILD, str(SEARCH_PY), json.dumps(env),
+                               json.dumps(argv), str(self.LIMIT_MIB), *(["zstd"] if zstd else [])],
+                              capture_output=True, text=True, timeout=600)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        got = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(got["rc"], 0, got["err"][-2000:])
+        return got
+
+    def bounded(self, got, source, why="memory limit"):
+        if not sys.platform.startswith("linux"):
+            return  # only Linux enforces RLIMIT_DATA: elsewhere the bound is documented, not held
+        peak = max(got["own_kib"], got["children_kib"])
+        self.assertLess(peak, self.BOUND_KIB, f"recall peaked at {peak} KiB parsing {source}")
+        self.assertIn(why, got["err"], "a source past the scan's limit was not said")
+        self.assertIn(str(source), got["err"])
+
+    def test_an_amplifying_transcript_is_skipped_within_the_limit_and_said(self):
+        where = self.tmp / "claude" / "projects" / "-workspace-amp"
+        where.mkdir(parents=True)
+        for name in ("amp-1.jsonl", "amp-2.jsonl"):  # several: the bound is the scan's, not a file's
+            (where / name).write_bytes(AMPLIFIER * ((20 << 20) // len(AMPLIFIER)))
+        got = self.recall(self.env, ["zeta_token", "--local-harnesses", "--limit", "50"])
+        self.bounded(got, where / "amp-1.jsonl")
+        self.assertEqual(got["out"].count("HIT "), 10, "the other harnesses' sessions were not all read")
+
+    def test_an_amplifying_compressed_transcript_is_skipped_within_the_limit_and_said(self):
+        packed = self.tmp / "codex" / "sessions" / "2026" / "10" / "10" / \
+            "rollout-2026-10-10T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl.zst"
+        packed.parent.mkdir(parents=True, exist_ok=True)
+        count = (20 << 20) // len(AMPLIFIER)
+        packed.write_bytes(b"ZF" + count.to_bytes(4, "big") + len(AMPLIFIER).to_bytes(4, "big") + AMPLIFIER)
+        self.assertLess(packed.stat().st_size, 64, "the compressed transcript is not tiny")
+        got = self.recall(self.env, ["zeta_token", "--local-harnesses", "--limit", "50"], zstd=True)
+        self.bounded(got, packed)
+        self.assertEqual(got["out"].count("HIT "), 10, "the other harnesses' sessions were not all read")
+
+    def test_an_amplifying_run_manifest_is_skipped_within_the_limit_and_said(self):
+        runs = self.tmp / "runs"
+        (runs / "amp").mkdir(parents=True)
+        unit = AMPLIFIER.strip() + b","
+        (runs / "amp" / "manifest.json").write_bytes(b'{"units":[' + unit * ((20 << 20) // len(unit)) + b"{}]}")
+        (runs / "real").mkdir()
+        (runs / "real" / "manifest.json").write_text(json.dumps(
+            {"units": [{"id": "U-1", "status": "merged", "files_touched": ["src/app.py"], "head_sha": "a" * 40}]}),
+            encoding="utf-8")
+        got = self.recall(self.env, ["--episodic-hint", "--path", "src/app.py", "--runs-dir", str(runs)])
+        self.bounded(got, runs / "amp" / "manifest.json")
+        self.assertIn("PRIOR_RUNS=1 ", got["out"], "the manifest beside it was not read")
+
+    def test_a_store_whose_schema_is_one_huge_expression_is_refused_unparsed(self):
+        # SQLite parses a store's schema on its first statement: a 62 MB IN list under the old 64 MiB
+        # statement limit built a 5.61 GB expression tree. MAX_SQL_BYTES (1 MiB) refuses it unparsed,
+        # on every platform; SCAN_MEMORY_BYTES would stop it where that holds too.
+        db = self.tmp / "amp-opencode" / "opencode.db"
+        db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE session (id, directory, title)")
+            conn.execute("INSERT INTO session VALUES ('s1', '/w', 'zeta_token')")
+            conn.commit()
+            conn.execute("PRAGMA writable_schema = ON")
+            conn.execute("UPDATE sqlite_master SET sql = ? WHERE name = 'session'",
+                         ("CREATE TABLE session (id, directory, title DEFAULT (0 IN (" + "1," * (4 << 20) + "1)))",))
+            conn.commit()
+        self.assertLess(db.stat().st_size, self.mod.MAX_STORE_BYTES)
+        got = self.recall({**self.env, "OPENCODE_DB": str(db)},
+                          ["zeta_token", "--local-harnesses", "--limit", "50"])
+        self.assertIn(f"first {db}", got["err"])
+        self.assertIn("schema holds a statement over", got["err"])
+        self.assertEqual(got["out"].count("HIT "), 9, "the other harnesses' sessions were not all read")
+        if sys.platform.startswith("linux"):
+            peak = max(got["own_kib"], got["children_kib"])
+            self.assertLess(peak, self.BOUND_KIB, f"recall peaked at {peak} KiB parsing the store's schema")
+
+    def test_a_source_past_its_wall_clock_is_skipped_and_said_and_the_rest_is_read(self):
+        slow = self.tmp / "claude" / "projects" / "-workspace-slow" / "slow-session.jsonl"
+        _jsonl(slow, [{"type": "user", "sessionId": "slow", "cwd": "/w", "timestamp": "2026-10-10T12:00:00Z",
+                       "message": {"role": "user", "content": "zeta_token"}}])
+        real = self.mod._read_capped
+
+        def stalls(fp, follow=False):
+            data = real(fp, follow)
+            if data is not None and Path(fp).name == "slow-session.jsonl":
+                time.sleep(30)
+            return data
+        err = io.StringIO()
+        with mock.patch.object(self.mod, "_read_capped", stalls), \
+                mock.patch.object(self.mod, "SOURCE_SECONDS", 1.0), \
+                mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            started = time.monotonic()
+            hits = self.mod.search_local_harnesses(self.mod.parse_args(["zeta_token", "--local-harnesses",
+                                                                         "--limit", "50"]))["hits"]
+            took = time.monotonic() - started
+        self.assertLess(took, 20, "the scan waited out a stalled source")
+        self.assertEqual(len(hits), 10, "the sources beside the stalled one were not all read")
+        self.assertIn(f"after SOURCE_SECONDS (1 s), first {slow}: recall is partial", err.getvalue())
+
+    def test_a_memory_error_anywhere_in_a_source_skips_that_source_and_the_scan_goes_on(self):
+        # Past the per-source catches -- in the reader's own work on a record -- the child dies of it,
+        # and the scan is restarted past the source it was reading.
+        bomb = self.tmp / "claude" / "projects" / "-workspace-bomb" / "bomb-session.jsonl"
+        _jsonl(bomb, [{"type": "user", "sessionId": "bomb", "cwd": "/w", "timestamp": "2026-10-10T12:00:00Z",
+                       "message": {"role": "user", "content": "zeta_token psi_bomb"}}])
+        real = self.mod._extract_text
+
+        def explodes(val, depth=0):
+            if isinstance(val, str) and "psi_bomb" in val:
+                raise MemoryError
+            return real(val, depth)
+        err = io.StringIO()
+        with mock.patch.object(self.mod, "_extract_text", explodes), \
+                mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            hits = self.mod.search_local_harnesses(self.mod.parse_args(["zeta_token", "--local-harnesses",
+                                                                         "--limit", "50"]))["hits"]
+        self.assertEqual(len(hits), 10, "the sources beside the failed one were not all read")
+        self.assertIn(f"memory limit (SCAN_MEMORY_BYTES, {self.mod.SCAN_MEMORY_BYTES} bytes", err.getvalue())
+        self.assertIn(f"first {bomb}: recall is partial", err.getvalue())
 
 
 class TestAStoreSwappedForAFifoNeverHangsRecall(_Base):

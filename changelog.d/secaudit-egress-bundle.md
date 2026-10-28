@@ -49,4 +49,9 @@
   statement, never to load a value or a schema statement past the cap; a `.zst` transcript is walked frame
   by frame in linear work, a damaged tail kept up to its last whole frame and said; a record nested
   past the parser's depth is skipped, never fatal; and a store swapped for a FIFO during SQLite's own
-  open fails closed and is said, never hangs recall.
+  open fails closed and is said, never hangs recall. Parsing no longer multiplies those byte caps
+  past a bound: every scan of the stores and of the run manifests runs in a forked child, which on
+  Linux `RLIMIT_DATA` holds to 1 GiB past the process (a source whose parse passes it is skipped
+  and said), each source gets 60 s of wall clock on every platform, a child stopped by either is
+  restarted past that source, and a store's schema statement is held to 1 MiB everywhere; macOS
+  does not enforce `RLIMIT_DATA`, so there only the byte caps and the schema cap bound it.

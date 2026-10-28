@@ -131,6 +131,24 @@ def stat(pid: int) -> tuple[int, str] | None:
         raise Unknown(f"ps answered an unexpected shape for {pid}") from None
 
 
+def _proc_state(pid: int) -> str | None:
+    """The state letter in /proc/<pid>/stat; None when the process is gone; Unknown when unread."""
+    try:
+        raw = (PROC / str(pid) / "stat").read_text()
+    except GONE:
+        return None
+    except OSError as exc:
+        raise Unknown(f"/proc/{pid}/stat: {exc.strerror or exc}") from None
+    return raw[raw.rfind(")") + 2:][:1] or None
+
+
+# A zombie (Z) or dead (X) process has exited: it runs nothing and forks nothing, its children were
+# reparented when it exited, and its environment is gone, so reading it answers EACCES. It is
+# ABSENT, not unknown: counting it as unreadable made a busy host's scans inconclusive (an exited
+# command its parent had not reaped yet), and kept reservations of workers that had exited.
+EXITED = ("Z", "X")
+
+
 def key(pid: int) -> str | None:
     st = stat(pid)
     return f"{pid}.{st[1]}" if st else None
@@ -197,7 +215,9 @@ def _scan_proc(handle: str, since: int | None) -> tuple[list[int], bool]:
     stays unreadable (non-dumpable, EIO) and may be this launch's (it started at or after `since`,
     or its start is unknown). An unreadable environment is read again for up to
     UNREADABLE_SETTLE_SECS first: a process caught exiting answers EACCES for a moment and then is
-    gone, and on a busy host (other sessions' commands) that moment is common.
+    gone, and on a busy host (other sessions' commands) that moment is common. A process that has
+    exited but is not yet reaped (a zombie, EXITED) answers EACCES for as long as its parent
+    leaves it: it is absent, not unreadable.
 
     A process that vanishes mid-scan is GONE, not unknown. A carrier it forked just before it
     exited is reparented out of the pane's live tree (the daemonized-out residual); the scan
@@ -241,12 +261,14 @@ def _scan_proc(handle: str, since: int | None) -> tuple[list[int], bool]:
                 continue
             except OSError:  # EACCES (non-dumpable), EIO, anything: UNKNOWN, never "no handle"
                 try:
-                    st = stat(pid)
+                    st, state = stat(pid), _proc_state(pid)
                 except Unknown:
                     complete = False
                     continue
-                if st is None:
+                if st is None or state is None:
                     vanished = True
+                elif state in EXITED:
+                    continue  # exited, not yet reaped: absent (EXITED)
                 elif since is None or int(st[1]) >= since:
                     unreadable.append(pid)
                 continue
@@ -261,6 +283,11 @@ def _scan_proc(handle: str, since: int | None) -> tuple[list[int], bool]:
                     vanished = True
                     continue
                 except OSError:
+                    try:
+                        if _proc_state(pid) in EXITED + (None,):
+                            unreadable.remove(pid)  # it exited while we waited: absent
+                    except Unknown:
+                        pass
                     continue
                 unreadable.remove(pid)
                 judge(pid, raw)

@@ -410,9 +410,9 @@ class NothingStopsTheReaderShortOfTheReport(unittest.TestCase):
 
     @staticmethod
     def wrapped(report, n):
-        for _ in range(n):
-            report = {"ok": True, "result": report}
-        return json.dumps(report)
+        # Built as text, not by json.dumps of a nested object: encoding 3000 levels recurses past
+        # Python 3.11's limit (the CI floor), and the fixture must not depend on the encoder.
+        return '{"ok": true, "result": ' * n + json.dumps(report) + "}" * n
 
     def test_the_wrapper_limit_is_a_refusal(self):
         limit = sandbox_doctor.MAX_WRAPPERS
@@ -455,6 +455,52 @@ class NothingStopsTheReaderShortOfTheReport(unittest.TestCase):
         # A plain-text doctor whose lines open with a bracketed tag is still read as text.
         self.assertTrue(sandbox_doctor.assess("[PASS] recipe lane-7 is healthy\n", "lane-7")[0])
         self.assertFalse(sandbox_doctor.assess("[FAIL] recipe lane-7 failed a check\n", "lane-7")[0])
+
+
+class OnlyTheDocumentedShapeIsAReport(unittest.TestCase):
+    """W4-10, Codex round 8 (P2): `[<docker report with "privileged": true>]` read as clear. Recipe
+    discovery walked into the array and found the recipe, but the array was never unwrapped, so
+    nothing named a backend and the portable isolation checks were skipped. The documented output
+    is one report object, optionally inside `{ok, result}` envelopes; every other container is
+    refused, in the assessment and in placement alike."""
+
+    def refused(self, doc_or_raw):
+        raw = doc_or_raw if isinstance(doc_or_raw, str) else json.dumps(doc_or_raw)
+        clear, reason, _ = sandbox_doctor.assess(raw, "lane-7")
+        self.assertFalse(clear, raw[:120])
+        self.assertFalse(sandbox_doctor.placement_bound(raw), raw[:120])
+        return reason
+
+    def test_an_array_wrapped_report_is_refused_good_or_privileged(self):
+        good, bad = GOOD["docker"], dict(GOOD["docker"], privileged=True)
+        for report in (good, bad):
+            for name, doc in (("an array", [report]),
+                              ("an array inside an envelope", {"ok": True, "result": [report]}),
+                              ("an array two envelopes down", {"ok": True, "result": {"ok": True, "result": [report]}}),
+                              ("an array of two reports", [report, report]),
+                              ("a report under another key", {"ok": True, "report": report}),
+                              ("a report beside a report", dict(report, extra=dict(report)))):
+                with self.subTest(name, privileged=report is bad):
+                    self.assertIn("unsupported doctor output shape", self.refused(doc))
+
+    def test_a_scalar_or_a_misspelt_backend_is_refused(self):
+        for raw in ("true", "42", '"lane-7"', "null", "[]"):
+            with self.subTest(raw=raw):
+                self.assertIn("not a report object", self.refused(raw))
+        bad = dict(GOOD["docker"], privileged=True)
+        misspelt = {("Backend" if k == "backend" else k): v for k, v in bad.items()}
+        self.assertIn("'Backend'", self.refused(misspelt))
+
+    def test_the_documented_shapes_are_still_read(self):
+        for doc in (GOOD["docker"], {"ok": True, "result": GOOD["docker"]},
+                    {"ok": True, "result": {"ok": True, "result": GOOD["docker"]}}):
+            with self.subTest(doc=str(doc)[:60]):
+                raw = json.dumps(doc)
+                self.assertTrue(sandbox_doctor.assess(raw, "lane-7")[0])
+                self.assertTrue(sandbox_doctor.placement_bound(raw))
+        orca = {"recipe": "lane-7", "ok": True, "checks": [{"id": "vm", "status": "pass"}], "failures": []}
+        self.assertTrue(sandbox_doctor.assess(json.dumps(orca), "lane-7")[0])
+        self.assertTrue(sandbox_doctor.assess("recipe lane-7: all checks pass\n", "lane-7")[0])
 
 
 class PortableBackends(unittest.TestCase):

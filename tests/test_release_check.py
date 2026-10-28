@@ -30,6 +30,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 SCRIPT = ROOT / "scripts" / "release_check.py"
 CHECKLIST = ROOT / "docs" / "release-1.0-checklist.md"
 
@@ -524,6 +530,79 @@ class GateOneReadsTheHumanKeyAtTheAnchor(unittest.TestCase):
         self.assertEqual(status, rc.FAIL, detail)
         self.assertIn("refs/remotes/origin/main", detail)
 
+    def test_a_local_bridge_inside_the_anchor_chain_is_no_anchor(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's END, so
+        # refs/remotes/origin/main -> refs/heads/bridge -> refs/remotes/origin/typed (a fetched
+        # branch that drops the pin and types the answer) read as remote-tracking all the way.
+        (self.root / ".orca" / "human-grant-pubkey").unlink()
+        self.answer(signed=False)
+        git = ["git", "-C", str(self.root)]
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                        "commit.gpgsign=false", "commit", "-q", "-m", "no pin, typed"], check=True)
+        subprocess.run([*git, "update-ref", "refs/remotes/origin/typed", "HEAD"], check=True)
+        subprocess.run([*git, "symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/typed"],
+                       check=True)
+        for chain in ((("refs/remotes/origin/main", "refs/heads/bridge"),),
+                      (("refs/remotes/origin/hop", "refs/heads/bridge"),
+                       ("refs/remotes/origin/main", "refs/remotes/origin/hop"))):
+            for link in chain:
+                subprocess.run([*git, "symbolic-ref", *link], check=True)
+            for env in (None, {"ORCA_PROVENANCE": "ci"}):
+                with self.subTest(chain=chain, env=env):
+                    _, status, detail = self.gate1(env)
+                    self.assertEqual(status, rc.FAIL, detail)
+                    self.assertIn("refs/heads/bridge", detail)
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_anchor(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # so a fetched `x<U+2028>refs/remotes/origin/main` at a commit that drops the pin and
+        # types the answer replaced the anchor and gate 1 PASSED.
+        git = ["git", "-C", str(self.root)]
+        honest = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True,
+                                text=True).stdout.strip()
+        subprocess.run([*git, "checkout", "-q", "-b", "typed"], check=True)
+        (self.root / ".orca" / "human-grant-pubkey").unlink()
+        self.answer(signed=False)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                        "commit.gpgsign=false", "commit", "-q", "-m", "no pin, typed"], check=True)
+        typed = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True,
+                               text=True).stdout.strip()
+        self.assertEqual(subprocess.run([*git, "rev-parse", "refs/remotes/origin/main"],
+                                        check=True, capture_output=True,
+                                        text=True).stdout.strip(), honest)
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.root, ch, typed)
+                try:
+                    _, status, detail = self.gate1()
+                finally:
+                    unplant()
+                # Read at the real anchor, which pins the key the tree deleted: refused.
+                self.assertEqual(status, rc.FAIL, detail)
+                self.assertIn("differs", detail)
+
+    def test_a_local_branch_spelled_as_the_absent_anchor_is_no_anchor(self):
+        # W3-07 class, Codex review (P1): with refs/remotes/origin/main ABSENT, symbolic-ref
+        # failed, the name kept its spelling, and rev-parse expanded it to the LOCAL branch
+        # refs/heads/refs/remotes/origin/main — here a commit that drops the pin and types the
+        # answer, so the key read "at the anchor" was none and the typed answer closed G1.
+        (self.root / ".orca" / "human-grant-pubkey").unlink()
+        self.answer(signed=False)
+        git = ["git", "-C", str(self.root)]
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                        "commit.gpgsign=false", "commit", "-q", "-m", "no pin, typed"], check=True)
+        subprocess.run([*git, "update-ref", "-d", "refs/remotes/origin/main"], check=True)
+        subprocess.run([*git, "update-ref", "refs/heads/refs/remotes/origin/main", "HEAD"],
+                       check=True)
+        for env in (None, {"ORCA_PROVENANCE": "ci"}):
+            with self.subTest(env=env):
+                _, status, detail = self.gate1(env)
+                self.assertEqual(status, rc.FAIL, detail)
+                self.assertIn("exactly that name", detail)
+
 
 class GateOneHoldsTheReleaseToTheAnchoredGateSet(unittest.TestCase):
     """PR #719 review round 3 (P1): a signature protects each ANSWER, but nothing authenticated
@@ -683,6 +762,32 @@ class GateOneHoldsTheReleaseToTheAnchoredGateSet(unittest.TestCase):
         view.write_text("", encoding="utf-8")
         _, status, detail = self.gate1()
         self.assertEqual(status, rc.FAIL, detail)
+        view.unlink()
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+        self.assertIn("gate-batch.md", detail)
+
+    def test_a_replacement_object_cannot_hide_what_the_anchor_carries(self):
+        # Independent re-attack (B): gate 1 listed what the anchor carries under the ambient env,
+        # so `git replace <anchor> <a commit without the view>` hid the view the anchor holds,
+        # and a release that deleted it PASSED. Resolution and listing now run under gitexec's
+        # hardened env, as gate-batch.py reads the same commit.
+        self.write(self.answer_all(gb.load_batch(self.store)))
+        view = self.store.parent / "gate-batch.md"
+        rel_view = f"docs/runs/{rc.GATE_BATCH_RUN}/gate-batch.md"
+        git = ["git", "-C", str(self.root)]
+        anchor = subprocess.run([*git, "rev-parse", "refs/remotes/origin/main"], check=True,
+                                capture_output=True, text=True).stdout.strip()
+        index = self.root.parent / "replacement-index"
+        env = dict(os.environ, GIT_INDEX_FILE=str(index))
+        subprocess.run([*git, "read-tree", anchor], check=True, env=env)
+        subprocess.run([*git, "rm", "-q", "--cached", rel_view], check=True, env=env)
+        tree = subprocess.run([*git, "write-tree"], check=True, env=env, capture_output=True,
+                              text=True).stdout.strip()
+        fake = subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t",
+                               "commit-tree", tree, "-m", "the anchor, minus its view"],
+                              check=True, capture_output=True, text=True).stdout.strip()
+        subprocess.run([*git, "replace", anchor, fake], check=True)
         view.unlink()
         _, status, detail = self.gate1()
         self.assertEqual(status, rc.FAIL, detail)

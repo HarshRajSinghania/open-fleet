@@ -100,6 +100,7 @@ if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sy
 
 import argparse
 import fnmatch
+import importlib.util
 import json
 import os
 import re
@@ -118,7 +119,6 @@ FLAGS = (
     "MIGRATIONS", "API", "AUTH", "SECURITY", "A11Y", "PERF",
 )
 
-DEFAULT_BASES = ("origin/main", "origin/master", "main", "master")
 
 FRONTEND_EXT = {".css", ".scss", ".less", ".sass", ".pcss", ".styl",
                 ".tsx", ".jsx", ".vue", ".svelte", ".astro",
@@ -280,19 +280,45 @@ def git(repo, *args, tolerate=False, blanks=()):
 
 
 def resolve_base(repo, base):
-    if base:
-        if git(repo, "rev-parse", "--verify", "-q", base + "^{commit}") is None:
-            raise ScopeError(base)
-        return base
-    head = git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
-    if head and head.strip():
-        candidate = head.strip().replace("refs/remotes/", "", 1)
-        if git(repo, "rev-parse", "--verify", "-q", candidate + "^{commit}") is not None:
-            return candidate
-    for candidate in DEFAULT_BASES:
-        if git(repo, "rev-parse", "--verify", "-q", candidate + "^{commit}") is not None:
-            return candidate
-    raise ScopeError("origin/HEAD")
+    """(commit, shown): the base resolved ONCE, by exact ref names only (gitexec.base_commit,
+    W3-07 class); the diff is taken against `commit`, never the name. `rev-parse <base>^{commit}`
+    expanded the name (refs/tags/ and refs/heads/ before refs/remotes/), so a tag or local branch
+    spelled `origin/main` stood in for the remote-tracking branch, and an origin/HEAD pointed at
+    a local branch was used as-is — and the base decides which paths count as changed, so which
+    review lenses run. A local-branch, HEAD or abbreviated-id base is refused on a lane claiming
+    soundness (gitexec.sound_lane: ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set) and NOTE'd
+    elsewhere.
+    gitexec.py is loaded here only: verify.py loads this file for SCOPE_TESTS and never resolves a
+    base (gitexec.py is in the verifier toolchain since #608 all the same)."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "gitexec_for_diff_scope", Path(__file__).resolve().parent / "gitexec.py")
+        gitexec = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gitexec)
+    except (OSError, ImportError, SyntaxError, AttributeError) as err:
+        print(f"diff_scope: gitexec.py, the exact-name base rule, did not load: {err}",
+              file=sys.stderr)
+        raise ScopeError(base or "origin/HEAD") from err
+
+    def run(*args):
+        out = git(repo, *args)
+        return (0, out) if out is not None else (1, "")
+
+    commit, shown, local, why = gitexec.base_commit(run, base)
+    if commit is None:
+        print(f"diff_scope: base {shown!r} {why}", file=sys.stderr)
+        raise ScopeError(base or "origin/HEAD")
+    if local:
+        lane = gitexec.sound_lane()
+        if lane:
+            print(f"diff_scope: {lane} claims a sound lane, but base {shown!r} is {local} "
+                  f"({commit[:12]}), not a remote-tracking ref or a full commit id — name "
+                  "origin/<branch> or a full commit id (W3-07)", file=sys.stderr)
+            raise ScopeError(base or shown)
+        print(f"diff_scope: NOTE — base {shown!r} is {local} ({commit[:12]}), not a "
+              "remote-tracking ref or a full commit id, so advisory; --base origin/<branch> (or a "
+              "full commit id) is one the change under check cannot move", file=sys.stderr)
+    return commit, shown
 
 
 def changed_files(repo, base):
@@ -362,7 +388,7 @@ def classify(repo, path):
 
 def scope(repo, base=None):
     """Return (flags dict, unmatched list). Raises ScopeError when the base fails."""
-    base = resolve_base(repo, base)
+    base, shown = resolve_base(repo, base)  # a commit id; `shown` names it in the output
     flags = {f: False for f in FLAGS}
     unmatched = []
     for path in changed_files(repo, base):
@@ -372,7 +398,7 @@ def scope(repo, base=None):
             continue
         for flag in hits:
             flags[flag] = True
-    return flags, unmatched, base
+    return flags, unmatched, shown
 
 
 def render_flags(flags):

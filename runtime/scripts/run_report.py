@@ -125,6 +125,15 @@ GIT = shutil.which("git")
 _GIT_ABSENT = "/nonexistent/git"
 
 
+def _git_env():
+    """gitexec.env(): the caller's environment with replacement objects and grafts off and the
+    repository-config command channels closed. Every git call here runs under it (independent
+    re-attack): under the ambient environment `git replace <reviewed> <PR>`, `git replace --graft`
+    or .git/info/grafts made the trusted base's ancestry and policy reads see the PR's commit, and
+    a report-only verdict on a mutation mission bound on a lane claiming soundness."""
+    return gitexec.env()
+
+
 def _git_cmd(*args):
     """Argv head for every git call: the git resolved once at import — never a bare name that
     would re-resolve against a later PATH (Greptile #498). With no git on PATH the head is a
@@ -145,6 +154,11 @@ _spec.loader.exec_module(inventory)
 _ds_spec = importlib.util.spec_from_file_location("dispatch_sign", HERE / "dispatch-sign.py")
 dispatch_sign = importlib.util.module_from_spec(_ds_spec)
 _ds_spec.loader.exec_module(dispatch_sign)
+# The one exact-name rule a trust anchor answers to (trusted_base; W3-07). Already a toolchain
+# file (TOOLCHAIN_FILES): inventory.py loads it too.
+_gx_spec = importlib.util.spec_from_file_location("gitexec", HERE / "gitexec.py")
+gitexec = importlib.util.module_from_spec(_gx_spec)
+_gx_spec.loader.exec_module(gitexec)
 
 # Committing the coordinator's public key here is THE enforcement switch — for the signed
 # dispatch record (verify-gate.sh discovers it) and, read at a report's own pin, for the signed
@@ -206,7 +220,8 @@ def is_shallow(root):
     try:
         proc = subprocess.run(
             _git_cmd("rev-parse", "--is-shallow-repository"),
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
         )
     except OSError:
         return False
@@ -216,7 +231,7 @@ def is_shallow(root):
 def path_exists_at(rev, path_text, root):
     return subprocess.run(
         _git_cmd("cat-file", "-e", f"{rev}:{path_text}"),
-        cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=str(root), env=_git_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
 
 
@@ -435,7 +450,7 @@ def blob_at(rev, path_text, root):
     never from the working tree, is the whole point: the tree has moved on since the run."""
     proc = subprocess.run(
         _git_cmd("show", f"{rev}:{path_text}"),
-        cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
     return proc.stdout if proc.returncode == 0 else None
 
@@ -449,7 +464,7 @@ def tree_of(rev, root):
     """`rev`'s tree sha, or None."""
     proc = subprocess.run(
         _git_cmd("rev-parse", f"{rev}^{{tree}}"),
-        cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
     )
     out = proc.stdout.strip()
     return out if proc.returncode == 0 and out else None
@@ -568,18 +583,24 @@ def invocation_args(text, manifest):
     return out
 
 
-# The grading base: the default branch's current tip, resolved the way floor_guard/diff_scope do.
-# HEAD is the last resort — the checkout run_report is running in — never a header field.
+# The grading base: the default branch's current tip, on the ADVISORY lane only. Each candidate
+# goes through `rev-parse`, i.e. git's ref-name expansion (a tag or local branch spelled
+# `origin/main` comes before the remote-tracking ref), and it falls back to local main/master and
+# HEAD — the checkout run_report is running in, never a header field. It is never a trust anchor:
+# a lane claiming soundness reads every trust-bearing fact at trusted_base, below, which resolves
+# by exact name (W3-07); floor_guard.py and diff_scope.py now resolve their bases that way too.
 GRADING_BASES = ("origin/HEAD", "origin/main", "origin/master", "main", "master", "HEAD")
 
 
 def grading_base(root, base=None):
-    """The commit the unsigned lane is proven against: `base` if named, else the first of
-    GRADING_BASES that resolves. None only in a repository with no commit at all."""
+    """ADVISORY: the commit the unsigned lane is proven against — `base` if named, else the first
+    of GRADING_BASES that resolves, through git's ref-name expansion. None only in a repository
+    with no commit at all. Never used where a lane claims soundness (trusted_base is)."""
     for candidate in ((base,) if base else GRADING_BASES):
         proc = subprocess.run(
             _git_cmd("rev-parse", "--verify", "-q", f"{candidate}^{{commit}}"),
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
         )
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
@@ -597,7 +618,6 @@ def grading_base(root, base=None):
 PROVENANCE_VARS = ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
 TRUSTED_BASES = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main",
                  "refs/remotes/origin/master")
-_COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 def sound_lane():
@@ -606,42 +626,41 @@ def sound_lane():
                  if (os.environ.get(var) or "").strip()), None)
 
 
-def _git_line(root, *args):
-    proc = subprocess.run(_git_cmd(*args), cwd=str(root), stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL, text=True)
-    return proc.returncode, proc.stdout.strip()
+def _git_raw(root, *args):
+    """(exit, stdout) with stdout as git wrote it — no strip (str.strip() eats U+2028/U+2029/
+    U+0085, which a refname may end with) and no strict decode (a refname may be non-UTF-8)."""
+    proc = subprocess.run(_git_cmd(*args), cwd=str(root), env=_git_env(), stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL)
+    return proc.returncode, proc.stdout.decode("utf-8", "surrogateescape")
 
 
 def trusted_base(root, base=None):
     """(commit, where) the key and the mutation-unit policy are read against on a lane claiming
-    soundness, or (None, why). `base`, when named, must be a commit id or a ref whose FINAL target
-    (any symbolic chain followed) is remote-tracking — the predicate gate-batch.py --pin-ref and
-    verify.py's trust keys answer to. Unnamed: refs/remotes/origin/HEAD when its target is itself
-    remote-tracking (one that points at a local branch is skipped, as verify-gate.sh skips it),
+    soundness, or (None, why). `base`, when named, must pass gitexec.remote_tracking_commit — the
+    rule gate-batch.py --pin-ref, decisions.py --pin-ref and verify.py's trust keys answer to: a
+    commit id that names that commit object, or a full refs/remotes/… ref that EXISTS under
+    exactly that name, every symbolic hop remote-tracking too (W3-07: `rev-parse
+    refs/remotes/origin/main` with that ref absent expands to a local refs/heads/refs/remotes/…
+    branch, and a ~1 or @{1} suffix names an older commit). Unnamed: refs/remotes/origin/HEAD
+    under that rule (one that points at a local branch is skipped, as verify-gate.sh skips it),
     then refs/remotes/origin/main, then …/master. Never a local branch, a tag, a short name or
-    HEAD. Remote-tracking means what this clone's fetch wrote: sound in the coordinator's clone or
-    a CI checkout, advisory in a worker's own, where every ref is the worker's to write."""
+    HEAD. Remote-tracking means what this clone's fetch wrote: sound in the coordinator's clone
+    or a CI checkout, advisory in a worker's own, where every ref is the worker's to write."""
     skipped = []
+
+    def git(*args):
+        return _git_raw(root, *args)
+
     for name in ((base,) if base else TRUSTED_BASES):
         if name.startswith("-"):
             return None, f"--base {name!r} is an option, not a ref"
-        target = name
-        if not (base and _COMMIT_ID.fullmatch(name)):
-            code, out = _git_line(root, "symbolic-ref", "-q", name)
-            target = out if code == 0 and out else name
-            if not target.startswith("refs/remotes/"):
-                via = f" (a symbolic ref to {target})" if target != name else ""
-                if base:
-                    return None, (f"--base {name!r}{via} is neither a commit id nor a ref whose "
-                                  "final target is remote-tracking (refs/remotes/…)")
-                skipped.append(f"{name} points at {target}, not a remote-tracking ref")
-                continue
-        code, commit = _git_line(root, "rev-parse", "--verify", "-q", f"{target}^{{commit}}")
-        if code == 0 and _COMMIT_ID.fullmatch(commit):
-            via = f" -> {target}" if target != name else ""
+        commit, target, why = gitexec.remote_tracking_commit(git, name)
+        if commit is not None:
+            via = f" -> {target}" if target not in (name, commit) else ""
             return commit, f"{name}{via} = {commit[:12]}"
         if base:
-            return None, f"--base {name!r} names no commit here"
+            return None, f"--base {name!r} {why}"
+        skipped.append(f"{name} {why}")
     why = "no remote-tracking base resolves (tried " + ", ".join(TRUSTED_BASES) + ")"
     return None, why + (f"; {'; '.join(skipped)}" if skipped else "")
 
@@ -669,7 +688,7 @@ def commit_object(rev, root):
     uses the id this returns, never the header's spelling."""
     proc = subprocess.run(
         _git_cmd("rev-parse", f"--disambiguate={rev.lower()}"),
-        cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
     )
     if proc.returncode != 0:
         return None
@@ -677,7 +696,8 @@ def commit_object(rev, root):
     for oid in proc.stdout.split():
         kind = subprocess.run(
             _git_cmd("cat-file", "-t", oid),
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
         ).stdout.strip()
         if kind == "commit":
             commits.append(oid)
@@ -688,7 +708,7 @@ def is_ancestor(rev, base, root):
     """`rev` reachable from `base` (a commit is its own ancestor)."""
     return subprocess.run(
         _git_cmd("merge-base", "--is-ancestor", rev, base),
-        cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=str(root), env=_git_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
 
 
@@ -709,7 +729,7 @@ def key_rev(rev, root, base=None):
         return None, "no grading base resolves (tried " + ", ".join(GRADING_BASES) + ")"
     if base is None and blob_at(rev, PUBKEY_PIN, root) is not None and not any(
             subprocess.run(_git_cmd("rev-parse", "--verify", "-q", f"{c}^{{commit}}"),
-                           cwd=str(root), stdout=subprocess.PIPE,
+                           cwd=str(root), env=_git_env(), stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL).returncode == 0
             for c in GRADING_BASES[:-1]):
         # h409 O-3.3: only HEAD resolves, and the pin carries a key — reading the key at the
@@ -935,7 +955,7 @@ def _read_at_rev(rev, path_text, root):
     try:
         proc = subprocess.run(
             _git_cmd("cat-file", "blob", f"{rev}:{path_text}"),
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
         return None
     if proc.returncode != 0:
@@ -1363,10 +1383,12 @@ def main(argv=None):
     parser.add_argument("--mission", help="mission the report is claimed by (with `report`)")
     parser.add_argument("--tier", help="tier claimed (with `report`)")
     parser.add_argument("--base", default=None, metavar="REV",
-                        help="the grading base the unsigned lane is proven against (default: "
-                             "origin/HEAD, then origin/main, origin/master, main, master, HEAD). "
-                             "On a lane claiming soundness (ORCA_PROVENANCE set) only a commit id "
-                             "or a ref whose final target is remote-tracking; the default is then "
+                        help="the grading base the unsigned lane is proven against — advisory "
+                             "there (default: origin/HEAD, then origin/main, origin/master, main, "
+                             "master, HEAD, resolved by git's usual name expansion). On a lane "
+                             "claiming soundness (ORCA_PROVENANCE set) only a commit id or a full "
+                             "remote-tracking ref that exists under exactly that name; the default "
+                             "is then "
                              "refs/remotes/origin/HEAD (if it points at a remote-tracking ref), "
                              "…/main, …/master, and none is could-not-run (exit 2)")
     args = parser.parse_args(argv)

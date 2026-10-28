@@ -399,17 +399,43 @@ class TestHighTierDenies(HookBase):
                 self.assertIsNotNone(block, command)
                 self.assertEqual(block["permissionDecision"], "deny", command)
 
+    def _isolated_home(self):
+        # A HOME whose parent holds neither this hook nor the fixture repo. The runner's HOME is
+        # /home/runner with the checkout under it, so there `~/..` (/home) holds deny-hook.sh
+        # itself and the self-guard rightly denies the delete: the verdict below would depend on
+        # where the checkout sits, not on the root/home class the test is about.
+        home = Path(tempfile.mkdtemp(prefix="denyhook-home-")) / "home" / "u"
+        home.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, home.parent.parent, True)
+        return {"HOME": str(home)}
+
     def test_a_scoped_delete_below_root_or_home_is_not_the_root_class(self):
         # The class is root/home itself or everything one level under it, not a named child and
         # not the parent above it (`~/..` is /home, a different target the HIGH tier does not own).
+        env = self._isolated_home()
         for command in (
             "rm -rf /etc", "rm -rf /etc/*", "rm -rf ~/.ssh", "rm -rf ${HOME}/project",
             "rm -rf /var/log/*", "rm -rf ~/../", "rm -rf ~/foo/../../",
         ):
             with self.subTest(command=command):
-                block = self.decision(self.fire(event("Bash", command=command)))
+                block = self.decision(self.fire(event("Bash", command=command), env_extra=env))
                 self.assertIsNotNone(block, command)
                 self.assertEqual(block["permissionDecision"], "ask", command)
+
+    def test_a_delete_above_home_that_holds_the_guard_is_denied(self):
+        # The other side of the test above: `~/..` is not the home CLASS, but when it holds this
+        # hook (the CI layout: HOME=/home/runner, checkout under it) or the unit worktree, the
+        # delete removes the guard with it, so the self-guard denies it rather than asking.
+        holds_hook = {"HOME": str(HOOK.parent / "no-such-home")}
+        holds_unit = {"HOME": str(self.repo.parent / "no-such-home"),
+                      "OPEN_FLEET_UNIT_WORKTREE": str(self.repo)}
+        for env in (holds_hook, holds_unit):
+            for command in ("rm -rf ~/../", "rm -rf ~/foo/../../"):
+                with self.subTest(command=command, env=env):
+                    block = self.decision(self.fire(event("Bash", command=command), env_extra=env))
+                    self.assertIsNotNone(block, command)
+                    self.assertEqual(block["permissionDecision"], "deny", command)
+                    self.assertIn("own guard", block["permissionDecisionReason"], command)
 
     def test_a_refused_shape_is_refused_in_a_later_segment_too(self):
         # Was "falls through to ask" until #297. `ask` is the wrong answer for a

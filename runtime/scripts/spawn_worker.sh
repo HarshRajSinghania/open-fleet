@@ -197,6 +197,42 @@ t = sys.stdin.buffer.read().decode("utf-8", "replace")
 sys.stdout.write("".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in t))'
 }
 
+# JSON_STRICT_PY: the one way a runtime response is read here (Codex round 5). json.load keeps the
+# LAST of two equal keys, so a response could name one pane to the registry and another to the
+# reader that judged it; NaN, Infinity and a number that overflows to inf are not JSON either.
+# strict_load / strict_loads raise Ambiguous (a ValueError) on each of those and on bytes that
+# are not UTF-8, so every reader below takes its own unparseable path, which fails closed.
+# (receipt_handles reads every occurrence instead: it must still find a handle in such a response.)
+JSON_STRICT_PY='import json, math, sys
+class Ambiguous(ValueError):
+    pass
+def _strict_pairs(pairs):
+    out = {}
+    for k, v in pairs:
+        if k in out:
+            raise Ambiguous(f"duplicate key {k!r}")
+        out[k] = v
+    return out
+def _strict_constant(c):
+    raise Ambiguous(f"non-JSON constant {c}")
+def _strict_float(s):
+    f = float(s)
+    if not math.isfinite(f):
+        raise Ambiguous(f"number out of range: {s[:40]}")
+    return f
+def strict_loads(text):
+    return json.loads(text, object_pairs_hook=_strict_pairs, parse_constant=_strict_constant,
+                      parse_float=_strict_float)
+def strict_load(path):
+    with open(path, "rb") as fh:
+        return strict_loads(fh.read().decode("utf-8"))
+'
+# pyjson ARGS... <<'PY' — python3 -I running the program on stdin, with JSON_STRICT_PY loaded.
+pyjson() {
+  python3 -I -c "${JSON_STRICT_PY}"'
+exec(compile(sys.stdin.read(), "<spawn_worker.sh>", "exec"))' "$@"
+}
+
 # orca_json <outfile> <orca-args...> — run orca with --json, fail on nonzero exit
 # OR on an exit-0 error envelope ({"error": ...}); fail-closed for every step.
 orca_json() {
@@ -204,14 +240,19 @@ orca_json() {
   "$ORCA_BIN" "$@" --json > "$out"
   envelope_check "$out"
 }
-# envelope_check <file>: fail (exit 1, the error printed inert) on an error envelope.
+# envelope_check <file>: fail (exit 1, the error printed inert) on an error envelope, and on a
+# response that is not one unambiguous JSON document.
 envelope_check() {
-  python3 -I - "$1" <<'PY'
+  pyjson "$1" <<'PY'
 import json, sys
 def _f(v):
     """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
     return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
-d = json.load(open(sys.argv[1]))
+try:
+    d = strict_load(sys.argv[1])
+except ValueError as exc:
+    print(f"orca response is not one unambiguous JSON document: {_f(exc)}", file=sys.stderr)
+    raise SystemExit(1)
 err = None
 if isinstance(d, dict):
     err = d.get("error")
@@ -689,11 +730,42 @@ register_spawn() {
 # The last line is `END`; a reader that never sees it treats the response as PARTIAL.
 receipt_handles() {
   python3 -I - "$1" "${2:-}" <<'PY'
-import json, re, sys
+import json, math, re, sys
 KEYS = ("agentTerminalHandle", "terminalHandle", "terminal_handle")
 KEY_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*\Z")
 terminal_mode = sys.argv[2] == "terminal"
 named, partial = [], False
+
+
+class Obj(list):
+    """A JSON object as its (key, value) pairs, EVERY occurrence kept (Codex round 5: json.load
+    keeps the last of two equal keys, so `"agentTerminalHandle": "term_live",
+    "agentTerminalHandle": "term_dead"` hid the live pane)."""
+
+
+def _pairs(pairs):
+    global partial
+    if len({k for k, _v in pairs}) != len(pairs):
+        partial = True  # a duplicate key: every reader but this one sees a different response
+    return Obj(pairs)
+
+
+def _constant(_c):
+    global partial
+    partial = True  # NaN / Infinity: not JSON
+    return None
+
+
+def _float(s):
+    global partial
+    f = float(s)
+    if not math.isfinite(f):
+        partial = True
+    return f
+
+
+def every(o, key):
+    return [v for k, v in o if k == key] if isinstance(o, Obj) else []
 
 
 def inert(s):
@@ -701,8 +773,8 @@ def inert(s):
 
 
 def add(role, v):
-    if v is None or v is False or v == "" or v == [] or v == {}:
-        return  # names nothing
+    if v is None or v is False or v == "" or v == []:
+        return  # names nothing (an empty object is an empty Obj)
     if isinstance(v, str):
         status = "ok" if KEY_OK.match(v) else (
             "unprintable" if any(not c.isprintable() or c.isspace() for c in v) else "notkey")
@@ -712,12 +784,17 @@ def add(role, v):
 
 
 def effect(e):
-    if isinstance(e, dict) and e.get("kind") in ("terminal", "dispatch_input"):
-        role = "agent" if e.get("role") in (None, "agent") else "other"
-        if e.get("kind") == "dispatch_input" and role != "agent":
-            return
-        add(role, e.get("id"))
-        add(role, e.get("handle"))
+    if not isinstance(e, Obj):
+        return
+    kinds, roles = every(e, "kind"), every(e, "role")
+    if "terminal" not in kinds and "dispatch_input" not in kinds:
+        return
+    role = "agent" if (not roles or None in roles or "agent" in roles) else "other"
+    if "terminal" not in kinds and role != "agent":
+        return  # a dispatch_input names the agent's pane only
+    for key in ("id", "handle"):
+        for v in every(e, key):
+            add(role, v)
 
 
 def walk(o, depth=0):
@@ -725,13 +802,14 @@ def walk(o, depth=0):
     if depth > 64:
         partial = True  # nested past what is read: it may name more
         return
-    if isinstance(o, dict):
-        for k, v in o.items():
+    if isinstance(o, Obj):
+        for k, v in o:
             if k in KEYS:
                 add("agent", v)
-            elif k == "terminal" and isinstance(v, dict):
-                add("agent", v.get("handle"))
-            elif k == "effects" and isinstance(v, list):
+            elif k == "terminal" and isinstance(v, Obj):
+                for h in every(v, "handle"):
+                    add("agent", h)
+            elif k == "effects" and isinstance(v, list) and not isinstance(v, Obj):
                 for e in v:
                     effect(e)
             walk(v, depth + 1)
@@ -744,23 +822,29 @@ try:
     raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
 except OSError:
     raw = ""
+parsed = True
 try:
-    d = json.loads(raw)
+    d = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_constant, parse_float=_float)
 except ValueError:
-    d, partial = None, True
-if not partial:
-    r = d.get("result") if isinstance(d, dict) else None
-    if not isinstance(r, dict):
-        r = d if isinstance(d, dict) else {}
-    if terminal_mode:  # the order terminal create's pane was always read in
-        t = r.get("terminal")
-        add("agent", t.get("handle") if isinstance(t, dict) else None)
-        add("agent", r.get("handle"))
-    else:  # the order the verdict parser always read the worker's pane in
-        add("agent", r.get("agentTerminalHandle"))
-        for e in r.get("effects") if isinstance(r.get("effects"), list) else []:
-            if isinstance(e, dict) and e.get("kind") == "terminal" and e.get("role") == "agent":
-                add("agent", e.get("id"))
+    d, parsed, partial = None, False, True
+if parsed:
+    results = every(d, "result") if isinstance(d, Obj) else []
+    rs = [r for r in results if isinstance(r, Obj)] or ([d] if isinstance(d, Obj) else [])
+    for r in rs:
+        if terminal_mode:  # the order terminal create's pane was always read in
+            for term in every(r, "terminal"):
+                for h in every(term, "handle"):
+                    add("agent", h)
+            for h in every(r, "handle"):
+                add("agent", h)
+        else:  # the order the verdict parser always read the worker's pane in
+            for h in every(r, "agentTerminalHandle"):
+                add("agent", h)
+            for effects in every(r, "effects"):
+                for e in effects if isinstance(effects, list) and not isinstance(effects, Obj) else []:
+                    if isinstance(e, Obj) and "terminal" in every(e, "kind") and "agent" in every(e, "role"):
+                        for h in every(e, "id"):
+                            add("agent", h)
     walk(d)
 else:
     # Not one whole document: every handle-shaped field in the text, so a live worker's handle
@@ -853,10 +937,10 @@ release_reservation() {
     keep_reservation=0  # every worker the response named is recorded
   fi
   if [ "$keep_reservation" = "1" ] && [ "$named_count" = "0" ] && [ "$step" = "create-terminal" ] && [ -s "${tj:-}" ] \
-     && python3 -I - "$tj" <<'PY'
+     && pyjson "$tj" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     raise SystemExit(1)
 r = d.get("result") if isinstance(d, dict) else None
@@ -1243,9 +1327,9 @@ PY
         step=worktree-create
         _wc=$(mktemp)
         orca_json "$_wc" worktree create --name "$safe_title" --repo "$_repo_top" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
-        _launch_wt=$(python3 -I - "$_wc" <<'PY'
+        _launch_wt=$(pyjson "$_wc" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1]))
+d = strict_load(sys.argv[1])
 r = d.get("result", d) if isinstance(d, dict) else {}
 wt = (r.get("worktree") or {}) if isinstance(r, dict) else {}
 p = wt.get("path") if isinstance(wt, dict) else None
@@ -1392,10 +1476,10 @@ if [ "$SPEC_GIVEN" = "1" ]; then
   if [ "$DEPS_GIVEN" = "1" ]; then create_args+=(--deps "$DEPS"); fi
   if [ "$PARENT_GIVEN" = "1" ]; then create_args+=(--parent "$PARENT"); fi
   orca_json "$tc" orchestration task-create ${create_args[@]+"${create_args[@]}"} ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"}
-  task=$(python3 -I - "$tc" <<'PY'
+  task=$(pyjson "$tc" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     d = {}
 r = d.get("result") if isinstance(d, dict) else None
@@ -1418,7 +1502,7 @@ tl="$SP/tl-$safe_title.json"
 brief_args=()
 if [ "$TASK_BRIEF" = "1" ]; then brief_args=(--brief); fi
 orca_json "$tl" orchestration task-list ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} ${brief_args[@]+"${brief_args[@]}"}
-tl_out=$(python3 -I - "$tl" "$task" <<'PY'
+tl_out=$(pyjson "$tl" "$task" <<'PY'
 import json, sys
 
 
@@ -1435,7 +1519,7 @@ def emit(status, unmet):
 
 
 path, tid = sys.argv[1], sys.argv[2]
-d = json.load(open(path))
+d = strict_load(path)
 r = d.get("result", d)
 tasks = r.get("tasks") if isinstance(r, dict) else r
 tasks = tasks or []
@@ -1448,7 +1532,7 @@ if deps is None:
     deps = []  # absent deps is the ONLY value that legitimately means "no deps"
 elif isinstance(deps, str):
     try:
-        deps = json.loads(deps)  # "" and garbage both fail here -> refusal below
+        deps = strict_loads(deps)  # "" and garbage both fail here -> refusal below
     except Exception:
         deps = None
 if not isinstance(deps, list):
@@ -1567,7 +1651,7 @@ if [ "$custom_lane" = "0" ]; then
   # Line 1 is the machine verdict; the remaining stdout lines are the caller-facing receipt
   # fields. nextSteps / nextCommands go to stderr verbatim — they are the runtime's own
   # recovery text, not ours to paraphrase.
-  ws_out=$(python3 -I - "$ws" "$profile_flag" "$ws_handle" <<'PY'
+  ws_out=$(pyjson "$ws" "$profile_flag" "$ws_handle" <<'PY'
 import json, sys
 
 # Every typed preflight refusal is a POLICY/usage answer, not a transport failure: the
@@ -1615,7 +1699,7 @@ def _contains_seq(toks, want):
     n = len(want)
     return any(toks[i:i + n] == want for i in range(len(toks) - n + 1))
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     d = {}
 if not isinstance(d, dict):
@@ -1756,10 +1840,10 @@ PY
       read_named "$rq"
       register_named
       step=triage-request
-      rq_state=$(python3 -I - "$rq" <<'PY'
+      rq_state=$(pyjson "$rq" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     print("unreadable")
     raise SystemExit(0)
@@ -1903,10 +1987,10 @@ else
   tw="$SP/tw-$safe_title.json"
   wait_rc=0
   "$ORCA_BIN" terminal wait --terminal "$h" --for tui-idle --timeout-ms 90000 ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$tw" 2> "$tw.stderr" || wait_rc=$?
-  satisfied=$(python3 -I - "$tw" <<'PY'
+  satisfied=$(pyjson "$tw" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     # An unreadable wait receipt is NOT "absent": nothing proves the pane is idle, so it is
     # judged as unsatisfied and the lane stops before injecting (2026-10-26 review).
@@ -1923,10 +2007,10 @@ PY
   if [ "$satisfied" = "false" ] || [ "$satisfied" = "unreadable" ] || [ "$wait_rc" != "0" ]; then
     # Orca names the prompt an agent stopped at (`wait.blockedReason`): say it, and never answer
     # it for the operator. A trust prompt is a grant only the operator gives (#596).
-    blocked=$(python3 -I - "$tw" <<'PY'
+    blocked=$(pyjson "$tw" <<'PY'
 import json, re, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     raise SystemExit(0)
 r = d.get("result", d) if isinstance(d, dict) else {}
@@ -1959,7 +2043,7 @@ PY
   dj_rc=0
   "$ORCA_BIN" orchestration dispatch --task "$task" --to "$h" --inject ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$dj" || dj_rc=$?
   classify_dispatch() {
-    python3 -I - "$1" <<'PY'
+    pyjson "$1" <<'PY'
 import json, sys
 POLICY_CODES = {"task_not_found", "task_not_startable", "inject_rejected",
                 "nested_worker_depth_exceeded", "consumer_fenced", "dispatch_inactive"}
@@ -1971,7 +2055,7 @@ def _f(v):
 
 
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     raise SystemExit(0)
 if not isinstance(d, dict):
@@ -2010,10 +2094,10 @@ PY
         step=confirm-agent
         ts="$SP/show-$safe_title.json"
         "$ORCA_BIN" terminal show --terminal "$h" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --json > "$ts" 2>&1 || true
-        fallback_skip=$(python3 -I - "$ts" <<'PY'
+        fallback_skip=$(pyjson "$ts" <<'PY'
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     print("terminal show gave no readable record")
     raise SystemExit(0)
@@ -2049,9 +2133,9 @@ PY
             exit 1 ;;
         esac
         pf="$SP/preamble-$safe_title.txt"
-        if [ "$dd_rc" != "0" ] || ! python3 -I - "$dd" "$pf" <<'PY'
+        if [ "$dd_rc" != "0" ] || ! pyjson "$dd" "$pf" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1]))
+d = strict_load(sys.argv[1])
 r = d.get("result", d) if isinstance(d, dict) else {}
 pre = r.get("preamble") if isinstance(r, dict) else None
 if not isinstance(r.get("dispatch"), dict) or not isinstance(pre, str) or not pre.strip():
@@ -2093,13 +2177,13 @@ PY
 
   step=read-inject-receipt
   read_stages() {
-    python3 -I - "$1" <<'PY'
+    pyjson "$1" <<'PY'
 import json, sys
 def _f(v):
     """A receipt field, inert and on one line (W4-11): anything unprintable escaped."""
     return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(v))
 try:
-    d = json.load(open(sys.argv[1]))
+    d = strict_load(sys.argv[1])
 except Exception:
     print("STAGES= REQUEST=")
     raise SystemExit(0)

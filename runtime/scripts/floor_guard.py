@@ -308,9 +308,10 @@ def resolve_base(repo, base):
     branch, and this base is where the waivers are read; an origin/HEAD pointed at a local branch
     was used as-is. Now a remote-tracking name (`origin/main`, `refs/remotes/…`) or a commit id
     goes through gitexec.remote_tracking_commit; a bare `main` is that local branch by its exact
-    name — refused on a lane claiming soundness (gitexec.sound_lane: ORCA_PROVENANCE /
-    OPEN_FLEET_PROVENANCE set, as decisions.py and run_report.py read it), and said in a NOTE to
-    be advisory elsewhere (the change can move a local branch)."""
+    name, and `HEAD` or an abbreviated commit id (an object id, never a ref of that spelling) is
+    the same advisory kind — refused on a lane claiming soundness (gitexec.sound_lane:
+    ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set, as decisions.py and run_report.py read it), and
+    said in a NOTE to be advisory elsewhere (the change can move a local name)."""
     def run(*args):
         out = git(repo, *args)
         return (0, out) if out is not None else (1, "")
@@ -324,14 +325,15 @@ def resolve_base(repo, base):
     if local:
         lane = gitexec.sound_lane()
         if lane:
-            raise GuardError(f"{lane} claims a sound lane, but base {shown!r} is a LOCAL branch "
-                             f"({commit[:12]}), which the change under check can move: there the "
-                             "waivers and the human-grant pin are read only at a remote-tracking "
-                             "ref or a commit id — --base origin/<branch> or a commit id (W3-07)")
-        print(f"floor-guard: NOTE — base {shown!r} is a LOCAL branch ({commit[:12]}): the change "
-              "under check can move one, so the waivers and the human-grant pin read there are "
-              "advisory; --base origin/<branch> (or a commit id) reads them where it cannot write",
-              file=sys.stderr)
+            raise GuardError(f"{lane} claims a sound lane, but base {shown!r} is {local} "
+                             f"({commit[:12]}), not a remote-tracking ref or a full commit id: "
+                             "there the waivers and the human-grant pin are read only at one of "
+                             "those — --base origin/<branch> or a full commit id (W3-07)")
+        print(f"floor-guard: NOTE — base {shown!r} is {local} ({commit[:12]}), not a "
+              "remote-tracking ref or a full commit id: the change under check can move a local "
+              "name and nothing binds an abbreviation, so the waivers and the human-grant pin read "
+              "there are advisory; --base origin/<branch> (or a full commit id) reads them where "
+              "it cannot write", file=sys.stderr)
     return commit, shown
 
 

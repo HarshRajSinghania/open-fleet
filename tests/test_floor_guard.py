@@ -1939,6 +1939,30 @@ class TestTheBaseIsResolvedByExactNameW307(FloorGuardBase):
         self.assertEqual(code, 1, err)
         self.assertIn("LOCAL branch", err)
 
+    def test_head_and_an_abbreviated_id_are_advisory_bases_never_ref_names(self):
+        # Re-attack C(1): off a sound lane `--base HEAD` was refused and `--base <short sha>` was
+        # read as the local BRANCH of that spelling — a planted refs/heads/<short sha> carrying a
+        # waiver was honoured. HEAD and an abbreviation are now advisory bases (with the NOTE),
+        # the abbreviation read as an object id only; a sound lane refuses both.
+        main = git(self.repo, "rev-parse", "refs/heads/main").stdout.strip()
+        short = main[:9]
+        self.waiver_on(f"refs/heads/{short}")
+        clean = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        with mock.patch.dict(os.environ, clean, clear=True):
+            code, out, err = run_main(self.repo, "--base", short)
+            self.assertEqual(code, 1, f"{out}{err}")  # main's commit: no waiver, the violation
+            self.assertNotIn("waived", out)
+            self.assertIn("abbreviated commit id", err)
+            code, out, err = run_main(self.repo, "--base", "HEAD")
+            self.assertEqual(code, 0, f"{out}{err}")  # HEAD..HEAD: nothing changed
+            self.assertIn("NOTE", err)
+        for base in (short, "HEAD"):
+            with self.subTest(base=base), \
+                    mock.patch.dict(os.environ, {**clean, "ORCA_PROVENANCE": "ci"}, clear=True):
+                code, out, err = run_main(self.repo, "--base", base)
+                self.assertEqual(code, 2, f"{out}{err}")
+                self.assertIn("claims a sound lane", err)
+
     def test_a_local_base_is_refused_on_a_lane_claiming_soundness(self):
         # Coordinator decision (the decisions.py / run_report.py precedent): a local branch is the
         # change's to move, so where ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE claims soundness the

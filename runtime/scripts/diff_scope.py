@@ -285,8 +285,9 @@ def resolve_base(repo, base):
     expanded the name (refs/tags/ and refs/heads/ before refs/remotes/), so a tag or local branch
     spelled `origin/main` stood in for the remote-tracking branch, and an origin/HEAD pointed at
     a local branch was used as-is — and the base decides which paths count as changed, so which
-    review lenses run. A local-branch base is refused on a lane claiming soundness
-    (gitexec.sound_lane: ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set) and NOTE'd elsewhere.
+    review lenses run. A local-branch, HEAD or abbreviated-id base is refused on a lane claiming
+    soundness (gitexec.sound_lane: ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set) and NOTE'd
+    elsewhere.
     gitexec.py is loaded here only: verify.py loads this file for SCOPE_TESTS and never resolves a
     base (gitexec.py is in the verifier toolchain since #608 all the same)."""
     try:
@@ -310,13 +311,13 @@ def resolve_base(repo, base):
     if local:
         lane = gitexec.sound_lane()
         if lane:
-            print(f"diff_scope: {lane} claims a sound lane, but base {shown!r} is a LOCAL branch "
-                  f"({commit[:12]}), which the change under check can move — name origin/<branch> "
-                  "or a commit id (W3-07)", file=sys.stderr)
+            print(f"diff_scope: {lane} claims a sound lane, but base {shown!r} is {local} "
+                  f"({commit[:12]}), not a remote-tracking ref or a full commit id — name "
+                  "origin/<branch> or a full commit id (W3-07)", file=sys.stderr)
             raise ScopeError(base or shown)
-        print(f"diff_scope: NOTE — base {shown!r} is a LOCAL branch ({commit[:12]}), which the "
-              "change under check can move; --base origin/<branch> (or a commit id) is one it "
-              "cannot", file=sys.stderr)
+        print(f"diff_scope: NOTE — base {shown!r} is {local} ({commit[:12]}), not a "
+              "remote-tracking ref or a full commit id, so advisory; --base origin/<branch> (or a "
+              "full commit id) is one the change under check cannot move", file=sys.stderr)
     return commit, shown
 
 

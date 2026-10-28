@@ -411,6 +411,27 @@ DEFAULT_BASES = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main",
                  "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master")
 
 
+ABBREVIATED_ID = re.compile(r"[0-9a-f]{4,63}")
+
+
+def _abbreviated_commit(git, prefix):
+    """``(commit, None)`` for the ONE commit object whose id starts with ``prefix``, or
+    ``(None, why)``. ``rev-parse --disambiguate`` lists object ids by prefix and never consults
+    refs, so a planted ``refs/heads/<prefix>`` is never what an abbreviation names (where
+    ``rev-parse <prefix>`` tries the ref FIRST — independent re-attack)."""
+    code, out = git("rev-parse", f"--disambiguate={prefix}")
+    commits = []
+    for oid in (out.split() if code == 0 else []):
+        if COMMIT_ID.fullmatch(oid):
+            kind_code, kind = git("cat-file", "-t", oid)
+            if kind_code == 0 and kind.strip() == "commit":
+                commits.append(oid)
+    if len(commits) != 1:
+        return None, (f"abbreviates {len(commits)} commit objects here, not one (an abbreviated id "
+                      "is read as an object id only, never as a ref of that spelling)")
+    return commits[0], None
+
+
 def _short(ref):
     for prefix in (REMOTE_TRACKING, LOCAL_BRANCH):
         if ref.startswith(prefix):
@@ -422,27 +443,43 @@ def base_commit(git, base=None):
     """``(commit, shown, local, None)`` for a diff base, or ``(None, shown, None, why)``.
 
     Every name is looked up EXACTLY; nothing is handed to git to expand, and the caller diffs and
-    reads at ``commit``, never at the name. ``shown`` is the human label; ``local`` is True when
-    the base is a local branch — not a trust anchor (the checked change can move one), so the
-    caller refuses it on a lane claiming soundness (sound_lane) and says so in a NOTE elsewhere.
+    reads at ``commit``, never at the name. ``shown`` is the human label. ``local`` is False for
+    an anchor; for an ADVISORY base it says which kind ("a LOCAL branch", "HEAD, a LOCAL name",
+    "an abbreviated commit id") — not a trust anchor (the checked change can move the first two,
+    and nothing binds the third), so the caller refuses it on a lane claiming soundness
+    (sound_lane) and says so in a NOTE elsewhere.
 
-    Named: a commit id or a full ``refs/remotes/…`` ref goes through remote_tracking_commit; a
-    short name with a slash (``origin/main``) is the remote-tracking ref ``refs/remotes/<name>``
-    under that rule and nothing else (never a tag or local branch of that spelling); a full
-    ``refs/heads/…`` ref or a bare name (``main``) is that local branch under its exact name;
-    anything else — a tag, ``HEAD``, a revision suffix — is refused. Unnamed: DEFAULT_BASES in
-    order, origin/HEAD's target included, the remote-tracking ones under remote_tracking_commit
-    (one that points at a local branch is skipped), then the local main and master."""
+    Named: a full commit id or a full ``refs/remotes/…`` ref goes through remote_tracking_commit;
+    a short name with a slash (``origin/main``) is the remote-tracking ref ``refs/remotes/<name>``
+    under that rule and nothing else (never a tag or local branch of that spelling); ``HEAD`` is
+    the checkout's HEAD; 4 to 63 hex digits are an ABBREVIATED commit id, resolved as an object id
+    only (``rev-parse --disambiguate``, which never consults refs — a branch spelled like the
+    abbreviation is never read) and only when it names exactly one commit; a full
+    ``refs/heads/…`` ref or another bare name (``main``) is that local branch under its exact
+    name; anything else — a tag, a revision suffix — is refused. Unnamed: DEFAULT_BASES in order,
+    origin/HEAD's target included, the remote-tracking ones under remote_tracking_commit (one that
+    points at a local branch is skipped), then the local main and master."""
     if base:
         if base.startswith("-"):
             return None, base, None, "is an option, not a ref"
         if COMMIT_ID.fullmatch(base.lower()) or base.startswith(REMOTE_TRACKING):
             commit, _target, why = remote_tracking_commit(git, base)
             return (commit, base, False, None) if commit else (None, base, None, why)
+        if base == "HEAD":
+            code, out = git("rev-parse", "--verify", "-q", "HEAD^{commit}")
+            commit = out.strip()
+            if code != 0 or not COMMIT_ID.fullmatch(commit):
+                return None, base, None, "names no commit (an unborn or detached-broken HEAD)"
+            return commit, base, "HEAD, a LOCAL name", None
+        if ABBREVIATED_ID.fullmatch(base.lower()):
+            commit, why = _abbreviated_commit(git, base.lower())
+            return ((commit, base, "an abbreviated commit id", None) if commit
+                    else (None, base, None, why))
         if base.startswith(LOCAL_BRANCH) or not (base.startswith("refs/") or "/" in base):
             full = base if base.startswith(LOCAL_BRANCH) else LOCAL_BRANCH + base
             commit, _target, why = local_branch_commit(git, full)
-            return (commit, base, True, None) if commit else (None, base, None, f"({full}) {why}")
+            return ((commit, base, "a LOCAL branch", None) if commit
+                    else (None, base, None, f"({full}) {why}"))
         if base.startswith("refs/"):
             return None, base, None, ("is neither remote-tracking (refs/remotes/…) nor a local "
                                       "branch (refs/heads/…): a tag or other ref is no base")
@@ -455,6 +492,6 @@ def base_commit(git, base=None):
         rule = local_branch_commit if local else remote_tracking_commit
         commit, target, why = rule(git, name)
         if commit is not None:
-            return commit, _short(target), local, None
+            return commit, _short(target), "a LOCAL branch" if local else False, None
         skipped.append(f"{name} {why}")
     return None, ", ".join(_short(n) for n in DEFAULT_BASES), None, "; ".join(skipped)

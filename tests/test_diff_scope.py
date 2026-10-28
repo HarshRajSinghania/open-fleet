@@ -784,6 +784,35 @@ class TestTheBaseIsResolvedByExactNameW307(ScopeBase):
                 self.assertEqual(data["error"], "no_base", r.stdout)
                 self.assertIn("not a valid ref name", r.stderr)
 
+    def test_head_and_an_abbreviated_id_are_advisory_bases_never_ref_names(self):
+        # Re-attack C(1): off a sound lane `--base HEAD` was refused and `--base <short sha>` was
+        # read as the local BRANCH of that spelling — a planted refs/heads/<short sha> at the
+        # change's tip emptied the diff. Both are advisory bases now (with the NOTE), the
+        # abbreviation read as an object id only; a sound lane refuses both.
+        main = git(self.repo, "rev-parse", "refs/heads/main").stdout.strip()
+        short = main[:9]
+        git(self.repo, "update-ref", f"refs/heads/{short}", "HEAD")
+        clean = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+
+        def scope(base, env):
+            r = subprocess.run([sys.executable, str(SCOPE), "--repo", str(self.repo), "--json",
+                                "--base", base], capture_output=True, text=True, env=env)
+            return json.loads(r.stdout), r
+
+        data, r = scope(short, clean)
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)  # diffed against main
+        self.assertIn("abbreviated commit id", r.stderr)
+        data, r = scope("HEAD", clean)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertIn("NOTE", r.stderr)
+        for base in (short, "HEAD"):
+            with self.subTest(base=base):
+                data, r = scope(base, {**clean, "OPEN_FLEET_PROVENANCE": "ci"})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(data["error"], "no_base", r.stdout)
+
     def test_a_local_base_is_refused_on_a_lane_claiming_soundness(self):
         # Coordinator decision (the decisions.py / run_report.py precedent): where
         # ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE claims soundness a local branch — the change's

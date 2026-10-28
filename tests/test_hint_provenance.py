@@ -922,7 +922,7 @@ class ArchiveIntegrityFailsClosed(unittest.TestCase):
                               [unit_run("2026-02-01-run-a", "SYM-1", "@c0", ["src/auth.py::refresh"], note="symbol note"),
                                unit_run("2026-02-01-run-b", "DOC-1", "@c0", ["README.md"], note="readme note")],
                               worktree_edits={"src/auth.py": "# moved down\ndef refresh(t):\n    return t\n"}))
-        original = Path.read_bytes
+        original = hp.read_regular  # every read of a live file the hint compares
 
         def unreadable(path):
             if path.name == "auth.py":
@@ -930,7 +930,7 @@ class ArchiveIntegrityFailsClosed(unittest.TestCase):
             return original(path)
         try:
             readable = {e["unit"]: e["currency"] for e in fx.select(paths=("src/auth.py", "README.md"))["entries"]}
-            with mock.patch.object(Path, "read_bytes", unreadable):
+            with mock.patch.object(hp, "read_regular", unreadable):
                 entries = {e["unit"]: (e["currency"], e["reasons"])
                            for e in fx.select(paths=("src/auth.py", "README.md"))["entries"]}
         finally:
@@ -1193,7 +1193,7 @@ class HiddenWorktreeChanges(unittest.TestCase):
         self.assertEqual(hole, {"FILE-1": ("UNKNOWN", ["scope-unverifiable:src/auth.py"]),
                                 "SYM-1": ("UNKNOWN", ["scope-unverifiable:src/auth.py"]),
                                 "DIR-1": ("UNKNOWN", ["scope-unverifiable:src"])})
-        original = Path.read_bytes
+        original = hp.read_regular  # every read of a live file the hint compares
 
         def unreadable(path):
             if path.name == "auth.py":
@@ -1201,7 +1201,7 @@ class HiddenWorktreeChanges(unittest.TestCase):
             return original(path)
         fx = self.fixture()
         try:
-            with mock.patch.object(Path, "read_bytes", unreadable):
+            with mock.patch.object(hp, "read_regular", unreadable):
                 denied = self.entries(fx)
         finally:
             fx.close()
@@ -1298,7 +1298,7 @@ class HiddenRelatedAndDependencyChanges(unittest.TestCase):
         self.assertEqual(got, ("STALE", [f"tests-changed:{self.TEST}", f"dependencies-changed:{self.LOCK}"]))
 
     def test_a_test_or_lockfile_that_cannot_be_compared_is_unknown(self):
-        original = Path.read_bytes
+        original = hp.read_regular  # every read of a live file the hint compares
 
         def unreadable(path):
             if path.name == "test_auth.py":
@@ -1306,7 +1306,7 @@ class HiddenRelatedAndDependencyChanges(unittest.TestCase):
             return original(path)
         fx = self.fixture()
         try:
-            with mock.patch.object(Path, "read_bytes", unreadable):
+            with mock.patch.object(hp, "read_regular", unreadable):
                 denied = self.entry(fx)
             replay_mod._git(fx.repo, "update-index", "--skip-worktree", self.LOCK)
             (fx.repo / self.LOCK).unlink()
@@ -1582,6 +1582,163 @@ class JoinedFieldsAreCheckedAsShown(unittest.TestCase):
                                   "repeating_same_approach": False})
         _action, packet = watchdog.build_failure_handover(benign)
         self.assertIn("REFLECTION: the refresh test flaked · freeze the clock · repeating=no", packet)
+
+
+class NoCapDecidesALabel(unittest.TestCase):
+    """Codex round 12 on 419a8435: the scan's child returned each hint cut to its caps (32 evidence
+    artifacts, 32 scope paths, 8 symbols a path) and the parent checked what was left, so a 33rd
+    artifact that had been modified, or a changed 40th path or its symbol, was never checked and the
+    hint came out CURRENT. The checks now run in the child on the whole record; only display data,
+    and the label, cross back. Each record here is past every cap with its one change past them."""
+
+    def entry(self, scn, query, unit):
+        fx = Fixture(scn)
+        try:
+            entries = fx.select(paths=query)["entries"]
+        finally:
+            fx.close()
+        return next(e for e in entries if e["unit"] == unit)
+
+    def test_a_modified_artifact_past_the_cap_is_checked(self):
+        names = [f"evidence-{i:02d}.txt" for i in range(40)]
+        run = dict(unit_run("2026-02-01-run-a", "ART-1", "@c0", ["src/auth.py"], note="forty artifacts"),
+                   artifacts={name: f"{name}\n" for name in names}, tamper_artifacts={names[-1]: "rewritten\n"})
+        got = self.entry(scenario([{"name": "c0", "files": BASE}], [run]), ("src/auth.py",), "ART-1")
+        self.assertEqual((got["currency"], got["reasons"]), ("STALE", [f"artifact-modified:{names[-1]}"]))
+
+    def test_a_changed_path_and_symbol_past_the_caps_are_checked(self):
+        files = {f"src/mod{i:02d}.py": f"def fn{i}():\n    return {i}\n" for i in range(40)}
+        last = "src/mod39.py"
+        commits = [{"name": "c0", "files": dict(BASE, **files)},
+                   {"name": "c1", "files": {last: "def fn39():\n    return -1\n"}}]
+        for unit, touched, reason in (("PATH-1", sorted(files), f"path-changed:{last}"),
+                                      ("SYM-1", [f"{path}::fn{i}" for i, path in enumerate(sorted(files))],
+                                       f"symbol-changed:{last}::fn39")):
+            with self.subTest(unit=unit):
+                run = unit_run("2026-02-01-run-a", unit, "@c0", touched, note="forty files")
+                got = self.entry(scenario(commits, [run]), ("src",), unit)
+                self.assertEqual(got["currency"], "STALE", got)
+                self.assertIn(reason, got["reasons"])
+
+    def test_a_supersession_past_the_cap_is_applied(self):
+        old = unit_run("2026-02-01-run-a", "OLD-1", "@c0", ["src/auth.py"], note="the older record")
+        new = unit_run("2026-02-02-run-b", "NEW-1", "@c0", ["src/auth.py"], note="the newer record",
+                       supersedes=[f"OTHER-{i}" for i in range(40)] + ["OLD-1"])
+        got = self.entry(scenario([{"name": "c0", "files": BASE}], [old, new]), ("src/auth.py",), "OLD-1")
+        self.assertEqual((got["currency"], got["reasons"]), ("SUPERSEDED", ["superseded-by:2026-02-02-run-b/NEW-1"]))
+
+
+# Runs one read the hint makes, in a child of its own under a 512 MiB data limit (so a read without
+# end fails there instead of in the test runner) and the caller's timeout; prints what it returned or
+# raised, and its own peak (VmHWM). argv: search_sessions.py, case, repo, path, and for "manifest"
+# what the manifest becomes AFTER artifact_reasons checked it and before it is read: a link to
+# /dev/zero ("zero"), a FIFO ("fifo") or an 8 GiB sparse file ("huge").
+READ_CHILD = ("import importlib.util, json, os, resource, sys\n"
+              "from pathlib import Path\n"
+              "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+              "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+              "hp = mod.hp\n"
+              "if hasattr(resource, 'RLIMIT_DATA'):\n"
+              "    resource.setrlimit(resource.RLIMIT_DATA, (512 << 20, resource.getrlimit(resource.RLIMIT_DATA)[1]))\n"
+              "case, repo, path = sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])\n"
+              "how = sys.argv[5] if len(sys.argv) > 5 else ''\n"
+              "def swap(target):\n"
+              "    target.unlink()\n"
+              "    if how == 'zero': target.symlink_to('/dev/zero')\n"
+              "    elif how == 'fifo': os.mkfifo(target)\n"
+              "    else:\n"
+              "        with open(target, 'wb') as fh: fh.truncate(8 << 30)\n"
+              "if how:\n"
+              "    real = hp.Archive._manifest_reasons\n"
+              "    def checked_then_swapped(self, manifest_path, rel):\n"
+              "        swap(Path(manifest_path))\n"
+              "        return real(self, manifest_path, rel)\n"
+              "    hp.Archive._manifest_reasons = checked_then_swapped\n"
+              "out = {}\n"
+              "try:\n"
+              "    archive = hp.Archive(repo / 'docs' / 'runs')\n"
+              "    if case == 'manifest':\n"
+              "        out['reasons'] = archive.artifact_reasons(path, [])\n"
+              "    elif case == 'evidence':\n"
+              "        record = {'artifacts': [{'path': path.name, 'sha256': '0' * 64}]}\n"
+              "        out['reasons'] = archive.artifact_reasons(repo / 'docs/runs/run-a/manifest.json', [record])\n"
+              "    else:\n"
+              "        out['digest'] = hp.sha256_file(path)\n"
+              "except BaseException as exc:\n"
+              "    out['raised'] = f'{type(exc).__name__}: {getattr(exc, \"kind\", \"\")}'\n"
+              "peak = 0\n"
+              "with open('/proc/self/status', encoding='ascii') as fh:\n"
+              "    peak = next((int(l.split()[1]) for l in fh if l.startswith('VmHWM:')), 0)\n"
+              "out['peak_kib'] = peak\n"
+              "print(json.dumps(out))\n")
+
+
+class TheHintsOwnReadsAreBounded(unittest.TestCase):
+    """W5-21's class, in the process that builds the hint (the scan's child has exited by then):
+    _manifest_reasons re-read a matched manifest with Path.read_bytes() and sha256_file() read each
+    evidence file the same way -- following a link swapped in since (to /dev/zero: a read without
+    end), blocking on a FIFO, and holding a file of any size whole. Each read now opens without
+    following a final link and without blocking, checks the descriptor is a regular file, and is
+    bounded (MAX_READ_BYTES held, MAX_HASH_BYTES streamed); a refusal is the hint's UNKNOWN reason."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hint-reads-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = self.tmp / "repo"
+        manifest = self.repo / "docs" / "runs" / "run-a" / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"units": [{"id": "U-1", "files_touched": ["src/a.py"]}]}), encoding="utf-8")
+        (self.repo / "big.log").write_text("evidence\n", encoding="utf-8")
+        for args in (("init", "-q"), ("add", "-A"), ("-c", "user.name=t", "-c", "user.email=t@t.invalid",
+                                                    "commit", "-qm", "fixture")):
+            subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True)
+        self.manifest = manifest
+
+    def read(self, case, path, how=None):
+        try:
+            proc = subprocess.run([sys.executable, "-I", "-c", READ_CHILD, str(ROOT / "runtime/scripts/search_sessions.py"),
+                                   case, str(self.repo), str(path), *([how] if how else [])],
+                                  capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            self.fail(f"the hint's read of {path.name} ({case}) never returned")
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        got = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertLess(got["peak_kib"], 128 * 1024, f"the hint's read of {path.name} peaked at {got['peak_kib']} KiB")
+        return got
+
+    def swap(self, path, how):
+        path.unlink()
+        if how == "zero":
+            path.symlink_to("/dev/zero")
+        elif how == "fifo":
+            os.mkfifo(path)
+        else:
+            with open(path, "wb") as fh:  # sparse: 8 GiB that hold no disk
+                fh.truncate(8 << 30)
+
+    def test_a_manifest_swapped_for_a_link_a_fifo_or_an_oversized_file_is_unknown_and_said(self):
+        # Swapped after artifact_reasons resolved and checked it, before the re-read: the scan's child
+        # read the manifest, and the hint re-reads it by name in this process afterwards.
+        for how, reason in (("zero", "artifact-irregular:manifest"), ("fifo", "artifact-irregular:manifest"),
+                            ("huge", "artifact-oversized:manifest")):
+            with self.subTest(how=how):
+                if os.path.lexists(self.manifest):  # each case starts from the committed manifest
+                    self.manifest.unlink()
+                subprocess.run(["git", "-C", str(self.repo), "checkout", "--", "."], check=True, capture_output=True)
+                got = self.read("manifest", self.manifest, how)
+                self.assertNotIn("raised", got)
+                self.assertEqual([tuple(r) for r in got["reasons"]], [(hp.UNKNOWN, reason)])
+
+    def test_evidence_is_hashed_only_from_a_regular_file_within_its_bound(self):
+        self.swap(self.repo / "big.log", "huge")
+        got = self.read("evidence", self.repo / "big.log")
+        self.assertEqual([tuple(r) for r in got["reasons"]], [(hp.UNKNOWN, "artifact-oversized:big.log")])
+        for how in ("zero", "fifo"):  # what the resolved evidence path became after its check
+            with self.subTest(how=how):
+                target = self.tmp / f"swapped-{how}"
+                target.touch()
+                self.swap(target, how)
+                self.assertEqual(self.read("hash", target)["raised"], "ArtifactRefused: irregular")
 
 
 if __name__ == "__main__":

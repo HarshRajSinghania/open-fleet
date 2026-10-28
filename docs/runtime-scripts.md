@@ -617,9 +617,9 @@ Exits: n/a (library).
 
 ## `egress.py`
 
-Content-free, hash-chained receipts for everything the fleet sends off-repo. One JSON
-object per line in `.orca/egress.jsonl` (mode 0600), appended BEFORE the send. Source
-`runtime/scripts/egress.py:1-76`; behavior pinned by `tests/test_egress.py`.
+Content-free, hash-chained receipts for everything the fleet sends off-repo. One canonical JSON
+object per line in `<repository root>/.orca/egress.jsonl` (mode 0600), appended BEFORE the send.
+Source `runtime/scripts/egress.py:1-101`; behavior pinned by `tests/test_egress.py`.
 
 Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
 refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
@@ -631,35 +631,81 @@ appends a receipt before each merge it sends (#599), since the hook never sees t
 
 Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 
-Subcommands: `write`, `verify`, `head` (verify, then print the head to anchor),
-`grants`.
+Subcommands: `write` (verify, append, print the receipt's id), `verify`, `head` (verify, then
+print the head to anchor), `grants` (verify, with `verify`'s anchors, then list the consents).
 
 Flags: `--ledger` (default `$OPEN_FLEET_EGRESS_LEDGER`, legacy `$ORCA_EGRESS_LEDGER`, else
-`.orca/egress.jsonl`). `write` takes
-`--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,
+`.orca/egress.jsonl` under the repository root — the nearest directory at or above the working
+directory holding `.git`; outside a repository the default refuses, exit 3, and so does a root
+nested inside another repository — a submodule, a vendored repository or a planted `.git` — unless
+it is a linked worktree of it, whose own ledger `write` then names on stderr; a `.git` file counts
+as a linked worktree only when git's back-link, `.git/worktrees/<name>/gitdir`, names it again). A
+ledger named by flag or variable that is not the repository's own (the ledger of a nested root
+included), or reached through a symlinked directory, is reported on `write`'s stderr, and `verify`
+prints the absolute path and where it came from. Only the ledger's own directory is
+ever created. `write` takes
+`--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file` (streamed),
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
-else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger) and
-`--expect-ancestor` (close-to-close, appends tolerated); `grants` takes `--json`.
-`verify` also fails any record whose field carries a line break: `id` hashes newline-joined
-`key=value` lines, so such a field makes the encoding ambiguous.
+else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger),
+`--expect-ancestor` (repeatable; close-to-close, appends tolerated) and `--require-receipts` (a
+close that expects receipts); `grants` takes `--json` and the same `--expect-head` and
+`--expect-ancestor`, checked the same way (a rewrite since an anchor exits 3); without either it
+says `UNANCHORED` (on stdout, or on stderr beside `--json`), as `verify` does.
+Text fields are printable ASCII; `--consent` names a grant (letters, digits, `` ._:/#()@+,=-``,
+starting with a letter or digit).
 
-Record fields: `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
-`consent`, `prev` — never the payload text (sha256 + byte count + kind only). `prev`
-chains to the previous raw line; `id` names the line and its chain position. `verify`
-recomputes the chain and prints the head digest; pass `--expect-head` with a head anchored
-off the writer to catch a wholesale rewrite.
+Record (format v2): `v`, `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
+`consent`, `prev` — never the payload text (sha256 + byte count + kind only). `id` is the sha256
+of the record's canonical serialisation without `id`; a line must BE the canonical serialisation
+of exactly those keys, so an extra key, a re-spacing, a type swap, a blank line or a missing final
+newline is TAMPER — on the last line as on any other (2026-10-27 audit, W5-05). `prev` chains to
+the previous raw line. `write` reads the ledger through the descriptor it holds locked, refuses
+(exit 3, before the send) any ledger `verify` would refuse, and fsyncs the receipt — and a new
+ledger's directory — before printing the id.
 
-Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, or chain broken).
+Anchors: the head digest `head` prints, and the `id` each `write` prints, each name one line byte
+for byte and, through `prev`, every line before it. Keep them off the writer (the loop-log, a
+ledger row) and pass them back: `--expect-ancestor` requires each still in the chain,
+`--expect-head` requires the ledger to end there. A receipt written since the last close is bound
+only by the id its `write` printed — the close head alone cannot see a rewrite after it. No
+receipts — no ledger file ("no ledger file there") or an empty one — is never called an intact
+chain: plain `verify` exits 0 and says `NO RECEIPTS`, `verify --require-receipts` (the close's
+form) exits 4 unless a sealed empty head (`--expect-head "(empty)"`) says none were expected, and
+any anchor naming a receipt against it is TAMPER (exit 3).
+
+Migration: a pre-v2 ledger (no `v` key) keeps verifying while each legacy line is exactly what the
+v1 writer produced (its keys, canonical bytes, types and v1 id), which binds it as fully; v2
+receipts chain onto it, and a legacy line after a v2 one is refused. A legacy line the v1 writer
+could not have produced was never bound and now reads as TAMPER — so does one whose text fields
+are not printable ASCII (a legacy consent carrying terminal escapes, 2026-10-27 re-attack).
+
+Recovery from a broken ledger. One appended byte that `verify` refuses stops every receipted send —
+each `egress.py write … &&`, and `merge_queue.py`'s merges and branch deletions — until a human
+acts. That is the fail-closed design, not a fault to route around, and the procedure is:
+1. *Inspect.* `egress.py verify` names the first broken line and why; read it and every line
+   after it. Do not send meanwhile.
+2. *Preserve, never edit.* Move the ledger aside whole, keeping it 0600:
+   `mv .orca/egress.jsonl .orca/egress.jsonl.broken-<UTC timestamp>`. Never truncate, re-chain or
+   correct a line in place: a repaired ledger cannot be told from a forged one.
+3. *Record.* In the run's loop-log (or `docs/DECISIONS.md` for a standing ledger) write the moved
+   file's name and sha256, the head digest of its last good line, the broken line's number and
+   reason, the receipt ids the coordinator holds for it, who moved it and why. The close that
+   follows reads the old file with those ids as anchors (`--ledger <moved file>`) and counts the
+   rotation as a RED leg until that record is reviewed.
+4. *Resume.* The next `write` starts a new chain at genesis; until it does, the close verifies the
+   new ledger without `--require-receipts`, and the next close anchors from the new chain's head.
+
+Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, an anchor missing, or a ledger that is not a regular file — a FIFO there is refused at once by every command, never waited on) · 4 `verify --require-receipts` found no receipts.
 
 > Why: the integrity inventory hashes what a run produced, but nothing recorded what it
 > sent — this ledger is the second half. Receipts are content-free (hash + count + kind)
 > because the ledger is forensic observability, not an exfiltration control: it records
 > attempted egress so an accident is auditable, while anything with a shell can still
-> send without one. The chain (`runtime/scripts/egress.py:record_id` over fixed
-> `runtime/scripts/egress.py:FIELDS`) proves continuity with a genesis, never with THE
-> genesis — a rewritten history links correctly — so `verify` prints the head
-> (`runtime/scripts/egress.py:head_digest`) for anchoring off the writer, and unanchored
-> output says so rather than reading as a clean bill.
+> send without one. The chain (`runtime/scripts/egress.py:record_id` over the canonical record,
+> `runtime/scripts/egress.py:FIELDS` in fixed order) proves continuity with a genesis, never with
+> THE genesis — a rewritten history links correctly — so `verify` prints the head
+> (`runtime/scripts/egress.py:head_digest`) and `write` the id for anchoring off the writer, and
+> unanchored output says so rather than reading as a clean bill.
 
 ## `first_run.py`
 
@@ -1390,7 +1436,7 @@ What a worker DOES with fenced text is graded separately, on tool events and git
 ## `hint_provenance.py`
 
 Provenance and currency for episodic memory hints (#605): is a historical finding still true
-against the live source? Import-only library used by `search_sessions.py --episodic-hint`.
+against the live source? Import-only library used by `search_sessions.py --episodic-hint`. Its checks run inside `search_sessions.py`'s contained scan, on each matched record whole.
 Source `runtime/scripts/hint_provenance.py:1-32`; behavior pinned by
 `tests/test_hint_provenance.py` and the replay corpus `tests/fixtures/hint-replay.json`
 (runner: `scripts/hint_replay.py`).
@@ -1402,7 +1448,7 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 | Label | Reasons | Current mode |
 |---|---|---|
 | `CURRENT` | none: the source revision is in the live repo and an ancestor of it, and nothing below fired | shown |
-| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `scope-unverifiable:<p>`, `tests-unverifiable:<t>`, `dependencies-changed:<file>`, `dependencies-unverifiable:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
+| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `scope-unverifiable:<p>`, `tests-unverifiable:<t>`, `dependencies-changed:<file>`, `dependencies-unverifiable:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `artifact-irregular:<f>`/`:manifest`, `artifact-oversized:<f>`/`:manifest`, `provenance-unreadable` | shown, labelled, never upgraded |
 | `STALE` | `path-changed:<p>`, `path-deleted:<p>`, `path-renamed:<old>-><new>`, `symbol-changed:<p>::<s>`, `symbol-gone:<p>::<s>`, `tests-changed:<t>`, `divergent-branch`, `ahead-of-live`, `artifact-modified:<f>`/`:manifest` | suppressed |
 | `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes` — only a record whose own revision and artifact checks held may supersede), `current-evidence:<p>=<outcome>` | suppressed |
 
@@ -1435,7 +1481,14 @@ assume-unchanged or skip-worktree flag or a stale stat cache cannot hide an edit
 alone are not one — or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
 to the archive root); an archive outside git has no committed bytes to check, so every entry it
 yields is `artifact-unversioned`, and an evidence file that cannot be read leaves only its own
-entry `artifact-unreadable` (an unreadable live file, `provenance-unreadable`). Newer means descendant by ancestry when the live repo has both revisions,
+entry `artifact-unreadable` (an unreadable live file, `provenance-unreadable`). Every file the hint
+reads in its own process -- the re-read of a matched manifest, an evidence file it hashes, a live file
+it compares -- is opened without following a final link and without blocking, must be a regular
+file by its descriptor, and is bounded: a manifest or live file is held only up to
+`MAX_READ_BYTES` (64 MiB), an evidence file hashed as it streams up to `MAX_HASH_BYTES` (1 GiB). A
+manifest or evidence file refused that way is `artifact-irregular:<f>`/`:manifest` or
+`artifact-oversized:<f>`/`:manifest` (UNKNOWN); a live file refused that way is unverifiable, as an
+unreadable one is. Newer means descendant by ancestry when the live repo has both revisions,
 else later commit time, else — equal commit times, as for two runs at one revision — later
 claimed time; two contradicting records of one unit that nothing orders are both
 `contradicted-by` the other.
@@ -1711,7 +1764,12 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
   deleted, as a compare-and-swap, only when GitHub merged that PR into BASE and reports its head
   branch in the queue's own repository: a fork's branch, or a same-named branch of the queue's
   repository behind a cross-repository PR, is never touched. The deletion is fenced and
-  egress-receipted like the merge, and its push inherits the merge boundary's lock as the merge's
+  egress-receipted like the merge. Each egress receipt's id is kept off the ledger, as an
+  `egress_receipt` in the queue's own receipts (`receipts`), on stderr, and as `egressReceipt` in a
+  merge's result, so run close can anchor it; a ledger routed by `$OPEN_FLEET_EGRESS_LEDGER` is said
+  on stderr, and the default is the one `egress.py` picks — the repository root's, wherever under
+  it `--repo-dir` points, and none (the send refused) under a nested `.git` (2026-10-27 re-attack,
+  W5-05/W5-03). Its push inherits the merge boundary's lock as the merge's
   send does, so a conductor killed mid-deletion holds the boundary until that push ends and the
   next owner records the branch as gone. Owed teardowns are read only once the boundary is held,
   and each deletion is claimed (`deleting`) in a fenced transaction that re-reads the entry just
@@ -1974,10 +2032,10 @@ host), or usage.
 ## `search_sessions.py`
 
 `orca search` behind an `--index-status` precheck: never query an index the host
-reports broken. Source `runtime/scripts/search_sessions.py:1-43`; behavior pinned by
+reports broken. Source `runtime/scripts/search_sessions.py:1-50`; behavior pinned by
 `tests/test_search_sessions.py` and (episodic hints) `tests/test_hint_provenance.py`.
 
-Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`.
+Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`. Every read is bounded: a transcript or run manifest over `MAX_FILE_BYTES` (64 MiB) is skipped, and so are a SQLite store's rows past it; a store over `MAX_STORE_BYTES` (1 GiB with its `-wal`) is never opened, and on a SQLite without `octet_length` (before 3.43, where sizing a value loads it) neither is one over `MAX_FILE_BYTES`, so no value inside can exceed the cap — the bound chosen because it is decided from the checked file before SQLite opens it; every store connection is opened by one helper that sets `SQLITE_LIMIT_LENGTH` to `MAX_FILE_BYTES` and `SQLITE_LIMIT_SQL_LENGTH` to `MAX_SQL_BYTES` (1 MiB, so a schema statement's expression tree stays small on every platform) before its first statement (Python 3.11+; without `setlimit` the same store bound applies), so SQLite refuses to load a larger value, or a schema holding a larger statement, at all, even in a store grown after its check (said; for a value, that table's later rows are lost); a scan reads at most `MAX_RUN_BYTES` (512 MiB) in all; and each skip is said on stderr, so a partial recall is never silent. Those caps bound the bytes read, not the memory, since parsing multiplies them (a 63 MiB transcript of `{"a":{},"b":{}}` lines held 1.71 GB): the scan of the stores, and the episodic hint's scan of the manifests, run in a forked child that holds the parse; on Linux its `RLIMIT_DATA` allows it `SCAN_MEMORY_BYTES` (1 GiB) past what the process held, so a source whose parse passes that is skipped and said, and on every platform a source still being read after `SOURCE_SECONDS` (60 s) is skipped and said; a child stopped by either is restarted past that source, at most `SCAN_ATTEMPTS` (8) times, after which the scan is abandoned and said; the episodic hint's prior-run entries are assessed and labelled in that child too (`hint_provenance.assess`, `supersede`, `verdict`, on the whole record), so no cap can leave out what a label is decided on; the child returns only a flat JSON projection of what the parent shows -- a hit's strings cut (its snippet to 64 KiB, or shorter to fit), a prior-run entry's display fields cut and its lists capped, with its computed label, at most 500 entries, never a parsed unit or manifest -- at most `RESULT_BYTES` (8 MiB) with at most `RESULT_VALUES` structural bytes, both checked before the parent decodes it. macOS does not enforce `RLIMIT_DATA`, so there the memory a scan holds is bounded only by the byte caps times the parse's amplification (some 25 to 30 times its bytes for adversarial JSON) and, for a store's schema, by `MAX_SQL_BYTES`; only regular files are read (a transcript, store or manifest that is a link, FIFO or device is never opened, and that skip is said too, a FIFO or a link to `/dev/zero` named like a transcript included); SQLite opens a store, its `-wal` and its `-shm` by name with blocking calls, so the open runs in a worker thread while the three names are watched: one that stops being a regular file during the open (a FIFO swapped in) fails the store closed, an open still blocked after `SQLITE_OPEN_SECONDS` (10 s) is abandoned, and once an abandoned open stays blocked no further store is opened in that process (SQLite may hold its process-wide lock), each said; a SQLite store is read only from its plain tables' stored columns — never a view, a virtual table (an fts5 table can front a view) or a virtual generated column (computed on each read) — one row at a time, each row's stored size charged as SQLite reads it, in the query itself, before any of its values is handed to Python, so no value past either cap ever reaches Python, and no table or column name over 256 bytes, nor any column's declared type or DEFAULT, is ever fetched; a `.zst` transcript is walked frame by frame in work linear in the file, every frame charged at least 512 bytes, and a damaged or truncated frame keeps the whole frames before it and is said (without Python 3.14's `compression.zstd` every `.zst` is skipped, and said); a record nested past the JSON parser's depth is skipped, never fatal to the scan (2026-10-27 audit and re-attack, W5-21).
 
 The precheck runs first: `enabled=false` or phase `degraded`/`closed` refuses with
 exit 2 before the query fires; `current`/`idle`/`indexing` proceed (`--fresh` asks

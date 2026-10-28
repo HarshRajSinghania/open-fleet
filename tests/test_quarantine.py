@@ -10,6 +10,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -419,9 +420,11 @@ class MainInProcess(unittest.TestCase):
 
 class ShippedTree(unittest.TestCase):
     def test_generated_and_copied_bundles_keep_catalog_playbook_edges(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as records:
             result = subprocess.run(
                 [sys.executable, str(ROOT / "scripts" / "bundle.py"), "--out", tmp],
+                # its build record goes to scratch, not into the source checkout's git directory
+                env={**os.environ, "OPEN_FLEET_BUNDLE_RECORDS": records},
                 capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             catalog = qc.catalog_view(ROOT)

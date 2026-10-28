@@ -18,6 +18,21 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("bundle", ROOT / "scripts" / "bundle.py")
 bundle = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bundle)
+_RECORDS = []
+
+
+def setUpModule():
+    # Build records go to a scratch directory, never the source checkout's git directory.
+    records = tempfile.TemporaryDirectory()
+    patcher = mock.patch.dict(os.environ, {bundle.RECORDS_ENV: records.name})
+    patcher.start()
+    _RECORDS.extend([patcher, records])
+
+
+def tearDownModule():
+    patcher, records = _RECORDS
+    patcher.stop()
+    records.cleanup()
 
 
 class BundleClosureTests(unittest.TestCase):

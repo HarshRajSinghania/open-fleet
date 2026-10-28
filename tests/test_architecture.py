@@ -1283,7 +1283,7 @@ class TestBundleForCopyInstallers(unittest.TestCase):
     def test_every_mission_is_self_contained_after_bundling(self):
         mod, tempfile = self._bundle()
         with tempfile.TemporaryDirectory() as tmp:
-            built, problems = mod.build(tmp)
+            built, problems = mod.build(tmp, keep_record=False)
             self.assertEqual(problems, [])
             self.assertEqual(built, len(mission_dirs()))
             for mission in mission_dirs():
@@ -1311,7 +1311,7 @@ class TestBundleForCopyInstallers(unittest.TestCase):
         import os
         mod, tempfile = self._bundle()
         with tempfile.TemporaryDirectory() as tmp:
-            built, problems = mod.build(tmp)
+            built, problems = mod.build(tmp, keep_record=False)
             self.assertEqual(problems, [])
             root = Path(tmp)
             manifest = _json.loads(
@@ -1374,7 +1374,7 @@ class TestBundleForCopyInstallers(unittest.TestCase):
         # where nothing was copied. 56 shipped dead with --check green.
         mod, tempfile = self._bundle()
         with tempfile.TemporaryDirectory() as tmp:
-            mod.build(tmp)
+            mod.build(tmp, keep_record=False)
             dead = [(md.relative_to(tmp).as_posix(), m.group(2))
                     for md in sorted(Path(tmp).rglob("*.md"))
                     for m in mod.RELATIVE_LINK_RE.finditer(md.read_text(encoding="utf-8"))

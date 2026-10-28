@@ -27,7 +27,23 @@ search whose Orca/provider call FAILS — the exit-1 class; a precheck refusal n
 falls back) scans the ten harnesses' own session stores read-only — claude-code,
 codex, opencode, omp, pi, jcode, goose, hermes, crush, openhands — each through a
 reader that follows its upstream on-disk format (see the per-reader comments).
-It is a token scan, not an index: every query re-reads the stores. One hit per
+It is a token scan, not an index: every query re-reads the stores, each file up to
+MAX_FILE_BYTES and the whole scan up to MAX_RUN_BYTES (a skip is said on stderr; the
+episodic hint's manifests too). Those cap the BYTES; parsing multiplies them, so the scan itself
+(the stores and the manifests alike) runs in a forked child: on Linux, RLIMIT_DATA holds it to
+SCAN_MEMORY_BYTES past what the process held, and a source whose parse passes that is skipped and
+said; on every platform a source still being read after SOURCE_SECONDS is skipped and said; a
+child stopped by either is restarted past that source, at most SCAN_ATTEMPTS times. macOS does
+not enforce RLIMIT_DATA, so there memory is bounded only by the byte caps times the parse's
+amplification (and a store's schema statement by MAX_SQL_BYTES, everywhere). Regular files only (a link, FIFO or device is said and
+never read; a store, -wal or -shm swapped for one during SQLite's open fails it closed, and
+an open stalled past SQLITE_OPEN_SECONDS is abandoned), a SQLite store's plain tables'
+stored columns only (never a view, a virtual table or a computed column; a store over
+MAX_STORE_BYTES is never opened, nor, on a SQLite without octet_length or a Python without
+setlimit, one over MAX_FILE_BYTES; each row's stored size is charged as SQLite reads it, before any
+of its values reaches Python, and SQLite is told, before a store's first statement, never to load
+a value or schema statement past MAX_FILE_BYTES at all), every whole frame of a .zst (each frame charged; a damaged
+tail is said), and a record nested past the parser's depth skipped, never fatal. One hit per
 session; --since drops undated records; --path matches the session's cwd;
 --cursor pages with the ``local:<offset>`` NEXT_CURSOR it printed (any other
 cursor is refused). On EVERY path (Orca results included) every untrusted
@@ -55,6 +71,7 @@ if (__name__ == "__main__" and not getattr(sys.flags, "safe_path", False) and sy
 
 import argparse
 import datetime
+import errno
 import fnmatch
 import hashlib
 import importlib.machinery
@@ -62,7 +79,18 @@ import json
 import os
 from pathlib import Path
 import re
+import select
+import signal
 import sqlite3
+import stat
+import struct
+import threading
+import time
+
+try:
+    import resource
+except ImportError:  # not POSIX: no memory limit can be set (see SCAN_MEMORY_BYTES)
+    resource = None
 
 
 class _Siblings:
@@ -95,6 +123,446 @@ GOOD_PHASES = ("current", "idle", "indexing")
 SCOPES = ("conversation", "all")
 SORTS = ("relevance", "newest")
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "runs"
+# Recall reads every session store under $HOME and every manifest under --runs-dir, and only the
+# OUTPUT was bounded (2026-10-27 audit, W5-21). A file over MAX_FILE_BYTES is skipped, and a scan
+# reads at most MAX_RUN_BYTES in all; either is said once on stderr, so a partial recall is never
+# silent. These bound the BYTES read, not the memory: parsing multiplies them (a 63 MiB .jsonl of
+# {"a":{},"b":{}} lines held 1.71 GB, a 5.6 KB .zst 1.81 GB, a 62 MB store's schema 5.61 GB --
+# re-attack of 2d254d0f). The memory is SCAN_MEMORY_BYTES' job.
+MAX_FILE_BYTES = 64 << 20
+MAX_RUN_BYTES = 512 << 20
+# Every scan of untrusted stores -- the local-harness search and the run-manifest scan -- runs in a
+# forked child (_contained) whose RLIMIT_DATA allows it SCAN_MEMORY_BYTES past what the process held
+# when it forked. Linux enforces RLIMIT_DATA on every private writable mapping, so an allocation past
+# it fails: a parse that runs out is a MemoryError, and the source being read is skipped and said;
+# a child that dies of it is restarted past that source. macOS (and any system that does not
+# enforce RLIMIT_DATA on mmap) does not bound it: there the memory a scan holds is bounded only by
+# the byte caps above times the parse's amplification, and MAX_SQL_BYTES for a store's schema. The
+# parent never holds what the child parsed: the child returns a flat projection of exactly the fields
+# the parent reads (_project_hits, _project_hints), every text cut to its cap and every list to its
+# count, as JSON of at most RESULT_BYTES with at most RESULT_VALUES structural bytes, both checked
+# before the parent decodes it -- never a pickled unit or manifest, which carried a parsed amplifier
+# (a matching unit beside 24 MiB of empty objects) back into the unbounded parent (Codex round 11).
+SCAN_MEMORY_BYTES = 1 << 30
+# Wall clock for one source (a file or a store, read and parsed), on every platform: the child is
+# killed past it and restarted past that source, which is said.
+SOURCE_SECONDS = 60.0
+# How many times a scan is restarted past a source that broke a limit before it gives up, said.
+SCAN_ATTEMPTS = 8
+RESULT_BYTES = 8 << 20
+RESULT_VALUES = 1 << 20
+# The projection's caps: a text field (a title, a cwd, a unit's name, status, note), a hit's snippet
+# (what a result line shows is 500 characters, a hint line 80), a path or token, list counts, and
+# the prior-run hints a scan returns. Each is far past anything shown; the scan for directive-shaped
+# text reads the field as carried.
+FIELD_CHARS = 16 << 10
+SNIPPET_CHARS = 64 << 10
+PATH_CHARS = 1 << 10
+LIST_ITEMS = 32
+REASON_ITEMS = 64
+SYMBOL_ITEMS = 8
+MAX_HINTS = 500
+# The longest schema statement SQLite is allowed to parse in a store (SQLITE_LIMIT_SQL_LENGTH): its
+# expression tree costs ~180 bytes per list item, so a 62 MB `DEFAULT (0 IN (1,1,...))` was 5.61 GB
+# while under the old limit (MAX_FILE_BYTES). No harness writes a schema statement near this.
+MAX_SQL_BYTES = 1 << 20
+# A SQLite store (with its -wal) is never opened past this size. Its rows are charged as SQLite
+# reads them (_RowGate), so this bounds the time a scan spends in one store, not what it holds.
+# Sizing a row without loading it needs octet_length (SQLite 3.43+): before that, the fallback
+# length(CAST(x AS BLOB)) loads each value into SQLite's memory first, so a 450 MiB value in a store
+# under MAX_STORE_BYTES was loaded before the cap refused it (Codex round 3 on PR #723). There the
+# store itself is held to MAX_FILE_BYTES: a stored value's bytes live in the file and its -wal, so
+# no value in a store that small can be larger than the cap. That bound is the rule chosen because
+# it is decided before the store is opened, from the descriptor checked, on every SQLite; and
+# every connection (_connect, the only way recall opens a store) sets SQLITE_LIMIT_LENGTH and
+# SQLITE_LIMIT_SQL_LENGTH to MAX_FILE_BYTES before its first statement where Python offers
+# setlimit (3.11+), so SQLite refuses to load a larger value -- or a schema statement past it,
+# which it parses on the first read -- at all (SQLITE_TOOBIG, before allocating it), which also
+# holds if a store grows after its size was checked. Without setlimit the same store bound as
+# without octet_length applies (Codex rounds 3 and 4 on PR #723).
+MAX_STORE_BYTES = 1 << 30
+
+
+class _ReadBudget:
+    """Bytes read so far in this process's scans, and what was skipped (reported once each)."""
+
+    def __init__(self):
+        self.used, self.said = 0, set()
+
+    def omit(self, path, why):
+        if why not in self.said:
+            self.said.add(why)
+            what = {"file": f"a file over the per-file cap ({MAX_FILE_BYTES} bytes)",
+                    "run": f"files past the scan's byte budget ({MAX_RUN_BYTES} bytes)",
+                    "irregular": "a link or a file that is not a regular file (never followed or read)",
+                    "store": f"a SQLite store over {MAX_STORE_BYTES} bytes with its -wal (never opened)",
+                    "store-unsized": f"a SQLite store over {MAX_FILE_BYTES} bytes with its -wal on a SQLite "
+                                     "without octet_length (before 3.43) or a Python without setlimit "
+                                     "(before 3.11), where a value could be loaded unbounded (never opened)",
+                    "oversized": f"a SQLite store whose schema holds a statement over "
+                                 f"{min(MAX_FILE_BYTES, MAX_SQL_BYTES)} bytes, which SQLite was told never to "
+                                 "load (never read)",
+                    "value": f"a stored value over {MAX_FILE_BYTES} bytes, which SQLite was told never to "
+                             "load (that table's rows from the one before it on)",
+                    "damaged": "the rest of a damaged or truncated compressed transcript",
+                    "stalled": f"a SQLite store whose open did not return in {SQLITE_OPEN_SECONDS} s (abandoned)",
+                    "blocked": "SQLite stores after an open that is still blocked (it may hold SQLite's lock)",
+                    "zstd": "compressed transcripts (a .zst needs Python 3.14's compression.zstd)",
+                    "memory": f"a source whose parse passed the scan's memory limit (SCAN_MEMORY_BYTES, "
+                              f"{SCAN_MEMORY_BYTES} bytes, where the OS enforces RLIMIT_DATA)",
+                    "slow": f"a source still being read and parsed after SOURCE_SECONDS ({SOURCE_SECONDS:g} s)",
+                    "failed": "a source whose reader failed on it",
+                    "abandoned": f"the rest of a scan whose limits stopped it {SCAN_ATTEMPTS} times, or with "
+                                 "no source to blame, or whose result was over RESULT_BYTES",
+                    "hints": f"prior-run hints past the first {MAX_HINTS}, or past the result's "
+                             f"{RESULT_BYTES} bytes"}[why]
+            if _WORKER is not None:  # a contained scan: the parent says it, once per scan
+                _WORKER.send(b"N", json.dumps([why, str(path)[:PATH_CHARS]]).encode())
+                return
+            print(f"search_sessions: skipped {what}, first {path}: recall is partial", file=sys.stderr)
+
+
+_BUDGET = _ReadBudget()
+
+
+def _new_scan():
+    """One budget per scan: main() and each local-harness search start a fresh one."""
+    global _BUDGET
+    _BUDGET = _ReadBudget()
+
+
+def _fits(fp, size):
+    """True when `size` bytes of `fp` would fit both caps; a miss is said once (no charge)."""
+    if size > MAX_FILE_BYTES:
+        _BUDGET.omit(fp, "file")
+        return False
+    if _BUDGET.used + size > MAX_RUN_BYTES:
+        _BUDGET.omit(fp, "run")
+        return False
+    return True
+
+
+def _charge(fp, size):
+    """True when `size` more bytes of `fp` fit both caps (and are now counted), else False."""
+    if not _fits(fp, size):
+        return False
+    _BUDGET.used += size
+    return True
+
+
+_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+# ---------------------------------------------------------------- contained scans (W5-21, re-attack)
+# In a contained scan's child: the pipe to the parent and the sources the parent said to skip.
+_WORKER = None
+_FRAME = struct.Struct(">cQ")  # kind, payload length
+
+
+class _Worker:
+    def __init__(self, fd, skip):
+        self.fd, self.skip = fd, skip
+
+    def send(self, kind, payload=b""):
+        view = memoryview(_FRAME.pack(kind, len(payload)) + payload)
+        while view:
+            view = view[os.write(self.fd, view):]
+
+
+def _source(path):
+    """Mark the start of one source in a contained scan; False when the parent said to skip it."""
+    if _WORKER is None:
+        return True
+    name = str(path)
+    if name in _WORKER.skip:
+        return False
+    _WORKER.send(b"S", os.fsencode(name))
+    return True
+
+
+def _text(value, limit=FIELD_CHARS):
+    """A field as the parent reads it: None, or its text (str() of anything else), cut to `limit`."""
+    if value is None:
+        return None
+    return (value if isinstance(value, str) else str(value))[:limit]
+
+
+def _note(value):
+    """A free-text field the parent shows only when it is truthy (a parking reason, an invariant)."""
+    return _text(value) if value else None
+
+
+def _weight(value):
+    """(bytes, structural bytes) of `value` as the child sends it: what _decode checks."""
+    data = json.dumps(value, ensure_ascii=False).encode("utf-8", "surrogatepass")
+    return len(data), sum(data.count(c) for c in (b"{", b"[", b",", b":"))
+
+
+def _project_hits(result):
+    """The local-harness result, carried across: its hits' strings cut (a snippet to SNIPPET_CHARS,
+    and further, halving, until each hit fits its share of RESULT_BYTES), its page."""
+    hits, raw = [], result["hits"][:100]
+    share = ((RESULT_BYTES - (64 << 10)) // max(1, len(raw)), (RESULT_VALUES - 1024) // max(1, len(raw)))
+    for hit in raw:
+        evidence = hit.get("evidence") or {}
+        out = {"sessionId": _text(hit["sessionId"], PATH_CHARS), "agent": _text(hit["agent"], 256),
+               "title": _text(hit["title"]), "score": float(hit["score"]), "cwd": _text(hit["cwd"]),
+               "evidence": {"role": _text(evidence.get("role"), 256),
+                            "snippet": _text(evidence.get("snippet"), SNIPPET_CHARS)}}
+        while any(got > cap for got, cap in zip(_weight(out), share, strict=True)):
+            for holder, key in ((out["evidence"], "snippet"), (out, "title"), (out, "cwd")):
+                if holder[key]:
+                    holder[key] = holder[key][:len(holder[key]) // 2]
+        hits.append(out)
+    page = result["page"]
+    return {"kind": "results", "hits": hits, "page": {"cursor": _text(page["cursor"], 64), "hasMore": bool(page["hasMore"])}}
+
+
+def _project_hint(hint):
+    """One prior-run hint, carried across as display data and the label the contained scan already
+    computed on the whole record (_judged_hints): never the unit or the manifest it came from, nor
+    anything a check would read. Every cap here cuts only what is shown; a reason list past
+    REASON_ITEMS keeps its first (worst) reasons and says how many more there were."""
+    (rank, prose), field, cand, sym, query, kind = hint["match"]
+    why = [_text(reason, PATH_CHARS) for reason in hint["why"][:REASON_ITEMS]]
+    reasons = [[label, _text(reason, PATH_CHARS)] for label, reason in hint["reasons"][:REASON_ITEMS]]
+    if len(hint["why"]) > REASON_ITEMS:
+        why.append(f"+{len(hint['why']) - REASON_ITEMS} more reasons")
+    return {"kind": "run", "run": _text(hint["run"], PATH_CHARS), "unit": _text(hint["unit"]),
+            "status": _text(hint["status"]), "rev": hint["rev"], "repo": _text(hint["repo"], PATH_CHARS),
+            "artifact": _text(hint["artifact"], PATH_CHARS), "digest": hint["digest"], "time": hint["time"],
+            "paths": [_text(p, PATH_CHARS) for p in hint["paths"][:LIST_ITEMS]],
+            "path_count": len(hint["paths"]),
+            "symbols": {_text(k, PATH_CHARS): sorted(_text(n, PATH_CHARS) for n in sorted(names)[:SYMBOL_ITEMS])
+                        for k, names in list(hint["symbols"].items())[:LIST_ITEMS]},
+            "match": [[int(rank), bool(prose)], field, _text(cand, PATH_CHARS), _text(sym, PATH_CHARS),
+                      _text(query, PATH_CHARS), kind],
+            "order": [int(n) for n in hint["order"]], "currency": hint["currency"], "why": why,
+            "reasons": reasons, "park": _note(hint["park"]), "inv": _note(hint["inv"])}
+
+
+def _project_hints(hints):
+    """At most MAX_HINTS hints, and only as many as fit RESULT_BYTES and RESULT_VALUES; any left out
+    is said."""
+    out, size, values = [], 64 << 10, 1024
+    for hint in hints:
+        projected = _project_hint(hint)
+        more, marks = _weight(projected)
+        size, values = size + more + 1, values + marks + 1
+        if len(out) >= MAX_HINTS or size > RESULT_BYTES or values > RESULT_VALUES:
+            _BUDGET.omit(hint["manifest_path"], "hints")
+            break
+        out.append(projected)
+    return out
+
+
+def _restore_hints(hints):
+    """The projection back in the types the parent's code expects: tuples and sets."""
+    for hint in hints:
+        hint["match"] = (tuple(hint["match"][0]), *hint["match"][1:])
+        hint["order"] = tuple(hint["order"])
+        hint["symbols"] = {path: set(names) for path, names in hint["symbols"].items()}
+        hint["reasons"] = [tuple(reason) for reason in hint["reasons"]]
+    return hints
+
+
+def _decode(data):
+    """A JSON result from a contained scan, or None when it is past RESULT_BYTES or holds more than
+    RESULT_VALUES structural bytes: both checked before it is decoded, so the parent's decode is
+    bounded whatever the child sent."""
+    if len(data) > RESULT_BYTES or sum(data.count(c) for c in (b"{", b"[", b",", b":")) > RESULT_VALUES:
+        return None
+    try:
+        return json.loads(data)
+    except ValueError:
+        return None
+
+
+def _limit_memory():
+    """Allow this (forked) process SCAN_MEMORY_BYTES of data past what it holds now (VmData), as
+    RLIMIT_DATA. Linux reports VmData and enforces the limit on every private writable mapping;
+    where neither holds (macOS), nothing is set and the wall clock and the byte caps are the bound."""
+    if resource is None or not hasattr(resource, "RLIMIT_DATA"):
+        return
+    try:
+        with open("/proc/self/status", encoding="ascii") as fh:
+            held = next(int(line.split()[1]) * 1024 for line in fh if line.startswith("VmData:"))
+    except (OSError, ValueError, StopIteration):
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+    want = held + SCAN_MEMORY_BYTES
+    for bound in (soft, hard):
+        if bound != resource.RLIM_INFINITY:
+            want = min(want, bound)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (want, hard))
+    except (OSError, ValueError):
+        pass  # a limit it cannot set: the wall clock and the byte caps still hold
+
+
+def _child(fd, skip, fn, args, project):
+    """The forked child's whole life; never returns (os._exit), so no frame of the parent's, a
+    test's cleanup included, ever runs here. It sends `project`'s flat projection of fn's result,
+    as JSON, never the objects fn parsed."""
+    global _WORKER
+    code = 70
+    try:
+        _WORKER = _Worker(fd, skip)
+        _limit_memory()
+        try:
+            value = project(fn(*args))
+            data = json.dumps([value, _BUDGET.used], ensure_ascii=False, allow_nan=False).encode("utf-8", "surrogatepass")
+        except MemoryError:
+            value = data = None
+            _WORKER.send(b"M")
+            code = 4
+        except Exception as exc:  # a reader that failed on its source: the parent skips that source
+            _WORKER.send(b"E", type(exc).__name__.encode("ascii", "replace")[:80])
+            code = 5
+        else:
+            if len(data) > RESULT_BYTES:
+                _WORKER.send(b"T")
+                code = 6
+            else:
+                _WORKER.send(b"R", data)
+                code = 0
+    except BaseException:
+        code = 71
+    finally:
+        os._exit(code)
+
+
+def _attempt(fn, args, skip, project):
+    """Run fn(*args) once in a forked child. Returns ("ok", value) or (why, the source being read
+    when it stopped: None when none had started)."""
+    read_fd, write_fd = os.pipe()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()  # nothing buffered here is written twice
+        except (AttributeError, OSError, ValueError):
+            pass
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        _child(write_fd, skip, fn, args, project)
+    os.close(write_fd)
+    current, why, result, buf = None, None, None, bytearray()
+    deadline = time.monotonic() + SOURCE_SECONDS
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                why = "slow"
+                break
+            ready, _w, _x = select.select([read_fd], [], [], min(left, 1.0))
+            if not ready:
+                continue
+            chunk = os.read(read_fd, 1 << 20)
+            if not chunk:
+                break
+            buf += chunk
+            while len(buf) >= _FRAME.size:
+                kind, size = _FRAME.unpack_from(buf)
+                if size > RESULT_BYTES:
+                    why = "abandoned"
+                    break
+                if len(buf) < _FRAME.size + size:
+                    break
+                payload = bytes(buf[_FRAME.size:_FRAME.size + size])
+                del buf[:_FRAME.size + size]
+                if kind == b"S":
+                    current, deadline = os.fsdecode(payload), time.monotonic() + SOURCE_SECONDS
+                elif kind == b"N":
+                    note = _decode(payload)
+                    if isinstance(note, list) and len(note) == 2 and all(isinstance(x, str) for x in note):
+                        _BUDGET.omit(note[1], note[0])
+                elif kind == b"R":
+                    result = payload
+                elif kind == b"M":
+                    why = "memory"
+                elif kind == b"E":
+                    why = "failed"
+                else:
+                    why = "abandoned"
+            if why == "abandoned":
+                break
+    finally:
+        os.close(read_fd)
+        if why is not None or result is None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        _pid, status = os.waitpid(pid, 0)
+    if result is not None and why is None:
+        decoded = _decode(result)
+        if not (isinstance(decoded, list) and len(decoded) == 2 and isinstance(decoded[1], int)):
+            return "abandoned", current
+        value, used = decoded
+        _BUDGET.used = max(_BUDGET.used, used)
+        return "ok", value
+    if why is None:  # it died without a word: out of memory where no MemoryError could be raised
+        why = "memory"
+    return why, current
+
+
+def _contained(fn, args, empty, project=lambda value: value, restore=lambda value: value):
+    """fn(*args), a scan of untrusted stores, computed in a forked child under SCAN_MEMORY_BYTES and
+    SOURCE_SECONDS per source, so no parse of untrusted bytes runs in this process. A child stopped
+    by either -- or by a reader failing -- is restarted with the source it was reading skipped,
+    which is said; with no source to blame, or past SCAN_ATTEMPTS, the scan gives up, said, and
+    `empty` is the answer. What crosses back is `project`'s projection, as JSON, and `restore` turns
+    it into the types the caller reads. Without fork (not POSIX) fn runs here, unbounded, its result
+    projected the same way."""
+    if _WORKER is not None or not hasattr(os, "fork"):
+        return restore(json.loads(json.dumps(project(fn(*args)), allow_nan=False)))
+    skip = set()
+    for _try in range(SCAN_ATTEMPTS):
+        outcome, value = _attempt(fn, args, frozenset(skip), project)
+        if outcome == "ok":
+            return restore(value)
+        if outcome == "abandoned" or value is None or value in skip:
+            break
+        _BUDGET.omit(value, outcome)
+        skip.add(value)
+    _BUDGET.omit(", ".join(sorted(skip)[:3]) or "(no source had started)", "abandoned")
+    return empty
+
+
+def _read_capped(fp, follow=False):
+    """`fp`'s bytes, or None when it is not a regular file, unreadable, over MAX_FILE_BYTES, or
+    past MAX_RUN_BYTES. Never through a link unless `follow` (an argument the caller named), and
+    opened O_NONBLOCK, so a FIFO or a device named like a transcript or a manifest is refused by
+    its fstat, never waited on or read without end; the bytes actually read are what is charged
+    (2026-10-27 re-attack, W5-21)."""
+    if not _source(fp):
+        return None
+    flags = _READ_FLAGS | (0 if follow else getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(fp, flags)
+    except OSError as err:
+        if err.errno == errno.ELOOP:
+            _BUDGET.omit(fp, "irregular")
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            _BUDGET.omit(fp, "irregular")
+            return None
+        if not _fits(fp, st.st_size):
+            return None
+        chunks, size = [], 0
+        while size <= MAX_FILE_BYTES and (chunk := os.read(fd, min(1 << 20, MAX_FILE_BYTES + 1 - size))):
+            chunks.append(chunk)
+            size += len(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if size > MAX_FILE_BYTES:  # it grew while being read
+        _BUDGET.omit(fp, "file")
+        return None
+    return b"".join(chunks) if _charge(fp, size) else None
 
 
 class Refused(Exception):
@@ -348,71 +816,110 @@ def _structured_tokens(unit):
     return out
 
 
-def _prior_hints(clean_paths, rdir):
-    """Every manifest unit whose path tokens match a query path, with its provenance attached."""
-    hints = []
+def _prior_hints(clean_paths, rdir, live=None, observations=()):
+    """Every manifest unit whose path tokens match a query path, with its provenance assessed and its
+    currency label computed. The manifests are untrusted bytes, read, parsed AND judged in a
+    contained scan (_contained): hint_provenance's checks (artifacts, scope, symbols, related tests,
+    supersession) run there on the whole record, so nothing a projection cap leaves out can be what
+    a label was decided on (Codex round 12 on 419a8435: the 33rd evidence artifact, cut, was never
+    checked); only display data and the label cross back."""
     if not (rdir.is_dir() and clean_paths):
-        return hints
-    for order, mf in enumerate(sorted(rdir.rglob("*manifest*.json"))):
+        return []
+    return _contained(_judged_hints, (clean_paths, rdir, live, observations), [], _project_hints, _restore_hints)
+
+
+def _judged_hints(clean_paths, rdir, live, observations):
+    """_scan_manifests' hints, each assessed against the live source, superseded where a newer
+    record or the current evidence contradicts it, and labelled (hint_provenance.verdict)."""
+    prior = _scan_manifests(clean_paths, rdir)
+    archive = hp.Archive(rdir) if prior else None
+    for hint in prior:
         try:
-            raw_bytes = mf.read_bytes()
-            data = json.loads(raw_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        digest = hashlib.sha256(raw_bytes).hexdigest()
-        run_id = mf.parent.name if mf.parent != rdir else mf.stem
-        for idx, unit in enumerate(_extract_unit_records(data)):
-            tokens = _extract_touched_tokens(unit)
-            structured = _structured_tokens(unit)
-            matches = []
-            for tok in tokens:
-                path, sym = hp.split_symbol(tok)
-                for query in clean_paths:
-                    kind = hp.match_kind(path, query)
-                    if kind:
-                        field = structured.get(tok, "prose")
-                        matches.append(((_KIND_RANK[kind], field == "prose"), field, path, sym, query, kind))
-            if not matches:
-                continue
-            paths, symbols, whole = [], {}, set()
-            declared = [s for s in unit.get("symbols") or [] if isinstance(s, str) and s.strip()]
-            for _rank, field, path, sym, query, kind in matches:
-                checked = hp.checked_path(path, query, kind)
-                if checked and checked not in paths:
-                    paths.append(checked)
-                if checked and (sym or declared):
-                    symbols.setdefault(checked, set()).update([sym] if sym else declared)
-                elif checked and field != "prose":
-                    whole.add(checked)
-            # A structured whole-file entry outranks a narrower symbol named for the same path
-            # anywhere else in the record (PR #639 review: files_touched ["src/a.py"] plus a claim
-            # naming src/a.py::foo checked only foo, and the rest of the file went unwatched).
-            for checked in whole:
-                symbols.pop(checked, None)
-            best = min(matches, key=lambda m: m[0])
-            head = unit.get("head_sha") if "head_sha" in unit else data.get("head_sha")
-            rev = head.strip().lower() if isinstance(head, str) and hp.REV.match(head.strip().lower()) else None
-            repo = next((v for v in (unit.get("repo"), unit.get("repository"), data.get("repo"),
-                                     data.get("repository")) if isinstance(v, str) and v.strip()), None)
-            raw_uid = unit.get("id") or unit.get("unit_id") or unit.get("unit") or "unit"
-            intent = unit.get("intent") if isinstance(unit.get("intent"), dict) else {}
-            supersedes = unit.get("supersedes")
-            # The record's own claimed time survives the commit-time override below: it is the only
-            # order between two runs at ONE revision (PR #639 review).
-            claimed = hp.recorded_time(data, unit, run_id)
-            hints.append({
-                "kind": "run", "run": run_id, "unit": raw_uid, "status": unit.get("status") or "recorded",
-                "run_key": str(run_id).strip().lower(), "unit_key": str(raw_uid).strip().lower(),
-                "outcome": hp.outcome(unit.get("status")), "rev": rev, "rev_raw": bool(head),
-                "repo": repo, "manifest_path": mf, "artifact": mf.relative_to(rdir).as_posix(),
-                "digest": digest, "records": [unit] if unit is data else [unit, data],
-                "time": claimed, "claimed": claimed, "paths": paths, "symbols": symbols,
-                "tokens": tokens, "match": best, "order": (order, idx), "reasons": [],
-                "supersedes": supersedes if isinstance(supersedes, list) else [],
-                "park": unit.get("parking_reason"),
-                "inv": intent.get("invariant") or intent.get("goal") or intent.get("why") or unit.get("claim"),
-            })
+            hint["reasons"].extend(hp.assess(hint, live, archive))
+        except hp.ProvenanceError as exc:
+            hint["reasons"].append((hp.UNKNOWN, f"provenance-unreadable:{exc}"))
+        if live is not None and hint["rev"] and live.has_commit(hint["rev"]):
+            hint["time"] = live.commit_time(hint["rev"]) or hint["time"]
+    hp.supersede(prior, live, observations)
+    for hint in prior:
+        hint["currency"], hint["why"] = hp.verdict(hint["reasons"])
+    return prior
+
+
+def _scan_manifests(clean_paths, rdir):
+    hints = []
+    for order, mf in enumerate(sorted(rdir.rglob("*manifest*.json"))):
+        kept = len(hints)
+        try:
+            _manifest_hints(hints, order, mf, clean_paths, rdir)
+        except MemoryError:  # past SCAN_MEMORY_BYTES: this manifest's hints go, and that is said
+            del hints[kept:]
+            _BUDGET.omit(mf, "memory")
     return hints
+
+
+def _manifest_hints(hints, order, mf, clean_paths, rdir):
+    """Append the hints of one manifest `mf` to `hints`."""
+    raw_bytes = _read_capped(mf)
+    if raw_bytes is None:
+        return
+    try:
+        data = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return  # RecursionError: nested past the parser's depth (W5-21)
+    digest = hashlib.sha256(raw_bytes).hexdigest()
+    run_id = mf.parent.name if mf.parent != rdir else mf.stem
+    for idx, unit in enumerate(_extract_unit_records(data)):
+        tokens = _extract_touched_tokens(unit)
+        structured = _structured_tokens(unit)
+        matches = []
+        for tok in tokens:
+            path, sym = hp.split_symbol(tok)
+            for query in clean_paths:
+                kind = hp.match_kind(path, query)
+                if kind:
+                    field = structured.get(tok, "prose")
+                    matches.append(((_KIND_RANK[kind], field == "prose"), field, path, sym, query, kind))
+        if not matches:
+            continue
+        paths, symbols, whole = [], {}, set()
+        declared = [s for s in unit.get("symbols") or [] if isinstance(s, str) and s.strip()]
+        for _rank, field, path, sym, query, kind in matches:
+            checked = hp.checked_path(path, query, kind)
+            if checked and checked not in paths:
+                paths.append(checked)
+            if checked and (sym or declared):
+                symbols.setdefault(checked, set()).update([sym] if sym else declared)
+            elif checked and field != "prose":
+                whole.add(checked)
+        # A structured whole-file entry outranks a narrower symbol named for the same path
+        # anywhere else in the record (PR #639 review: files_touched ["src/a.py"] plus a claim
+        # naming src/a.py::foo checked only foo, and the rest of the file went unwatched).
+        for checked in whole:
+            symbols.pop(checked, None)
+        best = min(matches, key=lambda m: m[0])
+        head = unit.get("head_sha") if "head_sha" in unit else data.get("head_sha")
+        rev = head.strip().lower() if isinstance(head, str) and hp.REV.match(head.strip().lower()) else None
+        repo = next((v for v in (unit.get("repo"), unit.get("repository"), data.get("repo"),
+                                 data.get("repository")) if isinstance(v, str) and v.strip()), None)
+        raw_uid = unit.get("id") or unit.get("unit_id") or unit.get("unit") or "unit"
+        intent = unit.get("intent") if isinstance(unit.get("intent"), dict) else {}
+        supersedes = unit.get("supersedes")
+        # The record's own claimed time survives the commit-time override below: it is the only
+        # order between two runs at ONE revision (PR #639 review).
+        claimed = hp.recorded_time(data, unit, run_id)
+        hints.append({
+            "kind": "run", "run": run_id, "unit": raw_uid, "status": unit.get("status") or "recorded",
+            "run_key": str(run_id).strip().lower(), "unit_key": str(raw_uid).strip().lower(),
+            "outcome": hp.outcome(unit.get("status")), "rev": rev, "rev_raw": bool(head),
+            "repo": repo, "manifest_path": mf, "artifact": mf.relative_to(rdir).as_posix(),
+            "digest": digest, "records": [unit] if unit is data else [unit, data],
+            "time": claimed, "claimed": claimed, "paths": paths, "symbols": symbols,
+            "tokens": tokens, "match": best, "order": (order, idx), "reasons": [],
+            "supersedes": supersedes if isinstance(supersedes, list) else [],
+            "park": unit.get("parking_reason"),
+            "inv": intent.get("invariant") or intent.get("goal") or intent.get("why") or unit.get("claim"),
+        })
 
 
 def _session_hints(session_hits):
@@ -510,7 +1017,8 @@ def _compose_prior(hint, withhold, blank, found=None):
     scope = ident(hint["paths"][0], 60) if hint["paths"] else "unresolved"
     syms = sorted(hint["symbols"].get(hint["paths"][0], ())) if hint["paths"] else []
     scope += f"::{ident(syms[0], 40)}" if syms else ""
-    scope += f"+{len(hint['paths']) - 1}" if len(hint["paths"]) > 1 else ""
+    count = hint.get("path_count", len(hint["paths"]))  # the projection carries the first LIST_ITEMS
+    scope += f"+{count - 1}" if count > 1 else ""
     when = datetime.datetime.fromtimestamp(hint["time"], datetime.timezone.utc).strftime("%Y-%m-%d") \
         if hint.get("time") is not None else "unknown"
     if not hint["repo"]:
@@ -578,18 +1086,9 @@ def build_episodic_selection(paths, runs_dir=None, session_hits=None, max_lines=
         live = hp.LiveSource(live)
     observations = hp.load_observations(current_evidence) if current_evidence is not None else []
     rdir = Path(runs_dir) if runs_dir is not None else DEFAULT_RUNS_DIR
-    prior = _prior_hints(clean_paths, rdir)
-    archive = hp.Archive(rdir) if prior else None
-    for hint in prior:
-        try:
-            hint["reasons"].extend(hp.assess(hint, live, archive))
-        except hp.ProvenanceError as exc:
-            hint["reasons"].append((hp.UNKNOWN, f"provenance-unreadable:{exc}"))
-        if live is not None and hint["rev"] and live.has_commit(hint["rev"]):
-            hint["time"] = live.commit_time(hint["rev"]) or hint["time"]
-    hp.supersede(prior, live, observations)
+    prior = _prior_hints(clean_paths, rdir, live, observations)  # assessed and labelled, contained
     sessions = _session_hints(session_hits)
-    for hint in prior + sessions:
+    for hint in sessions:
         hint["currency"], hint["why"] = hp.verdict(hint["reasons"])
     withhold = mode == "current"
     visible = [h for h in prior if not (withhold and h["currency"] in hp.SUPPRESSED)]
@@ -831,8 +1330,14 @@ def _norm_agent(name):
     return _AGENT_ALIASES.get(raw, raw)
 
 
-def _extract_text(val):
-    if val is None:
+# How deep _extract_text descends into a record. A transcript's text sits a few levels down; a
+# 1 400-deep list the JSON parser accepts recursed once per level and aborted the whole recall
+# with a RecursionError (2026-10-27 re-check, W5-21). Deeper than this is not conversation text.
+MAX_NESTING = 64
+
+
+def _extract_text(val, depth=0):
+    if val is None or depth > MAX_NESTING:
         return ""
     if isinstance(val, str):
         stripped = val.strip()
@@ -841,14 +1346,14 @@ def _extract_text(val):
         ):
             try:
                 parsed = json.loads(stripped)
-                inner = _extract_text(parsed)
+                inner = _extract_text(parsed, depth + 1)
                 if inner:
                     return inner
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 pass
         return val
     if isinstance(val, list):
-        parts = [_extract_text(item) for item in val]
+        parts = [_extract_text(item, depth + 1) for item in val]
         return " ".join(p for p in parts if p)
     if isinstance(val, dict):
         btype = val.get("type")
@@ -859,12 +1364,12 @@ def _extract_text(val):
         if btype and isinstance(val.get("data"), dict):
             # crush's {"type": "text"|"tool_result", "data": {...}} part wrapper.
             data = val["data"]
-            return _extract_text({k: data[k] for k in ("text", "content") if k in data})
+            return _extract_text({k: data[k] for k in ("text", "content") if k in data}, depth + 1)
         parts = []
         for k in ("text", "content", "message", "body", "parts",
                   "observation", "summary", "output"):
             if k in val and val[k] is not None:
-                sub = _extract_text(val[k])
+                sub = _extract_text(val[k], depth + 1)
                 if sub:
                     parts.append(sub)
         return " ".join(parts)
@@ -922,40 +1427,177 @@ def _rec(harness, sid, title, cwd, ts, role, content, fp):
             "content": content, "file_path": str(fp)}
 
 
-def _read_jsonl(fp):
-    try:
-        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
+def _json_lines(data, fp):
+    """The dict records of `data`'s JSON lines; [] when parsing them passed the scan's memory limit
+    (a MemoryError in a contained scan: SCAN_MEMORY_BYTES), which is said."""
     out = []
-    for raw in lines:
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            rec = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(rec, dict):
-            out.append(rec)
+    try:
+        for raw in data.decode("utf-8", errors="replace").splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                rec = json.loads(raw)
+            except (json.JSONDecodeError, RecursionError):
+                continue  # one record nested past the parser's depth is skipped, never fatal (W5-21)
+            if isinstance(rec, dict):
+                out.append(rec)
+    except MemoryError:
+        out = []
+        _BUDGET.omit(fp, "memory")
     return out
 
 
+def _read_jsonl(fp):
+    data = _read_capped(fp)
+    if data is None:
+        return []
+    return _json_lines(data, fp)
+
+
 def _read_json(fp):
-    try:
-        data = json.loads(fp.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
+    raw = _read_capped(fp)
+    if raw is None:
         return None
-    return data
+    try:
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, RecursionError):
+        return None
+    except MemoryError:
+        _BUDGET.omit(fp, "memory")
+        return None
 
 
 def _glob(root, *patterns):
+    """The regular files under `root` matching `patterns`. A match that is a link, a FIFO, a device
+    or a socket is said and left out (re-attack of 2d254d0f: is_file() dropped a FIFO, or a link to
+    /dev/zero, in silence); a directory is not a source and is left out unsaid."""
     found = set()
     if root is None or not root.is_dir():
         return []
     for pat in patterns:
-        found.update(p for p in root.glob(pat) if p.is_file())
+        for p in root.glob(pat):
+            try:
+                mode = os.lstat(p).st_mode
+            except OSError:
+                continue
+            if stat.S_ISREG(mode):
+                found.add(p)
+            elif not stat.S_ISDIR(mode):
+                _BUDGET.omit(p, "irregular")
     return sorted(found)
+
+
+# How long one SQLite store's open and first read may take. SQLite opens the store, its -wal and
+# its -shm BY NAME with blocking calls, after every check here: a FIFO put at any of the three
+# names in between blocked recall forever, and a 0444 FIFO cannot be unblocked by opening it for
+# writing (2026-10-27 re-check, W5-21). So the open runs in a worker thread while the three names
+# are watched: a name that stops being a regular file fails the store closed (and a FIFO there is
+# opened for writing and closed, so the blocked open returns), and an open still blocked at this
+# deadline -- on a FIFO swapped back out of sight, say -- is abandoned. Either is said.
+SQLITE_OPEN_SECONDS = 10.0
+_WATCH_SECONDS = 0.02
+# Set once an abandoned open is still blocked: SQLite blocks on a FIFO at -shm holding its
+# process-wide VFS lock, so every later open in this process would queue behind it. Later stores
+# are then skipped at once, and that is said, instead of each waiting out the deadline.
+_SQLITE_BLOCKED = False
+
+
+def _regular_or_absent(name):
+    try:
+        return stat.S_ISREG(os.stat(name, follow_symlinks=False).st_mode)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def _unblock(name):
+    """Open a FIFO at `name` for writing and close it, so an open() blocked reading it returns."""
+    try:
+        if stat.S_ISFIFO(os.stat(name, follow_symlinks=False).st_mode):
+            os.close(os.open(name, os.O_WRONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+                             | getattr(os, "O_CLOEXEC", 0)))
+    except OSError:
+        pass  # no reader waiting, no write permission (0444), or gone: the deadline still holds
+
+
+_LIMITS = hasattr(sqlite3.Connection, "setlimit")  # Python 3.11+
+
+
+def _connect(uri):
+    """The one way recall opens a store: a read-only connection whose length limits are set before
+    its first statement -- SQLite parses the schema on the first read, so a limit set after the
+    probe let a 450 MiB DEFAULT in a CREATE TABLE be loaded first (Codex round 4 on PR #723)."""
+    conn = sqlite3.connect(uri, uri=True, factory=_Store, check_same_thread=False)
+    try:
+        if _LIMITS:
+            conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_FILE_BYTES)
+            conn.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, min(MAX_FILE_BYTES, MAX_SQL_BYTES))
+        conn.row_factory = sqlite3.Row
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def _open_watched(uri, names):
+    """(connection, None) once `uri` opened and answered a first read; (None, None) on a SQLite
+    error; (None, "irregular" | "stalled") when a name in `names` stopped being a regular file
+    during the open, or the open outlived SQLITE_OPEN_SECONDS. A connection the caller does not
+    get is closed, by the worker if it is still blocked when given up on."""
+    lock, state, done = threading.Lock(), {"conn": None, "abandoned": False}, threading.Event()
+
+    def work():
+        conn = None
+        try:
+            conn = _connect(uri)
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()  # reads the schema, hands back no value
+            with lock:
+                if not state["abandoned"]:
+                    state["conn"], conn = conn, None
+        except sqlite3.DataError:  # SQLITE_TOOBIG: the schema holds a statement past the limit
+            state["oversized"] = True
+        except MemoryError:  # SQLITE_NOMEM: parsing its schema passed the scan's memory limit
+            state["memory"] = True
+        except sqlite3.Error as err:
+            # A schema statement past SQLITE_LIMIT_SQL_LENGTH is refused while it is tokenised, which
+            # SQLite reports as a malformed schema, "string or blob too big": refused, and said.
+            if "too big" in str(err):
+                state["oversized"] = True
+        finally:
+            if conn is not None:
+                conn.close()  # a failed probe, or one given up on, must not leak its connection
+            done.set()
+
+    threading.Thread(target=work, name="search_sessions-sqlite-open", daemon=True).start()
+    deadline, why = time.monotonic() + SQLITE_OPEN_SECONDS, None
+    while not done.wait(_WATCH_SECONDS):
+        if not all(_regular_or_absent(name) for name in names):
+            why = "irregular"
+            for name in names:
+                _unblock(name)
+            done.wait(1.0)  # an unblocked open returns at once; one that cannot be stays behind
+            break
+        if time.monotonic() >= deadline:
+            why = "stalled"
+            break
+    if why is None and not all(_regular_or_absent(name) for name in names):
+        why = "irregular"  # it finished, but through a name that is no longer a regular file
+    if why is None and state.get("oversized"):
+        why = "oversized"
+    if why is None and state.get("memory"):
+        why = "memory"
+    with lock:
+        state["abandoned"] = why is not None
+        conn, state["conn"] = state["conn"], None
+    if why is not None and conn is not None:
+        conn.close()
+        conn = None
+    if not done.is_set():
+        global _SQLITE_BLOCKED
+        _SQLITE_BLOCKED = True
+    return conn, why
 
 
 def _sqlite_ro(path):
@@ -971,38 +1613,165 @@ def _sqlite_ro(path):
       replayed, so rows still only in that WAL stay invisible until the harness
       checkpoints — never writing beside a harness's data wins over them.
     """
+    if not _source(path):
+        return None
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        _BUDGET.omit(path, "irregular")  # a store is read as the regular file it is, like a transcript
+        return None
     if not path.is_file():
+        return None
+    if _SQLITE_BLOCKED:
+        _BUDGET.omit(path, "blocked")
         return None
     resolved = path.resolve()
     uri = resolved.as_uri()
     wal = Path(str(resolved) + "-wal")
     shm = Path(str(resolved) + "-shm")
-    suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
-        else ("?mode=ro&immutable=1",)
-    for suffix in suffixes:
-        conn = None
+    names = (str(resolved), str(wal), str(shm))
+    # The store, as checked: held open across the connect, and compared after it, so a store
+    # replaced in between is never the one read (and a FIFO or link at any name is refused first).
+    try:
+        fd = os.open(names[0], _READ_FLAGS | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        _BUDGET.omit(path, "irregular")
+        return None
+    try:
+        checked = os.fstat(fd)
+        if not (stat.S_ISREG(checked.st_mode) and all(_regular_or_absent(name) for name in names[1:])):
+            _BUDGET.omit(path, "irregular")
+            return None
         try:
-            conn = sqlite3.connect(uri + suffix, uri=True)
-            conn.row_factory = sqlite3.Row
-            conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchall()
-            return conn
-        except sqlite3.Error:
+            wal_size = os.stat(names[1], follow_symlinks=False).st_size
+        except FileNotFoundError:
+            wal_size = 0
+        if checked.st_size + wal_size > MAX_STORE_BYTES:
+            _BUDGET.omit(path, "store")
+            return None
+        if (_OCTETS is None or not _LIMITS) and checked.st_size + wal_size > MAX_FILE_BYTES:
+            _BUDGET.omit(path, "store-unsized")  # no value in it can be over the cap: see MAX_STORE_BYTES
+            return None
+        # Its rows are charged as SQLite reads them (_RowGate), not by the file's size, which says
+        # nothing of what a query returns (W5-21); the size only bounds the time spent in it.
+        suffixes = ("?mode=ro", "?mode=ro&immutable=1") if wal.exists() and shm.exists() \
+            else ("?mode=ro&immutable=1",)
+        for suffix in suffixes:
+            conn, why = _open_watched(uri + suffix, names)
+            if why is None and conn is not None:
+                now = os.stat(names[0], follow_symlinks=False)
+                if (now.st_dev, now.st_ino) != (checked.st_dev, checked.st_ino):
+                    conn.close()
+                    conn, why = None, "irregular"
+            if why is not None:
+                _BUDGET.omit(path, why)
+                return None
             if conn is not None:
-                conn.close()  # a failed probe must not leak its connection
-            continue
-    return None
+                conn.path = path
+                return conn
+        return None
+    finally:
+        os.close(fd)
+
+
+# The byte size of a stored value as SQLite knows it. octet_length (SQLite 3.43+) reads it from the
+# record header without loading the value; length(CAST(x AS BLOB)) loads it into SQLite's memory,
+# never Python's. Either way it is known before any value is handed to Python (W5-21).
+_OCTETS = "octet_length" if sqlite3.sqlite_version_info >= (3, 43, 0) else None
+# A name longer than this is not one recall reads (every table and column it asks for is a short
+# literal), so it is never fetched.
+_NAME_LIMIT = 256
+
+
+def _octets(expr):
+    return f"{_OCTETS}({expr})" if _OCTETS else f"length(CAST({expr} AS BLOB))"
 
 
 def _tables(conn):
+    """The store's plain TABLES. Never its views: a view is any query, and a 4 KiB file can hold one
+    that yields gigabytes (2026-10-27 re-attack, W5-21). Never a VIRTUAL table either: sqlite_master
+    calls it a 'table', but its rows are whatever its module computes, and an fts5 table's external
+    content can be a view -- one that never yields held recall forever (re-check of 50b2615e). Only
+    a name of at most _NAME_LIMIT bytes is ever handed to Python (Codex round 2 on PR #723)."""
     return {row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()}
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE TABLE%' "
+        f"AND {_octets('name')} <= {_NAME_LIMIT}").fetchall()}
+
+
+def _quoted(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _stored_columns(conn, table):
+    """`table`'s columns that hold stored data: a VIRTUAL generated column (table_xinfo hidden=2)
+    is any expression, computed on each read -- hex(zeroblob(450000000)) in a 12 KiB store took
+    recall to 5.7 GB before a row could be charged -- so it is never selected. Only each column's
+    name and kind are fetched, never its declared type or DEFAULT, which can be any size."""
+    return [row[0] for row in conn.execute(
+        f"SELECT name FROM pragma_table_xinfo(?) WHERE hidden IN (0, 3) AND {_octets('name')} <= {_NAME_LIMIT} "
+        "ORDER BY cid", (table,)).fetchall()]
+
+
+class _Store(sqlite3.Connection):
+    """A harness store's connection, carrying what its rows have cost so far."""
+    path, used = None, 0
+
+
+class _RowGate:
+    """Charges each row's stored size as SQLite reads it, in the query's WHERE clause, so a row is
+    counted against MAX_FILE_BYTES (this store) and MAX_RUN_BYTES (the scan) BEFORE any of its
+    values is handed to Python, and a row that does not fit never is. The first refusal closes
+    the gate: no later row is admitted, and the refusal is said once the scan returns."""
+
+    def __init__(self, used):
+        self.used, self.why = used, None
+
+    def admit(self, size):
+        if self.why is not None:
+            return 0
+        size = int(size or 0)
+        if self.used + size > MAX_FILE_BYTES:
+            self.why = "file"
+        elif _BUDGET.used + size > MAX_RUN_BYTES:
+            self.why = "run"
+        else:
+            self.used += size
+            _BUDGET.used += size
+            return 1
+        return 0
 
 
 def _rows(conn, table):
+    """The rows of `table` (a table, never a view), one at a time. SQLite charges each row's stored
+    size through _RowGate before handing over any of its values, so no value past either cap ever
+    reaches Python (Codex round 2 on PR #723: eight 450 MB values were fetched in one batch before
+    the cap refused the first); past either cap the rest are never fetched, and that is said."""
+    where, used, out = getattr(conn, "path", None) or table, getattr(conn, "used", 0), []
+    gate = _RowGate(used)
     try:
-        return [dict(r) for r in conn.execute(f'SELECT * FROM "{table}"').fetchall()]
+        if table not in _tables(conn):
+            return []
+        columns = _stored_columns(conn, table)
+        if not columns:
+            return []
+        quoted = [_quoted(column) for column in columns]
+        # Every value's bytes, and 8 for each value's own overhead (a NULL or a number included).
+        size = " + ".join(f"coalesce({_octets(q)}, 0) + 8" for q in quoted)
+        conn.create_function("_open_fleet_admit", 1, gate.admit)
+        cursor = conn.cursor()
+        cursor.row_factory = None
+        cursor.execute(f"SELECT {', '.join(quoted)} FROM {_quoted(table)} WHERE _open_fleet_admit({size})")
+        while (row := cursor.fetchone()) is not None:
+            out.append(dict(zip(columns, row, strict=True)))
+        return out
+    except sqlite3.DataError:  # SQLITE_TOOBIG: a value past SQLITE_LIMIT_LENGTH, refused unloaded
+        _BUDGET.omit(where, "value")
+        return out
     except sqlite3.Error:
         return []
+    finally:
+        if gate.why is not None:
+            _BUDGET.omit(where, gate.why)
+        if isinstance(conn, _Store):
+            conn.used = gate.used
 
 
 def _json_col(value):
@@ -1011,7 +1780,7 @@ def _json_col(value):
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return value
     return value
 
@@ -1046,25 +1815,68 @@ def _iter_claude():
 _UUID_TAIL = re.compile(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 
 
+# What a .zst frame costs against the per-file cap on top of what it decodes to: an empty or
+# skippable frame decodes to nothing, so without it 8-byte frames are millions of walks for free.
+ZSTD_FRAME_COST = 512
+_ZSTD_WINDOW = 512
+
+
+def _unzstd_capped(zstd, packed, fp):
+    """(every whole frame of a .zst decoded, what it cost), or None past MAX_FILE_BYTES (W5-21).
+
+    One ZstdDecompressor decodes ONE frame and leaves what follows in `unused_data`, so frames
+    are walked one at a time (the one-shot `zstd.decompress` did that, with no output cap). Each
+    is fed from a window that starts at _ZSTD_WINDOW and doubles while the frame lasts, so
+    `unused_data` copies about one window per frame and the walk is linear in the file: handing
+    every frame the whole rest of it was quadratic, and a 2.5 MB file of empty frames held recall
+    for 23 s. Each frame also costs ZSTD_FRAME_COST. Past the cap is a skip that is said; a
+    damaged or truncated frame ends the walk, the whole frames before it are kept, and that skip
+    is said too."""
+    view, pos, out, cost = memoryview(packed), 0, [], 0
+    while pos < len(view):
+        cost += ZSTD_FRAME_COST
+        if cost > MAX_FILE_BYTES:
+            _BUDGET.omit(fp, "file")
+            return None
+        unpacker, window, frame = zstd.ZstdDecompressor(), _ZSTD_WINDOW, []
+        while True:
+            piece = view[pos:pos + window]
+            try:
+                chunk = unpacker.decompress(piece, max_length=MAX_FILE_BYTES + 1 - cost)
+            except Exception:
+                _BUDGET.omit(fp, "damaged")
+                return b"".join(out), cost
+            cost += len(chunk)
+            frame.append(chunk)
+            if cost > MAX_FILE_BYTES or (not unpacker.eof and not unpacker.needs_input):
+                _BUDGET.omit(fp, "file")  # the output reached the cap before the frame ended
+                return None
+            if unpacker.eof:
+                pos += len(piece) - len(unpacker.unused_data)
+                out += frame
+                break
+            pos += len(piece)
+            if pos >= len(view):  # the stream ends inside this frame
+                _BUDGET.omit(fp, "damaged")
+                return b"".join(out), cost
+            window = min(window * 2, 1 << 20)
+    return b"".join(out), cost
+
+
 def _codex_lines(fp):
     if fp.name.endswith(".zst"):
         try:
             from compression import zstd  # Python 3.14+ stdlib
         except ImportError:
+            _BUDGET.omit(fp, "zstd")
             return []
-        try:
-            raw = zstd.decompress(fp.read_bytes()).decode("utf-8", errors="replace")
-        except Exception:
+        packed = _read_capped(fp)
+        if packed is None:
             return []
-        out = []
-        for line in raw.splitlines():
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(rec, dict):
-                out.append(rec)
-        return out
+        walked = _unzstd_capped(zstd, packed, fp)
+        if walked is None or not _charge(fp, walked[1]):
+            return []
+        return _json_lines(walked[0], fp)
     return _read_jsonl(fp)
 
 
@@ -1327,7 +2139,7 @@ def _hermes_content(value):
     if isinstance(value, str) and value.startswith(_HERMES_JSON_PREFIX):
         try:
             return _extract_text(json.loads(value[len(_HERMES_JSON_PREFIX):]))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return ""
     return value if isinstance(value, str) else _extract_text(value)
 
@@ -1507,9 +2319,17 @@ def search_local_harnesses(ns):
     --since drops records with no readable timestamp: undated is not "recent".
     --path matches the session's working directory (the store path only when
     the harness recorded no cwd). --cursor pages with the ``local:<offset>``
-    NEXT_CURSOR a previous local page printed.
+    NEXT_CURSOR a previous local page printed. Reads are capped per file and per scan, and the
+    whole scan of the stores runs contained (_contained: SCAN_MEMORY_BYTES, SOURCE_SECONDS) (W5-21).
     """
+    _new_scan()
     build_search_argv(ns)
+    offset = _local_cursor_offset(ns.cursor)  # a foreign cursor is refused before any store is read
+    return _contained(_scan_local_harnesses, (ns, offset),
+                      {"kind": "results", "hits": [], "page": {"cursor": "none", "hasMore": False}}, _project_hits)
+
+
+def _scan_local_harnesses(ns, offset):
     query = (ns.query if ns.query is not None else ns.query_flag) or ""
     tokens = [t.lower() for t in query.split() if t.strip()]
     want_agents = {_norm_agent(a) for a in (ns.agent or []) if a}
@@ -1560,7 +2380,6 @@ def search_local_harnesses(ns):
     else:
         scored_hits.sort(key=lambda item: (item[0], item[1]), reverse=True)
 
-    offset = _local_cursor_offset(ns.cursor)
     end = offset + limit_val
     hits = [item[2] for item in scored_hits[offset:end]]
     has_more = len(scored_hits) > end
@@ -1587,6 +2406,7 @@ def run_orca(argv):
 
 
 def main(argv=None):
+    _new_scan()
     try:
         ns = parse_args(sys.argv[1:] if argv is None else argv)
     except SystemExit as exc:
@@ -1621,9 +2441,13 @@ def main(argv=None):
                     live = hp.LiveSource(_nonempty(ns.repo, "--repo"),
                                          rev=_nonempty(ns.live_rev, "--live-rev"))
                 if ns.current_evidence is not None:
-                    evidence = json.loads(Path(ns.current_evidence).read_text(encoding="utf-8"))
+                    raw = _read_capped(Path(ns.current_evidence), follow=True)
+                    if raw is None:
+                        raise Refused(f"episodic hint: --current-evidence {ns.current_evidence} is unreadable, "
+                                      f"not a regular file, or over {MAX_FILE_BYTES} bytes")
+                    evidence = json.loads(raw.decode("utf-8"))
                     hp.load_observations(evidence)
-            except (OSError, json.JSONDecodeError, hp.ProvenanceError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError, hp.ProvenanceError) as exc:
                 raise Refused(f"episodic hint: {exc}")
             hits = None
             if has_query:

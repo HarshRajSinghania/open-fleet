@@ -43,7 +43,9 @@
   malformed recipe field, a repeated JSON key and an envelope that contradicts the report at any
   wrapping level or depth (its `metadata` included), reads a report out of every wrapper (up to
   16; more, nesting too deep to parse, and JSON that does not parse are refused, never read as a
-  report or as text), and reads placement claims in every spelling. `worker_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`,
+  report or as text), refuses every output shape but one report object (an array, a scalar, a
+  list as `result`, a nested or misspelt `backend`), and reads placement claims in every
+  spelling. `worker_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`,
   `orca_cli.run_json`, `pm.py` and `spawn_worker.sh` print every receipt field, and every error
   and exception message (the provider-dispatch path included), escaped and on one line; no body line, tail item or list row stands at column 0 in the shape of a line those
   printers write (`KEY=`, `---`, `===`, a `(…)` marker, a printer's own `SUBJ:`/`ID:` headers),

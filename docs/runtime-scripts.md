@@ -1780,7 +1780,11 @@ claim anywhere in a report that names no portable backend refuses too. Whatever 
 short of the report is a refusal, in the assessment and in `--require-placement` alike: more than
 16 wrappers, output nested too deep to parse, and a transcript that opens as JSON (`{`, or `[`
 opening an array of objects, arrays or strings; a byte-order mark aside) but does not parse, which
-is never read as plain text. JSON transcripts read structurally (empty
+is never read as plain text. The documented JSON output is one report object, optionally inside
+those envelopes; every other shape is refused the same way, never assessed: an array or a scalar
+(`null` included) at the top, a list as the report's `result`, and a report's `backend` anywhere
+but at the top of the report proper or spelt otherwise (an array-wrapped report was read as one
+naming no backend, so its isolation checks were skipped). JSON transcripts read structurally (empty
 finding collections are good news; `ok:false` is a finding); plain-text transcripts first
 strip "none of these" shapes (`"failures": []`, `failures: 0`, `0 warnings`, `no
 failures`) before matching fail/warn/error words. A transcript naming a portable `backend`

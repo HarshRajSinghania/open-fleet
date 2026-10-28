@@ -316,6 +316,14 @@ def git(repo, *args, tolerate=False, blanks=(), custody=None):
     return r.stdout
 
 
+def _exact_runner(repo):
+    """gitexec.base_commit's ``git(*args) -> (returncode, stdout)`` over diff_scope's own git."""
+    def run(*args):
+        out = git(repo, *args)
+        return (0, out) if out is not None else (1, "")
+    return run
+
+
 def resolve_base(repo, base):
     """(commit, shown): the base resolved ONCE, by exact ref names only (gitexec.base_commit,
     W3-07 class); the diff is taken against `commit`, never the name. `rev-parse <base>^{commit}`
@@ -324,24 +332,9 @@ def resolve_base(repo, base):
     a local branch was used as-is — and the base decides which paths count as changed, so which
     review lenses run. A local-branch, HEAD or abbreviated-id base is refused on a lane claiming
     soundness (gitexec.sound_lane: ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set) and NOTE'd
-    elsewhere.
-    gitexec.py is loaded here only: verify.py loads this file for SCOPE_TESTS and never resolves a
-    base (gitexec.py is in the verifier toolchain since #608 all the same)."""
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "gitexec_for_diff_scope", Path(__file__).resolve().parent / "gitexec.py")
-        gitexec = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(gitexec)
-    except (OSError, ImportError, SyntaxError, AttributeError) as err:
-        print(f"diff_scope: gitexec.py, the exact-name base rule, did not load: {err}",
-              file=sys.stderr)
-        raise ScopeError(base or "origin/HEAD") from err
-
-    def run(*args):
-        out = git(repo, *args)
-        return (0, out) if out is not None else (1, "")
-
-    commit, shown, local, why = gitexec.base_commit(run, base)
+    elsewhere. gitexec is the module this file loads at import (its git custody too); gitexec.py is
+    in the verifier toolchain since #608."""
+    commit, shown, local, why = gitexec.base_commit(_exact_runner(repo), base)
     if commit is None:
         print(f"diff_scope: base {shown!r} {why}", file=sys.stderr)
         raise ScopeError(base or "origin/HEAD")
@@ -565,22 +558,38 @@ def predict_merge(repo, base, branch):
     commit (or the two share no merge base), and ScopeError(kind="diff_failed")
     when merge-tree cannot run: "could not predict" must never read as a conflict.
     """
+    # Each name resolved ONCE, by exact ref names only - W3-07's rule (gitexec.base_commit), as
+    # resolve_base resolves a scope base: `rev-parse <ref>^{commit}` expanded it (refs/tags/ and
+    # refs/heads/ before refs/remotes/), so a tag or local branch spelled `origin/main` stood in for
+    # the remote-tracking branch. merge-tree is then given the two commit ids, and a LOCAL name is
+    # refused on a lane claiming soundness and NOTE'd elsewhere (merge_queue.py passes commit ids).
+    shas = []
     for label, ref in (("base", base), ("branch", branch)):
-        if not ref or ref.startswith("-") or git(
-                repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}") is None:
-            raise ScopeError(f"predict-merge {label} {ref!r} does not resolve to a commit in {repo}",
-                             kind="no_base")
+        commit, shown, local, why = (gitexec.base_commit(_exact_runner(repo), ref)
+                                     if ref and not ref.startswith("-")
+                                     else (None, ref, None, "is empty or option-shaped"))
+        if commit is None:
+            raise ScopeError(f"predict-merge {label} {ref!r} does not resolve to a commit in {repo} "
+                             f"by its exact name: {why}", kind="no_base")
+        if local:
+            lane = gitexec.sound_lane()
+            if lane:
+                raise ScopeError(f"predict-merge: {lane} claims a sound lane, but {label} {shown!r} "
+                                 f"is {local} ({commit[:12]}), not a remote-tracking ref or a full "
+                                 "commit id (W3-07)", kind="no_base")
+            print(f"diff_scope: NOTE — predict-merge {label} {shown!r} is {local} "
+                  f"({commit[:12]}), not a remote-tracking ref or a full commit id, so advisory",
+                  file=sys.stderr)
+        shas.append(commit)
     # #629 (PR #649 review): merge-tree 3-way-merges the two commits, running a repo-config merge
     # driver a `merge=<driver>` attribute selects. Blanking the declared drivers left a window
     # (one added after the listing ran: W4 custody sweep), so merge-tree runs in git custody
     # (_custody): a git dir with no driver defined, over the repo's object store ("shared": the
     # merged tree it writes lands in the repo, where merge_queue.py commits it), given the two
-    # commit ids resolved here, never a ref the custody dir does not hold. The listing stays as a
+    # commit ids resolved above, never a ref the custody dir does not hold. The listing stays as a
     # fail-closed belt, read OUTSIDE the subprocess-error catch below: an unreadable driver list
     # raises diff_failed, never a merge-tree that "could not run" quietly read as no drivers.
     blanks = _driver_blanks(repo)
-    shas = [(git(repo, "rev-parse", "--verify", "-q", "--end-of-options", f"{ref}^{{commit}}") or "").strip()
-            for ref in (base, branch)]
     try:
         with _custody(repo, index=False, objects="shared") as custody:
             r = subprocess.run(
@@ -617,7 +626,7 @@ def predict_merge(repo, base, branch):
                 conflicts.add(m_conf.group(1).strip())
         return {"clean": False, "tree_oid": None, "conflicts": sorted(conflicts)}
 
-    mb_out = git(repo, "merge-base", base, branch)
+    mb_out = git(repo, "merge-base", *shas)
     if not mb_out or not mb_out.strip():
         raise ScopeError(f"predict-merge: {base!r} and {branch!r} share no merge base", kind="no_base")
     # No guessing from the classic `git merge-tree <base> <a> <b>` form (git < 2.38): its

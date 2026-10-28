@@ -526,8 +526,11 @@ under `-z --name-only`) and gitexec's custody floor (`SELECTOR_ENV` dropped, `CU
 `merge-tree --write-tree` run in git custody (`gitexec.custody`, with diff_scope's own git): a git
 dir with no filter, diff or merge driver defined, so one a `.gitattributes` or `info/attributes`
 line selects runs nowhere, even one added to the repository's config mid-call (W4 custody sweep).
-The prediction is given the two commit ids and writes its merged tree into the repository's own
-object store. The declared driver commands are still listed and blanked as a belt
+The prediction's BASE and BRANCH are each resolved once by exact ref names (`gitexec.base_commit`,
+the W3-07 rule `resolve_base` follows: a remote-tracking or full commit id anchors; a local branch,
+`HEAD` or an abbreviated id is refused on a lane claiming soundness and NOTE'd elsewhere; a tag or
+revision syntax is `no_base`), merge-tree is given the two commit ids, and it writes its merged tree
+into the repository's own object store. The declared driver commands are still listed and blanked as a belt
 (`_driver_blanks`, #629): an unreadable list is `diff_failed`, and so is a repository the custody
 refuses, and so is a config, include or `shallow` git would block on (refused before git runs);
 a FIFO at a work tree `.gitignore`/`.gitattributes` blocks a git call up to 60 s, then

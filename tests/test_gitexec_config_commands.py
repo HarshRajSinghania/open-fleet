@@ -1851,6 +1851,46 @@ class TheIncludeParserMatchesTheInstalledGit(unittest.TestCase):
                         self.assertIsInstance(got, floor_guard.GuardError)
 
 
+class PredictMergeResolvesNamesExactly(unittest.TestCase):
+    """W3-07's rule, where predict-merge resolves BASE and BRANCH (rebase onto #725): `rev-parse
+    <ref>^{commit}` tried refs/heads/ before refs/remotes/, so a local branch spelled `origin/main`
+    stood in for the remote-tracking one. Each name is now resolved by its exact name."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        remote = p.commit("f.txt", "x\n")  # what refs/remotes/origin/main names
+        p._git("update-ref", "refs/remotes/origin/main", remote)
+        p._git("checkout", "-q", "-b", "work")
+        p.commit("f.txt", "z\n")  # the branch: changes f from x
+        p._git("checkout", "-q", "--detach", remote)
+        decoy = p.commit("f.txt", "y\n")  # a LOCAL branch spelled origin/main: changes f too
+        p._git("update-ref", "refs/heads/origin/main", decoy)
+        return p
+
+    def test_origin_main_is_the_remote_tracking_ref_not_a_local_branch_of_that_spelling(self):
+        p = self._repo()
+        result = diff_scope.predict_merge(p.repo, "origin/main", "work")
+        self.assertTrue(result["clean"], "the decoy local branch was merged, not refs/remotes/origin/main")
+
+    def test_a_local_name_is_refused_on_a_sound_lane(self):
+        p = self._repo()
+        with mock.patch.dict(os.environ, {"ORCA_PROVENANCE": "ci"}):
+            with self.assertRaises(diff_scope.ScopeError) as cm:
+                diff_scope.predict_merge(p.repo, "origin/main", "work")
+        self.assertEqual(cm.exception.kind, "no_base")
+        self.assertIn("sound lane", str(cm.exception))
+
+    def test_a_tag_or_revision_syntax_is_no_base(self):
+        p = self._repo()
+        p._git("tag", "v1", "work")
+        for ref in ("v1", "work~1", "refs/tags/v1"):
+            with self.subTest(ref=ref), self.assertRaises(diff_scope.ScopeError) as cm:
+                diff_scope.predict_merge(p.repo, "origin/main", ref)
+            self.assertEqual(cm.exception.kind, "no_base")
+
+
 class CustodySetupTimeoutsAreEachToolsRefusal(unittest.TestCase):
     """Codex on PR #724 (round 6): a timeout in gitexec.custody's own setup (its rev-parse and
     config queries) escaped hint_provenance as a raw TimeoutExpired, and predict-merge reported it

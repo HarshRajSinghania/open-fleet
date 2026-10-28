@@ -1778,9 +1778,11 @@ finding, or a false placement claim anywhere inside it (its `metadata` included)
 report wrapped more than once is read out of all of its wrappers (up to 16), and a false placement
 claim anywhere in a report that names no portable backend refuses too. Whatever stops the reader
 short of the report is a refusal, in the assessment and in `--require-placement` alike: more than
-16 wrappers, output nested too deep to parse, and a transcript that opens as JSON (`{`, or `[`
-opening an array of objects, arrays or strings; a byte-order mark aside) but does not parse, which
-is never read as plain text. The documented JSON output is one report object, optionally inside
+16 wrappers, output nested too deep to parse, and a transcript that opens as JSON by the JSON
+grammar's first token (a byte-order mark and whitespace aside: `{`, or `[` followed by `]` or by
+any value's first token — an object, an array, a string, or a number, `true`, `false` or `null`
+that ends at a delimiter) but does not parse, which is never read as plain text; `[PASS] …`,
+`[12:00:01] …` and `[2026-10-28] …` lines are still read as text. The documented JSON output is one report object, optionally inside
 those envelopes; every other shape is refused the same way, never assessed: an array or a scalar
 (`null` included) at the top, a list as the report's `result`, and a report's `backend` anywhere
 but at the top of the report proper or spelt otherwise (an array-wrapped report was read as one
@@ -2062,7 +2064,10 @@ with only the documented refusal fields (`nextSteps`, `unmetDependencies`, `retr
 `failureCount`, `reason`) in their documented types. Anything else keeps it: a second error, a
 result beside the error, any other key at any depth, `runtime_error`, an unknown or untyped code,
 and `inject_rejected`, `consumer_fenced` and `dispatch_inactive`, which can follow a pane's creation
-and still exit 2 as refusals; or once every handle
+and still exit 2 as refusals; or once the WORKER's own pane is named (an agent-role handle:
+`agentTerminalHandle`, a terminal effect with `role: agent`, or a terminal handle on the result
+itself or in its `worker` object; any other pane, a coordinator-role, unknown-role or role-less one
+included, never releases it) and every handle
 named is recorded — with its root, or by its handle record alone when a complete scan finds no
 process carrying it (`SPAWN_ROOT_WAIT_SECS`, default 1: the worker is not a local process — it
 exited, runs remotely or in another uid's container, or the backend is a dry run) or the worker

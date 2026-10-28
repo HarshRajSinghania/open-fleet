@@ -15,7 +15,9 @@
   it, wherever the handle sits (an error envelope beside a ready result included, and a response
   that does not parse whole or reads two ways: every occurrence of a duplicated key), and each
   handle is registered whatever the exit code, error code or state; a refused or failed verdict
-  prints the pane it names. Every other reader of a runtime response refuses one that reads two
+  prints the pane it names. Registering a pane other than the worker's own (a coordinator-role,
+  unknown-role or role-less one) never releases the reservation: only the worker's agent-role
+  pane, named and completely recorded, does. Every other reader of a runtime response refuses one that reads two
   ways (a duplicate key, `NaN`, a number that overflows) as unparseable. A session whose
   identity cannot be read is capped at `ro` even when the failing read is one made while it
   waits on a reservation. A launch that may have left a
@@ -42,8 +44,8 @@
   `upstream_probe.py`. `sandbox_doctor.py` reads the recipe from recipe fields only, refuses a
   malformed recipe field, a repeated JSON key and an envelope that contradicts the report at any
   wrapping level or depth (its `metadata` included), reads a report out of every wrapper (up to
-  16; more, nesting too deep to parse, and JSON that does not parse are refused, never read as a
-  report or as text), refuses every output shape but one report object (an array, a scalar, a
+  16; more, nesting too deep to parse, and output that opens as JSON by the grammar's first
+  token but does not parse are refused, never read as a report or as text), refuses every output shape but one report object (an array, a scalar, a
   list as `result`, a nested or misspelt `backend`), and reads placement claims in every
   spelling. `worker_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`,
   `orca_cli.run_json`, `pm.py` and `spawn_worker.sh` print every receipt field, and every error

@@ -880,8 +880,8 @@ def _read_regular_following(path, limit):
     without blocking."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    except FileNotFoundError:
-        return None
+    except (FileNotFoundError, NotADirectoryError):
+        return None  # git skips a missing include (ENOENT, ENOTDIR) too
     except OSError as exc:
         raise GitCustodyRefused(f"git custody: cannot read {path!r}: {exc}") from exc
     st = os.fstat(fd)
@@ -896,57 +896,170 @@ def _read_regular_following(path, limit):
     return data
 
 
-_CONFIG_SECTION_RE = re.compile(rb'^\s*\[\s*([A-Za-z0-9.-]+)\s*(?:"(?:[^"\\]|\\.)*"\s*)?\]\s*(.*)$', re.S)
-_CONFIG_KEY_RE = re.compile(rb"^\s*([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$", re.S)
+class _ConfigUnparseable(ValueError):
+    """A config file _parse_config cannot read exactly as git does: never a guess."""
 
 
-def _config_value(raw):
-    """A git config value as git reads it: quotes removed, `\\` escapes applied, a `#`/`;` comment
-    outside quotes cut, surrounding blanks outside quotes trimmed."""
-    out, quoted, i, pending = bytearray(), False, 0, bytearray()
-    while i < len(raw):
-        c = raw[i:i + 1]
-        if c == b"\\" and i + 1 < len(raw):
-            out += pending
-            pending = bytearray()
-            out += {b"n": b"\n", b"t": b"\t", b"b": b"\b"}.get(raw[i + 1:i + 2], raw[i + 1:i + 2])
-            i += 2
-            continue
-        if c == b'"':
-            out += pending
-            pending = bytearray()
-            quoted = not quoted
-        elif not quoted and c in (b"#", b";"):
-            break
-        elif not quoted and c in (b" ", b"\t"):
-            if out:
-                pending += c
-        else:
-            out += pending + c
-            pending = bytearray()
+_GIT_SPACE = b" \t\n\r"
+
+
+def _parse_config(data):
+    """``[(section, subsection, key, value)]`` of a git config file's bytes, parsed the way git's
+    own parser (config.c git_parse_source) reads it, so a path read here is the path git opens
+    (Codex on PR #724, round 6: a CRLF line ending left `\r` on a path a line split read). Section
+    and key names are lowercased (git's are case-insensitive); ``subsection`` is None for a
+    `[section]`, its exact bytes for `[section "sub"]` (escapes applied), and the lowercased rest
+    for the old `[section.sub]`; ``value`` is None for a key with no `=`. A UTF-8 BOM at the start
+    is skipped and `\r\n` read as `\n`, as git does. Anything git would reject - a bad header, a bad
+    escape, an unterminated quote, a key outside a section - and any NUL byte raises
+    _ConfigUnparseable: the caller refuses rather than guesses."""
+    if b"\0" in data:
+        raise _ConfigUnparseable("a NUL byte")
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    data = data.replace(b"\r\n", b"\n")
+    n, i = len(data), 0
+
+    def nxt():
+        nonlocal i
+        if i >= n:
+            i += 1
+            return None  # EOF, which git reads as a final newline
+        c = data[i:i + 1]
         i += 1
-    return bytes(out)
+        return c
+
+    entries, section, subsection, comment = [], None, None, False
+    while True:
+        c = nxt()
+        if c is None:
+            return entries
+        if c == b"\n":
+            comment = False
+            continue
+        if comment or c in _GIT_SPACE:
+            continue
+        if c in (b"#", b";"):
+            comment = True
+            continue
+        if c == b"[":  # get_base_var
+            name = bytearray()
+            while True:
+                c = nxt()
+                if c is None or c == b"\n":
+                    raise _ConfigUnparseable("an unterminated section header")
+                if c == b"]":
+                    sub_raw = None
+                    break
+                if c in _GIT_SPACE:  # get_extended_base_var
+                    while c in (b" ", b"\t"):
+                        c = nxt()
+                    if c != b'"':
+                        raise _ConfigUnparseable("a section header without a quoted subsection")
+                    sub_raw = bytearray()
+                    while True:
+                        c = nxt()
+                        if c is None or c == b"\n":
+                            raise _ConfigUnparseable("an unterminated subsection")
+                        if c == b'"':
+                            break
+                        if c == b"\\":
+                            c = nxt()
+                            if c is None or c == b"\n":
+                                raise _ConfigUnparseable("an escaped newline in a subsection")
+                        sub_raw += c
+                    if nxt() != b"]":
+                        raise _ConfigUnparseable("a subsection not followed by ]")
+                    break
+                if not (c.isalnum() or c in (b"-", b".")):
+                    raise _ConfigUnparseable(f"{c!r} in a section name")
+                name += c.lower()
+            if not name:
+                raise _ConfigUnparseable("an empty section name")
+            base, dot, old_sub = bytes(name).partition(b".")
+            section = base
+            subsection = bytes(sub_raw) if sub_raw is not None else (old_sub if dot else None)
+            continue
+        if not c.isalpha():
+            raise _ConfigUnparseable(f"{c!r} where a key starts")
+        key = bytearray(c.lower())  # get_value
+        while True:
+            c = nxt()
+            if c is None or not (c.isalnum() or c == b"-"):
+                break
+            key += c.lower()
+        while c in (b" ", b"\t"):
+            c = nxt()
+        if section is None:
+            raise _ConfigUnparseable("a key before any section")
+        if c is None or c == b"\n":
+            entries.append((section, subsection, bytes(key), None))
+            continue
+        if c != b"=":
+            raise _ConfigUnparseable(f"{c!r} after a key")
+        value, quote, space, in_comment = bytearray(), False, 0, False  # parse_value
+        while True:
+            c = nxt()
+            if c is None or c == b"\n":
+                if quote:
+                    raise _ConfigUnparseable("an unterminated quoted value")
+                break
+            if in_comment:
+                continue
+            if not quote:
+                if c in (b";", b"#"):
+                    in_comment = True
+                    continue
+                if c in _GIT_SPACE:
+                    if value:
+                        space += 1
+                    continue
+            value += b" " * space
+            space = 0
+            if c == b"\\":
+                c = nxt()
+                if c == b"\n":
+                    continue  # a continued line
+                esc = {b"t": b"\t", b"b": b"\b", b"n": b"\n", b"\\": b"\\", b'"': b'"'}.get(c)
+                if esc is None:
+                    raise _ConfigUnparseable(f"a bad escape \\{c!r}")
+                value += esc
+                continue
+            if c == b'"':
+                quote = not quote
+                continue
+            value += c
+        entries.append((section, subsection, bytes(key), bytes(value)))
 
 
-def _include_paths(text):
-    """Every `path` value under an `[include]` or `[includeIf ...]` section of config ``text``
-    (bytes), conditions NOT evaluated: an over-approximation, which only ever adds a file to check."""
-    lines, joined = text.split(b"\n"), []
-    for line in lines:  # a value continued with a trailing backslash
-        if joined and joined[-1].endswith(b"\\") and not joined[-1].endswith(b"\\\\"):
-            joined[-1] = joined[-1][:-1] + line
-        else:
-            joined.append(line)
-    paths, in_include = [], False
-    for line in joined:
-        head = _CONFIG_SECTION_RE.match(line)
-        if head:
-            in_include = head.group(1).split(b".")[0].lower() in (b"include", b"includeif")
-            line = head.group(2)
-        kv = _CONFIG_KEY_RE.match(line)
-        if in_include and kv and kv.group(1).lower() == b"path" and kv.group(2) is not None:
-            paths.append(_config_value(kv.group(2)))
-    return paths
+def _include_targets(cfg, data):
+    """The files an `[include]`/`[includeIf "<cond>"]` `path` in config file ``cfg`` (bytes
+    ``data``) names, expanded as git's interpolate_path expands them: `~/` and `~user/` from the
+    password database, a relative path from ``cfg``'s own directory. Conditions are NOT evaluated
+    (every target is checked: the check can only over-approximate). A value git could not expand
+    either (a missing value, an unknown user, a `%(prefix)/` this process cannot resolve) raises
+    _ConfigUnparseable."""
+    import pwd
+    targets = []
+    for section, _sub, key, value in _parse_config(data):
+        if section not in (b"include", b"includeif") or key != b"path":
+            continue
+        if value is None:
+            raise _ConfigUnparseable("an include path without a value")
+        path = os.fsdecode(value)
+        if path.startswith("%(prefix)/"):
+            raise _ConfigUnparseable("a %(prefix)/ include path")
+        if path.startswith("~"):
+            user, slash, rest = path[1:].partition("/")
+            try:
+                home = os.path.expanduser("~") if not user else pwd.getpwnam(user).pw_dir
+            except KeyError as exc:
+                raise _ConfigUnparseable(f"an include path for unknown user {user!r}") from exc
+            path = os.path.join(home, rest) if slash else home
+        elif not os.path.isabs(path):
+            path = os.path.join(os.path.dirname(cfg), path)
+        targets.append(path)
+    return targets
 
 
 def _discover_git_dir(path):
@@ -987,8 +1100,9 @@ def refuse_blocking_files(path):
     and follows its includes, and a commit walk reads `shallow`, so a FIFO (or device) there hung
     the gate until its timeout. Checked without git and without blocking: the repository's config
     files (`config`, `config.worktree`), each file an `[include]`/`[includeIf]` `path` in them names
-    (followed recursively, conditions not evaluated, so the check can only over-approximate), and
-    the common `shallow`. A missing file is fine, as for git; a non-regular one refuses. A FIFO a
+    (parsed as git parses config - CRLF, quotes, escapes, continuations, comments, case - and
+    followed recursively, conditions not evaluated, so the check can only over-approximate; a file
+    it cannot read exactly as git does refuses), and the common `shallow`. A missing file is fine, as for git; a non-regular one refuses. A FIFO a
     worker swaps in AFTER this check, and the work tree's own `.gitignore`/`.gitattributes` (which
     git opens itself, path by path), stay bounded by each call's timeout and then fail closed."""
     found = _discover_git_dir(path)
@@ -1006,16 +1120,16 @@ def refuse_blocking_files(path):
         if cfg in seen:
             continue
         seen.add(cfg)
+        if depth > 10:  # git refuses an include chain deeper than 10
+            raise GitCustodyRefused(f"git custody: an include chain deeper than git allows, at {cfg!r}")
         text = _read_regular_following(cfg, ATTRIBUTES_FILE_LIMIT)
-        if text is None or depth >= 10:
+        if text is None:
             continue
-        for raw in _include_paths(text):
-            target = os.fsdecode(raw)
-            if target.startswith("~/") or target == "~":
-                target = os.path.join(os.path.expanduser("~"), target[2:])
-            elif not os.path.isabs(target):
-                target = os.path.join(os.path.dirname(cfg), target)
-            todo.append((target, depth + 1))
+        try:
+            todo += [(target, depth + 1) for target in _include_targets(cfg, text)]
+        except _ConfigUnparseable as exc:
+            raise GitCustodyRefused(f"git custody: cannot read {cfg!r} exactly as git does ({exc}), "
+                                    "so its includes cannot be checked") from exc
 
 
 class Custody:

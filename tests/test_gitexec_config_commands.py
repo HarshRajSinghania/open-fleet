@@ -1624,6 +1624,86 @@ class BlockingRepositoryFilesAreRefusedUpFront(unittest.TestCase):
         self.assertIn("a.txt", diff_scope.changed_files(p.repo, base))
 
 
+class IncludeTargetsAreReadAsGitReadsThem(unittest.TestCase):
+    """Codex on PR #724 (round 6): the include check split config on `\n` alone, so a CRLF config
+    left `\r` on the path, checked a file that does not exist, missed the FIFO git actually opens,
+    and git blocked until its timeout. Config is now parsed as git's own parser reads it, and a
+    file it cannot read exactly refuses. Each case below names a FIFO the way git reads it; a
+    positive control proves git itself would block on that very file."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\n")
+        return p
+
+    def _git_would_block(self, p):
+        try:
+            subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=_CLEAN_ENV,
+                           capture_output=True, stdin=subprocess.DEVNULL, timeout=3)
+        except subprocess.TimeoutExpired:
+            return True
+        return False
+
+    def _cases(self, d):
+        """(name, fifo file name, config text appended to .git/config)."""
+        return (
+            ("CRLF", "blocking", f"[include]\r\n\tpath = {d}/blocking\r\n"),
+            ("quoted", "block ing", f'[include]\n\tpath = "{d}/block ing"\n'),
+            ("escaped", 'bl"oc\\k', f'[include]\n\tpath = "{d}/bl\\"oc\\\\k"\n'),
+            ("continued", "blocking", f"[include]\n\tpath = {d}/blo\\\ncking\n"),
+            ("commented", "blocking", f"# path = /nowhere\n[include] ; a comment\n\tpath = {d}/blocking ; trailing # comment\n"),
+            ("mixed-case", "blocking", f'[InClUdE]\n\tPaTh = {d}/blocking\n'),
+            ("includeIf, escaped condition", "blocking", f'[IncludeIF "gitdir:{d}/\\"x/"]\n\tpath = {d}/blocking\n'),
+            ("relative", "blocking", "[include]\n\tpath = ../../blocking\n"),
+        )
+
+    def test_each_syntax_names_the_fifo_git_opens_and_is_refused(self):
+        for name, fifo_name, text in self._cases("{d}"):
+            with self.subTest(case=name):
+                p = self._repo()
+                d = str(p.dir)
+                os.mkfifo(p.dir / fifo_name)
+                text = text.replace("{d}", d)
+                with open(p.repo / ".git" / "config", "ab") as fh:
+                    fh.write(text.encode("utf-8"))
+                if name != "includeIf, escaped condition":  # a false condition: git never opens it
+                    self.assertTrue(self._git_would_block(p), f"fixture: git does not open the {name} FIFO")
+                done, got = _finishes(lambda r=p.repo: gitexec.refuse_blocking_files(r), seconds=10)
+                self.assertTrue(done)
+                self.assertIsInstance(got, gitexec.GitCustodyRefused, f"{name}: the FIFO was missed")
+                done, got = _finishes(lambda r=p.repo: floor_guard.collect_diff(r, "HEAD"), seconds=10)
+                self.assertTrue(done, f"floor_guard blocked on the {name} include")
+                self.assertIsInstance(got, floor_guard.GuardError)
+
+    def test_a_nested_include_through_a_regular_file_is_followed(self):
+        p = self._repo()
+        os.mkfifo(p.dir / "blocking")
+        (p.dir / "middle").write_bytes(f"[include]\r\n\tpath = {p.dir}/blocking\r\n".encode())
+        with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+            fh.write(f"[include]\n\tpath = {p.dir}/middle\n")
+        with self.assertRaises(gitexec.GitCustodyRefused):
+            gitexec.refuse_blocking_files(p.repo)
+
+    def test_a_config_git_cannot_read_exactly_is_refused_not_guessed(self):
+        for bad in ('[include]\n\tpath = "unterminated\n', "[include]\n\tpath = \\q\n", "[include\n"):
+            with self.subTest(config=bad):
+                p = self._repo()
+                with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                    fh.write(bad)
+                with self.assertRaises(gitexec.GitCustodyRefused):
+                    gitexec.refuse_blocking_files(p.repo)
+
+    def test_ordinary_configs_still_pass(self):
+        p = self._repo()
+        (p.dir / "inc").write_bytes(b"[core]\r\n\tquotePath = false\r\n")
+        p._git("config", "include.path", str(p.dir / "inc"))
+        p._git("config", "remote.origin.url", 'https://example.invalid/a "b".git')
+        p._git("config", "alias.x", "!echo ; # not a comment")
+        gitexec.refuse_blocking_files(p.repo)
+
+
 class CustodySetupTimeoutsAreEachToolsRefusal(unittest.TestCase):
     """Codex on PR #724 (round 6): a timeout in gitexec.custody's own setup (its rev-parse and
     config queries) escaped hint_provenance as a raw TimeoutExpired, and predict-merge reported it

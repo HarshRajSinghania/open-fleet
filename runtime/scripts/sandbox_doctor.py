@@ -547,7 +547,31 @@ def _envelope_findings(parsed) -> list[str]:
     return out
 
 
-TOO_DEEP = "doctor output is nested too deep to read: refused, never read as a report"
+TOO_DEEP = ("doctor output is nested too deep to read, far more than 16 levels deep: refused, never "
+            "read as a report")
+
+
+def _shape_findings(parsed) -> list[str]:
+    """What is wrong with the SHAPE of a JSON transcript (Codex round 8). The doctor's documented
+    output is one report object, optionally inside `{ok, result}` envelopes (_unwrap). Anything
+    else is an unsupported container and refused, never assessed: an array or a scalar at the top,
+    a list as the report's `result`, and a report's `backend` anywhere but at the top of the report
+    proper, or spelt otherwise (`[<report>]` was read as a report naming no backend, so a privileged
+    docker report inside an array skipped every isolation check and read as clear)."""
+    if not isinstance(parsed, dict):
+        return [f"the doctor output is a JSON {type(parsed).__name__}, not a report object"]
+    if _too_deep(parsed):  # the report was never reached: say that, not what lies past the limit
+        return [f"the report is wrapped more than {MAX_WRAPPERS} levels deep and was not read"]
+    report = _portable_doc(parsed)
+    out = []
+    if isinstance(report.get("result"), list):
+        out.append("the report's `result` is a list: a container of reports, not a report")
+    for d in _dicts(parsed):
+        for key in d:
+            if _norm(key) == "backend" and (d is not report or key != "backend"):
+                out.append(f"a report field {key!r} outside the report proper (a nested or misspelt "
+                           "`backend`): an unsupported report container")
+    return list(dict.fromkeys(out))
 
 
 def _looks_like_json(raw) -> bool:
@@ -569,7 +593,7 @@ def placement_bound(raw) -> bool:
 
 
 def _placement_bound(parsed) -> bool:
-    if _envelope_findings(parsed):
+    if _shape_findings(parsed) or _envelope_findings(parsed):
         return False
     doc = _portable_doc(parsed)
     if not isinstance(doc, dict):
@@ -590,6 +614,7 @@ def assess(raw, recipe):
 
 
 def _assess(raw, recipe):
+    is_json = True  # `null` parses to None too: whether it is JSON is not whether parsed is None
     try:
         parsed = _parse(raw)
     except DuplicateKey as exc:
@@ -600,7 +625,11 @@ def _assess(raw, recipe):
         if _looks_like_json(raw):
             return False, (f"doctor output opens as JSON but does not parse ({str(exc)[:80]}): "
                            "refused, never read as plain text"), False
-        parsed = None
+        parsed, is_json = None, False
+    if is_json:  # past this, a JSON transcript is a dict: every `parsed is not None` below is JSON
+        shape = _shape_findings(parsed)
+        if shape:
+            return False, "unsupported doctor output shape: " + "; ".join(shape[:3]), False
     doc = _portable_doc(parsed) if parsed is not None else None
 
     envelope = _envelope_findings(parsed)

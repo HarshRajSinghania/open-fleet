@@ -100,18 +100,24 @@ The launcher starts both containers with these properties:
   120 s (a byte at a time extends neither), and at most 32 are served at once. When all 32 are
   taken, a new connection evicts the one that has waited longest for its own request to arrive,
   so connections trickling requests, however many a process reopens, never keep the arm's own
-  model calls out; a call already read in full keeps its slot. Each request body is held once, and
-  what the bodies take together -- their bytes and the most parsing them can allocate -- is at most
-  320 MiB (`BODY_BUDGET`), which leaves the interpreter room in the broker's 512m. A request takes
-  its `Content-Length` from that budget before its body is read; then, before the body is parsed, a
-  linear pre-scan counts its JSON values and nesting and takes that bound (each value at its
-  worst parsed size, each string character at up to four bytes) from the same budget. The pre-scan
-  holds no memory of its own (it finds one structural byte at a time and skips each string with a
-  plain search, whatever escapes it holds) and stops after two million steps. Either budget take
-  waits up to 30 s for room and is otherwise answered 503 (a `body-budget` refusal); a body whose
-  parse alone could pass the budget, that nests more than 128 deep, or whose pre-scan would pass
-  its steps, is answered 413 unparsed (a `body-parse` refusal). Ordinary requests -- long or non-ASCII text, base64 images, thousands of
-  messages, many tools -- pass.
+  model calls out; a call already read in full keeps its slot. A request body is at most 32 MB (the
+  API's own limit) and held once, and what the bodies take together -- their bytes and the most
+  parsing them can allocate -- is at most 400 MiB (`BODY_BUDGET`), which leaves the interpreter and
+  its parse children room in the broker's 512m. Before a body is read, the most one of its length
+  can take parsed -- 13 times its bytes: the body, the string `json.loads` decodes it to, and the
+  strings parsed out of it, the last two at up to four bytes a character (one emoji widens a whole
+  string) and the last held twice over while the parser builds it -- is taken from that budget. A
+  pre-scan of the bytes then bounds the parse more closely (each character at the width the body's
+  widest character, or a `\u` escape, gives it; each JSON value at its worst parsed size) and the
+  rest goes back. The pre-scan holds no memory of its own (it finds one structural byte at a time
+  and skips each string with a plain search, whatever escapes it holds) and stops after two million
+  steps. The body is parsed in a child process whose memory limit is that bound, so a parse that
+  would pass it fails there, never in the broker, which holds no parsed body. A budget take waits
+  up to 30 s for room and is otherwise answered 503 (a `body-budget` refusal); a body whose bound
+  alone could pass the budget, that nests more than 128 deep, whose pre-scan would pass its steps,
+  or whose parse passes its bound, is answered 413 (a `body-parse` refusal). Ordinary requests --
+  long or non-ASCII text, base64 images, thousands of messages, many tools, and a 32 MB request
+  that is all ASCII but for one emoji -- pass.
   Every connection closed unanswered
   (evicted, past the bound, timed out, malformed, a body cut short) is counted as a `drop`. Drops
   and faults are counted per kind and written at most once a second per kind, with the running

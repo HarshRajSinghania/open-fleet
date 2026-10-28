@@ -21,14 +21,18 @@ headers (REQUEST_DEADLINE_S, which a byte at a time never extends) and one for i
 connection, not a client that keeps opening them, so when every slot is taken a new connection
 evicts the one that has waited longest for its own request to arrive: a request still arriving
 holds its slot only until someone else needs it, and only calls already read in full (relayed to
-the API, or being refused) keep theirs. A body is held once (one buffer of its Content-Length), and
-what the bodies of every connection take together -- their bytes and the most parsing them can
-allocate -- is at most BODY_BUDGET: a request takes its length from that budget before its body is
-read, and the bound parse_cost puts on its parse (a linear pre-scan that counts the body's JSON
-values and nesting) before json.loads sees it, each waiting up to BODY_WAIT_S for room and otherwise
-refused (503, a "body-budget" refusal); a body whose parse could pass the whole budget, or that nests
-past MAX_DEPTH, is refused unparsed (413, a "body-parse" refusal). So what the slots hold, parsed,
-fits the broker's container memory. A connection past the bound with none to evict is closed
+the API, or being refused) keep theirs. A body is at most MAX_BODY (the API's own 32 MB) and held
+once (one buffer of its Content-Length), and what the bodies of every connection take together --
+their bytes and the most parsing them can allocate -- is at most BODY_BUDGET. Before a body is read,
+the most one of its length can take parsed (WORST_PER_BYTE times it) is taken from that budget;
+then parse_cost, a pre-scan of its bytes, bounds its parse (the str json.loads decodes it to and the
+strings parsed out of it at their characters' width, and every JSON value) and the rest goes back.
+Each take waits up to BODY_WAIT_S for room and is otherwise refused (503, a "body-budget" refusal);
+a body whose bound could pass the whole budget, that nests past MAX_DEPTH, or whose pre-scan passes
+MAX_SCAN_STEPS is refused unparsed (413, a "body-parse" refusal). The parse itself runs in a forked
+child whose RLIMIT_DATA is that bound, so a parse that would pass it fails in the child and the body
+is refused (413): the broker never holds a parsed body. So what the slots hold, and their parses,
+fit the broker's container memory. A connection past the bound with none to evict is closed
 unanswered. Every connection closed without an answer (evicted, past the bound, timed out,
 malformed, a body cut short, or closed before its request) is counted as a "drop" (W5-16).
 count_tokens is free but bounded: FREE_CALLS_MAX calls and FREE_BYTES_MAX body bytes per broker,
@@ -75,11 +79,16 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
+import gc
 import http.client
 import io
 import json
 import os
 import re
+import resource
+import select
+import signal
 import socket
 import sys
 import threading
@@ -122,24 +131,34 @@ FIELDS = {"model", "messages", "system", "max_tokens", "stream", "tools", "tool_
           "temperature", "top_p", "top_k", "stop_sequences", "output_config", "context_management", "speed",
           "inference_geo", "service_tier"}
 FRAMING_TOKENS = 4096
-MAX_BODY = 64 << 20
+# The API refuses a request over 32 MB, so the broker never holds a larger one (it was 64 MiB).
+MAX_BODY = 32_000_000
 # The memory every connection's request body may take AT ONCE, together: its bytes, and what parsing
-# them can allocate. MAX_CONNECTIONS x MAX_BODY (2 GiB) never fit the broker's container
-# (BROKER_LIMITS, 512m), and four concurrent 64 MiB bodies held twice each took it to 506 MB
-# (re-attack of 2d254d0f); nor did holding each once bound the parse: a 60 MiB array of 20 million
-# empty objects fits MAX_BODY and parses to well over 1 GiB (Codex round 7). So a request takes its
-# Content-Length from this budget before its first body byte is read, and, before json.loads ever
-# sees the body, the worst its parse can allocate (parse_cost: a linear pre-scan of the bytes),
-# each waiting up to BODY_WAIT_S for room, else refused (503) and counted; a body whose parse alone
-# could pass the budget, or that nests past MAX_DEPTH, is refused (413) unparsed and counted. The
-# budget, with the interpreter and its threads, fits the container's memory; MAX_BODY never exceeds it.
-BODY_BUDGET = 320 << 20
+# them can allocate. MAX_CONNECTIONS x MAX_BODY never fit the broker's container (BROKER_LIMITS,
+# 512m), and four concurrent 64 MiB bodies held twice each took it to 506 MB (re-attack of
+# 2d254d0f); holding each once did not bound the parse either -- 20 million empty objects in 60 MiB
+# parse to over 1 GiB (Codex round 7), and 63 MiB of ASCII with one emoji is decoded and parsed to
+# two UCS-4 copies, 504 MiB with the body (Codex round 9). So a request takes its Content-Length
+# from this budget before its first body byte is read and, before anything parses it, parse_cost's
+# bound on the parse; each waits up to BODY_WAIT_S for room, else is refused (503) and counted, and a
+# body whose bound alone is past the budget is refused (413) unparsed and counted. The parse itself
+# runs in a forked child whose RLIMIT_DATA is that bound (_parse_in_child), so the bound is not an
+# estimate the container trusts: a parse that would pass it fails there, and the body is refused.
+# The worst body MAX_BODY can hold (13 times its bytes, see parse_cost) fits, and the budget leaves
+# the interpreter, its threads and PARSERS children room in the container's memory.
+BODY_BUDGET = 400 << 20
 BODY_WAIT_S = 30
 # The most one parsed JSON value costs, its slot in its container included: measured at peak on
 # CPython 3.12 (an empty object in an array 75 bytes, an object member under a distinct key 103,
-# two-character strings 56, numbers 43); a string's characters are charged on top, at up to four
-# bytes each (one non-Latin-1 character makes the whole string UCS-4).
+# two-character strings 56, numbers 43). Characters are charged by parse_cost, by their width.
 VALUE_COST = 128
+# Parses at once, each in a child of its own (_parse_in_child), and how long one may take. A child
+# is given its bound past what it inherited, and PARSE_SLACK for the parse's own bookkeeping.
+PARSERS = 2
+PARSE_SECONDS = 60
+PARSE_SLACK = 16 << 20
+# parse_cost's bound per byte of a body whose values cost nothing: 1 + 4 + 2 x 4 (see there).
+WORST_PER_BYTE = 13
 MAX_DEPTH = 128  # a request's JSON nests a few levels (a tool's input schema a dozen or so)
 # The walk's steps: one per structural byte outside a string and one per escaped quote inside one.
 # An ordinary request takes tens of thousands; past this many the body is refused, so the walk's
@@ -149,6 +168,13 @@ MAX_SCAN_STEPS = 2_000_000
 # repeating a group per escape kept state per repetition, so 30 million \n escapes made the
 # pre-scan itself exhaust the broker -- Codex round 8). Strings are skipped with bytes.find.
 _STRUCTURAL = re.compile(rb'["\[\]{},:]')
+# The widest character the body can decode to (a lead byte of a 4-byte UTF-8 sequence, or of one
+# past U+00FF), and the widest a string's escape can make (a high-surrogate \u escape pairs into an
+# astral character; any other \u escape past \u00ff is BMP). One byte each: never a repeated group.
+_UTF8_ASTRAL = re.compile(rb"[\xf0-\xf4]")
+_UTF8_WIDE = re.compile(rb"[\xc4-\xef]")
+_ESCAPE_ASTRAL = re.compile(rb"\\u[dD][89abAB]")
+_ESCAPE_WIDE = re.compile(rb"\\u(?:0[1-9a-fA-F]|[1-9a-fA-F])")
 _BACKSLASH = 0x5C
 _RUN_CHUNK = 4096
 UPSTREAM_TIMEOUT_S = 900
@@ -285,21 +311,149 @@ def _string_end(body, at, steps):
         at = quote + 1
 
 
+def _frames(err):
+    """An exception's frames as `file:line:function`, the last twelve, never its message."""
+    return [f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}"
+            for f in traceback.extract_tb(err.__traceback__)][-12:] if err is not None else []
+
+
+_PARSING = threading.BoundedSemaphore(PARSERS)
+
+
+def _parse_facts(body):
+    """What the broker needs of a body, read from json.loads(body): its terms (why, mult, images),
+    and its model, max_tokens and speed. Run in the parse child."""
+    try:
+        doc = json.loads(body)
+    except (ValueError, RecursionError):
+        doc = None
+    why, mult, images = terms(doc)
+    facts = {"why": why and short(why, 300), "mult": mult, "images": images, "model": None, "max_tokens": None,
+             "fast": False}
+    if isinstance(doc, dict):
+        facts.update(model=short(doc.get("model")), fast=doc.get("speed") == "fast")
+        if not why:
+            facts["max_tokens"] = doc["max_tokens"]
+    return facts
+
+
+def _vm_data():
+    """This process's private writable memory (VmData), in bytes; None where /proc does not say."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as fh:
+            return next(int(line.split()[1]) * 1024 for line in fh if line.startswith("VmData:"))
+    except (OSError, ValueError, StopIteration):
+        return None
+
+
+def _parse_in_child(body, allowance):
+    """_parse_facts(body), computed in a forked child that may allocate `allowance` bytes (and
+    PARSE_SLACK) past what it inherited -- RLIMIT_DATA, which Linux, where the broker runs, enforces
+    on every private writable mapping -- so a parse past the bound parse_cost put on it fails in the
+    child, never in the broker. The child shares the body with the broker (copy-on-write), runs with
+    the garbage collector off (a collection would touch, and so copy, the broker's whole heap), and
+    hands back only the facts. At most PARSERS at once. Returns the facts; {"memory": True} when the
+    parse passed its bound; {"error": name, "frames": [...]} when it raised; {"timeout": True} past
+    PARSE_SECONDS."""
+    with _PARSING:
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:  # the child: never returns, so no frame of the broker's runs here
+            code = 70
+            try:
+                os.close(read_fd)
+                gc.disable()
+                held = _vm_data()
+                if held is not None:
+                    soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+                    want = held + allowance + PARSE_SLACK
+                    resource.setrlimit(resource.RLIMIT_DATA, (want if hard == resource.RLIM_INFINITY
+                                                              else min(want, hard), hard))
+                try:
+                    facts = _parse_facts(body)
+                except MemoryError:
+                    facts = {"memory": True}
+                except Exception as exc:  # e.g. a fault in terms(): its name and frames, never its text
+                    facts = {"error": type(exc).__name__, "frames": _frames(exc)}
+                view = memoryview(json.dumps(facts).encode())
+                while view:
+                    view = view[os.write(write_fd, view):]
+                code = 0
+            except BaseException:
+                code = 71
+            finally:
+                os._exit(code)
+        os.close(write_fd)
+        chunks, deadline, timed_out = [], time.monotonic() + PARSE_SECONDS, False
+        try:
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    timed_out = True
+                    break
+                if not select.select([read_fd], [], [], min(left, 1.0))[0]:
+                    continue
+                chunk = os.read(read_fd, 1 << 16)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            os.close(read_fd)
+            if timed_out:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+    if timed_out:
+        return {"timeout": True}
+    try:
+        facts = json.loads(b"".join(chunks))
+    except ValueError:
+        return {"memory": True}  # it died without a word: out of memory where nothing could be raised
+    return facts if isinstance(facts, dict) else {"memory": True}
+
+
+def widths(body):
+    """(the bytes per character of the str json.loads decodes `body` to, the most bytes per
+    character of any str it parses out of it): CPython stores a str at the width of its widest
+    character, 1 (Latin-1), 2 (BMP) or 4 (astral), so one emoji makes a whole string four times its
+    length. The decoded input is as wide as the widest raw character; a parsed string as wide as
+    that, or as a \\u escape it holds."""
+    if body.isascii():
+        wide_in = 1
+    elif _UTF8_ASTRAL.search(body):
+        wide_in = 4
+    elif _UTF8_WIDE.search(body):
+        wide_in = 2
+    else:
+        wide_in = 1
+    wide_str = wide_in
+    if wide_str < 4 and b"\\u" in body:
+        if _ESCAPE_ASTRAL.search(body):
+            wide_str = 4
+        elif wide_str < 2 and _ESCAPE_WIDE.search(body):
+            wide_str = 2
+    return wide_in, wide_str
+
+
 def parse_cost(body, limit):
-    """An upper bound on the memory json.loads(body) can take, the body itself included, or None
-    when that is past `limit`, the body nests past MAX_DEPTH, or walking it takes more than
-    MAX_SCAN_STEPS steps. Its bytes count twice (once held, once as string characters), or five
-    times when a character of a string may be wider than a byte (a non-ASCII body, or a \\u
-    escape), and every JSON value VALUE_COST, where values are bounded from the structure: one for
-    the top, two per opening bracket (itself and its first element), one per comma or colon.
+    """An upper bound on the memory parsing `body` takes, the body itself included, or None when
+    that is past `limit`, the body nests past MAX_DEPTH, or walking it takes more than
+    MAX_SCAN_STEPS steps. Per byte of the body (no character is shorter than a byte): the body
+    itself (1); the str json.loads decodes it to, at the widest character's width (widths: 1, 2 or
+    4); and the strings parsed out of it at theirs, twice over -- the C parser builds an escaped
+    string in a writer that over-allocates by a quarter and, widening, holds the narrow buffer
+    beside the wide one (1.56 times the string at the worst measured: 10.25 bytes per byte with the
+    decoded input). So 13 times its bytes at most. Then VALUE_COST per JSON value, values bounded
+    from the structure: one for the top, two per opening bracket (itself and its first element),
+    one per comma or colon. _parse_in_child holds the parse to this bound.
 
     A count of those bytes over the whole body answers at C speed when it is within bounds (it
     can only overcount, by bytes inside strings), which covers an ordinary request. Otherwise the
     body is walked once outside its strings: the next structural byte is found by a one-byte regex,
     a string is skipped to its closing quote by _string_end. Its extra memory is O(1), and the walk
     stops as soon as a bound is passed."""
-    wide = 1 if body.isascii() and b"\\u" not in body else 4
-    base = len(body) * (1 + wide)
+    wide_in, wide_str = widths(body)
+    base = len(body) * (1 + wide_in + 2 * wide_str)
     if base > limit:
         return None
     opens = body.count(b"[") + body.count(b"{")
@@ -458,13 +612,16 @@ class Ledger:
         (which may quote a request), a request, a response or the token (W5-18). Counted per
         where and type, and written like a drop: the first, then at most one a DROP_RECORD_S, so a
         client resetting connections in a loop cannot grow the ledger, and an fsync, per reset."""
-        frames = [f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}"
-                  for f in traceback.extract_tb(err.__traceback__)][-12:] if err is not None else []
-        kind = f"{where}:{type(err).__name__}"
+        self.fault_named(where, type(err).__name__, _frames(err))
+
+    def fault_named(self, where, name, frames):
+        """A fault by its exception's type name and frames: one raised where they were taken, in a
+        parse child (_parse_in_child), which hands back only those."""
+        kind = f"{where}:{name}"
         with self.lock:
             self.faults[kind] = self.faults.get(kind, 0) + 1
             if self._due(("fault", kind)):
-                self.write({"event": "fault", "where": where, "error": type(err).__name__, "frames": frames,
+                self.write({"event": "fault", "where": where, "error": name, "frames": frames,
                             "count": self.faults[kind]})
 
     def reserve(self, model, usd):
@@ -593,15 +750,24 @@ class Broker(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
             return self.fail(411, "invalid_request_error", "a request needs a Content-Length")
-        if not 0 <= length <= min(MAX_BODY, self.server.bodies.limit):
-            return self.fail(413, "invalid_request_error", f"a body over {min(MAX_BODY, self.server.bodies.limit)} bytes")
-        if not self.server.bodies.take(length, time.monotonic() + BODY_WAIT_S):
-            self.ledger.refuse("body-budget", f"{length} body bytes past the {self.server.bodies.limit} held at once")
+        if not 0 <= length <= MAX_BODY:
+            return self.fail(413, "invalid_request_error", f"a body over {MAX_BODY} bytes")
+        # Before a byte is read, the most a body of this length can need parsed (WORST_PER_BYTE) is
+        # taken, so two bodies holding their bytes can never wait on each other for their parses;
+        # what the pre-scan finds it does not need goes back at once (answer_post).
+        bodies, self.held = self.server.bodies, WORST_PER_BYTE * length
+        if self.held > bodies.limit:
+            self.ledger.refuse("body-parse", f"a {length}-byte body, which could parse past the "
+                                             f"{bodies.limit}-byte budget")
+            return self.fail(413, "invalid_request_error", "the body is too large for the broker to parse within "
+                                                           "its memory")
+        if not bodies.take(self.held, time.monotonic() + BODY_WAIT_S):
+            self.ledger.refuse("body-budget", f"{length} body bytes and their parse past the {bodies.limit} held at once")
             return self.fail(503, "overloaded_error", "the broker holds as many request bodies as it can; retry")
         try:
             self.answer_post(path, length)
         finally:
-            self.server.bodies.give(length)
+            bodies.give(self.held)
 
     def answer_post(self, path, length):
         """do_POST once the body's bytes are taken from the budget (BODY_BUDGET)."""
@@ -616,44 +782,55 @@ class Broker(BaseHTTPRequestHandler):
             with contextlib.suppress(OSError):
                 self.fail(408, "invalid_request_error", f"the body did not arrive within {BODY_DEADLINE_S:g} s")
             return
-        if path == FREE_PATH:
+        bodies = self.server.bodies
+        if path == FREE_PATH:  # relayed unparsed: only its bytes stay held
+            bodies.give(self.held - len(body))
+            self.held = len(body)
             if not self.ledger.free(len(body)):
                 return self.fail(403, "permission_error", "the count_tokens bound would be passed")
             return self.relay(body, None, None, False)
-        # What parsing may allocate is bounded BEFORE json.loads sees the body, and taken from the
-        # same budget as its bytes: holding the body once never bounded its parse (Codex round 7).
-        bodies = self.server.bodies
+        # What parsing may allocate is bounded BEFORE anything parses the body, and held in the same
+        # budget as its bytes: holding the body once never bounded its parse (Codex rounds 7 and 9).
         cost = parse_cost(body, bodies.limit)
         if cost is None:
             self.ledger.refuse("body-parse", f"a {len(body)}-byte body whose parse could pass the "
                                              f"{bodies.limit}-byte budget, or that nests past {MAX_DEPTH}")
             return self.fail(413, "invalid_request_error", "the body's JSON is too large or too deeply nested "
                                                            "for the broker to parse within its memory")
-        extra = max(0, cost - len(body))
-        if not bodies.take(extra, time.monotonic() + BODY_WAIT_S):
-            self.ledger.refuse("body-budget", f"a parse of up to {extra} bytes past the {bodies.limit} held at once")
+        if cost <= self.held:
+            bodies.give(self.held - cost)
+        elif not bodies.take(cost - self.held, time.monotonic() + BODY_WAIT_S):
+            self.ledger.refuse("body-budget", f"a parse of up to {cost} bytes past the {bodies.limit} held at once")
             return self.fail(503, "overloaded_error", "the broker holds as many request bodies as it can; retry")
-        try:
-            self.price_and_relay(body)
-        finally:
-            bodies.give(extra)
+        self.held = cost
+        self.price_and_relay(body, cost - len(body))
 
-    def price_and_relay(self, body):
-        """Parse a body parse_cost has bounded and whose bound is taken, check its terms, reserve
-        its worst case, and relay it."""
-        try:
-            doc = json.loads(body)
-        except (ValueError, RecursionError):
-            doc = None
-        why, mult, images = terms(doc)
-        model = doc.get("model") if isinstance(doc, dict) else None
+    def price_and_relay(self, body, allowance):
+        """Parse a body parse_cost has bounded, and whose bound is taken, in a child held to that
+        bound; check its terms, reserve its worst case, and relay it. The broker never holds the
+        parsed body."""
+        facts = _parse_in_child(body, allowance)
+        if facts.get("error"):
+            # A fault in the child (in terms(), say): recorded as a handler fault, and, as one
+            # raised here would, the connection is closed unanswered.
+            self.ledger.fault_named("handler", short(str(facts["error"]), 80),
+                                    [short(str(f), 200) for f in facts.get("frames") or []][-12:])
+            self.close_connection = True
+            return None
+        if facts.get("memory") or facts.get("timeout"):
+            why = "its parse passed its bound" if facts.get("memory") else f"it did not parse in {PARSE_SECONDS} s"
+            self.ledger.refuse("body-parse", f"a {len(body)}-byte body: {why}")
+            return self.fail(413, "invalid_request_error", "the body's JSON could not be parsed within the "
+                                                           "broker's memory")
+        why, model = facts["why"], facts["model"]
         if why:
             self.ledger.refuse("terms", why, model)
             return self.fail(400, "invalid_request_error", why)
-        call = self.ledger.reserve(model, reservation(len(body), doc["max_tokens"], model, mult, images))
+        call = self.ledger.reserve(model, reservation(len(body), facts["max_tokens"], model, facts["mult"],
+                                                      facts["images"]))
         if call is None:
             return self.fail(403, "permission_error", f"the spend cap (${self.ledger.cap:g}) would be passed")
-        self.relay(body, call, model, doc.get("speed") == "fast")
+        self.relay(body, call, model, facts["fast"])
 
     def read_body(self, length):
         """The request's `length` body bytes, or None when they do not all arrive by the deadline:
@@ -876,8 +1053,19 @@ class BrokerServer(ThreadingHTTPServer):
         self.ledger.fault("handler", err)
 
 
+def _return_large_frees():
+    """Fix glibc's mmap threshold at its 128 KiB default: past its first large free glibc raises
+    the threshold up to 32 MiB, after which a body's buffer comes from a thread's heap and stays
+    in its RSS once freed -- four 32 MB bodies on four threads left 114 MB held. Fixed, every
+    buffer that large is its own mapping, returned when freed. A C library without mallopt, or
+    another one, is left as it is."""
+    with contextlib.suppress(OSError, AttributeError, TypeError):
+        ctypes.CDLL(None).mallopt(-3, 128 << 10)  # M_MMAP_THRESHOLD
+
+
 def serve(token, ledger_path, cap_usd, port=PORT, upstream=UPSTREAM, host="127.0.0.1"):
     """A started server (its own thread) and its ledger; the caller owns shutdown."""
+    _return_large_frees()
     handler = type("BoundBroker", (Broker,), {"token": token, "ledger": Ledger(ledger_path, cap_usd),
                                               "upstream": upstream, "timeout": HANDLER_TIMEOUT_S,
                                               "request_deadline": REQUEST_DEADLINE_S})

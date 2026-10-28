@@ -455,8 +455,8 @@ def check_gate_batch_owed(ctx):
     anchor = "refs/remotes/origin/main"
 
     def git(*args):
-        r = ctx.run(["git", *args], memo=False)
-        return r.returncode, r.stdout
+        code, out, _err = _hardened_git(ctx, *args)
+        return code, out
 
     # W3-07 class: the one exact-name rule (gitexec.remote_tracking_commit). With the anchor
     # ABSENT, `rev-parse refs/remotes/origin/main` expanded it to a local branch
@@ -476,12 +476,11 @@ def check_gate_batch_owed(ctx):
         return (name, FAIL, f"{label}: {r.stderr}")
     if not r.ok:
         return (name, FAIL, f"{label}: exit {r.returncode}: {tail(r.stderr)}")
-    carried = ctx.run(["git", "ls-tree", "--name-only", "--full-tree", pin, "--", store,
-                       view_md], memo=False)
-    if not carried.ok:
-        return (name, FAIL, f"cannot list {store} at {anchor} ({pin[:12]}): "
-                            f"{tail(carried.stderr)}")
-    carried = set(carried.stdout.splitlines())
+    code, listing, err = _hardened_git(ctx, "ls-tree", "-z", "--name-only", "--full-tree", pin,
+                                       "--", store, view_md)
+    if code != 0:
+        return (name, FAIL, f"cannot list {store} at {anchor} ({pin[:12]}): {tail(err)}")
+    carried = set(p for p in listing.split("\0") if p)
     if store not in carried:
         return (name, FAIL, f"{anchor} ({pin[:12]}) carries no {store}: the set of owed gates "
                             "is read there, and a store only the release tree carries could "
@@ -542,6 +541,22 @@ def gate1(ctx):
 # ---------------------------------------------------------------------------
 # Gate 2 — flagships proven (epic DoD 2)
 # ---------------------------------------------------------------------------
+
+def _hardened_git(ctx, *args):
+    """(exit, stdout, stderr) for one git call in the checkout under gitexec.py's absolute git and
+    hardened environment — replacement objects and grafts off, repository command config closed —
+    so gate 1 resolves its anchor and lists what the anchor carries the way gate-batch.py reads
+    it (independent re-attack: `git replace <anchor> <other>` changed what the ambient git listed
+    at the anchor). stdout is not stripped and decodes losslessly. Never raises."""
+    gitexec = _gitexec()
+    try:
+        proc = subprocess.run(gitexec.argv("-C", str(ctx.repo), *args), capture_output=True,
+                              timeout=TIMEOUT_TOOL, env=gitexec.env(), stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as err:
+        return None, "", f"git {args[0]}: {err}"
+    return (proc.returncode, proc.stdout.decode("utf-8", "surrogateescape"),
+            proc.stderr.decode("utf-8", "replace"))
+
 
 def _gitexec():
     """runtime/scripts/gitexec.py, by path: the one exact-name rule a trust anchor answers to."""

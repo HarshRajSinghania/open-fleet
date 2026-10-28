@@ -767,6 +767,32 @@ class GateOneHoldsTheReleaseToTheAnchoredGateSet(unittest.TestCase):
         self.assertEqual(status, rc.FAIL, detail)
         self.assertIn("gate-batch.md", detail)
 
+    def test_a_replacement_object_cannot_hide_what_the_anchor_carries(self):
+        # Independent re-attack (B): gate 1 listed what the anchor carries under the ambient env,
+        # so `git replace <anchor> <a commit without the view>` hid the view the anchor holds,
+        # and a release that deleted it PASSED. Resolution and listing now run under gitexec's
+        # hardened env, as gate-batch.py reads the same commit.
+        self.write(self.answer_all(gb.load_batch(self.store)))
+        view = self.store.parent / "gate-batch.md"
+        rel_view = f"docs/runs/{rc.GATE_BATCH_RUN}/gate-batch.md"
+        git = ["git", "-C", str(self.root)]
+        anchor = subprocess.run([*git, "rev-parse", "refs/remotes/origin/main"], check=True,
+                                capture_output=True, text=True).stdout.strip()
+        index = self.root.parent / "replacement-index"
+        env = dict(os.environ, GIT_INDEX_FILE=str(index))
+        subprocess.run([*git, "read-tree", anchor], check=True, env=env)
+        subprocess.run([*git, "rm", "-q", "--cached", rel_view], check=True, env=env)
+        tree = subprocess.run([*git, "write-tree"], check=True, env=env, capture_output=True,
+                              text=True).stdout.strip()
+        fake = subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t",
+                               "commit-tree", tree, "-m", "the anchor, minus its view"],
+                              check=True, capture_output=True, text=True).stdout.strip()
+        subprocess.run([*git, "replace", anchor, fake], check=True)
+        view.unlink()
+        _, status, detail = self.gate1()
+        self.assertEqual(status, rc.FAIL, detail)
+        self.assertIn("gate-batch.md", detail)
+
     def test_a_batch_the_anchor_does_not_carry_fails(self):
         # Drop the store from the anchor (a reviewed main without it), keep it in the release
         # tree with every gate signed: there is no trusted set to hold the release to.

@@ -922,6 +922,29 @@ register_named() {
     fi
   fi
 }
+# prelaunch_refusal <receipt>: exit 0 only when the launch call is PROVEN to have started nothing
+# (Codex round 6): the response is one unambiguous error envelope, carrying nothing else in its
+# result, whose code is a refusal the runtime gives BEFORE any launch effect. Every other error —
+# runtime_error, an unknown or untyped code, a refusal that can follow a pane's creation
+# (inject_rejected, consumer_fenced, dispatch_inactive) — leaves the outcome unknown, and the
+# reservation stays. The caller also requires that the response named no handle and parsed whole.
+PRELAUNCH_CODES="task_not_found task_not_startable nested_worker_depth_exceeded worktree_not_found selector_not_found invalid_argument"
+prelaunch_refusal() {
+  pyjson "$1" "$PRELAUNCH_CODES" <<'PY'
+try:
+    d = strict_load(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
+if not isinstance(d, dict) or set(d) - {"error", "result", "ok", "id"}:
+    raise SystemExit(1)
+r = d.get("result")
+if r not in (None, {}) and not (isinstance(r, dict) and set(r) <= {"error"}):
+    raise SystemExit(1)  # a result beside the error: not a clean refusal
+err = d.get("error") or (r.get("error") if isinstance(r, dict) else None)
+code = err.get("code") if isinstance(err, dict) else None
+raise SystemExit(0 if isinstance(code, str) and code in sys.argv[2].split() else 1)
+PY
+}
 # release_after_registration: every handle the response named is recorded, so the reservation goes.
 release_after_registration() {
   if [ -z "$launch_reservation" ] || rm -f -- "$launch_reservation" 2>/dev/null; then
@@ -929,24 +952,15 @@ release_after_registration() {
   fi
 }
 # release_reservation (EXIT trap): drop the reservation unless a worker may be live with no record.
-# A typed terminal-create refusal created no pane, so it is dropped too.
+# A terminal create that named no pane is released only on a proven pre-launch refusal.
 launch_reservation=""; keep_reservation=0
 release_reservation() {
   [ -n "$launch_reservation" ] || return 0
   if [ "$keep_reservation" = "1" ] && [ "$named_count" -gt 0 ] && [ "$named_unrecorded" = "0" ]; then
     keep_reservation=0  # every worker the response named is recorded
   fi
-  if [ "$keep_reservation" = "1" ] && [ "$named_count" = "0" ] && [ "$step" = "create-terminal" ] && [ -s "${tj:-}" ] \
-     && pyjson "$tj" <<'PY'
-import json, sys
-try:
-    d = strict_load(sys.argv[1])
-except Exception:
-    raise SystemExit(1)
-r = d.get("result") if isinstance(d, dict) else None
-raise SystemExit(0 if isinstance(d, dict) and (d.get("error") or (isinstance(r, dict) and r.get("error"))) else 1)
-PY
-  then
+  if [ "$keep_reservation" = "1" ] && [ "$named_count" = "0" ] && [ "$named_unrecorded" = "0" ] \
+     && [ "$step" = "create-terminal" ] && [ -s "${tj:-}" ] && prelaunch_refusal "$tj"; then
     keep_reservation=0
   fi
   if [ "$keep_reservation" = "1" ]; then
@@ -1627,6 +1641,7 @@ if [ "$custom_lane" = "0" ]; then
   read_named "$ws"
   register_named
   ws_handle="$agent_handle"
+  ws_partial="$receipt_partial"
 
   # The flag the requested PROFILE implies, read back out of the map above so the two cannot
   # drift: worker-start takes its args from the HOST, so this is what the host must have used.
@@ -1878,15 +1893,16 @@ PY
   # round 4: an error envelope beside a ready result). Each was registered above, before the
   # verdict. With every named worker recorded completely the reservation goes; with any record
   # incomplete it stays, capping every session nothing else identifies. With none named, only a
-  # typed policy refusal (the runtime started nothing) lets it go: a failure the receipt cannot
-  # explain is unknown, and unknown means a worker may be live.
+  # refusal PROVEN to precede any launch effect lets it go (prelaunch_refusal, Codex round 6): any
+  # other failure, a policy refusal that can follow a pane's creation included, is unknown, and
+  # unknown means a worker may be live.
   if [ "$named_count" -gt 0 ]; then
     if [ "$named_unrecorded" = "0" ]; then
       release_after_registration
     else
       echo "SPAWN=WARNING task=${task} a worker the response names may be live without a complete spawn record; its launch reservation stays instead (W4-04)" >&2
     fi
-  elif [ "$verdict" = "refused" ]; then
+  elif [ "$ws_partial" = "0" ] && prelaunch_refusal "$ws"; then
     keep_reservation=0
   fi
 

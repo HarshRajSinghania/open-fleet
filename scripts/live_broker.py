@@ -814,7 +814,8 @@ class Broker(BaseHTTPRequestHandler):
     def drop_body(self):
         """Free this request's body buffer in place, whatever still references it. Its one export,
         read_body's view, is released before read_body returns, so this never fails; if it did, the
-        BufferError would escape (a fault) before the bytes' charge went back, which then stays."""
+        BufferError would escape (a fault) before any of the share went back, which then stays held:
+        never a charge returned while its bytes live."""
         body, self.body = self.body, None
         if body is not None:
             body.clear()

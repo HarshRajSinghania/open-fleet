@@ -2030,7 +2030,11 @@ extraction before anything judges it — wherever the handle sits: the result, t
 or its `data`, a nested worker or terminal object, an effect — and each handle it names is
 registered whatever the exit code, error code or state says; a refused or failed verdict prints
 the pane it names (`HANDLE=`) and says a worker may be live there. A response that does not
-parse whole is searched for handle-shaped fields too. A launch that may have left a worker live
+parse whole is searched for handle-shaped fields too, and one that reads two ways (a duplicate
+key at any depth, `NaN`/`Infinity`, a number that overflows) has every occurrence of a handle
+key extracted; every other reader of a runtime response (the verdict, task-list, the triage,
+terminal wait, dispatch) treats such a response as unparseable and takes its fail-closed path,
+since `json.load` would keep only the last of two equal keys. A launch that may have left a worker live
 without a complete record — a successful start whose receipt names no handle, a failure the
 receipt cannot explain (no typed refusal, no handle), a handle record that cannot be written, a
 handle that is not a registry key, a response that does not parse whole, or a worker whose
@@ -2043,7 +2047,8 @@ named is recorded — with its root, or by its handle record alone when a comple
 process carrying it (`SPAWN_ROOT_WAIT_SECS`, default 1: the worker is not a local process — it
 exited, runs remotely or in another uid's container, or the backend is a dry run) or the worker
 is not a local pane at all (another runtime's, or placed with `--environment`/`--on`). A session
-whose identity cannot be read at all is capped at `ro`. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
+whose identity cannot be read is capped at `ro`, whether the first read failed or a later one while
+it waited on a reservation: the cap is taken from the last read. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
 `OPEN_FLEET_WORKER_ID`, `OPEN_FLEET_UNIT_WORKTREE` or an `ORCA_` alias — with no profile in its
 environment or the registry is capped at `ro`, and `--parent-profile` cannot raise that (the flag
 only narrows). A capped session cannot use a command override (`WORKER_CMD`, `CLAUDE_CMD`,

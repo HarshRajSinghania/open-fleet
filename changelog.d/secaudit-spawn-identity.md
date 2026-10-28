@@ -13,8 +13,12 @@
   unless it is an anchored coordinator. Every response that names a pane handle (`worker-start`,
   `terminal create`, the `request-show` triage) is read by one extraction before anything judges
   it, wherever the handle sits (an error envelope beside a ready result included, and a response
-  that does not parse whole), and each handle is registered whatever the exit code, error code or
-  state; a refused or failed verdict prints the pane it names. A launch that may have left a
+  that does not parse whole or reads two ways: every occurrence of a duplicated key), and each
+  handle is registered whatever the exit code, error code or state; a refused or failed verdict
+  prints the pane it names. Every other reader of a runtime response refuses one that reads two
+  ways (a duplicate key, `NaN`, a number that overflows) as unparseable. A session whose
+  identity cannot be read is capped at `ro` even when the failing read is one made while it
+  waits on a reservation. A launch that may have left a
   worker live without a complete record keeps its reservation. A process environment the scan
   cannot read (`EACCES`, `EIO`; re-read for a moment first, since a process caught exiting
   answers `EACCES` briefly) leaves the scan incomplete, so finding nothing is unknown, never "no

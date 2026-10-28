@@ -41,3 +41,15 @@
   `OPEN_FLEET_PROVENANCE` set — and elsewhere stays usable by its exact name with an advisory
   NOTE), and every later diff, waiver, pin, merge-base and grep read names the resolved commit.
   `run_report.py`'s grading base, used only on the advisory lane, now says so.
+- **The anchor listing cannot be split by a line break in a branch name, and every anchor read
+  ignores replacement objects and grafts** (W3-07 class, independent re-attack). The
+  `for-each-ref` listing was parsed with `str.splitlines()`, which breaks on U+2028, U+2029 and
+  U+0085 — all legal in a refname — so a fetched branch `x<U+2028>refs/remotes/origin/main` at the
+  worker's commit replaced the real origin/main at every Python site (a swapped pin accepted, an
+  unmerged head on base, gate 1 passing). Records now end in NUL+LF and split on that alone; a
+  malformed record or a refname seen twice refuses the listing. `run_report.py` ran git under the
+  ambient environment, so `git replace`, `git replace --graft` or `.git/info/grafts` made the
+  trusted base read the PR's own policy; it, `release_check.py`'s gate 1 and `verify-gate.sh`'s
+  key discovery now run git with replacement objects and grafts off. Off a sound lane
+  `floor_guard.py` and `diff_scope.py` accept `--base HEAD` and an abbreviated commit id (read as
+  an object id, never a branch of that spelling) with the advisory NOTE.

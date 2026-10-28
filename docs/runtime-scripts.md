@@ -980,12 +980,14 @@ The base is resolved once, by exact ref names only (`gitexec.base_commit`, W3-07
 the waivers and the human-grant pin are all read at that commit. A commit id, a full
 `refs/remotes/…` name, or a short remote-tracking name (`origin/main`, read only as
 `refs/remotes/origin/main`) goes through the trust-anchor rule (`gitexec.remote_tracking_commit`);
-a bare name (`main`) or `refs/heads/…` is that local branch by its exact name — refused (exit 2)
-where `ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` claims a sound lane, the predicate `decisions.py`
-and `run_report.py` apply, and elsewhere used with a stderr NOTE that it is advisory (the change
-under check can move a local branch); the no-remote fallback to local main/master follows the same
-rule. Never a tag, `HEAD`, a
-revision suffix (`origin/main~1`, `@{1}`), a local branch or tag spelled `origin/main` in place
+a bare name (`main`) or `refs/heads/…` is that local branch by its exact name, `HEAD` is the
+checkout's HEAD, and 4 to 63 hex digits are an abbreviated commit id resolved as an object id only
+(`rev-parse --disambiguate`, never a branch of that spelling; name a hex-named branch as
+`refs/heads/<name>`) — each refused (exit 2) where `ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE`
+claims a sound lane, the predicate `decisions.py` and `run_report.py` apply, and elsewhere used
+with a stderr NOTE that it is advisory (the change under check can move a local name, and nothing
+binds an abbreviation); the no-remote fallback to local main/master follows the same rule. Never a
+tag, a revision suffix (`origin/main~1`, `@{1}`), a local branch or tag spelled `origin/main` in place
 of the remote-tracking one, or a local `refs/heads/refs/remotes/…` branch standing in for an
 absent remote-tracking ref; unnamed, an `origin/HEAD` that points at a local branch is skipped.
 

@@ -576,8 +576,12 @@ CUSTODY_FLOOR = (
 #   GIT_NO_LAZY_FETCH=1 - a worker's `extensions.partialClone` + `remote.<n>.promisor` +
 #     `remote.<n>.uploadpack=<payload>` makes even a plain `rev-parse <ref>^{commit}` lazily fetch
 #     a missing object and run the payload (or a credential helper, or core.sshCommand) as the
-#     coordinator; this refuses the fetch, so a missing object is a could-not-run instead.
-CUSTODY_ENV = {"GIT_ALLOW_PROTOCOL": "file", "GIT_NO_LAZY_FETCH": "1"}
+#     coordinator; this refuses the fetch, so a missing object is a could-not-run instead;
+#   GIT_ATTR_NOSYSTEM=1 - the system attributes file ($(prefix)/etc/gitattributes, which a per-user
+#     install leaves the worker's to write) is never opened: a FIFO there would hang the call. The
+#     user's default one is closed by the custody naming its own core.attributesFile, always
+#     (custody_attributes; Codex on the W4-02 branch, round 3).
+CUSTODY_ENV = {"GIT_ALLOW_PROTOCOL": "file", "GIT_NO_LAZY_FETCH": "1", "GIT_ATTR_NOSYSTEM": "1"}
 
 # Data-only (never a command) core.* settings that change whether a working-tree file reads clean
 # or dirty, or which bytes a diff of it reads. Without them a custody `status` can read a clean
@@ -707,7 +711,8 @@ def custody_git_dir(common, object_format, head=None, gitdir=None, *, objects="a
     ``attributes`` (bytes, from custody_attributes) is the CONTENT of the repository's own
     `core.attributesFile`: written to a file in the dir that the dir's config names as its
     `core.attributesFile`, so git reads it at the same (lowest) precedence, below `.gitattributes`
-    and `info/attributes`. None names none."""
+    and `info/attributes`. None names none (git then reads its default user attributes file);
+    every caller here passes custody_attributes's result, which is never None."""
     if object_format not in ("sha1", "sha256"):
         raise GitCustodyRefused(f"git custody: unknown object format {object_format!r}")
     if objects not in ("alternate", "shared"):
@@ -809,11 +814,15 @@ def custody_attributes(run, cwd):
     ``cwd`` (the work tree top, where git reads it). The file is read only as a regular file of at
     most ATTRIBUTES_FILE_LIMIT bytes, opened without following a final symlink and without
     blocking (a FIFO or device refuses); a missing file (or an empty value) is no attributes, as
-    for git, still named so no other default is read. Anything else refuses (GitCustodyRefused):
-    never silently omitted."""
+    for git. Anything else refuses (GitCustodyRefused): never silently omitted. The path is taken
+    from git's NUL-terminated output, so a trailing newline in it is kept. With no repository
+    value this is b"", never None: the custody still names its own (empty) attributes file, so git
+    never opens its default user one ($XDG_CONFIG_HOME/git/attributes or
+    ~/.config/git/attributes, the worker's to write on a one-uid host, where a FIFO would hang the
+    call; Codex on the W4-02 branch, round 3)."""
     got = run(["config", "--type=path", "-z", "--get", "core.attributesFile"])
     if got.returncode == 1 and not got.stdout:
-        return None
+        return b""
     if got.returncode != 0 or not got.stdout.endswith(b"\0"):
         raise GitCustodyRefused("git custody: cannot read the repository's core.attributesFile: "
                                 f"{os.fsdecode(got.stderr).strip()[:200]}")

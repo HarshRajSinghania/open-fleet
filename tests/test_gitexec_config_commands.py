@@ -1456,6 +1456,73 @@ class AnUnreadableAttributesFileIsRefused(unittest.TestCase):
                 self.assertIn("core.attributesFile", got.stderr)
 
 
+class NoUserOrSystemAttributesFileIsOpened(unittest.TestCase):
+    """Codex on the W4-02 branch (round 3, P2), checked here: with no repository core.attributesFile
+    the custody named none, so git opened its default user attributes file ($XDG_CONFIG_HOME/git/
+    attributes, else ~/.config/git/attributes; the worker's to write on a one-uid host) and the
+    system one, and a FIFO there hung the call. The custody now always names its own attributes
+    file, and CUSTODY_ENV carries GIT_ATTR_NOSYSTEM=1."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")  # a diff reads attributes
+        return p, base
+
+    def _sites(self, p, base):
+        posix = _posix()
+        mb = floor_guard.merge_base(p.repo, base)
+        return (("floor_guard", lambda: floor_guard.collect_diff(p.repo, mb)),
+                ("diff_scope", lambda: diff_scope.changed_files(p.repo, base)),
+                ("hint_provenance", lambda: hint_provenance.LiveSource(str(p.repo)).changes_since(base)),
+                ("posix status", lambda: posix._git(["status", "--porcelain"], cwd=p.repo).stdout))
+
+    def test_a_fifo_at_either_default_user_attributes_file_is_never_opened(self):
+        for where in ("XDG_CONFIG_HOME", "HOME"):
+            p, base = self._repo()
+            empty = p.dir / "empty-home"
+            empty.mkdir()
+            with mock.patch.dict(os.environ, {"HOME": str(empty)}):
+                os.environ.pop("XDG_CONFIG_HOME", None)
+                want = {site: call() for site, call in self._sites(p, base)}
+            fifo_root = p.dir / "fifo-home"
+            if where == "XDG_CONFIG_HOME":
+                (fifo_root / "git").mkdir(parents=True)
+                os.mkfifo(fifo_root / "git" / "attributes")
+                env = {"HOME": str(empty), "XDG_CONFIG_HOME": str(fifo_root)}
+            else:
+                (fifo_root / ".config" / "git").mkdir(parents=True)
+                os.mkfifo(fifo_root / ".config" / "git" / "attributes")
+                env = {"HOME": str(fifo_root)}
+            for site, call in self._sites(p, base):
+                with self.subTest(where=where, site=site), mock.patch.dict(os.environ, env):
+                    if "XDG_CONFIG_HOME" not in env:
+                        os.environ.pop("XDG_CONFIG_HOME", None)
+                    done, got = _finishes(call)
+                    self.assertTrue(done, f"{site} hung opening a default attributes file at {where}")
+                    self.assertEqual(got, want[site])
+
+    def test_every_custody_git_runs_with_system_attributes_off(self):
+        p, base = self._repo()
+        seen, real = [], subprocess.run
+
+        def record(argv, *a, **kw):
+            # Every git but the driver listing (`config --list`, which reads no attributes and
+            # keeps gitexec.env's base so it resolves the repository its caller's git does).
+            if (isinstance(argv, (list, tuple)) and argv and os.path.basename(os.fsdecode(argv[0])) == "git"
+                    and "--list" not in argv):
+                seen.append((argv[-4:], (kw.get("env") or {}).get("GIT_ATTR_NOSYSTEM")))
+            return real(argv, *a, **kw)
+        with mock.patch.object(subprocess, "run", record):
+            for _site, call in self._sites(p, base):
+                call()
+        self.assertTrue(seen)
+        self.assertEqual([s for s in seen if s[1] != "1"], [],
+                         "a custody-floored git ran with the system attributes file live")
+
+
 class GitexecCustody(unittest.TestCase):
     """gitexec.custody: the coordinator-built git dir and the refusals it shares with the posix
     provider's run_git."""

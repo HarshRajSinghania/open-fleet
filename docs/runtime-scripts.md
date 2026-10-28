@@ -1213,7 +1213,9 @@ a relative one from the work tree top, then read only as a regular file of at mo
 `ATTRIBUTES_FILE_LIMIT` (1 MiB) bytes, opened without following a final symlink and without
 blocking; a FIFO, device, directory, symlink or larger file refuses, never dropped — dropped, a
 clean CRLF checkout an `eol=crlf` line there steers read as modified; a missing file or empty
-value is no attributes, as for git; a global or system value stays unread), refuses an
+value is no attributes, as for git; a global or system value stays unread; with no repository value
+the custody still names its own empty file, so git never opens its default user attributes file,
+`$XDG_CONFIG_HOME/git/attributes` or `~/.config/git/attributes`, where a FIFO would hang it), refuses an
 `extensions.*` the dir cannot honour (`partialClone` above all) and yields a `Custody` whose `lead`
 is `-C <repo> --git-dir <dir> --work-tree <top>` and whose `pairs` are those settings. A git run
 with that lead reads the repository's work tree, index and objects and no config the worker
@@ -1224,7 +1226,8 @@ is `env()` minus `SELECTOR_ENV` (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
 `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, ...) plus `CUSTODY_FLOOR` (`core.alternateRefsCommand`,
 submodule recursion, `log.showSignature` and every `gpg.*.program`, auto-maintenance) and
 `CUSTODY_ENV` (`GIT_ALLOW_PROTOCOL=file`, `GIT_NO_LAZY_FETCH=1`, so a planted promisor remote's
-`uploadpack`, credential helper or ssh command is never reached by a lazy fetch). Neither reaches
+`uploadpack`, credential helper or ssh command is never reached by a lazy fetch, and
+`GIT_ATTR_NOSYSTEM=1`, so the system attributes file is never opened). Neither reaches
 into a checked-out submodule: a git comparing the work tree probes a submodule's dirtiness with a
 child git that runs under the submodule's OWN config, so every custody diff carries
 `NO_SUBMODULE_CHILD` (`--ignore-submodules=dirty`: a moved gitlink is still reported, read from the

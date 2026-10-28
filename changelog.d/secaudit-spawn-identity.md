@@ -16,9 +16,9 @@
   that does not parse whole), and each handle is registered whatever the exit code, error code or
   state; a refused or failed verdict prints the pane it names. A launch that may have left a
   worker live without a complete record keeps its reservation. A process environment the scan
-  cannot read (`EACCES`, `EIO`) or processes vanishing mid-scan leave the scan incomplete, so
-  finding nothing is unknown, never "no process", and the same holds without `/proc` (`ps -E`); a
-  pane that is found is recorded. Any other identity read that fails, a `/proc` of another pid
+  cannot read (`EACCES`, `EIO`; re-read for a moment first, since a process caught exiting
+  answers `EACCES` briefly) leaves the scan incomplete, so finding nothing is unknown, never "no
+  process", and the same holds without `/proc` (`ps -E`); a pane that is found is recorded. Any other identity read that fails, a `/proc` of another pid
   namespace included, is unknown rather than absent: the reservation stays, or the caller is
   capped at `ro`. Not covered: a
   worker process outside its pane's process tree whose environment drops the handle (daemonized

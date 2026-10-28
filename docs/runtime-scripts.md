@@ -1939,8 +1939,11 @@ A pane found is recorded: its process tree is identified, and another carrier of
 outside it would have to have escaped it (the residual below). Completeness decides what finding
 NOTHING means. A scan is complete only when every process of this uid that could be the launch's
 pane was read; a read that fails for any reason but the process being gone is UNKNOWN, never
-"absent" (Codex round 4): an environment that cannot be read (`EACCES` from a non-dumpable
-process, `EIO`) makes the scan incomplete, and so do processes that keep vanishing mid-scan. With
+"absent" (Codex round 4): an environment that stays unreadable (`EACCES` from a non-dumpable
+process, `EIO`) makes the scan incomplete. It is read again for up to 0.25 s first, since a
+process caught exiting answers `EACCES` for a moment and then is gone; a process that vanishes
+mid-scan is gone, not unknown (the scan re-lists a few times for a carrier it forked just before
+it exited, which would be outside the pane's live tree: the residual below). With
 `--since <pid>` (`spawn_worker.sh` passes itself) an unreadable process that started before that
 pid is not counted, since it cannot be a pane this launch created; a runtime that handed a launch
 a pre-existing pane whose environment cannot be read is not covered. Without `/proc`, `ps -E`
@@ -2032,8 +2035,7 @@ without a complete record — a successful start whose receipt names no handle, 
 receipt cannot explain (no typed refusal, no handle), a handle record that cannot be written, a
 handle that is not a registry key, a response that does not parse whole, or a worker whose
 process tree is UNVERIFIED (`spawn_identity.py` exits 1: nothing found by a scan that could not
-read every candidate — an environment it could not read, processes that kept vanishing, a host
-without `/proc`; or 2: a root it found but could not verify) — KEEPS its reservation and says so, and it
+read every candidate — an environment that stayed unreadable, a host without `/proc`; or 2: a root it found but could not verify) — KEEPS its reservation and says so, and it
 caps every unanchored session until removed; on the custom-argv lane a pane whose handle record
 fails gets no task. Otherwise the reservation goes: when no launch call was made, on a typed
 policy refusal or a `terminal create` error envelope that names no pane, or once every handle

@@ -923,26 +923,64 @@ register_named() {
   fi
 }
 # prelaunch_refusal <receipt>: exit 0 only when the launch call is PROVEN to have started nothing
-# (Codex round 6): the response is one unambiguous error envelope, carrying nothing else in its
-# result, whose code is a refusal the runtime gives BEFORE any launch effect. Every other error —
-# runtime_error, an unknown or untyped code, a refusal that can follow a pane's creation
-# (inject_rejected, consumer_fenced, dispatch_inactive) — leaves the outcome unknown, and the
-# reservation stays. The caller also requires that the response named no handle and parsed whole.
+# (Codex rounds 6 and 7): the WHOLE response is exactly one pre-launch refusal, read against a
+# strict schema at every level. The document is `{"id"?, "ok": false?, "error": E}` or
+# `{"id"?, "ok": false?, "result": {"error": E}}` (never both); E is `{"code", "message"?,
+# "data"?}` with a code a runtime gives BEFORE any launch effect, and its data holds only the
+# documented refusal fields (nextSteps, unmetDependencies, retryOf, failureCount, reason) with
+# their documented types. Anything else anywhere — a second error, a result beside the error, a
+# state, an effect, a handle, an unknown key at any depth, a code outside the list (runtime_error,
+# inject_rejected, consumer_fenced, dispatch_inactive, an unknown or untyped one) — leaves the
+# outcome unknown, and the reservation stays. The caller also requires that no handle was named
+# and that the response parsed whole.
 PRELAUNCH_CODES="task_not_found task_not_startable nested_worker_depth_exceeded worktree_not_found selector_not_found invalid_argument"
 prelaunch_refusal() {
   pyjson "$1" "$PRELAUNCH_CODES" <<'PY'
+CODES = set(sys.argv[2].split())
+
+
+def strs(v):
+    return isinstance(v, list) and all(isinstance(x, str) for x in v)
+
+
+DATA = {"nextSteps": strs, "unmetDependencies": strs, "retryOf": lambda v: isinstance(v, str),
+        "failureCount": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "reason": lambda v: isinstance(v, str)}
+
+
+def refusal(e):
+    if not isinstance(e, dict) or not set(e) <= {"code", "message", "data"}:
+        return False
+    if not isinstance(e.get("code"), str) or e["code"] not in CODES:
+        return False
+    if "message" in e and not isinstance(e["message"], str):
+        return False
+    data = e.get("data", {})
+    if data is None:
+        return True
+    return isinstance(data, dict) and all(k in DATA and DATA[k](v) for k, v in data.items())
+
+
 try:
     d = strict_load(sys.argv[1])
 except Exception:
     raise SystemExit(1)
-if not isinstance(d, dict) or set(d) - {"error", "result", "ok", "id"}:
+if not isinstance(d, dict) or not set(d) <= {"id", "ok", "error", "result"}:
     raise SystemExit(1)
-r = d.get("result")
-if r not in (None, {}) and not (isinstance(r, dict) and set(r) <= {"error"}):
-    raise SystemExit(1)  # a result beside the error: not a clean refusal
-err = d.get("error") or (r.get("error") if isinstance(r, dict) else None)
-code = err.get("code") if isinstance(err, dict) else None
-raise SystemExit(0 if isinstance(code, str) and code in sys.argv[2].split() else 1)
+if "id" in d and not isinstance(d["id"], str):
+    raise SystemExit(1)
+if "ok" in d and d["ok"] is not False:
+    raise SystemExit(1)  # ok:true (or anything but false) beside a refusal contradicts it
+if "error" in d:
+    if d.get("result") not in (None, {}):
+        raise SystemExit(1)  # a result beside the error, an error inside it included
+    err = d["error"]
+else:
+    r = d.get("result")
+    if not isinstance(r, dict) or set(r) != {"error"}:
+        raise SystemExit(1)
+    err = r["error"]
+raise SystemExit(0 if refusal(err) else 1)
 PY
 }
 # release_after_registration: every handle the response named is recorded, so the reservation goes.

@@ -198,7 +198,7 @@ _remote_target() {
     [ -n "$_rt_entry" ] || break
     # Non-empty: $_t is symbolic. Its NEXT hop, not the chain's end the listing shows.
     if ! _rt_entry=$("$GIT_BIN" -C "$TOP" symbolic-ref -q --no-recurse "$_t" 2>/dev/null) || [ -z "$_rt_entry" ]; then
-      echo "verify-gate: NOTE — $1 reaches the symbolic ref '$_t', whose chain cannot be read one hop at a time here (git symbolic-ref --no-recurse, git 2.39+); no key is read there." >&2
+      echo "verify-gate: NOTE — $1 reaches the symbolic ref '$_t', whose chain cannot be read one hop at a time here (symbolic-ref --no-recurse needs Git 2.39+); no key is read there." >&2
       return 1
     fi
     _rt_hops=$((_rt_hops + 1))

@@ -574,13 +574,22 @@ def _shape_findings(parsed) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+# The first token of a JSON value inside an array, by the JSON grammar: an object, an array, a
+# string, an empty array's close, or a number or literal that ends at a delimiter (whitespace, a
+# comma, the array's close, or the end of the text). `[PASS]`, `[timestamp]`, `[12:00:01]` and
+# `[2026-10-28]` open plain-text lines, not arrays.
+_ARRAY_FIRST = re.compile(r"""\[\s*(?:[{\["\]]|(?:-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"""
+                          r"""|true|false|null)(?=[\s,\]]|\Z))""")
+
+
 def _looks_like_json(raw) -> bool:
-    """A transcript that opens like a JSON document (a byte-order mark and whitespace aside): `{`,
-    or `[` opening an array of objects, arrays or strings (`[PASS] …`, a plain-text log line, does
-    not). One that then does not parse is refused: read as plain text it skipped every structural
-    and isolation check, so a truncated report of a privileged container read as clear."""
+    """A transcript that opens as a JSON document by the JSON grammar's first token (a byte-order
+    mark and whitespace aside): `{`, or `[` followed by the first token of a value or by `]`
+    (_ARRAY_FIRST). One that then does not parse is refused (Codex rounds 7 and 9): read as plain
+    text it skipped every structural and isolation check, so a truncated report of a privileged
+    container, `[true, {…` included, read as clear."""
     head = raw.lstrip().lstrip("\ufeff").lstrip()
-    return head[:1] == "{" or (head[:1] == "[" and head[1:].lstrip()[:1] in ("{", "[", '"', "]"))
+    return head[:1] == "{" or _ARRAY_FIRST.match(head) is not None
 
 
 def placement_bound(raw) -> bool:

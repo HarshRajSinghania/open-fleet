@@ -1900,6 +1900,24 @@ class TestTheBaseIsResolvedByExactNameW307(FloorGuardBase):
                     finally:
                         unplant()
 
+    def test_two_non_utf8_branch_names_never_stop_the_guard(self):
+        # Re-attack residual: git() decoded with "replace", so fetched branches zz\xff and
+        # zz\xfe both read as `zz\ufffd` and the exact-name listing refused itself as naming one
+        # ref twice — exit 2 on every lane, which any branch pusher could aim at every PR's CI
+        # (guard.yml fetches every branch). The default base must still be the real origin/main.
+        honest = git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        for raw in (b"refs/remotes/origin/zz\xff", b"refs/remotes/origin/zz\xfe"):
+            subprocess.run([b"git", b"-C", bytes(self.repo), b"update-ref", raw,
+                            honest.encode()], check=True, capture_output=True)
+        for args in ((), ("--base", "origin/main")):
+            with self.subTest(args=args):
+                code, out, err = run_main(self.repo, *args)
+                self.assertEqual(code, 1, f"{out}{err}")  # the change's own violation, judged
+                self.assertIn("[threshold-lowered]", err)
+                self.assertNotIn("twice", err)
+        base, shown = floor_guard.resolve_base(self.repo, None)
+        self.assertEqual((base, shown), (honest, "origin/main"))
+
     def test_a_revision_suffix_is_no_base(self):
         # The waiver stood at origin/main~1 and was retired by a later `superseded` line.
         land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.WAIVER) + "\n"})

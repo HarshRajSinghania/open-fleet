@@ -287,7 +287,9 @@ def git(repo, *args, blanks=()):
         )
     except (OSError, subprocess.SubprocessError) as err:
         raise GuardError(f"git {' '.join(args)} failed to run: {err}") from err
-    return _text(r.stdout) if r.returncode == 0 else None
+    # surrogateescape, not _text's "replace": two refnames that differ only in non-UTF-8 bytes
+    # (zz\xff, zz\xfe) must not decode alike, or the anchor listing refuses itself (W3-07).
+    return r.stdout.decode("utf-8", "surrogateescape") if r.returncode == 0 else None
 
 
 def repo_root(start):

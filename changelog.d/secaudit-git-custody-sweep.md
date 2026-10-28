@@ -20,7 +20,9 @@
   work-tree diff no longer starts a child git inside a checked-out submodule to ask whether it is
   dirty (`--ignore-submodules=dirty`): that child ran under the submodule's own config, so a filter
   planted there ran too. A moved submodule commit is still reported; uncommitted changes inside a
-  submodule no longer are. The custody also carries the repository's `info/attributes` and its
+  submodule no longer are. The custody also carries the repository's `info/attributes`, the
+  content of its own `core.attributesFile` (read only as a regular file of at most 1 MiB, never
+  opened blocking; a FIFO, symlink or larger file refuses) and its
   `core.safecrlf`/`core.checkRoundtripEncoding` as data, so a CRLF (`eol=crlf`) checkout no longer
   reads as modified. Also:
   the `_external.py` runner docstring no longer claims `reset --hard` runs in custody (it is

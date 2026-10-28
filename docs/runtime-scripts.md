@@ -1191,7 +1191,7 @@ environment, where this module runs `GIT` under the caller's whole environment.
 `tests/test_gitexec_config_commands.py` holds both `driver_blanks` copies to this one.
 
 Git custody (W4-01, PR #720 Codex round 3; shared with the read-side tools since the W4 custody
-sweep). `custody_git_dir(common, object_format, head, gitdir, objects=, bare=)` builds a git dir in
+sweep). `custody_git_dir(common, object_format, head, gitdir, objects=, bare=, attributes=)` builds a git dir in
 a fresh temporary directory that no worker names: its own config (repository format, object
 format, `core.bare`, and no driver of any kind), HEAD at `head`, the repository's objects —
 `objects="alternate"` (default) through `objects/info/alternates`, read only, or `"shared"`, a
@@ -1201,11 +1201,19 @@ the repository finds it — and regular-file copies of the common `info/exclude`
 `filter=`/`diff=`/`merge=` it selects names a driver the dir never defines) and `shallow` and,
 when `gitdir` names a per-worktree admin dir, its `index` (mtime kept), split-index
 `sharedindex.*` and `info/sparse-checkout`; a FIFO, symlink or other non-regular file at any of
-those paths is refused (`GitCustodyRefused`, an `OSError`), never followed. It is removed on exit.
+those paths is refused (`GitCustodyRefused`, an `OSError`), never followed. `attributes` (bytes)
+is written to a file in the dir that its config names as `core.attributesFile`, so git reads it at
+that key's precedence (below `.gitattributes`, below `info/attributes`). It is removed on exit.
 `custody(repo, run=, index=, objects=)` reads the repository's facts (`rev-parse`) and data-only
 `core.*` settings (`custody_settings`: `filemode`, `symlinks`, `ignorecase`, sparse flags,
 `autocrlf`, `eol`, `safecrlf`, `checkRoundtripEncoding`, `checkstat`, `trustctime` — never
-`core.excludesFile` or `core.attributesFile`), refuses an
+`core.excludesFile`, whose ignore list could hide an untracked file) and the CONTENT of the
+repository's own `core.attributesFile` (`custody_attributes`: the path expanded as git expands it,
+a relative one from the work tree top, then read only as a regular file of at most
+`ATTRIBUTES_FILE_LIMIT` (1 MiB) bytes, opened without following a final symlink and without
+blocking; a FIFO, device, directory, symlink or larger file refuses, never dropped — dropped, a
+clean CRLF checkout an `eol=crlf` line there steers read as modified; a missing file or empty
+value is no attributes, as for git; a global or system value stays unread), refuses an
 `extensions.*` the dir cannot honour (`partialClone` above all) and yields a `Custody` whose `lead`
 is `-C <repo> --git-dir <dir> --work-tree <top>` and whose `pairs` are those settings. A git run
 with that lead reads the repository's work tree, index and objects and no config the worker

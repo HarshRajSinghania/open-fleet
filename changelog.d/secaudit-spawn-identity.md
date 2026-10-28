@@ -19,7 +19,10 @@
   ways (a duplicate key, `NaN`, a number that overflows) as unparseable. A session whose
   identity cannot be read is capped at `ro` even when the failing read is one made while it
   waits on a reservation. A launch that may have left a
-  worker live without a complete record keeps its reservation. A process environment the scan
+  worker live without a complete record keeps its reservation; with no handle named, it is
+  released only on a refusal proven to precede any launch effect (an allowlist of pre-launch
+  codes, on both launch paths), never for `runtime_error`, an unknown or untyped code, or a policy
+  refusal that can follow a pane's creation. A process environment the scan
   cannot read (`EACCES`, `EIO`; re-read for a moment first, since a process caught exiting
   answers `EACCES` briefly) leaves the scan incomplete, so finding nothing is unknown, never "no
   process", and the same holds without `/proc` (`ps -E`); a pane that is found is recorded. Any other identity read that fails, a `/proc` of another pid
@@ -36,8 +39,9 @@
   `ORCA_CLI_COMMAND` must name one executable with no invisible character, and one resolution in
   `orca_cli.py` now serves the Orca provider, `auto`, `preflight.py`, `install.sh` and
   `upstream_probe.py`. `sandbox_doctor.py` reads the recipe from recipe fields only, refuses a
-  malformed recipe field, a repeated JSON key and a contradicting envelope, and reads placement
-  claims in every spelling. `worker_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`,
+  malformed recipe field, a repeated JSON key and an envelope that contradicts the report at any
+  wrapping level or depth (its `metadata` included), reads a report out of every wrapper, and
+  reads placement claims in every spelling. `worker_ops.py`, `terminal_ops.py`, `send_msg.py`, `check_reply.py`,
   `orca_cli.run_json`, `pm.py` and `spawn_worker.sh` print every receipt field, and every error
   and exception message (the provider-dispatch path included), escaped and on one line; no body line, tail item or list row stands at column 0 in the shape of a line those
   printers write (`KEY=`, `---`, `===`, a `(…)` marker, a printer's own `SUBJ:`/`ID:` headers),

@@ -1772,8 +1772,11 @@ to its `id`/`name` fields outside checks, findings and mounts, all of which must
 list holding a non-string, an object without a usable id) is refused as malformed, never read
 past to that fallback. JSON that names a key twice inside one object, as written or in two spellings the reader takes as one (`id`/`ID`, `recipeId`/`recipe-id`), is refused at every level (which value wins
 would be the parser's choice), placement claims are read in every spelling
-(`prelaunchPlacementBound`, `Ephemeral`) and at every level, and an `{ok, result}` envelope
-around the report is held to it: its own `ok:false`, `error` or a false claim refuses. JSON transcripts read structurally (empty
+(`prelaunchPlacementBound`, `Ephemeral`) and at every level, and every `{ok, result}` envelope
+around the report, at every wrapping level, is held to it: its own `ok:false`, `error` or any
+finding, or a false placement claim anywhere inside it (its `metadata` included), refuses. A
+report wrapped more than once is read out of all of its wrappers, and a false placement claim
+anywhere in a report that names no portable backend refuses too. JSON transcripts read structurally (empty
 finding collections are good news; `ok:false` is a finding); plain-text transcripts first
 strip "none of these" shapes (`"failures": []`, `failures: 0`, `0 warnings`, `no
 failures`) before matching fail/warn/error words. A transcript naming a portable `backend`
@@ -2036,13 +2039,18 @@ key extracted; every other reader of a runtime response (the verdict, task-list,
 terminal wait, dispatch) treats such a response as unparseable and takes its fail-closed path,
 since `json.load` would keep only the last of two equal keys. A launch that may have left a worker live
 without a complete record — a successful start whose receipt names no handle, a failure the
-receipt cannot explain (no typed refusal, no handle), a handle record that cannot be written, a
+receipt does not prove came before any launch effect (see below), a handle record that cannot be written, a
 handle that is not a registry key, a response that does not parse whole, or a worker whose
 process tree is UNVERIFIED (`spawn_identity.py` exits 1: nothing found by a scan that could not
 read every candidate — an environment that stayed unreadable, a host without `/proc`; or 2: a root it found but could not verify) — KEEPS its reservation and says so, and it
 caps every unanchored session until removed; on the custom-argv lane a pane whose handle record
-fails gets no task. Otherwise the reservation goes: when no launch call was made, on a typed
-policy refusal or a `terminal create` error envelope that names no pane, or once every handle
+fails gets no task. Otherwise the reservation goes: when no launch call was made; on either
+launch path (`worker-start`, `terminal create`), on a refusal PROVEN to precede any launch effect
+— one error envelope with nothing else in its result, naming no pane, whose code is
+`task_not_found`, `task_not_startable`, `nested_worker_depth_exceeded`, `worktree_not_found`,
+`selector_not_found` or `invalid_argument` (any other error keeps it: `runtime_error`, an unknown
+or untyped code, and `inject_rejected`, `consumer_fenced` and `dispatch_inactive`, which can follow
+a pane's creation and still exit 2 as refusals); or once every handle
 named is recorded — with its root, or by its handle record alone when a complete scan finds no
 process carrying it (`SPAWN_ROOT_WAIT_SECS`, default 1: the worker is not a local process — it
 exited, runs remotely or in another uid's container, or the backend is a dry run) or the worker

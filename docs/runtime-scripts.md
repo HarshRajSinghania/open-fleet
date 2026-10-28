@@ -1253,7 +1253,12 @@ Each file is parsed as git's own config parser reads it — CRLF line endings, a
 values with escapes, `\`-continued lines, `#`/`;` comments, case-insensitive section and key
 names, quoted subsections with escapes, `~`/`~user` and relative include paths — so the path it
 checks is the path git opens; a file git itself would reject (a bad header or escape, an
-unterminated quote, a NUL byte, a `%(prefix)/` path) refuses rather than being guessed at.
+unterminated quote, a NUL byte, a `%(prefix)/` path) refuses rather than being guessed at. Which
+bytes count as whitespace is not written down: it is learned once per process from the installed
+git (one `git config -f <probe> --list -z` over a probe of every byte), because git versions
+differ (a newer git trims `\v` and `\f`, 2.43 keeps them). `tests/test_gitexec_config_commands.py`
+compares the parser with the installed git for every byte in 25 positions, so a git that reads
+config differently fails the suite.
 What can still block: a FIFO the worker swaps in after that check, and one at a work tree's own
 `.gitignore` or `.gitattributes`, which git opens itself path by path. Those are bounded by the
 call's own timeout (60 s in floor_guard, diff_scope and hint_provenance; up to 120 s in verify.py's

@@ -72,6 +72,13 @@ _Authority pinned at startup under its scrubbed nc_env floor, where this module 
 own GIT under the caller's whole environment. tests/test_gitexec_config_commands.py holds
 both driver_blanks copies (diff_scope's and verify's) to this one.
 
+``remote_tracking_commit(git, name)`` is the one rule a TRUST ANCHOR named by its caller answers
+to (W3-07): a commit id, read as an object id only, or a full ``refs/remotes/…`` ref that exists
+under exactly that name, every symbolic hop remote-tracking too. It holds the rule, not a git:
+each caller passes its own executor (verify.py its custody-classed one), so decisions.py
+``--pin-ref``, gate-batch.py ``--pin-ref``, run_report.py's trusted base, verify.py's trust keys
+and release_check.py's gate-1 anchor resolve a name the same way. verify-gate.sh mirrors it in sh.
+
 Library only: no CLI, no exit codes.
 """
 import os
@@ -238,3 +245,82 @@ def _blank_pairs(listing):
         elif _DIFF_COMMAND_KEY_RE.match(key):
             pairs.append((os.fsdecode(key), ""))
     return pairs
+
+
+# --- A trust anchor by its exact name (W3-07) ------------------------------------------------
+# `rev-parse <name>` expands a ref name (gitrevisions: <name>, refs/<name>, refs/tags/<name>,
+# refs/heads/<name>, …), so `refs/remotes/worker/key` with that ref ABSENT resolves to the local
+# branch `refs/heads/refs/remotes/worker/key` — a spelling check on the name passed it, and so
+# did any revision suffix (`refs/remotes/origin/main~1`, `^`, `@{1}`). A 64-hex name in a SHA-1
+# repository (or a 40-hex one in a SHA-256 repository) is not an object id there and expands as
+# a ref name too. The rule below never hands git a name to expand: refs are looked up by their
+# exact name in one listing, and a commit id must resolve to itself.
+COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+REMOTE_TRACKING = "refs/remotes/"
+_SYMREF_HOPS = 5  # git's own limit on a symbolic-ref chain
+
+
+def remote_tracking_commit(git, name):
+    """``(commit, target, None)`` when ``name`` anchors trust, else ``(None, target, why)``.
+
+    ``git(*args)`` runs one git command in the repository and returns ``(returncode, stdout
+    text)``. ``target`` is the final ref ``name`` reaches (the commit id itself for an id), for
+    the caller's message; ``why`` completes a sentence that begins with ``name``.
+
+    - A commit id (40 or 64 hex digits, any case) anchors when ``rev-parse <id>^{commit}``
+      prints that same id: it names a commit OBJECT, never a ref spelled in hex.
+    - Anything else must be a full ``refs/remotes/…`` name ``git check-ref-format`` accepts —
+      no revision syntax — that EXISTS under exactly that name in the repository's
+      ``refs/remotes/`` listing. A symbolic ref is followed hop by hop in that same listing, so
+      every hop and the final target are remote-tracking and exist; the target's object id is
+      then peeled to a commit. Resolved once: the caller reads at ``commit``, never at ``name``.
+
+    Remote-tracking means what this clone's fetch wrote: an anchor in the coordinator's clone or
+    a CI checkout, advisory in a worker's own, where every ref is the worker's to write."""
+    if not name or name.startswith("-"):
+        return None, name, "is empty or option-shaped, not a commit id or a ref"
+    if COMMIT_ID.fullmatch(name.lower()):
+        oid = name.lower()
+        code, out = git("rev-parse", "--verify", "-q", f"{oid}^{{commit}}")
+        if code != 0 or out.strip() != oid:
+            return None, name, ("is spelled as a commit id but names no commit object here (an id "
+                                "is read as an object id only, never as a ref of that spelling)")
+        return oid, oid, None
+    if not name.startswith(REMOTE_TRACKING):
+        return None, name, ("is neither a commit id nor a full remote-tracking ref name "
+                            "(refs/remotes/…): a local branch, tag, HEAD or short name is one the "
+                            "checked change can move")
+    code, _ = git("check-ref-format", name)
+    if code != 0:
+        return None, name, ("is not a valid ref name: revision syntax (~1, ^, @{…}, :) names a "
+                            "commit relative to a ref, not a ref")
+    code, out = git("for-each-ref", "--format=%(refname)%00%(symref)%00%(objectname)",
+                    REMOTE_TRACKING)
+    if code != 0:
+        return None, name, "could not be looked up: git for-each-ref failed"
+    listed = {}
+    for line in out.splitlines():
+        fields = line.split("\0")
+        if len(fields) == 3:
+            listed[fields[0]] = (fields[1], fields[2])
+    target = name
+    for _hop in range(_SYMREF_HOPS + 1):
+        if target not in listed:
+            via = f" (through the symbolic ref to {target})" if target != name else ""
+            return None, target, (f"names no remote-tracking ref that exists under exactly that "
+                                  f"name{via}: git's ref-name expansion (refs/heads/{target}, …) "
+                                  "is never followed")
+        symref, oid = listed[target]
+        if not symref:
+            break
+        if not symref.startswith(REMOTE_TRACKING):
+            return None, symref, (f"is a symbolic ref to {symref}, which is not remote-tracking "
+                                  "(a local branch the checked change can move)")
+        target = symref
+    else:
+        return None, target, f"is a symbolic-ref chain longer than {_SYMREF_HOPS} hops"
+    code, out = git("rev-parse", "--verify", "-q", f"{oid}^{{commit}}")
+    commit = out.strip()
+    if code != 0 or not COMMIT_ID.fullmatch(commit):
+        return None, target, f"reaches {target}, which points at no commit"
+    return commit, target, None

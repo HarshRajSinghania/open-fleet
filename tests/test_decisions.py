@@ -1258,6 +1258,74 @@ class TestPinRefIsCoordinatorOwnedW307(TestPinRefIsTheTrustAnchor):
         self.assertIn("working tree", r.stderr)
 
 
+class TestPinRefIsAnExactNameW307(TestPinRefIsTheTrustAnchor):
+    """Codex review of the W3-07 fix (P1, P2). The prefix check read the name the caller SPELLED,
+    and `rev-parse` then expanded it (gitrevisions: refs/<name>, refs/tags/<name>,
+    refs/heads/<name>, …): with refs/remotes/worker/key absent, a local branch
+    refs/heads/refs/remotes/worker/key answered for it, and a revision suffix passed the prefix
+    check too. A ref anchors only when it exists under exactly its name; a commit id only when it
+    names that commit object."""
+
+    def rogue_branch(self, ref):
+        """The change's own key and a grant it signed, committed on the LOCAL ref `ref`."""
+        self.swap_pin()
+        self.git("checkout", "-q", "-b", "the-change")
+        self.git("add", ".orca")
+        self.git("commit", "-q", "-m", "the change's own key")
+        self.git("update-ref", ref, "HEAD")
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+
+    def test_a_local_branch_spelled_as_an_absent_remote_tracking_ref_is_refused(self):
+        # Codex's reproduction: the real refs/remotes/worker/key never exists.
+        self.rogue_branch("refs/heads/refs/remotes/worker/key")
+        # ...and a remote-tracking symbolic ref whose target is that absent spelling
+        self.git("symbolic-ref", "refs/remotes/worker/head", "refs/remotes/worker/key")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/worker/head"):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("exactly that name", r.stderr)
+                self.assertIn("W3-07", r.stderr)
+                r = self.run_dec("--pin-ref", ref, "active")
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertNotIn("gate-pin", r.stdout)
+
+    def test_a_hex_named_branch_is_not_a_commit_id(self):
+        # In a SHA-1 repository 64 hex digits are no object id, so rev-parse expands them as a
+        # ref name: refs/heads/<64 hex> answered for "a commit id".
+        hexname = "ab" * 32
+        self.rogue_branch(f"refs/heads/{hexname}")
+        for ref in (hexname, hexname.upper()):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("names no commit object", r.stderr)
+
+    def test_a_revision_suffix_on_a_remote_tracking_ref_is_refused(self):
+        # A key rotation: the change holds the RETIRED key, which origin/main's parent (and its
+        # reflog entry before the rotation) still pins. Each suffix passed the prefix check and
+        # read that retired key, so grants it signed verified.
+        retired = self.seed_bytes
+        self.swap_pin()
+        self.git("add", ".orca")
+        self.git("commit", "-q", "-m", "rotate the human grant key")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.seed_bytes = retired
+        (Path(self.tmp) / ".orca" / "human-grant-pubkey").write_text(
+            self.ed.publickey(retired).hex() + "\n", encoding="utf-8")
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        for ref in ("refs/remotes/origin/main~1", "refs/remotes/origin/main^",
+                    "refs/remotes/origin/main@{1}", "refs/remotes/origin/main^{commit}"):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("not a valid ref name", r.stderr)
+        # The exact name reads the CURRENT key, which the retired one is not.
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("differs", r.stderr)
+
+
 class TestGrantPayloadBindsTsAndClassP23(PinnedLedger):
     """P2-3: a signature binds when the decision was taken, so it cannot be re-dated."""
 

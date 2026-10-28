@@ -299,7 +299,8 @@ def grant_pubkey(log_path, pin_ref=None):
     already reads the pin at its base ref; `--pin-ref` gives `check`, `active` and `append` the
     same trust anchor when they run over a tree a worker could have written.
 
-    W3-07: `pin_ref` must be a remote-tracking ref or a commit id, resolved once (_pin_at_ref).
+    W3-07: `pin_ref` must be a commit id or a full remote-tracking ref that exists under exactly
+    that name (no ref-name expansion, no revision suffix), resolved once (_pin_at_ref).
     Without it the working-tree pin — present, swapped or deleted — is the anchor, so it is never
     used silently: a NOTE says so, and a caller that claims a sound lane (ORCA_PROVENANCE /
     OPEN_FLEET_PROVENANCE set, as for verify-gate.sh) cannot run without one."""
@@ -361,31 +362,24 @@ def _pin_at_ref(root, ref):
         except (OSError, subprocess.SubprocessError) as err:
             raise DecisionsError(f"git {args[0]} failed to run: {err}") from err
 
-    # The class is what the ref RESOLVES to, never its spelling (PR #719 review): a refs/remotes/…
-    # name may be a symbolic ref to a local branch. Follow any symbolic chain to its final target
-    # once, and resolve THAT to a commit.
-    commit_id = re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", ref)
-    target = ref
-    if not commit_id:
-        sym = git("symbolic-ref", "-q", ref)
-        found = sym.stdout.decode("utf-8", "replace").strip()
-        target = found if sym.returncode == 0 and found else ref
-    resolved = git("rev-parse", "--verify", "-q", target + "^{commit}")
-    if resolved.returncode != 0:
-        raise DecisionsError(f"--pin-ref {ref!r} does not resolve to a commit in {root}")
     # W3-07: an anchor the checked change cannot move in the coordinator's clone — a commit id, or
-    # a ref whose final target is remote-tracking (what that clone's fetch wrote). A local branch,
-    # tag or HEAD is the change's own to `update-ref` (the trajectory harness does, one line from
-    # where it used to pass `main`), so it anchors nothing.
-    if not (commit_id or target.startswith("refs/remotes/")):
-        via = f" (a symbolic ref to {target})" if target != ref else ""
+    # a full refs/remotes/… ref that exists under EXACTLY that name, every symbolic hop
+    # remote-tracking too (gitexec.remote_tracking_commit, the one rule every trust anchor answers
+    # to). A local branch, tag or HEAD is the change's own to `update-ref` (the trajectory harness
+    # does, one line from where it used to pass `main`); so is `refs/heads/refs/remotes/…`, which
+    # `rev-parse refs/remotes/…` finds by ref-name expansion when the remote-tracking ref is
+    # absent, and a revision suffix (`~1`, `@{1}`) names an older commit than the ref.
+    def run(*args):
+        proc = git(*args)
+        return proc.returncode, proc.stdout.decode("utf-8", "replace")
+
+    commit, _target, why = gitexec.remote_tracking_commit(run, ref)
+    if commit is None:
         raise DecisionsError(
-            f"--pin-ref {ref!r}{via} is not a remote-tracking ref (refs/remotes/…) or a commit id "
-            "— a local branch, tag or HEAD is one the change under check can move, so it anchors "
-            "nothing (W3-07)")
+            f"--pin-ref {ref!r} {why} — it does not resolve to a commit under the exact-name "
+            f"anchor rule in {root}, so it anchors nothing (W3-07)")
     # Resolved ONCE: every read below names this commit, never the ref, which could otherwise
     # move between the validation above and the reads (W3-07).
-    commit = resolved.stdout.decode("utf-8", "replace").strip()
     rel = GRANT_PUBKEY_REL.as_posix()
     # Presence comes from the TREE listing, which never needs the blob: `cat-file -e` fails the
     # same way for an absent path and for a pinned blob this clone cannot read (a partial clone,
@@ -890,9 +884,11 @@ def build_parser():
     p.add_argument("--pin-ref", default=None,
                    help="read .orca/human-grant-pubkey from this git ref and refuse a working "
                         "tree whose pin differs; use it whenever the tree being checked could "
-                        "have been written by a worker. Must be a remote-tracking ref "
-                        "(refs/remotes/origin/main, followed to its final target) or a commit "
-                        "id, resolved once (W3-07) — trustworthy only in a clone the checked "
+                        "have been written by a worker. Must be a commit id or a full "
+                        "remote-tracking ref (refs/remotes/origin/main) that exists under exactly "
+                        "that name, every symbolic hop remote-tracking too — no ref-name "
+                        "expansion, no ~1/^/@{…} suffix — resolved once (W3-07); trustworthy "
+                        "only in a clone the checked "
                         "change cannot write refs in (the coordinator's fetch, a CI checkout); "
                         "required when ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE claims a sound lane")
     sub = p.add_subparsers(dest="command", required=True)

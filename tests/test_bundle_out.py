@@ -209,9 +209,10 @@ class RebuildsStillWork(unittest.TestCase):
             # A file the previous build wrote and this one will not (a retired mission).
             marker = out / bundle.MARKER
             data = json.loads(marker.read_text(encoding="utf-8"))
-            # A retired mission's vendored runtime copy: committed bytes of its source path, which
-            # is what lets a rebuild delete it (Codex review of 82a2d00c: a digest in the marker
-            # is no proof; the source repository's history is).
+            # A retired mission's vendored runtime copy (Codex review of 82a2d00c: a digest in the
+            # marker is no proof). No build of this checkout maps anything to skills/retired-it any
+            # more, so only the record of the build that wrote it can let a rebuild delete it
+            # (re-attack of 2d254d0f: committed bytes vouched for a user's own skill's copies too).
             retired = out / "skills" / "retired-it" / "runtime" / "scripts" / "verify.py"
             retired.parent.mkdir(parents=True)
             retired.write_bytes(committed_bytes("runtime/scripts/verify.py"))
@@ -226,7 +227,8 @@ class RebuildsStillWork(unittest.TestCase):
             marker.write_text(json.dumps(data), encoding="utf-8")
             # ...and its build record, kept outside --out, says so too (re-attack of 4b24dfde: the
             # marker alone vouches for nothing, not even inside a mission directory).
-            remember(out, {"skills/ship-it/references/README.md": b"stale copy\n"})
+            remember(out, {"skills/ship-it/references/README.md": b"stale copy\n",
+                           "skills/retired-it/runtime/scripts/verify.py": retired.read_bytes()})
             self.assertEqual(bundle.build(out), (22, []))
             self.assertFalse((out / "skills" / "retired-it").exists(), "an owned dir was kept")
             self.assertEqual((out / "skills" / "mine" / "SKILL.md").read_text(), "mine\n")

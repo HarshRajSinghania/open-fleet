@@ -1106,9 +1106,8 @@ def _build_into(out, missions, protocols, origin=None):
             else:
                 shutil.copy2(extra, target / extra.name)
             for path in (extra.rglob("*") if extra.is_dir() else [extra]):
-                if path.is_file() and not path.is_symlink():
-                    copied[f"skills/{skill_dir.name}/{path.relative_to(skill_dir).as_posix()}"] = \
-                        path.relative_to(ROOT).as_posix()
+                if path.is_file():
+                    copy(path, f"skills/{skill_dir.name}/{path.relative_to(skill_dir).as_posix()}")
         docs = protocol_docs(text, protocols)
         for name, source in docs.items():
             inventory.add(f"{REFERENCES}/{name}.md")

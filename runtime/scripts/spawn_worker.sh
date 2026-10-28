@@ -784,35 +784,41 @@ def add(role, v):
 
 
 def effect(e):
+    """A terminal (or dispatch_input) effect: the WORKER's pane only with `role: agent`; any other
+    role, a missing one or an unknown one is another pane (Codex round 9: a coordinator-role pane
+    counted as the worker's)."""
     if not isinstance(e, Obj):
         return
     kinds, roles = every(e, "kind"), every(e, "role")
     if "terminal" not in kinds and "dispatch_input" not in kinds:
         return
-    role = "agent" if (not roles or None in roles or "agent" in roles) else "other"
-    if "terminal" not in kinds and role != "agent":
-        return  # a dispatch_input names the agent's pane only
+    role = "agent" if roles and all(r == "agent" for r in roles) else "other"
     for key in ("id", "handle"):
         for v in every(e, key):
             add(role, v)
 
 
-def walk(o, depth=0):
+def walk(o, depth=0, worker=False):
+    """Every handle-shaped field. `agentTerminalHandle` names the worker's pane wherever it sits;
+    a generic terminalHandle / terminal_handle / terminal.handle does so only on the result itself
+    or inside a `worker` object (`worker`), and anywhere else names another pane."""
     global partial
     if depth > 64:
         partial = True  # nested past what is read: it may name more
         return
     if isinstance(o, Obj):
         for k, v in o:
-            if k in KEYS:
+            if k == "agentTerminalHandle":
                 add("agent", v)
+            elif k in KEYS:
+                add("agent" if worker else "other", v)
             elif k == "terminal" and isinstance(v, Obj):
                 for h in every(v, "handle"):
-                    add("agent", h)
+                    add("agent" if worker else "other", h)
             elif k == "effects" and isinstance(v, list) and not isinstance(v, Obj):
                 for e in v:
                     effect(e)
-            walk(v, depth + 1)
+            walk(v, depth + 1, k in ("result", "worker") and (worker or k == "worker" or depth == 0))
     elif isinstance(o, list):
         for v in o:
             walk(v, depth + 1)
@@ -845,7 +851,7 @@ if parsed:
                     if isinstance(e, Obj) and "terminal" in every(e, "kind") and "agent" in every(e, "role"):
                         for h in every(e, "id"):
                             add("agent", h)
-    walk(d)
+    walk(d, 0, not (isinstance(d, Obj) and every(d, "result")))  # a bare result is the result
 else:
     # Not one whole document: every handle-shaped field in the text, so a live worker's handle
     # in a truncated or doubled response is still registered.
@@ -859,17 +865,19 @@ else:
         if re.search(r'"kind"\s*:\s*"terminal"', obj.group(0)):
             for m in re.finditer(r'"(?:id|handle)"\s*:\s*%s' % s, obj.group(0)):
                 add("agent", m.group(1))
+# One line per handle; a handle the response names as the worker's anywhere is the worker's.
+agents = {value for role, _status, value in named if role == "agent"}
 seen = set()
 for role, status, value in named:
     if value not in seen:
         seen.add(value)
-        print(f"{role} {status} {value}")
+        print(f"{'agent' if value in agents else role} {status} {value}")
 if partial:
     print("PARTIAL")
 print("END")
 PY
 }
-# read_named <receipt> [terminal]: run receipt_handles once into named_lines (`<status> <value>`),
+# read_named <receipt> [terminal]: run receipt_handles once into named_lines (`<role> <status> <value>`),
 # agent_handle/agent_status (the worker's pane, if named) and receipt_partial.
 named_lines=(); agent_handle=""; agent_status=""; receipt_partial=0
 read_named() {
@@ -880,21 +888,24 @@ read_named() {
       END) _end=1 ;;
       PARTIAL) _partial=1 ;;
       agent|other)
-        named_lines+=("$_st $_v")
+        named_lines+=("$_role $_st $_v")
         if [ "$_role" = "agent" ] && [ -z "$agent_status" ]; then agent_handle="$_v"; agent_status="$_st"; fi ;;
     esac
   done < <(receipt_handles "$1" "${2:-}")
   if [ "$_end" = "1" ] && [ "$_partial" = "0" ]; then receipt_partial=0; fi
 }
 # register_named: register every handle read_named found (never this session's own). named_count
-# counts them across every response this launch read; named_unrecorded is 1 when any could not be
+# counts them across every response this launch read, and named_agent the WORKER's own pane among
+# them (role agent): only that one being named lets a reservation go, never an ancillary pane
+# alone (Codex round 9); named_unrecorded is 1 when any could not be
 # recorded completely (its record not written, its process tree unverified, not a registry key,
 # or a response that did not parse whole), and named_record_failed when a handle record itself
 # could not be written.
-named_count=0; named_unrecorded=0; named_record_failed=0
+named_count=0; named_agent=0; named_unrecorded=0; named_record_failed=0
 register_named() {
-  local _line _st _h _rs _mine _ph _n=0
+  local _line _role _st _h _rs _mine _ph _n=0 _a=0
   for _line in ${named_lines[@]+"${named_lines[@]}"}; do
+    _role="${_line%% *}"; _line="${_line#* }"
     _st="${_line%% *}"; _h="${_line#* }"
     _mine=0
     for _ph in ${own_handles[@]+"${own_handles[@]}"}; do
@@ -902,6 +913,7 @@ register_named() {
     done
     [ "$_mine" = "0" ] || continue
     _n=$((_n + 1))
+    if [ "$_role" = "agent" ]; then _a=$((_a + 1)); fi
     if [ "$_st" != "ok" ]; then
       named_unrecorded=1; named_record_failed=1
       echo "SPAWN=WARNING task=${task} the response names a worker pane whose handle is not a registry key ($_h), so it cannot be recorded: the launch reservation stays (W4-04)" >&2
@@ -914,7 +926,7 @@ register_named() {
       *) named_unrecorded=1 ;;
     esac
   done
-  named_count=$((named_count + _n))
+  named_count=$((named_count + _n)); named_agent=$((named_agent + _a))
   if [ "$receipt_partial" = "1" ]; then
     named_unrecorded=1
     if [ "$_n" -gt 0 ]; then
@@ -994,8 +1006,8 @@ release_after_registration() {
 launch_reservation=""; keep_reservation=0
 release_reservation() {
   [ -n "$launch_reservation" ] || return 0
-  if [ "$keep_reservation" = "1" ] && [ "$named_count" -gt 0 ] && [ "$named_unrecorded" = "0" ]; then
-    keep_reservation=0  # every worker the response named is recorded
+  if [ "$keep_reservation" = "1" ] && [ "$named_agent" -gt 0 ] && [ "$named_unrecorded" = "0" ]; then
+    keep_reservation=0  # the worker's own pane is named, and every pane named is recorded
   fi
   if [ "$keep_reservation" = "1" ] && [ "$named_count" = "0" ] && [ "$named_unrecorded" = "0" ] \
      && [ "$step" = "create-terminal" ] && [ -s "${tj:-}" ] && prelaunch_refusal "$tj"; then
@@ -1935,8 +1947,10 @@ PY
   # other failure, a policy refusal that can follow a pane's creation included, is unknown, and
   # unknown means a worker may be live.
   if [ "$named_count" -gt 0 ]; then
-    if [ "$named_unrecorded" = "0" ]; then
+    if [ "$named_agent" -gt 0 ] && [ "$named_unrecorded" = "0" ]; then
       release_after_registration
+    elif [ "$named_agent" = "0" ]; then
+      echo "SPAWN=WARNING task=${task} the response names only panes other than the worker's own (no agent-role handle): the worker's pane is unnamed, so its launch reservation stays (W4-04)" >&2
     else
       echo "SPAWN=WARNING task=${task} a worker the response names may be live without a complete spawn record; its launch reservation stays instead (W4-04)" >&2
     fi
@@ -2028,8 +2042,8 @@ else
   # The record replaces the reservation before anything is injected. If it cannot be written the
   # pane gets no task, and its reservation stays (the EXIT trap says so), capping it regardless.
   step=register-spawn
-  if [ "$named_unrecorded" = "0" ] && [ "$named_count" -gt 0 ]; then release_after_registration; fi
-  if [ "$named_record_failed" = "1" ] || [ "$named_count" = "0" ]; then
+  if [ "$named_unrecorded" = "0" ] && [ "$named_agent" -gt 0 ]; then release_after_registration; fi
+  if [ "$named_record_failed" = "1" ] || [ "$named_agent" = "0" ]; then
     echo "SPAWN=FAILED task=${task} step=${step} rc=1 — pane ${h} is LIVE but its PROFILE=${PROFILE} could not be recorded, so nothing was injected into it: close it (${ORCA_BIN} terminal close --terminal ${h}) (W4-04)" >&2
     exit 1
   fi

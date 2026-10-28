@@ -145,6 +145,11 @@ _spec.loader.exec_module(inventory)
 _ds_spec = importlib.util.spec_from_file_location("dispatch_sign", HERE / "dispatch-sign.py")
 dispatch_sign = importlib.util.module_from_spec(_ds_spec)
 _ds_spec.loader.exec_module(dispatch_sign)
+# The one exact-name rule a trust anchor answers to (trusted_base; W3-07). Already a toolchain
+# file (TOOLCHAIN_FILES): inventory.py loads it too.
+_gx_spec = importlib.util.spec_from_file_location("gitexec", HERE / "gitexec.py")
+gitexec = importlib.util.module_from_spec(_gx_spec)
+_gx_spec.loader.exec_module(gitexec)
 
 # Committing the coordinator's public key here is THE enforcement switch — for the signed
 # dispatch record (verify-gate.sh discovers it) and, read at a report's own pin, for the signed
@@ -597,7 +602,6 @@ def grading_base(root, base=None):
 PROVENANCE_VARS = ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
 TRUSTED_BASES = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main",
                  "refs/remotes/origin/master")
-_COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 def sound_lane():
@@ -614,34 +618,31 @@ def _git_line(root, *args):
 
 def trusted_base(root, base=None):
     """(commit, where) the key and the mutation-unit policy are read against on a lane claiming
-    soundness, or (None, why). `base`, when named, must be a commit id or a ref whose FINAL target
-    (any symbolic chain followed) is remote-tracking — the predicate gate-batch.py --pin-ref and
-    verify.py's trust keys answer to. Unnamed: refs/remotes/origin/HEAD when its target is itself
-    remote-tracking (one that points at a local branch is skipped, as verify-gate.sh skips it),
+    soundness, or (None, why). `base`, when named, must pass gitexec.remote_tracking_commit — the
+    rule gate-batch.py --pin-ref, decisions.py --pin-ref and verify.py's trust keys answer to: a
+    commit id that names that commit object, or a full refs/remotes/… ref that EXISTS under
+    exactly that name, every symbolic hop remote-tracking too (W3-07: `rev-parse
+    refs/remotes/origin/main` with that ref absent expands to a local refs/heads/refs/remotes/…
+    branch, and a ~1 or @{1} suffix names an older commit). Unnamed: refs/remotes/origin/HEAD
+    under that rule (one that points at a local branch is skipped, as verify-gate.sh skips it),
     then refs/remotes/origin/main, then …/master. Never a local branch, a tag, a short name or
-    HEAD. Remote-tracking means what this clone's fetch wrote: sound in the coordinator's clone or
-    a CI checkout, advisory in a worker's own, where every ref is the worker's to write."""
+    HEAD. Remote-tracking means what this clone's fetch wrote: sound in the coordinator's clone
+    or a CI checkout, advisory in a worker's own, where every ref is the worker's to write."""
     skipped = []
+
+    def git(*args):
+        return _git_line(root, *args)
+
     for name in ((base,) if base else TRUSTED_BASES):
         if name.startswith("-"):
             return None, f"--base {name!r} is an option, not a ref"
-        target = name
-        if not (base and _COMMIT_ID.fullmatch(name)):
-            code, out = _git_line(root, "symbolic-ref", "-q", name)
-            target = out if code == 0 and out else name
-            if not target.startswith("refs/remotes/"):
-                via = f" (a symbolic ref to {target})" if target != name else ""
-                if base:
-                    return None, (f"--base {name!r}{via} is neither a commit id nor a ref whose "
-                                  "final target is remote-tracking (refs/remotes/…)")
-                skipped.append(f"{name} points at {target}, not a remote-tracking ref")
-                continue
-        code, commit = _git_line(root, "rev-parse", "--verify", "-q", f"{target}^{{commit}}")
-        if code == 0 and _COMMIT_ID.fullmatch(commit):
-            via = f" -> {target}" if target != name else ""
+        commit, target, why = gitexec.remote_tracking_commit(git, name)
+        if commit is not None:
+            via = f" -> {target}" if target not in (name, commit) else ""
             return commit, f"{name}{via} = {commit[:12]}"
         if base:
-            return None, f"--base {name!r} names no commit here"
+            return None, f"--base {name!r} {why}"
+        skipped.append(f"{name} {why}")
     why = "no remote-tracking base resolves (tried " + ", ".join(TRUSTED_BASES) + ")"
     return None, why + (f"; {'; '.join(skipped)}" if skipped else "")
 

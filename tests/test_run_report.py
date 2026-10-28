@@ -2025,6 +2025,38 @@ class ASoundLaneReadsTheKeyAndPolicyAtATrustedBase(SignedKeyFixture):
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
                 self.assertIn("mutation-class", r.stdout)
 
+    def test_a_local_branch_spelled_as_an_absent_remote_tracking_ref_is_no_base(self):
+        # W3-07 class, Codex review (P1): trusted_base followed symbolic-ref, checked the target's
+        # SPELLING, then rev-parsed it — and with refs/remotes/origin/main absent, rev-parse
+        # expands the name to the local branch refs/heads/refs/remotes/origin/main. Pointed at
+        # the PR, the policy the PR wrote judged the PR and the report-only verdict bound.
+        self._scenario()
+        _git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        _git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        _git(self.repo, "update-ref", "refs/heads/refs/remotes/origin/main", self.rev)
+        for extra in ((), ("--base", "refs/remotes/origin/main")):
+            with self.subTest(extra=extra):
+                r = self.run_report(*extra)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("exactly that name", r.stderr)
+                self.assertNotIn("bound demo-it", r.stdout)
+
+    def test_a_suffixed_or_hex_named_base_is_no_trusted_base(self):
+        # A revision suffix passed the prefix check (origin/main~1 is an older commit than the
+        # reviewed tip), and 64 hex digits in a SHA-1 repository are no object id: rev-parse
+        # expands them to a branch of that spelling, here the PR.
+        self._scenario()
+        hexname = "ef" * 32
+        _git(self.repo, "update-ref", f"refs/heads/{hexname}", self.rev)
+        for base in ("refs/remotes/origin/main~1", "refs/remotes/origin/main^",
+                     "refs/remotes/origin/main@{0}", hexname):
+            with self.subTest(base=base):
+                self.assertEqual(run_report.trusted_base(self.repo, base)[0], None)
+                r = self.run_report("--base", base)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn("bound demo-it", r.stdout)
+        self.assertEqual(run_report.trusted_base(self.repo, self.reviewed)[0], self.reviewed)
+
     def test_the_policy_read_itself_never_lands_on_the_worker_s_commit(self):
         # The library read (validate.py, bind_check.py and certification.py call into this
         # module): with no pin it reads at the trusted base, and when no trusted base exists it

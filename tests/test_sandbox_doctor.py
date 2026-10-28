@@ -503,6 +503,41 @@ class OnlyTheDocumentedShapeIsAReport(unittest.TestCase):
         self.assertTrue(sandbox_doctor.assess("recipe lane-7: all checks pass\n", "lane-7")[0])
 
 
+class EveryFirstTokenOfAJsonArrayIsJson(unittest.TestCase):
+    """W4-10, Codex round 9 (P2): `[true, {"recipe": "lane-7", "backend": "docker", "privileged":
+    true}` (truncated) did not count as JSON-shaped, since only `[` followed by an object, array or
+    string did, so it fell through to the plain-text reader, which found the recipe and no failure
+    word and read it as clear. JSON-shaped is now the JSON grammar's first token: `{`, or `[`
+    followed by any value's first token or `]`; a number or a literal must end at a delimiter."""
+
+    BAD = json.dumps(dict(GOOD["docker"], privileged=True))
+
+    def test_every_first_token_class_truncated_is_refused(self):
+        for name, first in (("true", "true"), ("false", "false"), ("a number", "7"), ("a fraction", "0.5"),
+                            ("a negative number", "-2.5e3"), ("null", "null"), ("a string", '"x"'),
+                            ("a nested array", "[1]"), ("an object", "{}")):
+            with self.subTest(first=name):
+                raw = "[" + first + ", " + self.BAD[:-1]  # truncated: the array and the report never close
+                clear, reason, _ = sandbox_doctor.assess(raw, "lane-7")
+                self.assertFalse(clear, raw[:60])
+                self.assertIn("does not parse", reason)
+                self.assertFalse(sandbox_doctor.placement_bound(raw))
+        for raw in ("[] " + self.BAD, "[true", "\ufeff[null, " + self.BAD, "[ 0 ] " + self.BAD):
+            with self.subTest(raw=raw[:20]):
+                clear, reason, _ = sandbox_doctor.assess(raw, "lane-7")
+                self.assertFalse(clear, raw[:60])
+                self.assertIn("does not parse", reason)
+
+    def test_bracketed_text_lines_are_still_text(self):
+        for line in ("[PASS] recipe lane-7 is healthy", "[timestamp] recipe lane-7 is healthy",
+                     "[12:00:01] recipe lane-7 is healthy", "[2026-10-28] recipe lane-7 is healthy",
+                     "[truex] recipe lane-7 is healthy", "[nullable] recipe lane-7 is healthy",
+                     "[1/3] recipe lane-7 is healthy"):
+            with self.subTest(line=line):
+                self.assertTrue(sandbox_doctor.assess(line + "\n", "lane-7")[0])
+        self.assertFalse(sandbox_doctor.assess("[12:00:01] recipe lane-7 FAILED a check\n", "lane-7")[0])
+
+
 class PortableBackends(unittest.TestCase):
     """#585: a portable sandbox must PROVE its isolation, per backend, and fail with exit 2."""
 

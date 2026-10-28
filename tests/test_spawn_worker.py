@@ -2846,6 +2846,88 @@ class TestOnlyAProvenRefusalReleases(unittest.TestCase):
                     self.assertEqual(left, [], text)
 
 
+class TestOnlyTheWorkersOwnPaneReleases(unittest.TestCase):
+    """W4-04, Codex round 9 (P1): register_named counted every handle a response named, so
+    `{"result": {"state": "outcome_unknown", "effects": [{"kind": "terminal", "role": "coordinator",
+    "id": "term_aux"}]}}` registered the auxiliary pane, called the launch recorded and released the
+    reservation while the worker's own pane stayed unnamed. A reservation now goes only when the
+    WORKER's pane (an agent-role handle) is named and every named pane is completely recorded."""
+
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    _stub = TestSpawnWorkerV5Lanes._stub
+    tree = TestIdentitySurvivesAScrubbedEnvironment.tree
+    lane = TestIdentitySurvivesAScrubbedEnvironment.lane
+    scrubbed = TestIdentitySurvivesAScrubbedEnvironment.scrubbed
+    assert_capped = TestIdentitySurvivesAScrubbedEnvironment.assert_capped
+    RW = TestIdentitySurvivesAScrubbedEnvironment.RW
+    DANGER = TestIdentitySurvivesAScrubbedEnvironment.DANGER
+    CHILD = TestIdentitySurvivesAScrubbedEnvironment.CHILD
+    LAUNCH = TestIdentitySurvivesAScrubbedEnvironment.LAUNCH
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def launch(self, name, fname, answer, env, own=""):
+        """The runtime starts the worker's pane (term_orphan, which the answer never names as the
+        worker's) and an auxiliary pane (term_aux), both live; returns (rc, text, reservations
+        left, the worker pane's tree, the scratch dir)."""
+        tmp = Path(self.tmp) / name
+        tmp.mkdir()
+        self._stub(str(tmp))
+        (tmp / fname).write_text(answer if isinstance(answer, str) else json.dumps(answer))
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_orphan"})
+        pty.spawn("aux", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_aux"})
+        lane = {**self.lane(**env), "PATH": f"{tmp}:/usr/bin:/bin", "SP": str(tmp), "HOME": str(tmp)}
+        if own:
+            lane["ORCA_TERMINAL_HANDLE"] = own
+        rc, out, err = self.tree().run(self.LAUNCH, lane)
+        pend = tmp / ".open-fleet" / "spawn-profiles" / ".pending"
+        left = [p for p in pend.iterdir() if p.name.startswith("r.")] if pend.is_dir() else []
+        return rc, out + err, left, pty, tmp
+
+    def test_an_ancillary_pane_alone_never_releases_the_reservation(self):
+        aux = {"kind": "terminal", "role": "coordinator", "id": "term_aux"}
+        cases = (
+            ("an ancillary pane only (the Codex input)", "receipt.json",
+             {"result": {"state": "outcome_unknown", "effects": [aux]}}, self.RW, ""),
+            ("an unknown role only", "receipt.json",
+             {"result": {"state": "outcome_unknown", "effects": [dict(aux, role="observer")]}}, self.RW, ""),
+            ("no role at all", "receipt.json",
+             {"result": {"state": "outcome_unknown", "effects": [{"kind": "terminal", "id": "term_aux"}]}},
+             self.RW, ""),
+            ("a generic handle nested away from the result", "receipt.json",
+             {"result": {"state": "outcome_unknown", "launch": {"helper": {"terminalHandle": "term_aux"}}}},
+             self.RW, ""),
+            ("the agent named only as this session's own pane", "receipt.json",
+             {"result": {"state": "outcome_unknown", "effects": [
+                 aux, {"kind": "terminal", "role": "agent", "id": "term_coord_self"}]}}, self.RW, "term_coord_self"),
+            ("an ancillary pane beside an agent that cannot be recorded", "receipt.json",
+             {"result": {"state": "outcome_unknown", "effects": [
+                 aux, {"kind": "terminal", "role": "agent", "id": "term orphan"}]}}, self.RW, ""),
+            ("terminal create naming only a pane elsewhere", "terminal-create.json",
+             {"result": {"panes": [{"terminalHandle": "term_aux"}]}}, {"PROFILE": "ro"}, ""))
+        for i, (name, fname, answer, env, own) in enumerate(cases):
+            with self.subTest(name):
+                rc, text, left, pty, tmp = self.launch(f"c{i}", fname, answer, env, own)
+                reg = tmp / ".open-fleet" / "spawn-profiles"
+                self.assertTrue((reg / "term_aux").is_file(), text)  # the ancillary pane is still recorded
+                self.assertEqual(len(left), 1, text)
+                self.assertNotIn("dispatch", (tmp / "orca-calls.log").read_text())
+                profile = env["PROFILE"]
+                cap = f"parent profile '{profile}'" if profile == "ro" else "exceeds parent profile 'rw'"
+                child = {**self.scrubbed(**(self.RW if profile == "ro" else self.DANGER)),
+                         "HOME": str(tmp), "SP": str(tmp)}
+                self.assert_capped(pty.run(self.CHILD, child, via="pane"), cap)
+        # The worker's own pane named and recorded beside the ancillary one: released.
+        rc, text, left, _pty, tmp = self.launch("agent", "receipt.json", {"result": {
+            "state": "outcome_unknown", "effects": [aux, {"kind": "terminal", "role": "agent", "id": "term_orphan"}]}},
+            self.RW)
+        self.assertEqual(rc, 4, text)
+        self.assertEqual(left, [], text)
+
+
 class TestNonOrcaDanger(unittest.TestCase):
     """#585: off Orca, danger is decided by the runtime's own doctor — proven isolation AND
     prelaunch placement — instead of an unconditional refusal; everything short of that refuses."""

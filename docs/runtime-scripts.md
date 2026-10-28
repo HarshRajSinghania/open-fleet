@@ -1290,7 +1290,7 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 | Label | Reasons | Current mode |
 |---|---|---|
 | `CURRENT` | none: the source revision is in the live repo and an ancestor of it, and nothing below fired | shown |
-| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `scope-unverifiable:<p>`, `tests-unverifiable:<t>`, `dependencies-changed:<file>`, `dependencies-unverifiable:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
+| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `scope-unverifiable:<p>`, `tests-unverifiable:<t>`, `dependencies-changed:<file>`, `dependencies-unverifiable:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `artifact-irregular:<f>`/`:manifest`, `artifact-oversized:<f>`/`:manifest`, `provenance-unreadable` | shown, labelled, never upgraded |
 | `STALE` | `path-changed:<p>`, `path-deleted:<p>`, `path-renamed:<old>-><new>`, `symbol-changed:<p>::<s>`, `symbol-gone:<p>::<s>`, `tests-changed:<t>`, `divergent-branch`, `ahead-of-live`, `artifact-modified:<f>`/`:manifest` | suppressed |
 | `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes` — only a record whose own revision and artifact checks held may supersede), `current-evidence:<p>=<outcome>` | suppressed |
 
@@ -1323,7 +1323,14 @@ assume-unchanged or skip-worktree flag or a stale stat cache cannot hide an edit
 alone are not one — or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
 to the archive root); an archive outside git has no committed bytes to check, so every entry it
 yields is `artifact-unversioned`, and an evidence file that cannot be read leaves only its own
-entry `artifact-unreadable` (an unreadable live file, `provenance-unreadable`). Newer means descendant by ancestry when the live repo has both revisions,
+entry `artifact-unreadable` (an unreadable live file, `provenance-unreadable`). Every file the hint
+reads in its own process -- the re-read of a matched manifest, an evidence file it hashes, a live file
+it compares -- is opened without following a final link and without blocking, must be a regular
+file by its descriptor, and is bounded: a manifest or live file is held only up to
+`MAX_READ_BYTES` (64 MiB), an evidence file hashed as it streams up to `MAX_HASH_BYTES` (1 GiB). A
+manifest or evidence file refused that way is `artifact-irregular:<f>`/`:manifest` or
+`artifact-oversized:<f>`/`:manifest` (UNKNOWN); a live file refused that way is unverifiable, as an
+unreadable one is. Newer means descendant by ancestry when the live repo has both revisions,
 else later commit time, else — equal commit times, as for two runs at one revision — later
 claimed time; two contradicting records of one unit that nothing orders are both
 `contradicted-by` the other.

@@ -54,4 +54,7 @@
   Linux `RLIMIT_DATA` holds to 1 GiB past the process (a source whose parse passes it is skipped
   and said), each source gets 60 s of wall clock on every platform, a child stopped by either is
   restarted past that source, and a store's schema statement is held to 1 MiB everywhere; macOS
-  does not enforce `RLIMIT_DATA`, so there only the byte caps and the schema cap bound it.
+  does not enforce `RLIMIT_DATA`, so there only the byte caps and the schema cap bound it. The
+  hint's own reads afterwards (`hint_provenance.py`: the re-read of a matched manifest, evidence
+  hashing, live files) never follow a final link or block, read only a regular file, and are
+  bounded (64 MiB held, 1 GiB hashed as it streams), a refusal being the entry's UNKNOWN reason.

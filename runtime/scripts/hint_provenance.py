@@ -32,11 +32,13 @@ Library only: no CLI, no exit codes.
 """
 import ast
 import datetime
+import errno
 import fnmatch
 import functools
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import warnings
 from pathlib import Path
@@ -188,8 +190,71 @@ def outcome(status):
     return None
 
 
-def sha256_file(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+# What a hint reads from disk, in the process that builds it (the scan's child has exited by then).
+# A manifest re-read or a live file is held whole to be compared, so it is read only up to
+# MAX_READ_BYTES (search_sessions' MAX_FILE_BYTES: a manifest the scan accepted is no larger); an
+# evidence file is hashed as it streams, up to MAX_HASH_BYTES. Each is opened without following a
+# final link and without blocking, and must be a regular file by its descriptor: Path.read_bytes()
+# followed a link swapped in since the check (to /dev/zero: read without end), blocked on a FIFO,
+# and held a file of any size whole (W5-21 class, re-attack of 2d254d0f).
+MAX_READ_BYTES = 64 << 20
+MAX_HASH_BYTES = 1 << 30
+_OPEN_FLAGS = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+               | getattr(os, "O_CLOEXEC", 0))
+
+
+class ArtifactRefused(OSError):
+    """A file a hint will not read: ``kind`` is ``irregular`` (a link, FIFO, device or socket) or
+    ``oversized`` (past the bound it is read under). The hint says so in its reasons."""
+
+    def __init__(self, kind, path):
+        super().__init__(f"{path}: {kind}")
+        self.kind = kind
+
+
+def _open_regular(path, limit):
+    """A descriptor on the regular file at ``path`` of at most ``limit`` bytes, or ArtifactRefused."""
+    try:
+        fd = os.open(path, _OPEN_FLAGS)
+    except OSError as err:
+        if err.errno == errno.ELOOP:
+            raise ArtifactRefused("irregular", path) from None
+        raise
+    st = os.fstat(fd)
+    kind = "irregular" if not stat.S_ISREG(st.st_mode) else "oversized" if st.st_size > limit else None
+    if kind is not None:
+        os.close(fd)
+        raise ArtifactRefused(kind, path)
+    return fd
+
+
+def _chunks(path, limit):
+    """The bytes of ``path`` in chunks, never more than ``limit`` (a file grown past it while read
+    is ``oversized``)."""
+    fd = _open_regular(path, limit)
+    try:
+        read = 0
+        while chunk := os.read(fd, min(1 << 20, limit + 1 - read)):
+            read += len(chunk)
+            if read > limit:
+                raise ArtifactRefused("oversized", path)
+            yield chunk
+    finally:
+        os.close(fd)
+
+
+def read_regular(path, limit=MAX_READ_BYTES):
+    """The bytes of the regular file at ``path``, at most ``limit``; ArtifactRefused otherwise."""
+    return b"".join(_chunks(path, limit))
+
+
+def sha256_file(path, limit=MAX_HASH_BYTES):
+    """The sha256 of the regular file at ``path``, streamed, at most ``limit`` bytes read;
+    ArtifactRefused otherwise."""
+    digest = hashlib.sha256()
+    for chunk in _chunks(path, limit):
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _epoch(stamp):
@@ -431,6 +496,9 @@ class Archive:
                 try:
                     present = target is not None and target.is_file()
                     digest = sha256_file(target) if present else None
+                except ArtifactRefused as exc:
+                    reasons.append((UNKNOWN, f"artifact-{exc.kind}:{os.path.basename(rel)}"))
+                    continue
                 except OSError:
                     # Unknown for THIS hint only (PR #639 review: the OSError escaped every handler
                     # and one unreadable evidence file aborted the whole hint command).
@@ -453,7 +521,9 @@ class Archive:
         if not blob_id:
             return [(STALE, "artifact-modified:manifest")]
         try:
-            data = Path(manifest_path).read_bytes()
+            data = read_regular(manifest_path)
+        except ArtifactRefused as exc:
+            return [(UNKNOWN, f"artifact-{exc.kind}:manifest")]
         except OSError:
             return [(UNKNOWN, "artifact-unreadable:manifest")]
         if _blob_id(data, len(blob_id)) == blob_id:
@@ -523,7 +593,7 @@ class LiveSource:
         try:
             if target is None or not target.is_file():
                 return None
-            return target.read_bytes().decode("utf-8", "replace")
+            return read_regular(target).decode("utf-8", "replace")
         except OSError as exc:
             # An unreadable live file is unknown for the hints scoped to it, not fatal to the rest.
             raise ProvenanceError(f"cannot read {path} in the live source") from exc
@@ -618,7 +688,10 @@ class LiveSource:
         leaf = parent / os.path.basename(rel)
         if leaf.is_symlink():
             return os.fsencode(os.readlink(leaf))
-        return leaf.read_bytes() if leaf.is_file() else None
+        try:
+            return read_regular(leaf) if leaf.is_file() else None
+        except ArtifactRefused:
+            return None  # swapped for a link or a FIFO, or past MAX_READ_BYTES: no comparison, unknown
 
     def watch(self, rev, paths):
         """Name the paths a hint depends on -- its scope, its related tests, the dependency files: in

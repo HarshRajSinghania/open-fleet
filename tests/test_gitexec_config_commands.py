@@ -1704,6 +1704,153 @@ class IncludeTargetsAreReadAsGitReadsThem(unittest.TestCase):
         gitexec.refuse_blocking_files(p.repo)
 
 
+# Codex on PR #724 (round 7): the include parser's whitespace set was written down by hand and
+# missed what a newer git treats as space, so the check read a different path from the one git
+# opens. These compare the parser with the INSTALLED git, byte by byte and position by position
+# (they run against whatever git CI has, so a future git that reads config differently fails here).
+_BYTE_TEMPLATES = {
+    "value, leading": lambda b: b"[include]\n\tpath = " + b + b"X\n",
+    "value, trailing": lambda b: b"[include]\n\tpath = X" + b + b"\n",
+    "value, trailing, CRLF": lambda b: b"[include]\r\n\tpath = X" + b + b"\r\n",
+    "value, inside": lambda b: b"[include]\n\tpath = A" + b + b"B\n",
+    "value, doubled inside": lambda b: b"[include]\n\tpath = A" + b + b + b"B\n",
+    "value, quoted": lambda b: b'[include]\n\tpath = "A' + b + b'B"\n',
+    "value, quoted at the end": lambda b: b'[include]\n\tpath = "A' + b + b'"\n',
+    "value, after a backslash": lambda b: b"[include]\n\tpath = A\\" + b + b"B\n",
+    "value, after a backslash, quoted": lambda b: b'[include]\n\tpath = "A\\' + b + b'B"\n',
+    "value, before a comment": lambda b: b"[include]\n\tpath = A" + b + b"; c\n",
+    "value, right after =": lambda b: b"[include]\n\tpath =" + b + b"X\n",
+    "key, then the byte": lambda b: b"[include]\n\tpath" + b + b"= X\n",
+    "key, inside": lambda b: b"[include]\n\tpa" + b + b"th = X\n",
+    "key, bare then the byte": lambda b: b"[include]\n\tpath" + b + b"\n",
+    "line, leading": lambda b: b"[include]\n" + b + b"path = X\n",
+    "line, alone": lambda b: b"[include]\n" + b + b"\npath = X\n",
+    "header, then the byte": lambda b: b"[include]" + b + b"path = X\n",
+    "header name, inside": lambda b: b"[incl" + b + b"ude]\npath = X\n",
+    "header name, then the byte": lambda b: b"[include" + b + b'"s"]\npath = X\n',
+    "header, before ]": lambda b: b'[include "s"' + b + b"]\npath = X\n",
+    "subsection, inside": lambda b: b'[includeIf "a' + b + b'b"]\npath = X\n',
+    "subsection, after a backslash": lambda b: b'[includeIf "a\\' + b + b'b"]\npath = X\n',
+    "comment, leading": lambda b: b"[include]\n" + b + b"# c\npath = X\n",
+    "after a comment": lambda b: b"[include]\n# c" + b + b"path = Y\npath = X\n",
+    "file, leading": lambda b: b + b"[include]\npath = X\n",
+}
+
+
+def _git_list(path, data):
+    path.write_bytes(data)
+    got = subprocess.run(["git", "config", "-f", str(path), "--list", "-z"], env=_CLEAN_ENV,
+                         capture_output=True, stdin=subprocess.DEVNULL, cwd=str(path.parent), timeout=30)
+    if got.returncode != 0:
+        return None
+    out = []
+    for record in got.stdout.split(b"\0")[:-1]:
+        key, nl, value = record.partition(b"\n")
+        out.append((key.lower(), value if nl else None))
+    return out
+
+
+def _parsed(data):
+    try:
+        entries = gitexec._parse_config(data)
+    except gitexec._ConfigUnparseable:
+        return None
+    return [((section + (b"." + sub if sub is not None else b"") + (b"." if section else b"") + key).lower(), value)
+            for section, sub, key, value in entries]
+
+
+class TheIncludeParserMatchesTheInstalledGit(unittest.TestCase):
+
+    def test_every_byte_in_every_position_reads_as_git_reads_it(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        mismatches = []
+        for where, template in _BYTE_TEMPLATES.items():
+            for byte in range(256):
+                data = template(bytes([byte]))
+                git, ours = _git_list(tmp / "c", data), _parsed(data)
+                if git == ours:
+                    continue
+                # The one allowed difference: a NUL byte, which git silently truncates a value at,
+                # is refused here rather than mirrored.
+                if ours is None and b"\0" in data:
+                    continue
+                mismatches.append((where, f"{byte:#04x}", git, ours))
+        self.assertEqual(mismatches, [], "the include parser reads config differently from the installed git")
+
+    def test_the_whitespace_set_is_the_installed_gits(self):
+        space = gitexec._git_config_space()
+        self.assertTrue(set(b" \t\n") <= set(space), space)
+        self.assertIs(gitexec._git_config_space(), space, "probed once, then cached")
+        for c in range(1, 256):
+            b = bytes([c])
+            if b in (b"\n", b'"', b"\\", b";", b"#"):
+                continue
+            with self.subTest(byte=f"{c:#04x}"):
+                git = _git_list(Path(tempfile.mkdtemp()) / "c", b"[p]\n\tk = " + b + b"A" + b + b"\n")
+                self.assertEqual(git == [(b"p.k", b"A")], b in space)
+
+    def test_a_git_that_counts_vertical_tab_and_form_feed_as_space_is_followed(self):
+        # What a newer git does (Codex, round 7): with \v and \f in the set, they are trimmed.
+        space = gitexec._git_config_space() + b"\x0b\x0c"
+        for b in (b"\x0b", b"\x0c"):
+            entries = gitexec._parse_config(b"[include]\n\tpath = /x/fifo" + b + b"\n" + b + b"[include]" + b +
+                                            b"path = A" + b + b"B\n", space=space)
+            self.assertEqual([e[3] for e in entries], [b"/x/fifo", b"A B"])
+
+    def test_the_probe_follows_a_git_that_counts_vertical_tab_and_form_feed_as_space(self):
+        # A stand-in for a newer git: it reads every config file as the real one would read it with
+        # \v and \f turned into spaces. The probe learns that set; nothing is written by hand.
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        fake = tmp / "git"
+        fake.write_text("#!/bin/sh\n"
+                        'if [ "$1" = config ] && [ "$2" = -f ]; then\n'
+                        f'  LC_ALL=C tr "\\013\\014" "  " <"$3" >"$3.newgit" && exec {_sh(_REAL_GIT)} config -f "$3.newgit" "$4" "$5"\n'
+                        "fi\n"
+                        f'exec {_sh(_REAL_GIT)} "$@"\n', encoding="utf-8")
+        fake.chmod(0o755)
+        saved = gitexec._SPACE_PROBE
+        self.addCleanup(setattr, gitexec, "_SPACE_PROBE", saved)
+        gitexec._SPACE_PROBE = None
+        with mock.patch.object(gitexec, "GIT", str(fake)):
+            space = gitexec._git_config_space()
+        self.assertIn(b"\x0b", space)
+        self.assertIn(b"\x0c", space)
+        self.assertEqual(gitexec._parse_config(b"[include]\n\tpath = /x/fifo\x0c\n", space=space)[0][3], b"/x/fifo")
+
+    def test_a_vertical_tab_or_form_feed_names_the_fifo_git_opens(self):
+        # Each scenario puts ONE FIFO at one of the two names a trailing \v/\f could mean; the check
+        # must refuse exactly when git itself blocks on the file it opens (the positive control),
+        # whichever way the installed git reads the byte.
+        for b in ("\x0b", "\x0c"):
+            for fifo_at in ("stripped", "kept"):
+                with self.subTest(byte=repr(b), fifo_at=fifo_at):
+                    tmp = tempfile.mkdtemp()
+                    self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
+                    p = _Probe(tmp)
+                    p.commit("a.txt", "line1\n")
+                    name = "blocking" + (b if fifo_at == "kept" else "")
+                    os.mkfifo(p.dir / name)
+                    with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                        fh.write(f"[include]\n\tpath = {p.dir}/blocking{b}\n")
+                    try:
+                        subprocess.run(["git", "-C", str(p.repo), "rev-parse", "HEAD"], env=_CLEAN_ENV,
+                                       capture_output=True, stdin=subprocess.DEVNULL, timeout=3)
+                        git_blocks = False
+                    except subprocess.TimeoutExpired:
+                        git_blocks = True
+                    done, got = _finishes(lambda r=p.repo: gitexec.refuse_blocking_files(r), seconds=10)
+                    self.assertTrue(done)
+                    self.assertEqual(isinstance(got, gitexec.GitCustodyRefused), git_blocks,
+                                     f"git {'blocks' if git_blocks else 'does not block'} on the FIFO "
+                                     f"{'without' if fifo_at == 'stripped' else 'with'} the trailing {b!r}")
+                    if git_blocks:
+                        done, got = _finishes(lambda r=p.repo: floor_guard.collect_diff(r, "HEAD"), seconds=10)
+                        self.assertTrue(done, "floor_guard blocked")
+                        self.assertIsInstance(got, floor_guard.GuardError)
+
+
 class CustodySetupTimeoutsAreEachToolsRefusal(unittest.TestCase):
     """Codex on PR #724 (round 6): a timeout in gitexec.custody's own setup (its rev-parse and
     config queries) escaped hint_provenance as a raw TimeoutExpired, and predict-merge reported it

@@ -900,10 +900,60 @@ class _ConfigUnparseable(ValueError):
     """A config file _parse_config cannot read exactly as git does: never a guess."""
 
 
-_GIT_SPACE = b" \t\n\r"
+_SPACE_PROBE = None  # the installed git's config whitespace, probed once per process
 
 
-def _parse_config(data):
+def _git_config_space():
+    """The bytes the INSTALLED git's config parser treats as whitespace (its isspace()), learned
+    from that git, once: which bytes git's ctype table counts as space is version-dependent (Codex
+    on PR #724, round 7: a newer git strips a trailing \v or \f from a value this host's 2.43
+    keeps), and a parser that disagrees checks a different file from the one git opens. One
+    `git config -f <probe> --list -z` over a probe file whose key kXX holds `<b>A<b>B<b>` for every
+    byte b that is not itself config syntax: git reads `A B` for a whitespace byte (trimmed at both
+    ends, a space inside) and the raw bytes otherwise. Run in a fresh temporary directory with
+    discovery stopped there, so no repository config is read. Anything else (git failing, an answer
+    neither shape) raises GitCustodyRefused: the parser never guesses."""
+    global _SPACE_PROBE
+    if _SPACE_PROBE is not None:
+        return _SPACE_PROBE
+    candidates = [c for c in range(1, 256) if bytes([c]) not in (b"\n", b'"', b"\\", b";", b"#")]
+    body = b"[p]\n" + b"".join(b"\tk%02x = " % c + bytes([c]) + b"A" + bytes([c]) + b"B" + bytes([c]) + b"\n"
+                               for c in candidates)
+    tmp = tempfile.mkdtemp(prefix="open-fleet-git-space-")
+    try:
+        probe = os.path.join(tmp, "probe")
+        with open(probe, "wb") as fh:
+            fh.write(body)
+        probe_env = env()
+        probe_env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(tmp)
+        try:
+            got = subprocess.run(argv("config", "-f", probe, "--list", "-z"), capture_output=True,
+                                 timeout=30, env=probe_env, cwd=tmp, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise GitCustodyRefused(f"git custody: cannot learn how git reads config: {exc}") from exc
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if got.returncode != 0:
+        raise GitCustodyRefused("git custody: cannot learn how git reads config: "
+                                f"{os.fsdecode(got.stderr).strip()[:200]}")
+    values = {}
+    for record in got.stdout.split(b"\0")[:-1]:
+        key, _, value = record.partition(b"\n")
+        values[key] = value
+    space = bytearray(b"\n")  # a line end, which git's isspace() also counts
+    for c in candidates:
+        b = bytes([c])
+        value = values.get(b"p.k%02x" % c)
+        if value == b"A B":
+            space += b
+        elif value != b + b"A" + b + b"B" + b:
+            raise GitCustodyRefused(f"git custody: git reads config byte {c:#04x} in a way the "
+                                    "include check cannot mirror")
+    _SPACE_PROBE = bytes(space)
+    return _SPACE_PROBE
+
+
+def _parse_config(data, space=None):
     """``[(section, subsection, key, value)]`` of a git config file's bytes, parsed the way git's
     own parser (config.c git_parse_source) reads it, so a path read here is the path git opens
     (Codex on PR #724, round 6: a CRLF line ending left `\r` on a path a line split read). Section
@@ -911,8 +961,12 @@ def _parse_config(data):
     `[section]`, its exact bytes for `[section "sub"]` (escapes applied), and the lowercased rest
     for the old `[section.sub]`; ``value`` is None for a key with no `=`. A UTF-8 BOM at the start
     is skipped and `\r\n` read as `\n`, as git does. Anything git would reject - a bad header, a bad
-    escape, an unterminated quote, a key outside a section - and any NUL byte raises
-    _ConfigUnparseable: the caller refuses rather than guesses."""
+    escape, an unterminated quote - and any NUL byte raises
+    _ConfigUnparseable: the caller refuses rather than guesses. ``space`` is the whitespace set
+    (default: the installed git's, _git_config_space), used wherever git's parser calls isspace();
+    the two places git tests for ' ' and '\t' alone (after a key name) test those alone here too.
+    A NUL byte refuses (git would silently truncate the value at it)."""
+    space = _git_config_space() if space is None else space
     if b"\0" in data:
         raise _ConfigUnparseable("a NUL byte")
     if data.startswith(b"\xef\xbb\xbf"):
@@ -929,7 +983,8 @@ def _parse_config(data):
         i += 1
         return c
 
-    entries, section, subsection, comment = [], None, None, False
+    # git reads a key before any section as one with an empty section name (never include.path).
+    entries, section, subsection, comment = [], b"", None, False
     while True:
         c = nxt()
         if c is None:
@@ -937,7 +992,7 @@ def _parse_config(data):
         if c == b"\n":
             comment = False
             continue
-        if comment or c in _GIT_SPACE:
+        if comment or c in space:
             continue
         if c in (b"#", b";"):
             comment = True
@@ -951,8 +1006,8 @@ def _parse_config(data):
                 if c == b"]":
                     sub_raw = None
                     break
-                if c in _GIT_SPACE:  # get_extended_base_var
-                    while c in (b" ", b"\t"):
+                if c in space:  # get_extended_base_var: `do c = next; while (isspace(c))`
+                    while c in space:
                         c = nxt()
                     if c != b'"':
                         raise _ConfigUnparseable("a section header without a quoted subsection")
@@ -990,14 +1045,12 @@ def _parse_config(data):
             key += c.lower()
         while c in (b" ", b"\t"):
             c = nxt()
-        if section is None:
-            raise _ConfigUnparseable("a key before any section")
         if c is None or c == b"\n":
             entries.append((section, subsection, bytes(key), None))
             continue
         if c != b"=":
             raise _ConfigUnparseable(f"{c!r} after a key")
-        value, quote, space, in_comment = bytearray(), False, 0, False  # parse_value
+        value, quote, blanks, in_comment = bytearray(), False, 0, False  # parse_value
         while True:
             c = nxt()
             if c is None or c == b"\n":
@@ -1010,12 +1063,12 @@ def _parse_config(data):
                 if c in (b";", b"#"):
                     in_comment = True
                     continue
-                if c in _GIT_SPACE:
+                if c in space:
                     if value:
-                        space += 1
+                        blanks += 1
                     continue
-            value += b" " * space
-            space = 0
+            value += b" " * blanks
+            blanks = 0
             if c == b"\\":
                 c = nxt()
                 if c == b"\n":

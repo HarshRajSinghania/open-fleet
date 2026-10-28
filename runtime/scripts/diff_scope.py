@@ -173,13 +173,27 @@ class ScopeError(Exception):
 
 # git is resolved ONCE to an absolute path and run with replacement objects and the
 # config-driven execution channels off. The rule is gitexec.py's, inlined here because
-# verify.py loads this file by path: a sibling import would join the signed verifier
-# toolchain (verify._Transcript.TOOLCHAIN / run_report.TOOLCHAIN_FILES). The copy is
-# the WHOLE floor — no global/system config, safe.directory — and a test pins it to
-# gitexec.HARDENED so it cannot fall behind again (2026-10-23 review, §5). Absent at import is
-# None, never a bare "git" that every later call re-resolves against PATH (W4-14): _argv raises.
+# verify.py loads this file by path and diff_scope's own GIT is the one its callers (and their
+# tests) pin. The copy is the WHOLE floor — no global/system config, safe.directory — and a test
+# pins it to gitexec.HARDENED so it cannot fall behind again (2026-10-23 review, §5). Absent at
+# import is None, never a bare "git" that every later call re-resolves against PATH (W4-14):
+# _argv raises.
 _found = shutil.which("git")
 GIT = os.path.abspath(_found) if _found else None
+
+
+def _load_gitexec():
+    """runtime/scripts/gitexec.py, loaded by path: the shared git custody (custody_git_dir and
+    friends) and its floor. gitexec.py is already in the signed verifier toolchain (#608), so
+    loading it here adds no file to what verify.py IS."""
+    spec = importlib.util.spec_from_file_location(
+        "open_fleet_diff_scope_gitexec", Path(__file__).resolve().parent / "gitexec.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+gitexec = _load_gitexec()
 
 
 def _argv(*args):
@@ -192,11 +206,15 @@ def _argv(*args):
 
 def _git_env(blanks=()):
     """gitexec.env's floor, inlined; ``blanks`` (_driver_blanks pairs) ride as further env
-    pairs, so a driver name holding `=` or a non-UTF-8 byte reaches git exactly (PR #649)."""
+    pairs, so a driver name holding `=` or a non-UTF-8 byte reaches git exactly (PR #649). Every
+    call also carries gitexec's custody floor (W4 custody sweep): CUSTODY_FLOOR's fixed command
+    keys, CUSTODY_ENV (no lazy fetch, no transport but `file`) and no inherited repository
+    selector (SELECTOR_ENV: GIT_DIR, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, ...)."""
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
            and k not in ("GIT_EXTERNAL_DIFF", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
-                         "GIT_CONFIG")}
+                         "GIT_CONFIG")
+           and k not in gitexec.SELECTOR_ENV}
     pairs = (("core.fsmonitor", "false"), ("protocol.ext.allow", "never"), ("safe.directory", "*"),
              # #629: the repo-config command channels a fixed key can close — hooks (post-checkout
              # on a worktree read) and the global external-diff program.
@@ -204,13 +222,14 @@ def _git_env(blanks=()):
              # floor_guard's DIFF_RENDERING pins: inert for -z --name-only, kept for parity.
              ("diff.noprefix", "false"), ("diff.mnemonicPrefix", "false"), ("diff.srcPrefix", "a/"),
              ("diff.dstPrefix", "b/"), ("diff.relative", "false"), ("color.diff", "false"),
-             *blanks)
+             *gitexec.CUSTODY_FLOOR, *blanks)
     env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_COUNT": str(len(pairs))})
     for i, (k, v) in enumerate(pairs):
         env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = k, v
+    env.update(gitexec.CUSTODY_ENV)
     return env
 
 
@@ -265,18 +284,34 @@ def _driver_blanks(repo):
     return pairs
 
 
-def git(repo, *args, tolerate=False, blanks=()):
+def git(repo, *args, tolerate=False, blanks=(), custody=None):
+    """stdout of ``git <args>`` in ``repo`` (None on failure). ``custody`` (a gitexec.Custody, see
+    _custody) runs it against the coordinator-built git dir over ``repo``'s work tree instead."""
+    lead = custody.lead if custody is not None else ["-C", str(repo)]
+    pairs = [*(custody.pairs if custody is not None else ()), *blanks]
     try:
         # surrogateescape: a non-UTF-8 path round-trips instead of raising
         # UnicodeDecodeError (an uncaught crash would exit 1 — the conflict code).
-        r = subprocess.run(_argv("-C", str(repo), *args), capture_output=True, text=True,
+        r = subprocess.run(_argv(*lead, *args), capture_output=True, text=True,
                            encoding="utf-8", errors="surrogateescape",
-                           timeout=60, env=_git_env(blanks), stdin=subprocess.DEVNULL)
+                           timeout=60, env=_git_env(pairs), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 and not tolerate:
         return None
     return r.stdout
+
+
+def _custody(repo, **kw):
+    """gitexec.custody over ``repo``, its facts and settings read with diff_scope's own git and
+    floor: a git dir the coordinator builds over the repo's objects, whose config declares no
+    filter, textconv, diff or merge driver. A driver a `.gitattributes`/`info/attributes` line
+    selects is undefined there, however late the repo's config gained it (W4 custody sweep: the
+    blanks _driver_blanks lists cover only drivers declared BEFORE the listing)."""
+    def run(args):
+        return subprocess.run(_argv("-C", str(repo), *args), capture_output=True, timeout=60,
+                              env=_git_env(), stdin=subprocess.DEVNULL)
+    return gitexec.custody(repo, run=run, **kw)
 
 
 def resolve_base(repo, base):
@@ -338,11 +373,22 @@ def changed_files(repo, base):
     options = ("--no-ext-diff", "--no-textconv", "--no-renames", "-z", "--name-only")
     # The working-tree diff materialises tracked files, which runs a repo-config clean/smudge
     # filter a .gitattributes selects — the one channel --no-ext-diff/--no-textconv leave open
-    # (#629). Blank every declared driver command first.
+    # (#629). Listing the declared drivers and blanking them left a window: one added after the
+    # listing ran (W4 custody sweep). So that diff runs in git custody (_custody), where no driver
+    # is defined at all. The listing stays as a fail-closed belt (an unreadable config is
+    # diff_failed, never "no drivers"). The committed diff compares two trees by name only
+    # (--name-only, --no-renames): it reads no working-tree file and renders no content, so no
+    # driver can apply, and it runs in the repo, where `base` names a ref.
     blanks = _driver_blanks(repo)
     absorb(git(repo, "diff", *options, f"{base}...HEAD", "--", blanks=blanks), "committed diff")
     # Working tree (staged + unstaged); fails on a repo with no commits.
-    absorb(git(repo, "diff", *options, "HEAD", "--", blanks=blanks), "working-tree diff")
+    try:
+        with _custody(repo) as custody:
+            worktree = git(repo, "diff", *options, "HEAD", "--", blanks=blanks, custody=custody)
+    except (OSError, subprocess.SubprocessError) as err:  # GitCustodyRefused is an OSError
+        raise ScopeError(f"working-tree diff acquisition failed: {err}", kind="diff_failed",
+                         resolved=base) from err
+    absorb(worktree, "working-tree diff")
     # Untracked: the new migration/component is untracked right up until commit.
     absorb(git(repo, "ls-files", "-z", "--others", "--exclude-standard"), "untracked enumeration")
     return sorted(names)
@@ -517,18 +563,24 @@ def predict_merge(repo, base, branch):
             raise ScopeError(f"predict-merge {label} {ref!r} does not resolve to a commit in {repo}",
                              kind="no_base")
     # #629 (PR #649 review): merge-tree 3-way-merges the two commits, running a repo-config merge
-    # driver a `merge=<driver>` attribute selects. Neutralise every declared driver, read in
-    # `repo` itself immediately before the call (same directory, same ref state) — and read
-    # OUTSIDE the subprocess-error catch below: an unreadable driver list raises diff_failed,
-    # never a merge-tree that "could not run" quietly read as no drivers (PR #649 review).
+    # driver a `merge=<driver>` attribute selects. Blanking the declared drivers left a window
+    # (one added after the listing ran: W4 custody sweep), so merge-tree runs in git custody
+    # (_custody): a git dir with no driver defined, over the repo's object store ("shared": the
+    # merged tree it writes lands in the repo, where merge_queue.py commits it), given the two
+    # commit ids resolved here, never a ref the custody dir does not hold. The listing stays as a
+    # fail-closed belt, read OUTSIDE the subprocess-error catch below: an unreadable driver list
+    # raises diff_failed, never a merge-tree that "could not run" quietly read as no drivers.
     blanks = _driver_blanks(repo)
+    shas = [(git(repo, "rev-parse", "--verify", "-q", "--end-of-options", f"{ref}^{{commit}}") or "").strip()
+            for ref in (base, branch)]
     try:
-        r = subprocess.run(
-            _argv("-C", str(repo), "-c", "core.quotePath=false",
-                  "merge-tree", "--write-tree", base, branch),
-            capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
-            timeout=60, env=_git_env(blanks), stdin=subprocess.DEVNULL,
-        )
+        with _custody(repo, index=False, objects="shared") as custody:
+            r = subprocess.run(
+                _argv(*custody.lead, "-c", "core.quotePath=false",
+                      "merge-tree", "--write-tree", *shas),
+                capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
+                timeout=60, env=_git_env([*custody.pairs, *blanks]), stdin=subprocess.DEVNULL,
+            )
     except (OSError, subprocess.SubprocessError):
         r = None
 

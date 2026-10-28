@@ -17,6 +17,7 @@ is never created. Every case carries its mutation control: with the hardening re
 marker comes back, so the test proves the hardening is load-bearing, not that the channel
 was dormant. Stdlib only; no network.
 """
+import contextlib
 import importlib.util
 import json
 import os
@@ -123,6 +124,12 @@ class _Probe:
 
 def _sh(path):
     return "'" + str(path).replace("'", "'\\''") + "'"
+
+
+def _no_custody(repo, **_kw):
+    """The pre-custody gate, for mutation controls only: a gitexec.Custody with no git dir, so the
+    content-reading git runs in ``repo`` itself, under the repository's own config."""
+    return contextlib.nullcontext(gitexec.Custody(None, None, (), repo))
 
 
 class GitexecDriverBlanks(unittest.TestCase):
@@ -293,7 +300,9 @@ class FloorGuardWorktreeDiff(unittest.TestCase):
 
     def test_mutation_control_without_the_blanks_the_filter_fires(self):
         p, base = self._repo()
-        with mock.patch.object(floor_guard.gitexec, "driver_blanks", lambda repo: []):
+        # The pre-fix guard: no blanks AND no custody (the diff reads the repo's own config).
+        with mock.patch.object(floor_guard.gitexec, "driver_blanks", lambda repo: []), \
+                mock.patch.object(floor_guard.gitexec, "custody", _no_custody):
             self._collect(p, base)
         self.assertIn("clean", p.fired(),
                       "control: with the driver blanks removed the clean filter must fire")
@@ -318,7 +327,9 @@ class DiffScopeWorktreeDiff(unittest.TestCase):
 
     def test_mutation_control_without_the_blanks_the_filter_fires(self):
         p, base = self._repo()
-        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []):
+        # The pre-fix scope: no blanks AND no custody (the diff reads the repo's own config).
+        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []), \
+                mock.patch.object(diff_scope, "_custody", _no_custody):
             diff_scope.scope(p.repo, base)
         self.assertIn("clean", p.fired(),
                       "control: with the driver blanks removed the clean filter must fire")
@@ -348,7 +359,9 @@ class HintProvenanceWorktreeDiff(unittest.TestCase):
 
     def test_mutation_control_without_the_blanks_the_filter_fires(self):
         p, base = self._repo()
-        with mock.patch.object(hint_provenance.gitexec, "driver_blanks", lambda repo: []):
+        # The pre-fix read: no blanks AND no custody (the diff reads the repo's own config).
+        with mock.patch.object(hint_provenance.gitexec, "driver_blanks", lambda repo: []), \
+                mock.patch.object(hint_provenance.gitexec, "custody", _no_custody):
             self._changes(p, base)
         self.assertIn("clean", p.fired(),
                       "control: with the driver blanks removed the clean filter must fire")
@@ -809,7 +822,9 @@ class MergeDriverNeutralised(unittest.TestCase):
 
     def test_mutation_control_without_the_blanks_the_merge_driver_runs(self):
         p = self._repo()
-        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []):
+        # The pre-fix prediction: no blanks AND no custody (merge-tree reads the repo's config).
+        with mock.patch.object(diff_scope, "_driver_blanks", lambda repo: []), \
+                mock.patch.object(diff_scope, "_custody", _no_custody):
             diff_scope.predict_merge(p.repo, self.main, "side")
         self.assertIn("merge", p.fired(),
                       "control: with the blanks removed the merge driver must run")
@@ -1061,6 +1076,215 @@ class TheAnchorListingSplitsOnItsRecordTerminatorOnly(unittest.TestCase):
                 listed, why = gitexec._ref_records(out, "refs/remotes/")
                 self.assertIsNone(listed)
                 self.assertTrue(why)
+
+
+# W4 custody sweep (audit W4-01/W4-02 class): driver_blanks LISTS the drivers a config declares,
+# and the content-reading git then reads that config AGAIN. A sibling worker that adds a NEVER-SEEN
+# driver in between - selected for every path through the shared `info/attributes` - had it run on
+# the coordinator, whatever the listing said. floor_guard's, diff_scope's and hint_provenance's
+# content-reading git now runs against a git dir the gate builds (gitexec.custody), whose config
+# declares no driver. The racing sibling adds a fresh filter, textconv and merge driver before
+# EVERY git launch; each GREEN case has a control that restores the pre-fix gate (blanks listed,
+# no custody) under the same race and sees the late driver run.
+def _racing_sibling(p):
+    real = subprocess.run
+    seq = p.__dict__.setdefault("race_seq", [0])
+    common = p.repo / ".git"
+
+    def run(argv, *a, **kw):
+        if isinstance(argv, (list, tuple)) and argv and os.path.basename(os.fsdecode(argv[0])) == "git":
+            seq[0] += 1
+            name = f"late{seq[0]}"
+            with open(common / "config", "a", encoding="utf-8") as fh:
+                fh.write(f'[filter "{name}"]\n\tclean = "{p.probe}" {name}-clean\n'
+                         f'\tsmudge = "{p.probe}" {name}-smudge\n'
+                         f'[diff "{name}"]\n\ttextconv = "{p.probe}" {name}-textconv\n'
+                         f'[merge "{name}"]\n\tdriver = "{p.probe}" {name}-merge %O %A %B\n')
+            (common / "info").mkdir(exist_ok=True)
+            with open(common / "info" / "attributes", "a", encoding="utf-8") as fh:
+                fh.write(f"* filter={name} diff={name} merge={name}\n")
+        return real(argv, *a, **kw)
+    return mock.patch.object(subprocess, "run", run)
+
+
+class ContentGitRunsNoDriverAddedAfterTheListing(unittest.TestCase):
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\nline2\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        (p.repo / "b.txt").write_text("brand new\n", encoding="utf-8")
+        return p, base
+
+    def _diverged(self):
+        """Two branches changing shared.txt differently: merge-tree 3-way-merges that path."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("shared.txt", "base\n")
+        main = p._git("symbolic-ref", "--short", "HEAD").stdout.strip()
+        p._git("checkout", "-q", "-b", "side")
+        p.commit("shared.txt", "side\n")
+        p._git("checkout", "-q", main)
+        p.commit("shared.txt", "mainline\n")
+        return p, main
+
+    def _race_and_control(self, p, call, bypass):
+        with _racing_sibling(p):
+            got = call()
+        self.assertGreater(p.race_seq[0], 0, "the race never ran")
+        self.assertEqual(p.fired(), set(), "a driver added after the listing ran on the coordinator")
+        with _racing_sibling(p), contextlib.ExitStack() as stack:
+            for target, attr in bypass:
+                stack.enter_context(mock.patch.object(target, attr, _no_custody))
+            try:
+                call()
+            except Exception:  # the control only has to RUN the planted driver, not succeed
+                pass
+        self.assertTrue(p.fired(), "control: the pre-custody gate never ran the late driver")
+        return got
+
+    def test_floor_guard(self):
+        p, base = self._repo()
+        mb = floor_guard.merge_base(p.repo, base)
+        text = self._race_and_control(p, lambda: floor_guard.collect_diff(p.repo, mb),
+                                      [(floor_guard.gitexec, "custody")])
+        self.assertIn("+CHANGED", text)
+        self.assertIn("+brand new", text)
+
+    def test_diff_scope_scope(self):
+        p, base = self._repo()
+        self._race_and_control(p, lambda: diff_scope.scope(p.repo, base), [(diff_scope, "_custody")])
+        self.assertIn("a.txt", diff_scope.changed_files(p.repo, base))
+
+    def test_diff_scope_predict_merge(self):
+        p, main = self._diverged()
+        result = self._race_and_control(p, lambda: diff_scope.predict_merge(p.repo, main, "side"),
+                                        [(diff_scope, "_custody")])
+        self.assertFalse(result["clean"], "with no merge driver the divergent merge is a conflict")
+        self.assertIn("shared.txt", result["conflicts"])
+
+    def test_hint_provenance(self):
+        p, base = self._repo()
+        changes = self._race_and_control(
+            p, lambda: hint_provenance.LiveSource(str(p.repo)).changes_since(base),
+            [(hint_provenance.gitexec, "custody")])
+        self.assertEqual(changes, {"a.txt": ("M", None), "b.txt": ("A", None)})
+
+
+class CustodyReadsWhatTheRepositoryReads(unittest.TestCase):
+    """The custody must not change what an ordinary repository's diff says: the same tracked,
+    staged, deleted, mode and untracked changes, rendered the same way, as the gate's plain git
+    read before the custody (no driver declared, so both are the repository's own answer)."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        (p.repo / "keep.txt").write_text("keep\n", encoding="utf-8")
+        (p.repo / "gone.txt").write_text("gone\n", encoding="utf-8")
+        (p.repo / "run.sh").write_text("echo hi\n", encoding="utf-8")
+        base = p.commit("a.txt", "line1\nline2\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        (p.repo / "staged.txt").write_text("staged\n", encoding="utf-8")
+        p._git("add", "staged.txt")
+        (p.repo / "gone.txt").unlink()
+        (p.repo / "run.sh").chmod(0o755)
+        (p.repo / "sub").mkdir()
+        (p.repo / "sub" / "new file.txt").write_text("untracked\n", encoding="utf-8")
+        return p, base
+
+    def test_floor_guard_diff_is_unchanged(self):
+        p, base = self._repo()
+        mb = floor_guard.merge_base(p.repo, base)
+        got = floor_guard.collect_diff(p.repo, mb)
+        with mock.patch.object(floor_guard.gitexec, "custody", _no_custody):
+            want = floor_guard.collect_diff(p.repo, mb)
+        self.assertEqual(got, want)
+        for needle in ("+CHANGED", "+staged", "-gone", "new mode 100755", "+untracked"):
+            self.assertIn(needle, got)
+
+    def test_diff_scope_and_hint_provenance_are_unchanged(self):
+        p, base = self._repo()
+        got = diff_scope.changed_files(p.repo, base)
+        live = hint_provenance.LiveSource(str(p.repo)).changes_since(base)
+        with mock.patch.object(diff_scope, "_custody", _no_custody), \
+                mock.patch.object(hint_provenance.gitexec, "custody", _no_custody):
+            self.assertEqual(got, diff_scope.changed_files(p.repo, base))
+            self.assertEqual(live, hint_provenance.LiveSource(str(p.repo)).changes_since(base))
+        self.assertEqual(got, ["a.txt", "gone.txt", "run.sh", "staged.txt", "sub/new file.txt"])
+
+
+class GitexecCustody(unittest.TestCase):
+    """gitexec.custody: the coordinator-built git dir and the refusals it shares with the posix
+    provider's run_git."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        return p
+
+    def test_the_custody_dir_names_no_driver_and_reads_the_repo_objects(self):
+        p = self._repo()
+        p.arm_filter()
+        with gitexec.custody(p.repo) as c:
+            gd = Path(c.git_dir)
+            cfg = (gd / "config").read_text(encoding="utf-8")
+            self.assertNotIn("filter", cfg)
+            self.assertFalse((gd / "info" / "attributes").exists())
+            self.assertEqual(Path(c.work_tree).resolve(), p.repo.resolve())
+            self.assertIn(b"objects", (gd / "objects" / "info" / "alternates").read_bytes())
+            self.assertEqual(c.lead[:2], ["-C", str(p.repo)])
+            r = subprocess.run(c.argv("cat-file", "-p", "HEAD:a.txt"), env=c.env(), capture_output=True,
+                               text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.stdout, "one\n", r.stderr)
+        self.assertFalse(gd.exists(), "the custody dir outlived its use")
+
+    def test_a_partial_clone_is_refused_not_guessed(self):
+        p = self._repo()
+        p._git("config", "core.repositoryformatversion", "1")
+        p._git("config", "extensions.partialClone", "origin")
+        with self.assertRaises(gitexec.GitCustodyRefused):
+            with gitexec.custody(p.repo):
+                pass
+
+    def test_a_planted_fifo_or_symlink_is_refused_not_followed(self):
+        p = self._repo()
+        exclude = p.repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.unlink(missing_ok=True)
+        os.symlink("/etc/passwd", exclude)
+        with self.assertRaises(gitexec.GitCustodyRefused):
+            with gitexec.custody(p.repo):
+                pass
+
+    def test_custody_env_drops_selectors_and_pins_the_floor(self):
+        env = gitexec.custody_env({"PATH": os.environ["PATH"], "GIT_DIR": "/elsewhere",
+                                   "GIT_INDEX_FILE": "/elsewhere/index", "GIT_EXEC_PATH": "/evil"})
+        for name in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_EXEC_PATH"):
+            self.assertNotIn(name, env)
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs["log.showSignature"], "false")
+        self.assertEqual(pairs["core.alternateRefsCommand"], "exit 0")
+        self.assertEqual(pairs["core.hooksPath"], os.devnull)
+        self.assertEqual((env["GIT_NO_LAZY_FETCH"], env["GIT_ALLOW_PROTOCOL"]), ("1", "file"))
+
+    def test_the_posix_provider_shares_this_custody(self):
+        sys.path.insert(0, str(ROOT / "runtime"))
+        try:
+            posix = importlib.import_module("providers.posix")
+        finally:
+            sys.path.remove(str(ROOT / "runtime"))
+        self.assertIs(posix._custody_git_dir, posix.gitexec.custody_git_dir)
+        self.assertIs(posix.GitCustodyRefused, posix.gitexec.GitCustodyRefused)
+        self.assertEqual(posix.PROVIDER_FLOOR, gitexec.CUSTODY_FLOOR)
+        self.assertEqual(posix.PROVIDER_FLOOR_ENV, gitexec.CUSTODY_ENV)
+        self.assertEqual(posix.GIT_SELECTOR_ENV, gitexec.SELECTOR_ENV)
 
 
 if __name__ == "__main__":

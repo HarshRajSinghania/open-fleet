@@ -1330,6 +1330,24 @@ class TestARefusedFileIsSaid(_Base):
             self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
         self.assertIn(f"first {link}: recall is partial", err.getvalue())
 
+    def test_a_fifo_or_a_link_to_dev_zero_named_like_a_transcript_is_said(self):
+        # Re-attack of 2d254d0f: _glob kept only what is_file() accepted, so a FIFO, or a link to
+        # /dev/zero, named like a transcript was left out in silence, never reaching the read that
+        # says a refused file.
+        where = self.tmp / "claude" / "projects" / "-workspace-odd"
+        where.mkdir(parents=True)
+        for name, make in (("a-fifo.jsonl", os.mkfifo), ("b-zero.jsonl", lambda p: p.symlink_to("/dev/zero"))):
+            with self.subTest(name=name):
+                make(where / name)
+                err = io.StringIO()
+                with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+                    ns = self.mod.parse_args(["zeta_token", "--local-harnesses", "--agent", "claude-code"])
+                    hits = self.mod.search_local_harnesses(ns)["hits"]
+                self.assertEqual(len(hits), 1, "the regular transcript beside them was not read")
+                self.assertIn(f"first {where / name}: recall is partial", err.getvalue())
+                self.assertIn("not a regular file", err.getvalue())
+                (where / name).unlink()
+
 
 
 class TestAStoreSwappedForAFifoNeverHangsRecall(_Base):

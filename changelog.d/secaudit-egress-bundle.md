@@ -39,7 +39,8 @@
   `--allow-foreign-image` is passed, the committed Dockerfile's digest always the git object's
   (`build` refuses a working copy that differs from HEAD's, before docker reads it and after), and refuses any `--mount` path docker would split; the image
   pins the Claude Code installer and binary by sha256 ([live harness](../docs/guides/live-harness.md)).
-  `search_sessions.py` reads only regular files (a link, FIFO or device is said, never opened) and
+  `search_sessions.py` reads only regular files (a link, FIFO or device is said, never opened, a FIFO
+  or a link to `/dev/zero` named like a transcript included) and
   only a SQLite store's plain tables' stored columns (never a view, virtual table or generated
   column), capped per file and per scan as the bytes arrive, a row's stored size charged as
   SQLite reads it so no value past either cap ever reaches Python, a store over 1 GiB never

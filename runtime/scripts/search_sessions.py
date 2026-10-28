@@ -1087,11 +1087,22 @@ def _read_json(fp):
 
 
 def _glob(root, *patterns):
+    """The regular files under `root` matching `patterns`. A match that is a link, a FIFO, a device
+    or a socket is said and left out (re-attack of 2d254d0f: is_file() dropped a FIFO, or a link to
+    /dev/zero, in silence); a directory is not a source and is left out unsaid."""
     found = set()
     if root is None or not root.is_dir():
         return []
     for pat in patterns:
-        found.update(p for p in root.glob(pat) if p.is_file())
+        for p in root.glob(pat):
+            try:
+                mode = os.lstat(p).st_mode
+            except OSError:
+                continue
+            if stat.S_ISREG(mode):
+                found.add(p)
+            elif not stat.S_ISDIR(mode):
+                _BUDGET.omit(p, "irregular")
     return sorted(found)
 
 

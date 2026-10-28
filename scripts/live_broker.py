@@ -21,13 +21,18 @@ headers (REQUEST_DEADLINE_S, which a byte at a time never extends) and one for i
 connection, not a client that keeps opening them, so when every slot is taken a new connection
 evicts the one that has waited longest for its own request to arrive: a request still arriving
 holds its slot only until someone else needs it, and only calls already read in full (relayed to
-the API, or being refused) keep theirs. A body is at most MAX_BODY (the API's own 32 MB) and held
+the API, or being refused) keep theirs. Every wait before that is evictable and ends at once when
+evicted -- for its request line and headers, its body's first byte, its share of the body budget,
+its body -- so an evicted connection gives its slot up at once. A body is at most MAX_BODY (the API's own 32 MB) and held
 once (one buffer of its Content-Length), and what the bodies of every connection take together --
 their bytes and the most parsing them can allocate -- is at most BODY_BUDGET. Before a body is read,
 the most one of its length can take parsed (WORST_PER_BYTE times it) is taken from that budget;
 then parse_cost, a pre-scan of its bytes, bounds its parse (the str json.loads decodes it to and the
 strings parsed out of it at their characters' width, and every JSON value) and the rest goes back.
-Each take waits up to BODY_WAIT_S for room and is otherwise refused (503, a "body-budget" refusal);
+Budget goes only to a body that is arriving (its first byte is here); a body arriving slower than
+MIN_BODY_RATE, past BODY_GRACE_S, is stalled, and a request waiting for budget takes back, for
+itself, what a stalled body holds past its buffer, evicting it. Each take waits up to BODY_WAIT_S
+for room and is otherwise refused (503, a "body-budget" refusal);
 a body whose bound could pass the whole budget, that nests past MAX_DEPTH, or whose pre-scan passes
 MAX_SCAN_STEPS is refused unparsed (413, a "body-parse" refusal). The parse itself runs in a forked
 child whose RLIMIT_DATA is that bound, so a parse that would pass it fails in the child and the body
@@ -159,6 +164,13 @@ PARSE_SECONDS = 60
 PARSE_SLACK = 16 << 20
 # parse_cost's bound per byte of a body whose values cost nothing: 1 + 4 + 2 x 4 (see there).
 WORST_PER_BYTE = 13
+# A body is STALLED once its bytes arrive slower than MIN_BODY_RATE, after BODY_GRACE_S: then what it
+# holds of the budget past its buffer can be taken back by any request waiting for budget, which
+# polls for that every RECLAIM_POLL_S. An ordinary client on the arm's loopback sends a 32 MB body in
+# well under a second.
+MIN_BODY_RATE = 1 << 20
+BODY_GRACE_S = 1.0
+RECLAIM_POLL_S = 0.1
 MAX_DEPTH = 128  # a request's JSON nests a few levels (a tool's input schema a dozen or so)
 # The walk's steps: one per structural byte outside a string and one per escaped quote inside one.
 # An ordinary request takes tens of thousands; past this many the body is refused, so the walk's
@@ -755,24 +767,44 @@ class Broker(BaseHTTPRequestHandler):
         # Before a byte is read, the most a body of this length can need parsed (WORST_PER_BYTE) is
         # taken, so two bodies holding their bytes can never wait on each other for their parses;
         # what the pre-scan finds it does not need goes back at once (answer_post).
-        bodies, self.held = self.server.bodies, WORST_PER_BYTE * length
-        if self.held > bodies.limit:
+        bodies, worst = self.server.bodies, WORST_PER_BYTE * length
+        if worst > bodies.limit:
             self.ledger.refuse("body-parse", f"a {length}-byte body, which could parse past the "
                                              f"{bodies.limit}-byte budget")
             return self.fail(413, "invalid_request_error", "the body is too large for the broker to parse within "
                                                            "its memory")
-        if not bodies.take(self.held, time.monotonic() + BODY_WAIT_S):
-            self.ledger.refuse("body-budget", f"{length} body bytes and their parse past the {bodies.limit} held at once")
-            return self.fail(503, "overloaded_error", "the broker holds as many request bodies as it can; retry")
+        self.ticket = ticket = _Ticket(self.connection, length)
+        self.server.track(self.connection, ticket)
         try:
+            # Budget goes only to a body that is arriving: its first byte must be here (a stalled
+            # request waits for it holding no budget, and is evictable like any reader).
+            self.reader.deadline = time.monotonic() + BODY_DEADLINE_S
+            if length and not self.body_arriving():
+                if not self.server.was_evicted(self.connection):
+                    self.ledger.drop("body did not arrive")
+                return None
+            if not bodies.take(ticket, worst, time.monotonic() + BODY_WAIT_S, self.server.reclaimed):
+                if ticket.cancelled:
+                    return None  # evicted while it waited: closed unanswered, and counted
+                self.ledger.refuse("body-budget", f"{length} body bytes and their parse past the {bodies.limit} "
+                                                  "held at once")
+                return self.fail(503, "overloaded_error", "the broker holds as many request bodies as it can; retry")
+            ticket.since, ticket.arriving = time.monotonic(), True
             self.answer_post(path, length)
         finally:
-            bodies.give(self.held)
+            bodies.give(ticket)
+
+    def body_arriving(self):
+        """Whether the body's first byte arrives before the body's deadline (or an eviction)."""
+        try:
+            return bool(self.rfile.peek(1))
+        except (TimeoutError, OSError):
+            return False
 
     def answer_post(self, path, length):
         """do_POST once the body's bytes are taken from the budget (BODY_BUDGET)."""
-        self.reader.deadline = time.monotonic() + BODY_DEADLINE_S
         body = self.read_body(length)
+        self.ticket.arriving = False  # read in full, or never: no longer a body that may stall
         if not self.server.request_read(self.connection):
             return  # evicted while it stalled: closed unanswered, and counted (W5-16)
         self.connection.settimeout(self.timeout)  # the answer's writes get the plain per-call timeout
@@ -782,10 +814,9 @@ class Broker(BaseHTTPRequestHandler):
             with contextlib.suppress(OSError):
                 self.fail(408, "invalid_request_error", f"the body did not arrive within {BODY_DEADLINE_S:g} s")
             return
-        bodies = self.server.bodies
+        bodies, ticket = self.server.bodies, self.ticket
         if path == FREE_PATH:  # relayed unparsed: only its bytes stay held
-            bodies.give(self.held - len(body))
-            self.held = len(body)
+            bodies.give(ticket, ticket.held - len(body))
             if not self.ledger.free(len(body)):
                 return self.fail(403, "permission_error", "the count_tokens bound would be passed")
             return self.relay(body, None, None, False)
@@ -797,12 +828,11 @@ class Broker(BaseHTTPRequestHandler):
                                              f"{bodies.limit}-byte budget, or that nests past {MAX_DEPTH}")
             return self.fail(413, "invalid_request_error", "the body's JSON is too large or too deeply nested "
                                                            "for the broker to parse within its memory")
-        if cost <= self.held:
-            bodies.give(self.held - cost)
-        elif not bodies.take(cost - self.held, time.monotonic() + BODY_WAIT_S):
+        if cost <= ticket.held:
+            bodies.give(ticket, ticket.held - cost)
+        elif not bodies.take(ticket, cost - ticket.held, time.monotonic() + BODY_WAIT_S, self.server.reclaimed):
             self.ledger.refuse("body-budget", f"a parse of up to {cost} bytes past the {bodies.limit} held at once")
             return self.fail(503, "overloaded_error", "the broker holds as many request bodies as it can; retry")
-        self.held = cost
         self.price_and_relay(body, cost - len(body))
 
     def price_and_relay(self, body, allowance):
@@ -853,6 +883,7 @@ class Broker(BaseHTTPRequestHandler):
                 if not n:
                     break
                 got += n
+                self.ticket.got = got  # its progress: a body that stalls can be evicted (_BodyBudget)
         finally:
             view.release()
         if got < length:
@@ -953,26 +984,90 @@ def read_token(path):
     return token
 
 
+class _Ticket:
+    """One request's share of BODY_BUDGET: what it holds (`held`), its body buffer's part of that
+    (`raw`, its Content-Length), how much of its body has arrived (`got`) since its budget was
+    granted (`since`), whether its body is still arriving, and whether it was evicted."""
+
+    __slots__ = ("request", "raw", "held", "got", "since", "arriving", "cancelled")
+
+    def __init__(self, request, length):
+        self.request, self.raw, self.held, self.got = request, length, 0, 0
+        self.since, self.arriving, self.cancelled = 0.0, False, False
+
+    def stalled(self, now):
+        """Its body is still arriving, but slower than MIN_BODY_RATE once BODY_GRACE_S has passed."""
+        return self.arriving and self.got < self.raw and \
+            self.got < MIN_BODY_RATE * (now - self.since - BODY_GRACE_S)
+
+
 class _BodyBudget:
-    """BODY_BUDGET: the body bytes all connections hold at once. `take` waits for room until a
-    deadline (False then); `give` returns a request's bytes when it is answered."""
+    """BODY_BUDGET: what the bodies of all connections, and their parses, hold at once. A request
+    takes from it with `take`, which waits for room until a deadline; while it waits it takes back
+    what any stalled body holds past its buffer (`_reclaim`), so stalled requests cannot keep the
+    budget from one whose body is arriving, and what it takes back is its own at once, never handed
+    to another waiter. An evicted request's wait ends at once (`cancel`). `give` returns a share."""
 
     def __init__(self, limit):
         self.limit, self.held, self.cond = limit, 0, threading.Condition()
+        self.tickets = set()  # every ticket holding a share
 
-    def take(self, n, deadline):
-        with self.cond:
-            while self.held + n > self.limit:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    return False
-                self.cond.wait(left)
-            self.held += n
-            return True
+    def take(self, ticket, n, deadline, reclaimed):
+        """Add `n` to `ticket`'s share; False when it was evicted (cancelled) or the deadline passed
+        first. `reclaimed(ticket)` is called, outside the lock, for each stalled request whose share
+        was taken back, to evict it."""
+        victims = []
+        try:
+            with self.cond:
+                while not ticket.cancelled:
+                    if self.held + n > self.limit:
+                        victims += self._reclaim(n)
+                    if self.held + n <= self.limit:
+                        self.held += n
+                        ticket.held += n
+                        self.tickets.add(ticket)
+                        return True
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        return False
+                    self.cond.wait(min(left, RECLAIM_POLL_S))
+                return False
+        finally:
+            for victim in victims:
+                reclaimed(victim)
 
-    def give(self, n):
+    def _reclaim(self, n):
+        """Take back, stalest first, what stalled bodies hold past their buffers (which their threads
+        give back as they end), until `n` fits. Lock held. Returns the requests taken from."""
+        now, victims = time.monotonic(), []
+        for victim in sorted((t for t in self.tickets if t.stalled(now)),
+                             key=lambda t: t.got - MIN_BODY_RATE * (now - t.since)):
+            freed = max(0, victim.held - victim.raw)
+            self.held -= freed
+            victim.held -= freed
+            victim.cancelled, victim.arriving = True, False
+            victims.append(victim)
+            if self.held + n <= self.limit:
+                break
+        return victims
+
+    def cancel(self, ticket):
+        """An evicted request: its wait ends at once, and what it holds past its buffer is back."""
         with self.cond:
+            ticket.cancelled, ticket.arriving = True, False
+            freed = max(0, ticket.held - ticket.raw)
+            self.held -= freed
+            ticket.held -= freed
+            self.cond.notify_all()
+
+    def give(self, ticket, n=None):
+        """Return `n` of `ticket`'s share (all of it by default)."""
+        with self.cond:
+            n = ticket.held if n is None else min(n, ticket.held)
             self.held -= n
+            ticket.held -= n
+            if not ticket.held:
+                self.tickets.discard(ticket)
             self.cond.notify_all()
 
 
@@ -993,7 +1088,7 @@ class BrokerServer(ThreadingHTTPServer):
     def __init__(self, address, handler, ledger, slots):
         self.ledger, self.slots = ledger, threading.BoundedSemaphore(slots)
         self.bodies = _BodyBudget(BODY_BUDGET)
-        self.reading, self.evicted, self.state = {}, set(), threading.Lock()
+        self.reading, self.evicted, self.tickets, self.state = {}, set(), {}, threading.Lock()
         super().__init__(address, handler)
 
     def process_request(self, request, client_address):
@@ -1011,17 +1106,37 @@ class BrokerServer(ThreadingHTTPServer):
             raise
 
     def evict(self):
-        """Shut the reading connection that has waited longest; False when none is reading."""
+        """Shut the reading connection that has waited longest; False when none is reading. Reading
+        covers every wait before a request is read in full -- its request line and headers, its
+        body's first byte, its budget, its body -- and each ends at once: the socket is shut, and a
+        wait for budget is cancelled (re-attack of c952fa4f: a waiter kept its slot until its budget
+        deadline, 30 s, while the new connection waited 5 s for that slot)."""
         with self.state:
             if not self.reading:
                 return False
             victim = min(self.reading, key=self.reading.get)
             del self.reading[victim]
             self.evicted.add(victim)
+            ticket = self.tickets.get(victim)
+        if ticket is not None:
+            self.bodies.cancel(ticket)
         with contextlib.suppress(OSError):
             victim.shutdown(socket.SHUT_RDWR)
         self.ledger.drop("stalled request evicted")
         return True
+
+    def reclaimed(self, ticket):
+        """A stalled body whose share of the budget a waiting request took back: evicted."""
+        with self.state:
+            self.reading.pop(ticket.request, None)
+            self.evicted.add(ticket.request)
+        with contextlib.suppress(OSError):
+            ticket.request.shutdown(socket.SHUT_RDWR)
+        self.ledger.drop("stalled body evicted")
+
+    def track(self, request, ticket):
+        with self.state:
+            self.tickets[request] = ticket
 
     def request_read(self, request):
         """`request`'s whole request has arrived: from here it keeps its slot. False when it was
@@ -1038,6 +1153,7 @@ class BrokerServer(ThreadingHTTPServer):
         with self.state:
             self.reading.pop(request, None)
             self.evicted.discard(request)
+            self.tickets.pop(request, None)
 
     def process_request_thread(self, request, client_address):
         try:

@@ -100,7 +100,13 @@ The launcher starts both containers with these properties:
   120 s (a byte at a time extends neither), and at most 32 are served at once. When all 32 are
   taken, a new connection evicts the one that has waited longest for its own request to arrive,
   so connections trickling requests, however many a process reopens, never keep the arm's own
-  model calls out; a call already read in full keeps its slot. A request body is at most 32 MB (the
+  model calls out; a call already read in full keeps its slot. Every wait before a request is read
+  in full -- for its headers, its body's first byte, its share of the body budget below, its body --
+  ends at once when it is evicted, so an evicted connection's slot is free at once. A request body
+  gets its share of that budget only once its first byte is here, and one whose bytes then arrive
+  slower than 1 MiB/s (after a second's grace) is stalled: a request waiting for budget takes back,
+  for itself, what a stalled body holds and evicts it, so stalled requests, however many arrive,
+  cannot keep an ordinary call's body out. A request body is at most 32 MB (the
   API's own limit) and held once, and what the bodies take together -- their bytes and the most
   parsing them can allocate -- is at most 400 MiB (`BODY_BUDGET`), which leaves the interpreter and
   its parse children room in the broker's 512m. Before a body is read, the most one of its length

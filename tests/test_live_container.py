@@ -1703,12 +1703,92 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
                 self.assertEqual(self.post(doc=self.body(**extra))[0], 400)
         self.assertEqual(self.api.requests, [])
 
+    def test_stalled_holders_and_budget_waiters_cannot_keep_an_ordinary_call_out(self):
+        # Codex round 10 on c952fa4f: two stalled requests whose reservations left 12 bytes of the
+        # budget, the other slots filled by requests waiting for budget, and more stalled requests
+        # arriving: an evicted budget waiter kept its slot until its 30 s budget deadline (the new
+        # connection waited 5 s for it, holding up every connection behind it), and the budget an
+        # evicted holder gave back went to another stalled waiter, so an ordinary call never got
+        # in. Every wait is now evictable at once, budget goes only to a body that is arriving, and
+        # a request waiting for budget takes back, for itself, what a stalled body holds. With the
+        # arrivals still coming while the call is made, and with them stopped (then only the call's
+        # own eviction and its taking back of a stalled share can let it in).
+        for during in (True, False):
+            with self.subTest(arrivals_during_the_call=during):
+                self.ordinary_call_behind_stalled_requests(during)
+
+    def test_budget_goes_only_to_a_body_that_is_arriving(self):
+        # A request whose body has not begun holds no share of the budget, however long it waits:
+        # what is given back can go only to bodies actually arriving.
+        server = self.served_broker()
+        body = json.dumps(self.body()).encode()
+        conn = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(conn.close)
+        conn.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                     b"Content-Length: %d\r\n\r\n" % len(body))
+        time.sleep(0.5)
+        self.assertEqual(server.bodies.held, 0, "a request with no body byte yet holds budget")
+        conn.sendall(body)
+        self.assertTrue(conn.recv(64).startswith(b"HTTP/1.0 200"))
+
+    def ordinary_call_behind_stalled_requests(self, during):
+        server = self.served_broker()
+        big = 32_000_000
+        small = (lb.BODY_BUDGET - lb.WORST_PER_BYTE * big - 12) // lb.WORST_PER_BYTE
+        self.assertEqual(lb.BODY_BUDGET - lb.WORST_PER_BYTE * (big + small), 12)
+        stalled = []
+
+        def stall(length):
+            conn = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            stalled.append(conn)
+            conn.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: %d\r\n\r\n{" % length)  # one body byte, then nothing
+        self.addCleanup(lambda: [conn.close() for conn in stalled])
+        for length in (big, small):  # the budget, but for 12 bytes
+            stall(length)
+            time.sleep(0.2)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and server.bodies.held != lb.BODY_BUDGET - 12:
+            time.sleep(0.01)
+        self.assertEqual(server.bodies.held, lb.BODY_BUDGET - 12, "the stalled holders did not take the budget")
+        for length in [big] * (lb.MAX_CONNECTIONS - 3) + [small]:  # every other slot waits for budget
+            stall(length)
+        time.sleep(0.3)
+        for _ in range(2):  # evict both holders: stalled waiters take what they gave back
+            stall(big)
+            time.sleep(0.3)
+        stop = threading.Event()
+
+        def keep_arriving():
+            while not stop.wait(0.05):
+                with contextlib.suppress(OSError):
+                    stall(big)
+        flood = threading.Thread(target=keep_arriving, daemon=True)
+        flood.start()
+        self.addCleanup(flood.join, 5)
+        self.addCleanup(stop.set)
+        time.sleep(0.3)
+        if not during:
+            stop.set()
+            flood.join(5)
+            time.sleep(0.2)
+        started = time.monotonic()
+        try:
+            status, data = self.post()
+        except (OSError, http.client.HTTPException) as err:
+            status, data = None, repr(err)
+        took = time.monotonic() - started
+        stop.set()
+        self.assertEqual(status, 200, data)
+        self.assertLess(took, 10, f"an ordinary call took {took:.1f} s behind stalled requests")
+
     def test_a_body_is_held_once_not_twice(self):
         # Re-attack of 2d254d0f: read_body kept every chunk and then joined them, so each body was
         # held twice -- four concurrent 64 MiB bodies took the broker to 506 MB of its 512m.
         n = 8 << 20
         fake = types.SimpleNamespace(rfile=io.BufferedReader(io.BytesIO(b"x" * n)), connection=None, ledger=None,
-                                     server=types.SimpleNamespace(was_evicted=lambda _conn: False))
+                                     server=types.SimpleNamespace(was_evicted=lambda _conn: False),
+                                     ticket=lb._Ticket(None, n))
         tracemalloc.start()
         try:
             body = lb.Broker.read_body(fake, n)

@@ -31,8 +31,10 @@
   `external-ci-monitor.py` never re-sends `GITHUB_TOKEN` on a redirect, refuses a foreign origin
   and an oversized body, and shape-checks `--repo`; the paperclip and OpenHands adapters' keys never
   follow a redirect either. The live harness's broker cuts off idle and trickling connections and
-  evicts a stalled request when its slots are full, so trickling connections never keep the arm's
-  calls out; it takes no body over the API's own 32 MB, holds each once, and bounds what parsing it
+  evicts a stalled request when its slots are full -- every wait before a request is read in full,
+  for its body budget included, ends at once when evicted -- and a request waiting for body budget
+  takes back what a stalled body holds, which goes only to bodies that are arriving, so trickling
+  or stalled connections never keep the arm's calls out; it takes no body over the API's own 32 MB, holds each once, and bounds what parsing it
   can allocate before parsing it -- the decoded input and its strings at their characters' width,
   and every JSON value, by a pre-scan that holds no memory of its own and stops after two million
   steps -- and parses it in a child process held to that bound, so the bodies held at once and

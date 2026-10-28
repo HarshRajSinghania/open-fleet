@@ -1802,5 +1802,107 @@ class TestWaiversFromTheBaseRefP17(FloorGuardBase):
         self.assertIn("class `one-way`", err)
 
 
+
+class TestTheBaseIsResolvedByExactNameW307(FloorGuardBase):
+    """W3-07 class (Codex review follow-up): resolve_base ran `rev-parse <base>^{commit}` and,
+    unnamed, cut origin/HEAD's target to the SHORT name `origin/<x>`. gitrevisions tries
+    refs/tags/ and refs/heads/ before refs/remotes/, so a tag or local branch spelled
+    `origin/main` stood in for the remote-tracking branch — and the base is where the waivers are
+    read. An origin/HEAD pointed at a local branch was used as-is; an absent refs/remotes/… name
+    expanded to a local refs/heads/refs/remotes/… branch; a revision suffix read an older base.
+    Each plant below carries a waiver for the change's own violation: before, `clean (1 waived)`;
+    now the waivers are read at the exact remote-tracking commit, or the base is refused."""
+
+    WAIVER = "floor-waiver:threshold-lowered:CONSTRAINTS.md"
+
+    def setUp(self):
+        super().setUp()
+        # The coordinator's fetch of the reviewed default branch: no waiver there.
+        git(self.repo, "update-ref", "refs/remotes/origin/main", "main")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        # The change lowers a floor.
+        write(self.repo, "CONSTRAINTS.md",
+              BASE_CONSTRAINTS.replace("| D1 | coverage | 85 |", "| D1 | coverage | 60 |"))
+        self.commit("lower the floor")
+
+    def waiver_on(self, ref):
+        """A commit off the base carrying a waiver for the change's own violation, at `ref`."""
+        git(self.repo, "branch", "planted", "main")
+        land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.WAIVER) + "\n"},
+                     branch="planted")
+        git(self.repo, "update-ref", ref, "refs/heads/planted")
+        git(self.repo, "branch", "-D", "planted")
+
+    def assert_not_waived(self, *args, code=1):
+        got, out, err = run_main(self.repo, *args)
+        self.assertEqual(got, code, f"{out}{err}")
+        self.assertNotIn("waived", out)
+        return err
+
+    def test_a_tag_spelled_origin_main_never_stands_in_for_the_remote_branch(self):
+        self.waiver_on("refs/tags/origin/main")
+        for args in ((), ("--base", "origin/main")):
+            with self.subTest(args=args):
+                err = self.assert_not_waived(*args)
+                self.assertIn("[threshold-lowered]", err)
+
+    def test_a_local_branch_spelled_origin_main_never_stands_in_for_the_remote_branch(self):
+        self.waiver_on("refs/heads/origin/main")
+        for args in ((), ("--base", "origin/main")):
+            with self.subTest(args=args):
+                self.assert_not_waived(*args)
+
+    def test_an_origin_head_pointed_at_a_local_branch_is_skipped(self):
+        self.waiver_on("refs/heads/evil")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/evil")
+        self.assert_not_waived()
+
+    def test_an_absent_remote_ref_is_not_answered_by_a_local_branch_of_its_spelling(self):
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        self.waiver_on("refs/heads/refs/remotes/origin/main")
+        err = self.assert_not_waived("--base", "refs/remotes/origin/main", code=2)
+        self.assertIn("exactly that name", err)
+
+    def test_a_revision_suffix_is_no_base(self):
+        # The waiver stood at origin/main~1 and was retired by a later `superseded` line.
+        land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.WAIVER) + "\n"})
+        land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.WAIVER) + "\n" + grant_row(
+            self.WAIVER, answer="superseded", ts="2026-09-11T00:00:00Z", klass="mechanical",
+            source="", why="the floor holds again") + "\n"})
+        git(self.repo, "update-ref", "refs/remotes/origin/main", "main")
+        self.assert_not_waived("--base", "origin/main")
+        for base in ("origin/main~1", "origin/main^", "origin/main@{1}", "main~1"):
+            with self.subTest(base=base):
+                err = self.assert_not_waived("--base", base, code=2)
+                self.assertIn("not a valid ref name", err)
+
+    def test_waivers_and_the_diff_are_read_at_the_resolved_commit(self):
+        land_on_base(self.repo, {"docs/DECISIONS.md": grant_row(self.WAIVER) + "\n"})
+        git(self.repo, "update-ref", "refs/remotes/origin/main", "main")
+        tip = git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        seen = []
+        real = floor_guard.git
+
+        def spy(repo, *args, **kwargs):
+            seen.append(list(args))
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(floor_guard, "git", side_effect=spy):
+            code, out, err = run_main(self.repo, "--base", "origin/main")
+        self.assertEqual(code, 0, err)
+        self.assertIn("(1 waived)", out)
+        reads = [a for a in seen if a[:1] in (["merge-base"], ["cat-file"])]
+        self.assertTrue(reads, seen)
+        for argv in reads:
+            self.assertFalse(any("origin/main" in tok for tok in argv), argv)
+            self.assertTrue(any(tok == tip or tok.startswith(tip + ":") for tok in argv), argv)
+
+    def test_a_local_base_is_named_advisory(self):
+        code, _out, err = run_main(self.repo, "--base", "main")
+        self.assertEqual(code, 1, err)
+        self.assertIn("LOCAL branch", err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

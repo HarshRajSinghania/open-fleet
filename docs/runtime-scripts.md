@@ -1156,7 +1156,8 @@ Exits: n/a (library).
 > `runtime/scripts/gitexec.py:driver_blanks` keeps read-side git queries deterministic.
 > `runtime/scripts/wtree.sh` carries the same belt and blanks for its `add -A`/`write-tree`
 > fingerprint, with global/system config off as here (W4-02: on a one-uid host `~/.gitconfig` is
-> the worker's to write); a changed path any declared driver filters is refused as unverifiable
+> the worker's to write), and stages in a git dir it builds whose config defines no driver, so one
+> added after its listing never runs; a changed path any declared driver filters is refused as unverifiable
 > (exit 3) rather than fingerprinted from bytes the commit was never built from (#629, PR #649 review). Since #608 the module is part of the signed verifier toolchain
 > (`runtime/scripts/verify.py:_Transcript`): verify.py loads `runtime/scripts/inventory.py` to
 > check a retention receipt, and that loads this module — so a change here changes a toolchain
@@ -2218,7 +2219,8 @@ identical content does not change the fingerprint, so a record made on a dirty t
 valid once committed; content-preserving rebase/amend/squash does not change it either.
 The temp index seeds from a copy of the real one (stat cache preserved, mtime restored
 against racy-index reads), falling back to `read-tree HEAD` when the restore fails.
-Staged blobs enter the object store as unreachable objects until gc, like `git stash -u`.
+Staging runs in git custody (below), so the blobs and tree it writes land in a scratch object
+store removed on exit; the repository's own store is never written.
 
 Ignored files are out by contract: the value is compared to `<head_sha>^{tree}`, and no commit
 tree can hold an ignored file, so including them would make every record stale. A run that
@@ -2228,33 +2230,51 @@ tree — the fingerprint binds committable content only, and the coordinator's c
 at `head_sha` is what catches such a pass. A `core.excludesFile` named in global config is not
 read (global config is off, below), so an untracked file only it hid counts and reads STALE.
 
-Filters and the config (#629, PR #649 review, W4-02). wtree.sh runs over a worker's worktree,
-so no filter driver runs here, wherever it is declared: the repository's (`--show-scope`
-local/worktree, includes counted in the including file's scope), and the global or system file
-too — on a one-uid host `~/.gitconfig` is the worker's to write, and a global clean filter both ran
-in the coordinator and chose the fingerprint (it mapped a tampered file back to its committed blob,
-so verify graded a tree no test saw FRESH). Every staging git call runs with
+Filters and the config (#629, PR #649 review, W4-02, W4 custody sweep). wtree.sh runs over a
+worker's worktree, so no filter driver runs here, wherever it is declared: the repository's
+(`--show-scope` local/worktree, includes counted in the including file's scope), and the global or
+system file too — on a one-uid host `~/.gitconfig` is the worker's to write, and a global clean
+filter both ran in the coordinator and chose the fingerprint (it mapped a tampered file back to its
+committed blob, so verify graded a tree no test saw FRESH). Every git call runs with
 `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1` (`safe.directory=*` in place of the
 global file), and the fsmonitor/hooks/replace belt is set as for gitexec; only the driver listing
-reads the caller's global/system view, to learn the names it must blank and report. The
+reads the caller's global/system view, to learn the names it must blank and report. Listing the
+declared drivers is not enough on its own: `add -A` read the repository's config again, so a filter
+a still-running worker added after the listing ran (and could map a tampered file back to HEAD).
+So `read-tree`, `add -A`, `write-tree` and the exit-3 `diff-index` run in git custody — the shared
+custody of `runtime/scripts/gitexec.py` (`custody_git_dir`), spelled in sh: a git dir wtree.sh
+builds in a temp dir with its own config (object format only, no driver of any kind), HEAD at the
+repository's HEAD commit, the repository's objects as a read-only alternate and regular-file copies
+of its `info/exclude`, `shallow`, `info/sparse-checkout` and split-index `sharedindex.*` (anything
+but a regular file there is exit 1), with the repository's own work tree (`--work-tree`). A driver
+any config gains at any moment is undefined there. The repository's data-only `core.*` settings
+(line endings, file modes, name folding, stat fields, sparse flags) ride as command-line pairs so a
+checkout still fingerprints as its committed tree; a repository-scope `core.excludesFile` does
+not (an untracked file only it hid counts and reads STALE). An `extensions.*` the custody dir cannot
+reproduce (a partial clone above all) is exit 1, never a guess, and `GIT_NO_LAZY_FETCH=1` +
+`GIT_ALLOW_PROTOCOL=file` keep a planted promisor remote from running anything through a lazy fetch. The
 trade-off: a file a declared driver filters (Git LFS included) can be compared to the committed
 tree only by running that driver. While its stat is unchanged, git reuses the index's cleaned blob
 and the fingerprint is exact. Once its stat changes (a touch, an edit), git would re-clean it, and
 the raw bytes it stages instead would make a good run read as STALE. So for any such path staged
 differently from HEAD (found with `diff-index --cached --no-ext-diff` and `check-attr filter`,
-which run nothing) wtree.sh exits 3 with the reason instead of printing a misleading value.
+which run nothing) wtree.sh exits 3 with the reason instead of printing a misleading value. A
+driver declared only after the listing is not reported: it never ran, so its path is hashed from
+its raw bytes and the value states that content (a changed file reads STALE, never FRESH).
 `evidence-run.py` records that reason as `wtree_unverifiable`, and `verify.py check_commands`
 refuses the record as UNVERIFIABLE, naming the reason, not as STALE. The coordinator's clean-env
 re-run at `head_sha` decides such a unit.
 
 Custody (W4-07). The environment pointers that outrank `-C` (`GIT_DIR`, `GIT_WORK_TREE`,
-`GIT_COMMON_DIR`, `GIT_INDEX_FILE`, the object directories, `GIT_ATTR_SOURCE`) and the inherited
+`GIT_COMMON_DIR`, `GIT_INDEX_FILE`, the object directories, `GIT_ATTR_SOURCE`), the inherited
 config channels that outrank or blind the belt (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG`,
-`GIT_EXTERNAL_DIFF`) are unset, and git is resolved once to an absolute path (`"$GIT"`); a git
-that does not resolve to one is exit 1.
+`GIT_EXTERNAL_DIFF`) and the helper-program, template and namespace selectors (`GIT_EXEC_PATH`,
+`GIT_TEMPLATE_DIR`, `GIT_NAMESPACE`) are unset, and git is resolved once to an absolute path
+(`"$GIT"`); a git that does not resolve to one is exit 1.
 
-Exits: 0 prints the hash · 1 outside a git repo, no commits and no usable index, or no absolute
-git on PATH · 3 a path staged differently from HEAD is filtered by a declared driver, reason on
+Exits: 0 prints the hash · 1 outside a git repo, no commits and no usable index, no absolute
+git on PATH, or a repository the custody cannot stage (an unhonourable extension, a non-regular
+file where git reads one) · 3 a path staged differently from HEAD is filtered by a declared driver, reason on
 stderr, nothing on stdout (callers fail closed on nonzero — never treat it as an empty fingerprint).
 
 > Why this and not `HEAD^{tree}`: committing identical content must not invalidate a

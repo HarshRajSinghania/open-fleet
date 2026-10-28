@@ -7,3 +7,8 @@
   (unverifiable), and a global `core.excludesFile` is not read. Inherited
   `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`/`GIT_CONFIG`/`GIT_CONFIG_PARAMETERS` no longer steer
   the fingerprint or blind the driver listing, and git is resolved once to an absolute path.
+  Staging (`read-tree`, `add -A`, `write-tree`) now runs in git custody: a git dir wtree.sh builds
+  over the repository's objects and work tree, whose config defines no driver, so a filter a
+  still-running worker adds after the driver listing neither runs nor chooses the fingerprint;
+  a partial clone or a non-regular `info/exclude` is exit 1, and the staged objects no longer
+  land in the repository's store.

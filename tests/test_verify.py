@@ -1695,6 +1695,26 @@ class GitAuthorityChecks(unittest.TestCase):
             self.assertEqual(verify.check_symbol_on_base(None, "main"), [])
             self.assertEqual(verify.check_symbol_on_base("orca_unit_symbol", None), [])
 
+    def test_symbol_is_never_read_on_a_local_branch_spelled_as_the_absent_remote(self):
+        # W3-07 class, Codex review: `git grep … refs/remotes/origin/main` with that ref ABSENT
+        # expanded the name to the local branch refs/heads/refs/remotes/origin/main — here a
+        # worker commit that adds the symbol — and the change read as "on base".
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        Path(self.repo, "planted.py").write_text("def planted_symbol():\n    pass\n",
+                                                 encoding="utf-8")
+        git("add", "planted.py")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "worker")
+        git("update-ref", "-d", "refs/remotes/origin/main")
+        git("update-ref", "refs/heads/refs/remotes/origin/main", "HEAD")
+        with self._inside_repo():
+            errs = verify.check_symbol_on_base("planted_symbol", "main")
+            self.assertTrue(any("not found on origin/main" in e for e in errs), errs)
+            errs = verify.check_symbol_on_base("planted_symbol", "main~0")
+            self.assertTrue(any("not found on origin/main~0" in e for e in errs), errs)
+
 
 class GitObjectRewriteChannelsAreClosed(RepoCase):
     """Review P1: `git replace` in the graded clone rewrites what head_sha RESOLVES to, and a
@@ -6546,6 +6566,57 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
                 {"unit": "u1", "base_sha": self.poison}, "sha256:" + "a" * 64, "mutation",
                 None, "rec.json", "pub")
             self.assertTrue(bad and "pre-fix content was swapped" in bad[0], bad)
+
+    def _poison_spelled_as_the_absent_remote(self):
+        """W3-07 class, Codex review: refs/remotes/origin/main ABSENT, and a LOCAL branch spelled
+        refs/heads/refs/remotes/origin/main holding the poison — `rev-parse` and `merge-base`
+        expand the remote name to it."""
+        git = ["git", "-C", str(self.repo)]
+        subprocess.run([*git, "update-ref", "-d", "refs/remotes/origin/main"], check=True)
+        subprocess.run([*git, "update-ref", "refs/heads/refs/remotes/origin/main", self.poison],
+                       check=True)
+
+    def test_an_absent_remote_ref_is_not_answered_by_a_local_branch_of_its_spelling(self):
+        # The base-binding and ancestry pair on a sound lane: before, both passed the poison
+        # (it is an "ancestor" of the local branch); now the ref does not resolve, so the
+        # ancestry proof the lane asked for is fatal and base binding is left to it.
+        self._poison_spelled_as_the_absent_remote()
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            errs = verify.check_ancestry({"head_sha": self.poison}, "main")
+            self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+            self.assertIn("origin/main not found", errs[0])
+            self.assertIn("exactly that name", errs[0])
+            self.assertEqual(verify.check_base_binding({"base_sha": self.poison}, "main", True), [])
+
+    def test_a_revision_suffix_on_the_base_is_not_a_base(self):
+        verify._Authority.lane = "provenance=ci"
+        with self._inside_repo():
+            for base in ("main~0", "main^0", "main@{0}"):
+                with self.subTest(base=base):
+                    errs = verify.check_ancestry({"head_sha": self.honest_base}, base)
+                    self.assertTrue(errs and not errs[0].startswith("NOTE:"), errs)
+                    self.assertIn("not a valid ref name", errs[0])
+
+    def test_the_base_is_resolved_once_and_every_later_read_names_the_commit(self):
+        # merge-base used to re-resolve refs/remotes/origin/<base> (and expand it) after the
+        # existence check; it now receives the commit id the exact-name rule returned.
+        seen = []
+        real = verify._git
+
+        def spy(args, *a, **k):
+            seen.append(list(args))
+            return real(args, *a, **k)
+
+        with self._inside_repo(), mock.patch.object(verify, "_git", side_effect=spy):
+            self.assertEqual(verify.check_base_binding({"base_sha": self.honest_base}, "main",
+                                                       True), [])
+            self.assertEqual(verify.check_ancestry({"head_sha": self.honest_base}, "main"), [])
+        reads = [argv for argv in seen if argv[:1] == ["merge-base"]]
+        self.assertEqual(len(reads), 2, seen)
+        for argv in reads:
+            self.assertNotIn("refs/remotes/origin/main", argv)
+            self.assertEqual(argv[-1], self.honest_base, argv)
 
 
 class SiblingNamedLikeTheStdlibNeverLoads(unittest.TestCase):

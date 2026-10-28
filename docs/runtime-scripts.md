@@ -2658,8 +2658,9 @@ Flags: none — positional arguments only.
 Untracked non-ignored files are included; .gitignore'd scratch stays out. Committing
 identical content does not change the fingerprint, so a record made on a dirty tree stays
 valid once committed; content-preserving rebase/amend/squash does not change it either.
-The temp index seeds from a copy of the real one (stat cache preserved, mtime restored
-against racy-index reads), falling back to `read-tree HEAD` when the restore fails.
+The temp index seeds from a copy of the real one (stat cache preserved, atime/mtime restored
+from the copied file's own descriptor against racy-index reads), falling back to `read-tree HEAD`
+when the real index is absent or the restore fails.
 Staging runs in git custody (below), so the blobs and tree it writes land in a scratch object
 store removed on exit; the repository's own store is never written.
 
@@ -2687,21 +2688,21 @@ custody of `runtime/scripts/gitexec.py` (`custody_git_dir`), spelled in sh: a gi
 builds in a temp dir with its own config (object format only, no driver of any kind), HEAD at the
 repository's HEAD commit, the repository's objects as a read-only alternate and regular-file copies
 of its `info/exclude`, `info/attributes`, `shallow`, `info/sparse-checkout` and split-index
-`sharedindex.*` (anything but a regular file there is exit 1), with the repository's own work tree
-(`--work-tree`). A driver any config gains at any moment is undefined there. `info/attributes` is
-data: `text`/`eol`/`working-tree-encoding` are built-in conversions a clean CRLF checkout needs to
-fingerprint as its tree, and a `filter=` it selects names a driver the custody never defines. The
-repository's data-only `core.*` settings (line endings and `safecrlf`, file modes, name folding,
-stat fields, sparse flags, `checkRoundtripEncoding`) ride as command-line pairs for the same
-reason; a repository-scope `core.excludesFile` does not (an untracked file only it hid counts and
-reads STALE). A repository-scope `core.attributesFile` is attribute data too, and dropping it made
-a clean CRLF checkout it steers read STALE, so its CONTENT is carried: the path as git expands it
-(a relative one from the work tree top), read only as a regular file of at most 1 MiB, opened
-without following a final symlink and without blocking (by `python3 -I`, since sh cannot), into a
-file the custody's own `core.attributesFile` names — the same lowest precedence, below
-`.gitattributes` and `info/attributes`. A FIFO, device, directory, symlink or larger file is exit 1,
-never dropped; a missing file or empty value is no attributes, as for git. The path reaches the
-reader from git's NUL-terminated output, never a `$(...)`, which stripped a trailing newline and
+`sharedindex.*` (anything but a regular file there is exit 1; how each is read is below), with the
+repository's own work tree (`--work-tree`). A driver any config gains at any moment is undefined
+there. `info/attributes` is data: `text`/`eol`/`working-tree-encoding` are built-in conversions a
+clean CRLF checkout needs to fingerprint as its tree, and a `filter=` it selects names a driver the
+custody never defines. The repository's data-only `core.*` settings (line endings and `safecrlf`,
+file modes, name folding, stat fields, sparse flags, `checkRoundtripEncoding`) ride as command-line
+pairs for the same reason; a repository-scope `core.excludesFile` does not (an untracked file only
+it hid counts and reads STALE). A repository-scope `core.attributesFile` is attribute data too, and
+dropping it made a clean CRLF checkout it steers read STALE, so its CONTENT is carried: the path as
+git expands it (a relative one from the work tree top), read as every custody copy is (below) and
+only as a regular file of at most 1 MiB, into a file the custody's own `core.attributesFile` names —
+the same lowest precedence, below `.gitattributes` and `info/attributes`. A FIFO, device, directory,
+symlink or larger file is exit 1, never dropped; a missing file or empty value is no attributes, as
+for git. The path reaches the reader from git's NUL-terminated output, never a `$(...)`, which
+stripped a trailing newline and
 read another file. The custody's own attributes file is named always — empty when the repository
 names none — so git never opens its default user attributes file (`$XDG_CONFIG_HOME/git/attributes`
 or `~/.config/git/attributes`, the worker's to write on a one-uid host, where a FIFO hung staging),
@@ -2726,6 +2727,27 @@ its raw bytes and the value states that content (a changed file reads STALE, nev
 refuses the record as UNVERIFIABLE, naming the reason, not as STALE. The coordinator's clean-env
 re-run at `head_sha` decides such a unit.
 
+Copies and paths (Codex, round 5). Every file copied into the custody — the five above, the
+`core.attributesFile` content, and the real index into the temp index — is opened ONCE, by
+`python3 -I` (sh cannot open without blocking): without following a final symlink
+(`O_NOFOLLOW`), without blocking (`O_NONBLOCK`), its type and size checked with `fstat` on that
+descriptor, and copied from that descriptor, never past its cap. A type check by path followed by
+`cp` by path let a still-running worker swap in a FIFO between the two, so `cp`'s open hung the
+gate, or a symlink, which `cp` followed. The caps: 16 MiB for `info/exclude`, `info/attributes`,
+`shallow` and `info/sparse-checkout`, 1 GiB for the index and each `sharedindex.*`, 1 MiB for
+`core.attributesFile`. A FIFO, socket, device, directory, symlink, larger or still-growing file is
+exit 1, never followed, skipped or waited on; an absent file is skipped, as git skips it (an absent
+index seeds from HEAD). Each copy gets its original's atime/mtime from that same `fstat`. python3 is
+resolved once to an absolute path, as git is; none is exit 1. Every path git hands wtree.sh — the
+toplevel, the git dir, the common dir, the index path — and every carried `core.*` value is read
+byte-exact: `$(...)` strips every trailing newline, so wtree.sh pointed at `/tmp/repo<NL>`
+fingerprinted `/tmp/repo`, another repository, and printed its tree. A sentinel printed after git's
+output takes the strip and only git's own terminating newline is removed. So a linked worktree whose
+path ends in a newline fingerprints itself; a repository whose common git dir holds a newline (or a
+`"`) is exit 1, since an alternates file cannot name it; a toplevel or git dir that is not absolute
+is exit 1. A limit: `config --get` prints a valueless key (`[core] filemode`, true to git) exactly
+as it prints an empty value, so such a key is carried as the empty value git reads as false.
+
 Custody (W4-07). The environment pointers that outrank `-C` (`GIT_DIR`, `GIT_WORK_TREE`,
 `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, the object directories, `GIT_ATTR_SOURCE`), the inherited
 config channels that outrank or blind the belt (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG`,
@@ -2734,8 +2756,9 @@ config channels that outrank or blind the belt (`GIT_CONFIG_PARAMETERS`, `GIT_CO
 (`"$GIT"`); a git that does not resolve to one is exit 1.
 
 Exits: 0 prints the hash · 1 outside a git repo, no commits and no usable index, no absolute
-git on PATH, a repository the custody cannot stage (an unhonourable extension, a non-regular
-file where git reads one, a `core.attributesFile` that is not a regular file of at most 1 MiB, a
+git or python3 on PATH, a repository the custody cannot stage (an unhonourable extension, a common
+git dir an alternates file cannot name, a file where git reads one that is not a regular file
+within its cap — 16 MiB, 1 GiB for the index and shared index, 1 MiB for `core.attributesFile` — a
 gitlink path holding a newline), or an exit-3 check that could not run · 3 a path staged differently from HEAD is filtered by a declared driver, reason on
 stderr, nothing on stdout (callers fail closed on nonzero — never treat it as an empty fingerprint).
 

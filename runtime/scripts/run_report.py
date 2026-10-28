@@ -125,6 +125,15 @@ GIT = shutil.which("git")
 _GIT_ABSENT = "/nonexistent/git"
 
 
+def _git_env():
+    """gitexec.env(): the caller's environment with replacement objects and grafts off and the
+    repository-config command channels closed. Every git call here runs under it (independent
+    re-attack): under the ambient environment `git replace <reviewed> <PR>`, `git replace --graft`
+    or .git/info/grafts made the trusted base's ancestry and policy reads see the PR's commit, and
+    a report-only verdict on a mutation mission bound on a lane claiming soundness."""
+    return gitexec.env()
+
+
 def _git_cmd(*args):
     """Argv head for every git call: the git resolved once at import — never a bare name that
     would re-resolve against a later PATH (Greptile #498). With no git on PATH the head is a
@@ -211,7 +220,8 @@ def is_shallow(root):
     try:
         proc = subprocess.run(
             _git_cmd("rev-parse", "--is-shallow-repository"),
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
         )
     except OSError:
         return False
@@ -221,7 +231,7 @@ def is_shallow(root):
 def path_exists_at(rev, path_text, root):
     return subprocess.run(
         _git_cmd("cat-file", "-e", f"{rev}:{path_text}"),
-        cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=str(root), env=_git_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
 
 
@@ -440,7 +450,7 @@ def blob_at(rev, path_text, root):
     never from the working tree, is the whole point: the tree has moved on since the run."""
     proc = subprocess.run(
         _git_cmd("show", f"{rev}:{path_text}"),
-        cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
     return proc.stdout if proc.returncode == 0 else None
 
@@ -454,7 +464,7 @@ def tree_of(rev, root):
     """`rev`'s tree sha, or None."""
     proc = subprocess.run(
         _git_cmd("rev-parse", f"{rev}^{{tree}}"),
-        cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
     )
     out = proc.stdout.strip()
     return out if proc.returncode == 0 and out else None
@@ -589,7 +599,8 @@ def grading_base(root, base=None):
     for candidate in ((base,) if base else GRADING_BASES):
         proc = subprocess.run(
             _git_cmd("rev-parse", "--verify", "-q", f"{candidate}^{{commit}}"),
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
         )
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
@@ -615,10 +626,12 @@ def sound_lane():
                  if (os.environ.get(var) or "").strip()), None)
 
 
-def _git_line(root, *args):
-    proc = subprocess.run(_git_cmd(*args), cwd=str(root), stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL, text=True)
-    return proc.returncode, proc.stdout.strip()
+def _git_raw(root, *args):
+    """(exit, stdout) with stdout as git wrote it — no strip (str.strip() eats U+2028/U+2029/
+    U+0085, which a refname may end with) and no strict decode (a refname may be non-UTF-8)."""
+    proc = subprocess.run(_git_cmd(*args), cwd=str(root), env=_git_env(), stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL)
+    return proc.returncode, proc.stdout.decode("utf-8", "surrogateescape")
 
 
 def trusted_base(root, base=None):
@@ -636,7 +649,7 @@ def trusted_base(root, base=None):
     skipped = []
 
     def git(*args):
-        return _git_line(root, *args)
+        return _git_raw(root, *args)
 
     for name in ((base,) if base else TRUSTED_BASES):
         if name.startswith("-"):
@@ -675,7 +688,7 @@ def commit_object(rev, root):
     uses the id this returns, never the header's spelling."""
     proc = subprocess.run(
         _git_cmd("rev-parse", f"--disambiguate={rev.lower()}"),
-        cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
     )
     if proc.returncode != 0:
         return None
@@ -683,7 +696,8 @@ def commit_object(rev, root):
     for oid in proc.stdout.split():
         kind = subprocess.run(
             _git_cmd("cat-file", "-t", oid),
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
         ).stdout.strip()
         if kind == "commit":
             commits.append(oid)
@@ -694,7 +708,7 @@ def is_ancestor(rev, base, root):
     """`rev` reachable from `base` (a commit is its own ancestor)."""
     return subprocess.run(
         _git_cmd("merge-base", "--is-ancestor", rev, base),
-        cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=str(root), env=_git_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
 
 
@@ -715,7 +729,7 @@ def key_rev(rev, root, base=None):
         return None, "no grading base resolves (tried " + ", ".join(GRADING_BASES) + ")"
     if base is None and blob_at(rev, PUBKEY_PIN, root) is not None and not any(
             subprocess.run(_git_cmd("rev-parse", "--verify", "-q", f"{c}^{{commit}}"),
-                           cwd=str(root), stdout=subprocess.PIPE,
+                           cwd=str(root), env=_git_env(), stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL).returncode == 0
             for c in GRADING_BASES[:-1]):
         # h409 O-3.3: only HEAD resolves, and the pin carries a key — reading the key at the
@@ -941,7 +955,7 @@ def _read_at_rev(rev, path_text, root):
     try:
         proc = subprocess.run(
             _git_cmd("cat-file", "blob", f"{rev}:{path_text}"),
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            cwd=str(root), env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
         return None
     if proc.returncode != 0:

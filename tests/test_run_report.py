@@ -2085,6 +2085,37 @@ class ASoundLaneReadsTheKeyAndPolicyAtATrustedBase(SignedKeyFixture):
                 self.assertIn("mutation-class", r.stdout)
                 self.assertNotIn("bound demo-it", r.stdout)
 
+    def test_replacement_objects_and_grafts_never_move_the_trusted_base(self):
+        # Independent re-attack (B): run_report ran git under the ambient environment, so
+        # `git replace <reviewed> <PR>` (the reviewed commit now READS as the PR), `git replace
+        # --graft <reviewed> <PR>` or a .git/info/grafts line (the PR now an ANCESTOR of the
+        # reviewed tip, so the key and policy are read at the PR's own pin) made the PR's policy
+        # judge the PR: exit 0 "bound demo-it" on a lane claiming soundness. Every git call now
+        # runs under gitexec's hardened env (no replace objects, no grafts).
+        self._scenario()
+        grafts = self.repo / ".git" / "info" / "grafts"
+        plants = (
+            ("replace", lambda: _git(self.repo, "replace", self.reviewed, self.rev),
+             lambda: _git(self.repo, "replace", "-d", self.reviewed)),
+            ("replace --graft", lambda: _git(self.repo, "replace", "--graft", self.reviewed,
+                                              self.rev),
+             lambda: _git(self.repo, "replace", "-d", self.reviewed)),
+            ("info/grafts", lambda: grafts.write_text(f"{self.reviewed} {self.rev}\n",
+                                                      encoding="utf-8"),
+             lambda: grafts.unlink()),
+        )
+        for label, plant, unplant in plants:
+            with self.subTest(plant=label):
+                grafts.parent.mkdir(parents=True, exist_ok=True)
+                plant()
+                try:
+                    r = self.run_report()
+                finally:
+                    unplant()
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("mutation-class", r.stdout)
+                self.assertNotIn("bound demo-it", r.stdout)
+
     def test_a_suffixed_or_hex_named_base_is_no_trusted_base(self):
         # A revision suffix passed the prefix check (origin/main~1 is an older commit than the
         # reviewed tip), and 64 hex digits in a SHA-1 repository are no object id: rev-parse

@@ -6147,6 +6147,27 @@ class VerifierDocsMatchTheCode(unittest.TestCase):
         self.assertIn("--nc-command", doc)
 
 
+@contextlib.contextmanager
+def _linked_control_git_dir(cls, top, head):
+    """The control's pre-custody layout, for mutation controls only: a linked worktree of `top`
+    (`worktree add --no-checkout`), whose admin dir reads the SHARED config and `info/attributes`
+    the graded worker writes. Patched over _Authority.control_git_dir, it shows the custody is
+    what keeps a planted driver from running in the control (W4 custody sweep)."""
+    holder = tempfile.mkdtemp(prefix="orca-nc-linked-")
+    wt = os.path.join(holder, "wt")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    subprocess.run(["git", "-C", top, "worktree", "add", "-q", "--no-checkout", "--detach", wt, head],
+                   check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
+    try:
+        yield subprocess.run(["git", "-C", wt, "rev-parse", "--absolute-git-dir"], check=True,
+                             capture_output=True, text=True, env=env,
+                             stdin=subprocess.DEVNULL).stdout.strip()
+    finally:
+        subprocess.run(["git", "-C", top, "worktree", "remove", "--force", wt], capture_output=True,
+                       env=env, stdin=subprocess.DEVNULL)
+        shutil.rmtree(holder, ignore_errors=True)
+
+
 class ConfigFilterNeverRunsInTheControl(MutationFixture):
     """#629: `worktree add` and `checkout <base> -- <paths>` MATERIALISE worker content, running a
     repo-config clean/smudge filter a `.gitattributes` (or, as here, `$GIT_DIR/info/attributes`,
@@ -6198,9 +6219,12 @@ class ConfigFilterNeverRunsInTheControl(MutationFixture):
                          "a repo-config filter ran inside a verifier git leg (#629)")
 
     def test_mutation_control_without_the_blanks_the_filter_fires(self):
+        # The pre-fix control: a linked worktree of the source (the shared config), no blanks.
         self._positive_control()
         with mock.patch.object(verify._Authority, "driver_blanks",
-                               classmethod(lambda cls, repo: [])):
+                               classmethod(lambda cls, repo: [])), \
+                mock.patch.object(verify._Authority, "control_git_dir",
+                                  classmethod(_linked_control_git_dir)):
             self._run_main(self._manifest(lighting="dark-eligible", nc=self._revert_nc()),
                            "--lighting", "dark-eligible",
                            "--execute-nc", "--nc-command", self.proof_cmd)
@@ -6323,10 +6347,14 @@ class ConditionalIncludeFilterNeverRunsInTheControl(MutationFixture):
     def test_mutation_control_drivers_read_in_the_source_repo_miss_it(self):
         # Read the drivers where the old code read them — the source repo — whatever directory
         # the call names: the conditional filter is missing from that list and runs again.
+        # The control's pre-custody layout (a linked worktree, whose config view includes the
+        # conditional file) is restored too: in custody no filter is defined at all.
         self._positive_control()
         source, real = str(self.repo), verify._Authority.driver_blanks
         with mock.patch.object(verify._Authority, "driver_blanks",
-                               classmethod(lambda cls, repo: real(source))):
+                               classmethod(lambda cls, repo: real(source))), \
+                mock.patch.object(verify._Authority, "control_git_dir",
+                                  classmethod(_linked_control_git_dir)):
             self._run()
         self.assertTrue(self.marker.exists(),
                         "control: blanks read in the source repo must miss the linked-only filter")
@@ -6359,6 +6387,90 @@ class ConfigMergeDriverNeutralisedInTheControl(MutationFixture):
                                       "--lighting", "dark-eligible",
                                       "--execute-nc", "--nc-command", self.proof_cmd)
         self.assertEqual(rc, 0, out + err)
+
+
+class ControlRunsNoDriverAddedAfterTheListing(MutationFixture):
+    """W4 custody sweep (audit W4-01/W4-02 class): driver_blanks LISTS the drivers the control
+    worktree's config declares, then the checkout/revert/apply reads that config again. A sibling
+    worker that adds a NEVER-SEEN `filter.<n>.*`, `diff.<n>.textconv` or `merge.<n>.driver` to the
+    shared config (selected for every path through the shared `info/attributes`) between the two
+    had it run as the verifier. The control now runs in a git dir the verifier builds, whose config
+    declares no driver. The racing sibling below adds a fresh driver before EVERY git launch."""
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.dir = Path(marks.name)
+        self.marker = self.dir / "fired"
+        self.seq = 0
+
+    def _probe(self, name, passthrough):
+        probe = self.dir / f"{name}.sh"
+        probe.write_text("#!/bin/sh\necho " + shlex.quote(name) + " >> " + shlex.quote(str(self.marker))
+                         + ("\ncat\n" if passthrough else "\nexit 0\n"), encoding="utf-8")
+        probe.chmod(0o755)
+        return '"' + str(probe).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def _race(self):
+        real = subprocess.run
+        common = self.repo / ".git"
+
+        def run(argv, *a, **kw):
+            if isinstance(argv, (list, tuple)) and argv and os.path.basename(str(argv[0])) == "git":
+                self.seq += 1
+                name = f"late{self.seq}"
+                with open(common / "config", "a", encoding="utf-8") as fh:
+                    fh.write(f'[filter "{name}"]\n\tsmudge = {self._probe(name + "-smudge", True)}\n'
+                             f'\tclean = {self._probe(name + "-clean", True)}\n'
+                             f'[diff "{name}"]\n\ttextconv = {self._probe(name + "-textconv", False)}\n'
+                             f'[merge "{name}"]\n\tdriver = {self._probe(name + "-merge", False)}\n')
+                (common / "info").mkdir(exist_ok=True)
+                with open(common / "info" / "attributes", "a", encoding="utf-8") as fh:
+                    fh.write(f"* filter={name} diff={name} merge={name}\n")
+            return real(argv, *a, **kw)
+        return mock.patch.object(subprocess, "run", run)
+
+    def _fired(self):
+        return self.marker.read_text().split() if self.marker.exists() else []
+
+    def _controls(self):
+        """The revert control both ways: restoring the declared paths from base_sha (`checkout
+        <base> -- <paths>`), and the linear range revert (`revert --no-commit base..head`)."""
+        paths = self._revert_nc()
+        ranged = {k: v for k, v in paths.items() if k != "paths"}
+        return (("paths", paths), ("range", ranged))
+
+    def _execute(self, nc):
+        m = {"base_sha": self.base_sha, "head_sha": self.head_sha, "negative_control": nc}
+        return verify.execute_negative_control(m, self.proof_cmd)
+
+    def test_a_driver_added_after_every_listing_never_runs_in_the_control(self):
+        for label, nc in self._controls():
+            with self.subTest(control=label):
+                with self._race():
+                    ok, msgs = self._execute(nc)
+                self.assertGreater(self.seq, 0, "the race never ran")
+                self.assertEqual(self._fired(), [], f"a driver added mid-control ran ({label})")
+                self.assertTrue(ok, msgs)
+                self.assertTrue(any("negative control EXECUTED" in x for x in msgs), msgs)
+
+    def test_mutation_control_the_linked_worktree_runs_the_late_driver(self):
+        # The pre-custody layout, under the same race, with the real (listing) driver_blanks: the
+        # driver added after the listing runs in the control's checkout. The plant is live.
+        with self._race(), mock.patch.object(verify._Authority, "control_git_dir",
+                                             classmethod(_linked_control_git_dir)):
+            self._execute(self._revert_nc())
+        self.assertTrue(self._fired(), "control: the late driver never ran in a linked worktree")
+
+    def test_the_control_git_dir_declares_no_driver_and_writes_the_source_store(self):
+        with verify._Authority.control_git_dir(str(self.repo), self.head_sha) as gd:
+            gd = Path(gd)
+            self.assertEqual((gd / "HEAD").read_text(encoding="utf-8").strip(), self.head_sha)
+            self.assertNotIn("filter", (gd / "config").read_text(encoding="utf-8"))
+            self.assertFalse((gd / "info" / "attributes").exists())
+            self.assertEqual((gd / "objects").resolve(), (self.repo / ".git" / "objects").resolve())
+        self.assertFalse(gd.exists(), "the control git dir outlived its use")
 
 
 class DriverQueryFailureRefusesTheControl(MutationFixture):

@@ -50,6 +50,7 @@ from .base import (
 from .local_state import LocalStateStore
 from ._external import release_claim_on_failure
 from ._external import insert_dispatch, load_dispatch, local_worker_list, record_fence, show_from_row
+from ._external import credentialed_request, origin
 
 RO_ALLOWED_TOOLS = ["glob", "grep", "planning_file_editor"]
 RO_DISABLED_TOOLS = ["terminal", "file_editor", "apply_patch", "task_tracker", "browser_tool_set"]
@@ -241,11 +242,12 @@ class OpenHandsProvider(RuntimeProvider):
         data = json.dumps(body).encode("utf-8") if body is not None else None
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         api_key = self._env("OPEN_FLEET_OPENHANDS_SESSION_API_KEY", "ORCA_OPENHANDS_SESSION_API_KEY")
-        if api_key:
-            headers["X-Session-API-Key"] = api_key
-        http_req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        # The session key rides an unredirected header and never leaves the server's origin.
+        http_req = credentialed_request(url, data, method, headers, {"X-Session-API-Key": api_key} if api_key else {})
         try:
             with urllib.request.urlopen(http_req, timeout=kwargs.get("timeout", 60)) as resp:
+                if origin(getattr(resp, "url", None) or url) != origin(url):  # where the redirects ended
+                    raise ProviderError("openhands_redirected", f"{method} {req.get('path')} was redirected to another origin")
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:500] if exc.fp else ""

@@ -36,7 +36,9 @@ broker's ledger is written beside the receipt, out of the arm's reach, and summa
 
 What the arm's container gets: the image's non-root user, --rm, a pids/memory/CPU limit, no
 capability, no-new-privileges, no privileged flag, no host namespace, and the broker's network
-alone; a clean export of the checkout's HEAD, read-only (the launcher refuses a dirty tree, and
+alone -- which includes the broker's route out, so the arm's own connections reach any host
+unmetered: the broker caps model calls, it is no egress control (W5-15); a clean export of the
+checkout's HEAD, read-only (the launcher refuses a dirty tree, and
 nothing the container writes reaches the checkout, its .git or its ignored files); one read-write
 results directory, so the arm's own ledger and evidence outlive the container; and the
 attestation, read-only. The broker's container gets the same user, hardening and export, limits
@@ -45,7 +47,15 @@ from the leftover check to the receipt. A wall-clock limit ends it: the launcher
 both containers, then verifies with `docker ps -a --filter label=LABEL=<nonce>` that neither
 exists. A teardown step that fails or times out is recorded, never raised, so the receipt,
 written outside every mount, is always written. The container's output is saved through a
-redactor to a 0600 file: no byte of the token reaches the disk.
+redactor to a 0600 file: no byte of the token reaches the disk. The image must be one this
+launcher's `build` recorded (IMAGES: its id and the Dockerfile digest it was built from) AND carry
+the committed Dockerfile's digest label, unless --allow-foreign-image names the exception, which
+the receipt records (W5-13): a label alone is inherited by any image built FROM this one. The
+committed digest is always the git object's (the pinned commit's for a launch, HEAD's for a build,
+which refuses a working copy that differs), never the file on disk's. Both
+guard against accidents; docker access is root-equivalent and can forge either. Every path that
+goes into a --mount, derived staging paths included, passes one
+rule: no comma, quote or line break (W5-14).
 
 The limit, honestly: this guards against accidents on the host, never against an operator who
 deliberately fakes a container (as root: a /.dockerenv, an attestation, a hostname). The
@@ -67,6 +77,7 @@ import json
 import os
 import platform
 import posixpath
+import re
 import secrets
 import shutil
 import signal
@@ -82,6 +93,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT  # the checkout whose HEAD runs (a Python-level seam for the launcher's own tests)
 DOCKERFILE = ROOT / "scripts" / "live_container.Dockerfile"
+DOCKERFILE_REL = "scripts/live_container.Dockerfile"  # where a commit holds it: the digest a launch trusts
 CLAUDE_CODE = "2.1.304"
 IMAGE = f"open-fleet-live:claude-{CLAUDE_CODE}"
 LABEL = "org.open-fleet.live-harness"  # every harness container carries it: its value is the nonce
@@ -91,6 +103,10 @@ TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"  # never in any environment the launcher s
 TOKEN_FILE = "~/of-live/oauth-token"
 RECEIPTS = "~/of-live/receipts"
 LOCK = "~/of-live/live-harness.lock"  # held by one launch from its leftover check to its receipt
+# The ids of the images THIS launcher's `build` produced, with the Dockerfile digest each was built
+# from: the launch gate. A label alone is not provenance, since docker copies a parent's labels to
+# every image built FROM it (2026-10-27 re-attack, W5-13).
+IMAGES = "~/of-live/images.json"
 USER = "10001:10001"  # the image's `runner`, never root: the arm runs as it (the broker as the operator)
 REPO_IN, RESULTS_IN, LEDGER_IN = "/repo", "/results", "/ledger"
 SECRET = "/run/secrets/claude_token"  # the token: a read-only file mount in the broker's container alone
@@ -222,17 +238,61 @@ def export_checkout(repo, commit, dest):
         raise Refused(f"the export is at {head}, not the pinned {commit}")
 
 
-def image_facts(image):
-    """The image's id, digests and labels; Refused when it is not built."""
+def built_images(path):
+    """{image id: {"ref", "dockerfile_sha256", "built_at"}} this launcher's builds recorded."""
+    try:
+        doc = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def record_build(path, image_id, ref, dockerfile_sha256):
+    """Add one image this launcher built to its record: a new file renamed into place, 0600."""
+    path = Path(path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    doc = built_images(path)
+    doc[image_id] = {"ref": ref, "dockerfile_sha256": dockerfile_sha256, "built_at": now()}
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    write_new(tmp, (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode())
+    os.replace(tmp, path)
+
+
+def committed_blob(cwd, spec):
+    """The bytes of the blob `spec` (`<commit>:<path>`; a `./` path is relative to `cwd`) as the
+    repository at `cwd` committed them -- the git object, read by the hardened git, never a working
+    copy -- or None when that commit holds no such file (or `cwd` is no checkout)."""
+    try:
+        proc = subprocess.run(gitexec.argv("-C", str(cwd), "cat-file", "blob", spec), env=gitexec.env(),
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def committed_dockerfile_sha256(repo, commit):
+    """The sha256 of the Dockerfile as `commit` holds it (DOCKERFILE_REL), or None. The working copy
+    is never read: hashing the file on disk recorded an uncommitted edit (one `git update-index
+    --skip-worktree` hides from the dirty check) as `from_committed_dockerfile: true` (re-attack of
+    2d254d0f, W5-13)."""
+    data = committed_blob(repo, f"{commit}:{DOCKERFILE_REL}")
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+def image_facts(image, images=None, committed=None):
+    """The image's id, digests and labels, and whether THIS launcher built that id from the committed
+    Dockerfile (`committed`, the sha256 of the Dockerfile the pinned commit holds; `images`, the
+    launcher's build record); Refused when it is not built."""
     proc = docker("image", "inspect", "--format", "{{json .}}", image)
     if proc.returncode != 0:
         raise Refused(f"no image {image}: build it first (live_container.py build): {proc.stderr.strip()[:200]}")
     doc = json.loads(proc.stdout)
     labels = (doc.get("Config") or {}).get("Labels") or {}
-    committed = sha256_file(DOCKERFILE) if DOCKERFILE.is_file() else None
+    built = built_images(images or IMAGES).get(doc.get("Id")) or {}
     return {"ref": image, "id": doc.get("Id"), "repo_digests": doc.get("RepoDigests") or [], "labels": labels,
             "dockerfile_sha256": labels.get(DOCKERFILE_LABEL), "committed_dockerfile_sha256": committed,
-            "from_committed_dockerfile": bool(committed) and labels.get(DOCKERFILE_LABEL) == committed}
+            "from_committed_dockerfile": bool(committed) and labels.get(DOCKERFILE_LABEL) == committed,
+            "built_by_this_launcher": bool(committed) and built.get("dockerfile_sha256") == committed}
 
 
 def leftovers():
@@ -277,6 +337,18 @@ def broker_user():
     return f"{uid}:{gid}"
 
 
+def mount(src, dst, readonly=False):
+    """One `--mount` value, or Refused. Docker reads it as comma-separated CSV, where a quote opens a
+    quoted field, so a source path holding a comma, a quote or a line break would be read as other
+    keys: one rule for every path that goes into a mount, the caller's and the derived ones alike
+    (2026-10-27 audit, W5-14)."""
+    text = str(src)
+    if any(c in text for c in ',"\n\r'):
+        raise Refused(f"{text} holds a comma, a quote or a line break, which a docker --mount cannot carry "
+                      "(for a staging path, point TMPDIR at a directory without one)")
+    return f"type=bind,src={text},dst={dst}" + (",readonly" if readonly else "")
+
+
 def hardened(nonce, role, limits, user=USER):
     """What both containers share: a non-root user, --rm, limits, no capability, no privilege."""
     mem = str(limits["memory"])
@@ -290,9 +362,9 @@ def broker_argv(image_id, nonce, export, token_file, ledger_dir, cap_usd, timeou
     carries the harness hostname, which the arm's container inherits with its network namespace."""
     return [*hardened(nonce, "broker", BROKER_LIMITS, broker_user()), "--hostname", containment.HARNESS_HOSTNAME + nonce,
             "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
-            "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
-            "--mount", f"type=bind,src={token_file},dst={SECRET},readonly",
-            "--mount", f"type=bind,src={ledger_dir},dst={LEDGER_IN}",
+            "--mount", mount(export, REPO_IN, readonly=True),
+            "--mount", mount(token_file, SECRET, readonly=True),
+            "--mount", mount(ledger_dir, LEDGER_IN),
             "--workdir", LEDGER_IN, image_id,
             "timeout", "--kill-after=30", str(int(timeout) + 2 * BACKSTOP_S),
             "python3", "-I", f"{REPO_IN}/{BROKER_SCRIPT}", "--token-file", SECRET,
@@ -302,14 +374,15 @@ def broker_argv(image_id, nonce, export, token_file, ledger_dir, cap_usd, timeou
 def arm_argv(image_id, nonce, arm, broker_id, cmd, export, results, attestation, limits, settings=None):
     """`docker create` for the arm: the broker's network namespace and nothing else of it, and no
     credential: its environment is the image's and PATH alone. No privileged flag, no host
-    namespace, no capability, no device."""
+    namespace, no capability, no device. The shared namespace is not an egress control: it carries
+    the broker's own route out, so the arm reaches the network directly (W5-15, live_broker.py)."""
     return [*hardened(nonce, "arm", limits), "--label", f"org.open-fleet.arm={arm}",
             "--network", f"container:{broker_id}",
             "--env", f"PATH={CONTAINER_PATH}",
-            "--mount", f"type=bind,src={export},dst={REPO_IN},readonly",
-            "--mount", f"type=bind,src={results},dst={RESULTS_IN}",
-            "--mount", f"type=bind,src={attestation},dst={containment.ATTESTATION},readonly",
-            *(["--mount", f"type=bind,src={settings},dst={CLAUDE_SETTINGS},readonly"] if settings else []),
+            "--mount", mount(export, REPO_IN, readonly=True),
+            "--mount", mount(results, RESULTS_IN),
+            "--mount", mount(attestation, containment.ATTESTATION, readonly=True),
+            *(["--mount", mount(settings, CLAUDE_SETTINGS, readonly=True)] if settings else []),
             "--workdir", RESULTS_IN, image_id, *cmd]
 
 
@@ -429,8 +502,14 @@ def spend(ledger):
     settles = {e.get("call"): e for e in events if e.get("event") == "settle"}
     opened = next((e for e in events if e.get("event") == "open"), {})
     unsettled = [c for c in starts if c not in settles]
+    # The broker counts refusals per kind and writes one line per kind at most once a second, the
+    # counts riding every line: the last count is the number refused (a ledger from before counts
+    # one line per refusal).
+    tallies = [e["refused"] for e in events if isinstance(e.get("refused"), dict)]
+    refused = (sum(n for n in tallies[-1].values() if isinstance(n, int)) if tallies
+               else sum(1 for e in events if e.get("event") == "refuse"))
     return {"ledger": str(ledger), "read": True, "cap_usd": opened.get("cap_usd"), "calls": len(starts),
-            "refused": sum(1 for e in events if e.get("event") == "refuse"),
+            "refused": refused,
             "settled_usd": round(sum(e.get("cost_usd") or 0 for e in settles.values()), 6),
             "unsettled_calls": len(unsettled),
             "unsettled_reserved_usd": round(sum(starts[c].get("reserved_usd") or 0 for c in unsettled), 6)}
@@ -469,18 +548,34 @@ def run(args):
         if inside(path, repo) or inside(repo, path):
             raise Refused(f"{what} {path} overlaps the checkout {repo}")
     for what, path in (("--results", results), ("--receipts", receipts), ("--token-file", token_file)):
-        if "," in str(path):
-            raise Refused(f"{what} {path} holds a comma, which a docker --mount cannot carry")
+        try:
+            mount(path, "/")
+        except Refused as err:
+            raise Refused(f"{what} {err}") from None
     if inside(receipts, results) or inside(results, receipts):
         raise Refused(f"--receipts {receipts} overlaps --results {results}: the container writes to the "
                       "results, and the receipt must be out of its reach")
-    for what, mount in (("--results", results), ("the checkout", repo)):  # the arm sees both (Codex at 8585b35789)
-        if inside(Path(os.path.realpath(token_file)), mount) or inside(token_file, mount):
-            raise Refused(f"--token-file {token_file} is inside {what} {mount}, which the arm's container mounts: "
+    for what, mounted in (("--results", results), ("the checkout", repo)):  # the arm sees both (Codex at 8585b35789)
+        if inside(Path(os.path.realpath(token_file)), mounted) or inside(token_file, mounted):
+            raise Refused(f"--token-file {token_file} is inside {what} {mounted}, which the arm's container mounts: "
                           "keep the token outside both")
     token = read_token(token_file)  # its value only to check the file and to redact the output
     commit = pinned_commit(repo)
-    image = image_facts(args.image)
+    image = image_facts(args.image, args.images, committed_dockerfile_sha256(repo, commit))
+    # The receipt names where the image came from; that fact gates the launch, not just the record
+    # (2026-10-27 audit, W5-13). The gate is this launcher's own build record of the image ID beside
+    # the label, which an image built FROM it inherits. An image built elsewhere runs only when the
+    # operator names it. Both guard against accidents: anyone who can run docker (root-equivalent)
+    # can forge either.
+    image["foreign_image_allowed"] = bool(args.allow_foreign_image)
+    ours = image["from_committed_dockerfile"] and image["built_by_this_launcher"]
+    if not ours and not args.allow_foreign_image:
+        record = "recorded" if image["built_by_this_launcher"] else "no record of this id"
+        raise Refused(f"the image {args.image} ({image['id']}) was not built by this launcher from the committed "
+                      f"Dockerfile (its {DOCKERFILE_LABEL} label is {image['dockerfile_sha256']!r}, the committed "
+                      f"one {image['committed_dockerfile_sha256']!r}; {record} in {args.images}): run "
+                      "`live_container.py build`, or pass --allow-foreign-image to run it anyway, which the "
+                      "receipt records")
     with launch_lock(args.lock):
         if leftovers():
             raise Refused(f"a harness container already exists (docker ps -a --filter label={LABEL}): one arm runs "
@@ -520,12 +615,16 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
                "log": str(log_path), "token_redactions": 0}
     ids, refused, redactor, attempted = [], None, None, False
     try:
-        export = staging / "repo"
+        export, attestation = staging / "repo", staging / "attestation.json"
+        # Every derived mount source passes the same rule as the caller's, before anything is made.
+        # broker_argv and arm_argv apply it again, but only after the export is cloned and the
+        # results, receipts and ledger directories exist: checked here, a refused start leaves none.
+        for derived in (export, attestation, staging / "claude.json", ledger_dir):
+            mount(derived, "/")
         export_checkout(repo, commit, export)
         for need in (script, f"{WRAPPER_DIR}/claude", BROKER_SCRIPT):
             if not (export / need).is_file():
                 raise Refused(f"{need} is not in commit {commit[:12]}")
-        attestation = staging / "attestation.json"
         # host_sha256: the host machine's name, hashed, so a run inside names the machine it ran on,
         # not the container, whose name changes with every launch (#604's machine identity).
         doc = {"schema": containment.ATTESTATION_SCHEMA, "nonce": nonce, "commit": commit, "arm": args.arm,
@@ -614,19 +713,65 @@ def launch(args, results, receipts, token_file, token, repo, commit, image):
     return code if code >= 0 else 128 - code  # the attach client died of signal -code
 
 
+def _read_dockerfile(path):
+    """A regular file's bytes, never through a link; None for anything else."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read() if stat.S_ISREG(os.fstat(fh.fileno()).st_mode) else None
+
+
 def build(args):
-    """docker build of the committed Dockerfile, from an empty context, labelled with its digest."""
-    dockerfile = Path(args.dockerfile).resolve()
-    if not dockerfile.is_file():
-        raise Refused(f"no Dockerfile at {dockerfile}")
-    with tempfile.TemporaryDirectory(prefix="of-live-build-") as ctx:
+    """docker build of the committed Dockerfile, from an empty context, labelled with its digest.
+
+    Only a Dockerfile exactly as the checkout's HEAD commits it is built: the bytes on disk must be
+    that blob's (read from the git object, by the hardened git), before the build and after it, or
+    nothing is built or recorded. Hashing the file on disk labelled and recorded an uncommitted edit
+    as the committed Dockerfile (re-attack of 2d254d0f, W5-13).
+
+    What is recorded (IMAGES, the launch gate) is the id THIS build wrote to its --iidfile, then
+    inspected by that id: inspecting the tag after the build recorded whatever the tag named by
+    then, so a tag moved in between (a second build of a changed Dockerfile, a `docker tag`) was
+    recorded as built from the committed one (2026-10-27 re-attack of 4b24dfde, W5-13)."""
+    dockerfile = Path(args.dockerfile or DOCKERFILE).resolve()
+    data = _read_dockerfile(dockerfile)
+    if data is None:
+        raise Refused(f"no Dockerfile at {dockerfile} (or not a regular file)")
+    committed = committed_blob(dockerfile.parent, f"HEAD:./{dockerfile.name}")
+    if committed is None:
+        raise Refused(f"{dockerfile} is not committed at HEAD of its checkout: `build` builds only the committed "
+                      "Dockerfile, so the digest it labels and records is the commit's")
+    if data != committed:
+        raise Refused(f"{dockerfile} differs from the copy committed at HEAD: commit or restore it; `build` builds "
+                      "only the committed Dockerfile, so the digest it labels and records is the commit's")
+    digest = hashlib.sha256(committed).hexdigest()
+    with tempfile.TemporaryDirectory(prefix="of-live-build-") as ctx, \
+            tempfile.TemporaryDirectory(prefix="of-live-iid-") as meta:
         context = Path(args.context).resolve() if args.context else Path(ctx)
-        argv = ["build", "-f", str(dockerfile), "-t", args.image,
-                "--label", f"{DOCKERFILE_LABEL}={sha256_file(dockerfile)}", str(context)]
+        iidfile = Path(meta) / "image-id"  # beside the context, never in it: the context stays empty
+        argv = ["build", "-f", str(dockerfile), "-t", args.image, "--iidfile", str(iidfile),
+                "--label", f"{DOCKERFILE_LABEL}={digest}", str(context)]
         exe = shutil.which("docker")
         if not exe:
             raise Refused("no `docker` on PATH (OrbStack or Docker Engine)")
-        return subprocess.run([exe, *argv], stdin=subprocess.DEVNULL).returncode
+        rc = subprocess.run([exe, *argv], stdin=subprocess.DEVNULL).returncode
+        built = iidfile.read_text(encoding="ascii", errors="replace").strip() if iidfile.is_file() else ""
+    if rc == 0 and _read_dockerfile(dockerfile) != committed:
+        raise Refused(f"{dockerfile} changed while docker built it, so what docker read is unknown: the image "
+                      f"({built[:80] or 'no id'}) is not recorded and a launch will refuse it")
+    if rc == 0:
+        image_id = None
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", built):
+            proc = docker("image", "inspect", "--format", "{{json .}}", built)
+            image_id = json.loads(proc.stdout).get("Id") if proc.returncode == 0 else None
+        if not image_id:
+            raise Refused(f"the build of {args.image} succeeded, but the image id it produced ({built[:80]!r}) "
+                          "cannot be read, so it is not recorded and a launch will refuse it")
+        record_build(args.images, image_id, args.image, digest)
+        print(f"live_container: built {args.image} as {image_id}, recorded in {args.images}", file=sys.stderr)
+    return rc
 
 
 def parser():
@@ -636,8 +781,9 @@ def parser():
     sub = p.add_subparsers(dest="command", required=True)
     b = sub.add_parser("build", help="build the harness image (downloads the base and Claude Code)")
     b.add_argument("--image", default=IMAGE)
-    b.add_argument("--dockerfile", default=str(DOCKERFILE), help=argparse.SUPPRESS)
+    b.add_argument("--dockerfile", default=None, help=argparse.SUPPRESS)
     b.add_argument("--context", default=None, help=argparse.SUPPRESS)
+    b.add_argument("--images", default=IMAGES, help=argparse.SUPPRESS)
     r = sub.add_parser("run", help="run one arm in a fresh container, then destroy it")
     r.add_argument("--arm", required=True, choices=sorted(ARMS))
     r.add_argument("--results", required=True, help="the host results directory, /results inside")
@@ -651,7 +797,11 @@ def parser():
                    help=f"the subscription token, mode 0600 (default {TOKEN_FILE})")
     r.add_argument("--receipts", default=RECEIPTS, help=f"where the receipt goes (default {RECEIPTS})")
     r.add_argument("--image", default=IMAGE)
+    r.add_argument("--allow-foreign-image", action="store_true", dest="allow_foreign_image",
+                   help="run an image this launcher's `build` did not record from the committed Dockerfile "
+                        "(recorded in the receipt as image.foreign_image_allowed)")
     r.add_argument("--lock", default=LOCK, help=argparse.SUPPRESS)
+    r.add_argument("--images", default=IMAGES, help=argparse.SUPPRESS)
     r.add_argument("--pids-limit", type=int, default=LIMITS["pids"], dest="pids_limit")
     r.add_argument("--memory", default=LIMITS["memory"])
     r.add_argument("--cpus", default=LIMITS["cpus"])

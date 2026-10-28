@@ -48,9 +48,13 @@ CLOSE (in order; any mismatch is a STOP, logged, never patched over):
    its egress receipt, then retire the unit worktree (dispatch-lifecycle.md guards).
    The loop-log line carries `egress.py head` for the run ledger, and the close
    first runs `egress.py verify --expect-ancestor <the previous close's recorded
-   head>` — receipts appended since are expected; a rewritten or truncated ledger
-   loses the anchored line. The anchor lives in committed records the ledger
-   writer alone cannot rewrite (#561). A mismatch is a RED leg under rule 6.
+   head>` plus one `--expect-ancestor <id>` per receipt written since: each id
+   `egress.py write` printed, and each `egress_receipt` that `merge_queue.py receipts`
+   lists — receipts appended since are expected; a rewritten or truncated ledger
+   loses an anchored line, and only its id binds a receipt written after the last close.
+   The anchors live in committed records the ledger writer alone cannot rewrite
+   (#561), and `--require-receipts` (no receipts exits 4); only a run that sent
+   nothing omits it, and says so. A mismatch (3) or exit 4 is a RED leg under rule 6.
 
 Scope: the unit binds T (records must bind head_sha's tree — evidence-manifest.md); the integrated tree M is covered by the PR's merge-commit CI, never this close.
 

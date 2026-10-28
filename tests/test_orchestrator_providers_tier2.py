@@ -1209,5 +1209,72 @@ class TestCommonTransport(unittest.TestCase):
         self.assertIn(ctx.exception.code, ("paperclip_unreachable", "paperclip_http_error"))
 
 
+class TestCredentialsNeverFollowARedirect(unittest.TestCase):
+    """2026-10-27 audit, W5-08's class at its neighbours: an adapter's API key rode an ordinary
+    header (`Request(headers=...)`), which urllib copies onto the request a 3xx makes, to whatever
+    host its Location names. paperclip's bearer (through http_json) and OpenHands' session key now
+    ride unredirected headers, and an answer from another origin is refused."""
+
+    def serve(self, handler: type) -> int:
+        from http.server import ThreadingHTTPServer
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1]
+
+    def redirect_pair(self) -> tuple[str, dict[str, Any]]:
+        from http.server import BaseHTTPRequestHandler
+        seen: dict[str, Any] = {}
+
+        class Elsewhere(BaseHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:
+                pass
+
+            def do_GET(self) -> None:
+                seen["elsewhere"] = {k.lower(): v for k, v in self.headers.items()}
+                body = b'{"ok": true, "id": "x", "conversations": []}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        far = self.serve(Elsewhere)
+
+        class Redirector(BaseHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:
+                pass
+
+            def do_GET(self) -> None:
+                seen["first"] = {k.lower(): v for k, v in self.headers.items()}
+                self.send_response(302)
+                self.send_header("Location", f"http://localhost:{far}{self.path}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        return f"http://127.0.0.1:{self.serve(Redirector)}", seen
+
+    def test_http_json_never_resends_a_callers_header_and_refuses_the_answer(self) -> None:
+        base, seen = self.redirect_pair()
+        with self.assertRaises(ProviderError) as ctx:
+            common.http_json(base, "GET", "/api/x", provider="paperclip", timeout=5,
+                             headers={"Authorization": "Bearer PAPERCLIP-KEY"})
+        self.assertEqual(ctx.exception.code, "paperclip_redirected")
+        self.assertEqual(seen["first"].get("authorization"), "Bearer PAPERCLIP-KEY")
+        self.assertNotIn("authorization", seen["elsewhere"], "the key followed the redirect")
+
+    def test_openhands_session_key_never_follows_a_redirect(self) -> None:
+        openhands = _mod("runtime.providers.openhands")
+        base, seen = self.redirect_pair()
+        with tempfile.TemporaryDirectory() as tmp:
+            prov = openhands.OpenHandsProvider(db_path=Path(tmp) / "state.db", base_url=base,
+                                               env={"OPEN_FLEET_OPENHANDS_SESSION_API_KEY": "OH-KEY"})
+            with self.assertRaises(ProviderError) as ctx:
+                prov._default_runner({"method": "GET", "path": "/api/conversations/search"}, timeout=5)
+        self.assertEqual(ctx.exception.code, "openhands_redirected")
+        self.assertEqual(seen["first"].get("x-session-api-key"), "OH-KEY")
+        self.assertNotIn("x-session-api-key", seen["elsewhere"], "the session key followed the redirect")
+
+
 if __name__ == "__main__":
     unittest.main()

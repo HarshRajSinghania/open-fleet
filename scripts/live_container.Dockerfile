@@ -23,9 +23,22 @@ ENV HOME=/home/runner \
     DISABLE_AUTOUPDATER=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Claude Code, pinned, by its official installer, as `runner`. The build fails unless the pinned
-# binary the in-container wrapper execs (scripts/live_container_bin/claude) is that version.
-RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.304 \
+# Claude Code, pinned, by its official installer, as `runner`. The installer is saved to a file and
+# runs only when its sha256 is the pinned one, never piped to a shell; the build then fails unless
+# the binary the in-container wrapper execs (scripts/live_container_bin/claude) has the sha256 the
+# 2.1.304 release manifest gives for this platform, and is that version (2026-10-27 audit, W5-12).
+# Re-pin both on a version bump: sha256 of https://claude.ai/install.sh, and the linux-x64 and
+# linux-arm64 checksums in https://downloads.claude.ai/claude-code-releases/<version>/manifest.json.
+RUN curl -fsSL -o /tmp/claude-install.sh https://claude.ai/install.sh \
+ && echo "3a68d3406cf674e17bed1733a4dcf37805e2e47d87417700007d7e1aa766a944  /tmp/claude-install.sh" | sha256sum -c - \
+ && bash /tmp/claude-install.sh 2.1.304 \
+ && rm -f /tmp/claude-install.sh \
+ && case "$(uname -m)" in \
+      x86_64) want=ea0f135784631619a7a409d07322ecec964f9cc4fd377508ed1ba3f141f27912 ;; \
+      aarch64) want=c487117526509ab6d2ee6013e14f181faf68d6d6afe6bb0d4b2b4a9feca5ecb3 ;; \
+      *) echo "no pinned Claude Code 2.1.304 digest for $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && echo "$want  /home/runner/.local/share/claude/versions/2.1.304" | sha256sum -c - \
  && /home/runner/.local/share/claude/versions/2.1.304 --version | grep -q '^2\.1\.304 '
 
 LABEL org.open-fleet.claude-code="2.1.304"

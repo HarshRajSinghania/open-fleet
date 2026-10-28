@@ -34,7 +34,11 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -342,6 +346,22 @@ def build_fixtures(tmp, token="zeta_token"):
     }
 
 
+# The peak RSS (KiB) of a child's own process image. ru_maxrss survives execve on Linux -- a child
+# starts with its parent's RSS at fork as its maximum -- so a test runner that built a large fixture
+# masked the very growth a child measures; VmHWM belongs to the image exec created. Spliced into
+# the children below.
+PEAK_KIB = ("import resource\n"
+            "def peak_kib():\n"
+            "    try:\n"
+            "        with open('/proc/self/status', encoding='ascii') as fh:\n"
+            "            for line in fh:\n"
+            "                if line.startswith('VmHWM:'):\n"
+            "                    return int(line.split()[1])\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // (1024 if sys.platform == 'darwin' else 1)\n")
+
+
 class _Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -612,6 +632,1030 @@ class TestInjectionFencing(_Base):
         self.assertIn("SESSION_HITS=1", out)
         self.assertIn("[INJECTION-PATTERN:", out)
         self.assertIsNone(re.search(r"<<<\s*END\s+UNTRUSTED", out))
+
+
+class TestRecallReadsAreBounded(_Base):
+    """2026-10-27 security audit, W5-21: only the OUTPUT was bounded. Every session store and
+    every run manifest was read whole, so one huge transcript or manifest held the recall scan
+    in memory before any output. A file past MAX_FILE_BYTES is skipped, a scan stops reading at
+    MAX_RUN_BYTES, and either is said on stderr so a partial recall is never silent."""
+
+    def big_claude_session(self, nbytes):
+        path = self.tmp / "claude" / "projects" / "-workspace-big" / "big-session.jsonl"  # CLAUDE_CONFIG_DIR
+        record = {"type": "user", "sessionId": "big-session", "cwd": "/workspace/big",
+                  "timestamp": "2026-10-10T12:00:00Z",
+                  "message": {"role": "user", "content": "omega_token " + "x" * nbytes}}
+        _jsonl(path, [record])
+        return path
+
+    def scan(self, *argv):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args([*argv, "--local-harnesses"])
+            hits = self.mod.search_local_harnesses(ns)["hits"]
+        return hits, err.getvalue()
+
+    def test_a_file_over_the_per_file_cap_is_skipped_and_said(self):
+        # 300 KB against a 200 KB cap: every other fixture (the SQLite stores included) fits.
+        self.big_claude_session(300_000)
+        self.assertEqual(len(self.scan("omega_token")[0]), 1, "the fixture is not where the reader looks")
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 200_000, create=True):
+            hits, err = self.scan("omega_token")
+            self.assertEqual(hits, [], "a file over the per-file cap was read whole")
+            self.assertIn("skipped", err)
+            # Everything under the cap is still read.
+            self.assertEqual(len(self.scan("zeta_token", "--limit", "50")[0]), 10)
+
+    def test_a_scan_stops_reading_at_the_per_run_budget(self):
+        self.big_claude_session(4096)
+        with mock.patch.object(self.mod, "MAX_RUN_BYTES", 1024, create=True):
+            hits, err = self.scan("omega_token")
+        self.assertEqual(hits, [], "the scan read past its byte budget")
+        self.assertIn("budget", err)
+
+    def test_an_oversized_run_manifest_is_never_read_whole(self):
+        runs = self.tmp / "runs" / "run-a"
+        runs.mkdir(parents=True)
+        manifest = {"units": [{"id": "U-1", "status": "merged", "files_touched": ["src/app.py"],
+                               "head_sha": "a" * 40, "pad": "x" * 4096}]}
+        (runs / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        found = self.mod._prior_hints(["src/app.py"], self.tmp / "runs")
+        self.assertEqual(len(found), 1, "the fixture manifest does not match the query path")
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 2048, create=True), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.mod._prior_hints(["src/app.py"], self.tmp / "runs"), [])
+
+
+class TestSqliteAndManifestReadsAreBounded(_Base):
+    """Re-attack of 82a2d00c (W5-21): a 4 KiB goose sessions.db whose `messages` is a recursive
+    VIEW yielding 800 rows of 512 KiB took the scan to 880 MB RSS with no partial note (only the
+    file's size was charged; views were read; every row was fetched at once). And 40
+    *manifest*.json symlinks to /dev/zero read 2.5 GiB charging 0, while a FIFO named
+    x-manifest.json hung --episodic-hint."""
+
+    def goose_db(self, build):
+        db = self.tmp / "only-goose" / "data" / "sessions" / "sessions.db"
+        db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE sessions (id TEXT, name TEXT, working_dir TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('s1', 'Goose', '/w')")
+            build(conn)
+            conn.commit()
+        only = self.tmp / "only-goose-home"
+        only.mkdir()
+        return {"HOME": str(only), "XDG_DATA_HOME": str(only / "xdg"), "GOOSE_PATH_ROOT": str(db.parents[2]),
+                "PATH": os.environ.get("PATH", "")}
+
+    def scan(self, query, env):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args([query, "--local-harnesses", "--agent", "goose", "--limit", "50"])
+            return self.mod.search_local_harnesses(ns)["hits"], err.getvalue()
+
+    def test_a_view_posing_as_a_table_is_never_read(self):
+        env = self.goose_db(lambda conn: conn.execute(
+            "CREATE VIEW messages AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) "
+            "SELECT 's1' AS session_id, 'user' AS role, "
+            "json_array(json_object('type', 'text', 'text', 'lambda_token ' || i)) AS content_json, "
+            "'2026-10-10T12:00:00Z' AS created_timestamp FROM n"))
+        hits, _err = self.scan("lambda_token", env)
+        self.assertEqual(hits, [], "a VIEW (any query a 4 KiB file can hide) was read as a store")
+
+    def test_rows_are_charged_as_they_are_read_and_a_skip_is_said(self):
+        # A table's rows are fetched a few at a time and charged as they arrive: past the cap the
+        # rest are never fetched, and the partial read is said (a store's file size says nothing
+        # of what a query returns, so it is not what is charged).
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE messages (session_id TEXT, content_json TEXT)")
+        conn.executemany("INSERT INTO messages VALUES ('s1', ?)", [("y" * 20000,)] * 50)
+        err = io.StringIO()
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 100_000, create=True), contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            rows = self.mod._rows(conn, "messages")
+        self.assertLess(len(rows), 50, "every row was read past the per-store cap")
+        self.assertGreater(len(rows), 0)
+        self.assertIn("skipped", err.getvalue())
+
+    def test_a_manifest_that_is_not_a_regular_file_is_never_read(self):
+        runs = self.tmp / "runs"
+        (runs / "real").mkdir(parents=True)
+        manifest = {"units": [{"id": "U-1", "status": "merged", "files_touched": ["src/app.py"], "head_sha": "a" * 40}]}
+        (runs / "real" / "elsewhere.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (runs / "linked").mkdir()
+        (runs / "linked" / "linked-manifest.json").symlink_to(runs / "real" / "elsewhere.json")
+        (runs / "fifo").mkdir()
+        os.mkfifo(runs / "fifo" / "x-manifest.json")
+        found = []
+        worker = threading.Thread(target=lambda: found.append(self.mod._prior_hints(["src/app.py"], runs)),
+                                  daemon=True)
+        worker.start()
+        worker.join(10)
+        self.assertFalse(worker.is_alive(), "a FIFO named *manifest*.json hung the recall")
+        self.assertEqual(found, [[]], "a manifest that is a symlink (to /dev/zero, or anywhere) was read")
+
+
+class _FrameZstd:
+    """A stand-in for 3.14's compression.zstd with its frame semantics: a stream is concatenated
+    frames (here b"ZF" + 4-byte repeat count + 4-byte length + chunk, decoding to chunk * count,
+    so a small frame can expand like a real one); one ZstdDecompressor decodes ONE frame, sets
+    `eof` at its end and leaves what follows in `unused_data`; `max_length` caps the output, and
+    a truncated frame leaves `needs_input` set, holding what it was given until the frame is whole."""
+
+    class ZstdError(Exception):
+        pass
+
+    # Every byte handed to any decompressor, so a test can see the input a walk re-feeds.
+    fed = 0
+
+    class ZstdDecompressor:
+        def __init__(self):
+            self.eof, self.needs_input, self.unused_data, self._held = False, True, b"", b""
+
+        def decompress(self, data, max_length=-1):
+            # Like the real one, input is held across calls until its frame is whole.
+            _FrameZstd.fed += len(data)
+            data = self._held = self._held + bytes(data)
+            if data[:2] != b"ZF"[:len(data)]:
+                raise _FrameZstd.ZstdError("not a frame")
+            if len(data) < 10:
+                return b""  # truncated: needs more input
+            count, size = int.from_bytes(data[2:6], "big"), int.from_bytes(data[6:10], "big")
+            if len(data) < 10 + size:
+                return b""
+            payload, rest = data[10:10 + size] * count, data[10 + size:]
+            if 0 <= max_length < len(payload):
+                self.needs_input = False
+                return payload[:max_length]
+            self.eof, self.needs_input, self.unused_data = True, False, rest
+            return payload
+
+    @staticmethod
+    def frame(chunk, count=1):
+        return b"ZF" + count.to_bytes(4, "big") + len(chunk).to_bytes(4, "big") + chunk
+
+
+class TestMultiFrameZstdTranscripts(_Base):
+    """Codex review of 82a2d00c (W5-21): the capped decompressor stopped at the end of the FIRST
+    frame and ignored `unused_data`, so a valid .jsonl.zst of concatenated frames silently lost
+    every later record -- with no partial-recall warning. The real module is 3.14-only here."""
+
+    SID = "0199f1a2-7b3c-7d4e-8f90-aaaaaaaaaaaa"
+
+    def zst_session(self, frames):
+        path = (self.tmp / "codex" / "sessions" / "2026" / "10" / "11"
+                / f"rollout-2026-10-11T09-00-00-{self.SID}.jsonl.zst")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"".join(frames))
+        return path
+
+    def records(self, *records):
+        return "".join(json.dumps(r) + "\n" for r in records).encode()
+
+    def scan(self, query, env=None):
+        package = type(sys)("compression")
+        package.zstd = _FrameZstd
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {"compression": package, "compression.zstd": _FrameZstd}), \
+                mock.patch.dict(os.environ, env or self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args([query, "--local-harnesses", "--agent", "codex", "--limit", "50"])
+            return self.mod.search_local_harnesses(ns)["hits"], err.getvalue()
+
+    def session(self, later_frame_count=1):
+        meta = {"timestamp": "2026-10-11T09:00:00Z", "type": "session_meta",
+                "payload": {"id": self.SID, "cwd": "/workspace/zst"}}
+        first = {"timestamp": "2026-10-11T09:00:01Z", "type": "response_item",
+                 "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "start"}]}}
+        later = {"timestamp": "2026-10-11T09:00:02Z", "type": "response_item",
+                 "payload": {"type": "message", "role": "assistant",
+                             "content": [{"type": "output_text", "text": "kappa_token in a later frame"}]}}
+        return self.zst_session([_FrameZstd.frame(self.records(meta, first)),
+                                 _FrameZstd.frame(self.records(later), count=later_frame_count)])
+
+    def test_every_frame_of_a_multi_frame_transcript_is_read(self):
+        self.session()
+        hits, _err = self.scan("kappa_token")
+        self.assertEqual(len(hits), 1, "the records after the first frame were dropped")
+
+    def test_the_cap_holds_across_frames_and_a_skip_is_said(self):
+        # Only this one store, so the skip reported is this file's: the later frame expands to
+        # ~40 KB, past a cap the compressed file itself is well under.
+        path = self.session(later_frame_count=200)
+        only = self.tmp / "only-codex"
+        (only / "home").mkdir(parents=True)
+        env = {"HOME": str(only / "home"), "XDG_DATA_HOME": str(only / "xdg"), "CODEX_HOME": str(path.parents[4]),
+               "PATH": os.environ.get("PATH", "")}
+        self.assertEqual(len(self.scan("kappa_token", env)[0]), 1)
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", path.stat().st_size + 4096, create=True):
+            hits, err = self.scan("kappa_token", env)
+        self.assertEqual(hits, [], "the frames together passed the per-file cap")
+        self.assertIn(f"skipped a file over the per-file cap ({path.stat().st_size + 4096} bytes), first {path}", err)
+
+
+
+class TestZstdFramesAreWalkedInBoundedWork(_Base):
+    """Re-check of c9d8ffa1 (W5-21): the frame walk handed each new decompressor the WHOLE rest of
+    the file, and `unused_data` copied it back, so a 2.5 MB .jsonl.zst of 320 000 empty skippable
+    frames held a recall for 23 s on 3.14 (quadratic: a 64 MiB one runs for hours). And a stream
+    whose later frame was truncated or followed by junk dropped every record of the frames before
+    it, with nothing said; without 3.14's compression.zstd, every .zst was skipped in silence."""
+
+    SID = TestMultiFrameZstdTranscripts.SID
+    zst_session = TestMultiFrameZstdTranscripts.zst_session
+    records = TestMultiFrameZstdTranscripts.records
+    scan = TestMultiFrameZstdTranscripts.scan
+    session = TestMultiFrameZstdTranscripts.session
+
+    def setUp(self):
+        super().setUp()
+        _FrameZstd.fed = 0
+
+    def test_many_tiny_frames_cost_linear_input(self):
+        empties = 2000
+        tail = {"timestamp": "2026-10-11T09:00:02Z", "type": "response_item",
+                "payload": {"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "mu_token after the empties"}]}}
+        meta = {"timestamp": "2026-10-11T09:00:00Z", "type": "session_meta",
+                "payload": {"id": self.SID, "cwd": "/workspace/zst"}}
+        path = self.zst_session([_FrameZstd.frame(self.records(meta))] + [_FrameZstd.frame(b"")] * empties
+                                + [_FrameZstd.frame(self.records(tail))])
+        hits, _err = self.scan("mu_token")
+        self.assertEqual(len(hits), 1, "the frame after the empty ones was not read")
+        size = path.stat().st_size
+        # The scan walks the frames in its contained child, whose counter this process never sees
+        # (Codex round 8 on 70805faa: the assertion read a parent counter that stayed 0, so the
+        # quadratic walk passed): the same walk is measured here, in this process.
+        _FrameZstd.fed = 0
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.mod._new_scan()
+            walked = self.mod._unzstd_capped(_FrameZstd, path.read_bytes(), path)
+        self.assertIsNotNone(walked, "the walk measured here did not read the file")
+        self.assertGreater(_FrameZstd.fed, 0, "the walk measured here fed nothing: it was not measured")
+        self.assertLess(_FrameZstd.fed, 4 * size + empties * 1024,
+                        f"the walk re-fed {_FrameZstd.fed} bytes for a {size}-byte file: quadratic in frames")
+
+    def test_every_frame_costs_against_the_per_file_cap(self):
+        # Empty frames decode to nothing, so only a per-frame charge bounds how many are walked.
+        path = self.zst_session([_FrameZstd.frame(b"")] * 400 + [_FrameZstd.frame(self.records(
+            {"timestamp": "2026-10-11T09:00:02Z", "type": "event_msg",
+             "payload": {"type": "agent_message", "message": "nu_token"}}))])
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 100 * 1024, create=True):
+            hits, err = self.scan("nu_token")
+        self.assertEqual(hits, [], "400 empty frames were walked for free past a cap they cost more than")
+        self.assertIn(f"skipped a file over the per-file cap (102400 bytes), first {path}", err)
+
+    def test_a_truncated_later_frame_keeps_the_whole_frames_and_says_so(self):
+        meta = {"timestamp": "2026-10-11T09:00:00Z", "type": "session_meta",
+                "payload": {"id": self.SID, "cwd": "/workspace/zst"}}
+        first = {"timestamp": "2026-10-11T09:00:01Z", "type": "event_msg",
+                 "payload": {"type": "user_message", "message": "xi_token in the whole frame"}}
+        second = _FrameZstd.frame(self.records({"timestamp": "2026-10-11T09:00:02Z", "type": "event_msg",
+                                                "payload": {"type": "agent_message", "message": "lost"}}))
+        for damage in (second[:-3], b"not a frame at all"):
+            with self.subTest(damage=damage[:12]):
+                path = self.zst_session([_FrameZstd.frame(self.records(meta, first)), damage])
+                hits, err = self.scan("xi_token")
+                self.assertEqual(len(hits), 1, "the records of the whole first frame were dropped")
+                self.assertIn(f"first {path}: recall is partial", err)
+                self.assertIn("damaged", err)
+
+    def test_without_the_zstd_module_a_compressed_transcript_is_said(self):
+        path = self.session()
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {"compression": None, "compression.zstd": None}), \
+                mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args(["kappa_token", "--local-harnesses", "--agent", "codex"])
+            self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
+        self.assertIn(f"first {path}: recall is partial", err.getvalue())
+        self.assertIn("compression.zstd", err.getvalue())
+
+
+class TestStoresAreReadAsStoredData(_Base):
+    """Re-check of 50b2615e (W5-21): `type = 'table'` also lists a VIRTUAL table, and an fts5 table
+    whose external content is a recursive view read the view through it -- a 24 KiB goose store
+    yielded hits from the view's rows, and one over a view that never yields held recall forever.
+    A VIRTUAL generated column is computed on read: a 12 KiB store whose content_json was
+    hex(zeroblob(450000000)) took recall to 5.7 GB RSS before a single row was charged."""
+
+    goose_db = TestSqliteAndManifestReadsAreBounded.goose_db
+    scan = TestSqliteAndManifestReadsAreBounded.scan
+
+    def test_a_virtual_table_over_a_view_is_never_read(self):
+        def build(conn):
+            conn.execute("CREATE VIEW v AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) "
+                         "SELECT i AS rowid, 's1' AS session_id, 'user' AS role, '2026-10-10T12:00:00Z' AS "
+                         "created_timestamp, json_array(json_object('type', 'text', 'text', 'omicron_token ' || i)) "
+                         "AS content_json FROM n")
+            conn.execute("CREATE VIRTUAL TABLE messages USING fts5(session_id, role, created_timestamp, "
+                         "content_json, content='v')")
+        hits, _err = self.scan("omicron_token", self.goose_db(build))
+        self.assertEqual(hits, [], "a VIRTUAL table (here fts5 over a view) was read as a store")
+
+    def test_a_generated_column_is_never_computed(self):
+        def build(conn):
+            conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, "
+                         "content_json TEXT GENERATED ALWAYS AS (json_array(json_object('type', 'text', "
+                         "'text', 'pi_token ' || session_id))) VIRTUAL)")
+            conn.execute("INSERT INTO messages (session_id, role, created_timestamp) "
+                         "VALUES ('s1', 'user', '2026-10-10T12:00:00Z')")
+        hits, _err = self.scan("pi_token", self.goose_db(build))
+        self.assertEqual(hits, [], "a VIRTUAL generated column (any expression, computed per read) was read")
+
+    def test_stored_rows_are_still_read(self):
+        def build(conn):
+            conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, content_json TEXT)")
+            conn.execute("INSERT INTO messages VALUES ('s1', 'user', '2026-10-10T12:00:00Z', "
+                         "json_array(json_object('type', 'text', 'text', 'rho_token stored')))")
+        hits, _err = self.scan("rho_token", self.goose_db(build))
+        self.assertEqual(len(hits), 1)
+
+
+class _SpyCursor:
+    """A cursor that records the largest str/bytes value any fetch hands Python."""
+
+    def __init__(self, spy, cursor):
+        object.__setattr__(self, "_spy", spy)
+        object.__setattr__(self, "_cursor", cursor)
+
+    def _seen(self, rows):
+        for row in rows:
+            for value in (tuple(row) if row is not None else ()):
+                if isinstance(value, (str, bytes)):
+                    self._spy.largest = max(self._spy.largest, len(value))
+        return rows
+
+    def execute(self, *args):
+        self._cursor.execute(*args)
+        return self
+
+    def fetchone(self):
+        return self._seen([self._cursor.fetchone()])[0]
+
+    def fetchmany(self, *args):
+        return self._seen(self._cursor.fetchmany(*args))
+
+    def fetchall(self):
+        return self._seen(self._cursor.fetchall())
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._cursor, name, value)
+
+
+class _SpyConnection:
+    """A connection whose every query result passes _SpyCursor, so a test sees what reached Python."""
+
+    def __init__(self, conn):
+        self.conn, self.largest = conn, 0
+
+    def cursor(self):
+        return _SpyCursor(self, self.conn.cursor())
+
+    def execute(self, *args):
+        return self.cursor().execute(*args)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
+class TestNoValueOverTheCapReachesPython(_Base):
+    """Codex round 2 on PR #723 (W5-21): _rows fetched eight rows at a time and charged them only
+    once Python held them, so eight stored 450 MB values were materialised before the 64 MiB cap
+    refused the first; the store-size guard was gone too. Each row's stored size is now charged as
+    SQLite reads it, before any of its values is handed to Python, and a store over its own cap is
+    never opened. The spy records the largest value any query hands Python."""
+
+    goose_db = TestSqliteAndManifestReadsAreBounded.goose_db
+    scan = TestSqliteAndManifestReadsAreBounded.scan
+
+    def store(self):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE messages (session_id TEXT, content_json)")
+        conn.executemany("INSERT INTO messages VALUES ('s1', ?)", [("small " * 10,)] * 3)
+        conn.execute("INSERT INTO messages SELECT 's1', zeroblob(300000) FROM (SELECT 1 UNION ALL SELECT 2)")
+        conn.execute("INSERT INTO messages SELECT 's1', hex(zeroblob(150000)) FROM (SELECT 1 UNION ALL SELECT 2)")
+        conn.commit()
+        return _SpyConnection(conn)
+
+    def test_an_over_cap_row_is_never_handed_to_python(self):
+        spy, err = self.store(), io.StringIO()
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 100_000, create=True), contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            rows = self.mod._rows(spy, "messages")
+        self.assertLess(spy.largest, 100_000, f"a {spy.largest}-byte value reached Python past a 100000-byte cap")
+        self.assertEqual(len(rows), 3, "the rows under the cap were not all read")
+        self.assertIn("skipped", err.getvalue())
+
+    def test_the_scans_budget_is_charged_before_a_value_arrives(self):
+        spy, err = self.store(), io.StringIO()
+        with mock.patch.object(self.mod, "MAX_RUN_BYTES", 120_000, create=True), contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            self.mod._BUDGET.used = 100_000
+            rows = self.mod._rows(spy, "messages")
+        self.assertLess(spy.largest, 20_000, f"a {spy.largest}-byte value reached Python past the scan's budget")
+        self.assertEqual(len(rows), 3)
+        self.assertIn("scan's byte budget", err.getvalue())
+
+    def test_schema_reads_never_hand_python_an_oversized_name_or_default(self):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute(f"CREATE TABLE messages (session_id TEXT, content_json TEXT DEFAULT '{'d' * 200_000}')")
+        conn.execute(f'CREATE TABLE "{"t" * 50_000}" (x TEXT)')
+        spy = _SpyConnection(conn)
+        self.assertIn("messages", self.mod._tables(spy))
+        self.assertEqual(self.mod._stored_columns(spy, "messages"), ["session_id", "content_json"])
+        self.assertLess(spy.largest, 1024, f"a {spy.largest}-byte schema value (a name or a DEFAULT) reached Python")
+
+    def test_a_store_over_its_size_cap_is_never_opened_and_that_is_said(self):
+        def build(conn):
+            conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, content_json TEXT)")
+            conn.execute("INSERT INTO messages VALUES ('s1', 'user', '2026-10-10T12:00:00Z', "
+                         "json_array(json_object('type', 'text', 'text', 'sigma_token ' || hex(zeroblob(20000)))))")
+        env = self.goose_db(build)
+        self.assertEqual(len(self.scan("sigma_token", env)[0]), 1, "the store is read under its cap")
+        with mock.patch.object(self.mod, "MAX_STORE_BYTES", 8192, create=True):
+            hits, err = self.scan("sigma_token", env)
+        self.assertEqual(hits, [], "a store over MAX_STORE_BYTES was opened")
+        self.assertIn("a SQLite store over", err)
+
+
+class TestOldSqliteNeverSizesAValueByLoadingIt(_Base):
+    """Codex round 3 on PR #723 (W5-21): without octet_length (SQLite before 3.43) the row gate's
+    size, length(CAST(x AS BLOB)), loads each value into SQLite's memory first, so a 450 MiB value
+    in a store under the 1 GiB guard was loaded before the cap refused it. There a store over
+    MAX_FILE_BYTES is now never opened -- no value inside it can be over the cap -- and every store
+    connection tells SQLite never to load a value past MAX_FILE_BYTES (SQLITE_LIMIT_LENGTH), which
+    holds even for a store that grows after its size was checked."""
+
+    goose_db = TestSqliteAndManifestReadsAreBounded.goose_db
+
+    def build(self, conn):
+        conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, content_json TEXT)")
+        conn.execute("INSERT INTO messages VALUES ('s1', 'user', '2026-10-10T12:00:00Z', "
+                     "json_array(json_object('type', 'text', 'text', 'chi_token ' || hex(zeroblob(150000)))))")
+
+    def test_without_octet_length_a_store_over_the_value_cap_is_refused_before_any_query(self):
+        self.goose_db(self.build)
+        db = self.tmp / "only-goose" / "data" / "sessions" / "sessions.db"
+        self.assertGreater(db.stat().st_size, 200_000)
+        opened = []
+        real = self.mod._open_watched
+
+        def spy(*args, **kwargs):
+            opened.append(args)
+            return real(*args, **kwargs)
+
+        err = io.StringIO()
+        with mock.patch.object(self.mod, "MAX_FILE_BYTES", 200_000, create=True), \
+                mock.patch.object(self.mod, "_OCTETS", None), mock.patch.object(self.mod, "_open_watched", spy), \
+                contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            self.assertIsNone(self.mod._sqlite_ro(db), "a store over the value cap was opened without octet_length")
+        self.assertEqual(opened, [], "SQLite was asked to open the store at all")
+        self.assertIn("without octet_length", err.getvalue())
+        if self.mod.sqlite3.sqlite_version_info >= (3, 43, 0):  # with it, the same store is read
+            with mock.patch.object(self.mod, "MAX_FILE_BYTES", 200_000, create=True), \
+                    mock.patch.object(self.mod, "_OCTETS", "octet_length"), contextlib.redirect_stderr(io.StringIO()):
+                self.mod._new_scan()
+                conn = self.mod._sqlite_ro(db)
+                self.assertIsNotNone(conn)
+                conn.close()
+
+    # Another process grows the store after its size was checked: its memory is not the child's.
+    GROW = ("import sqlite3, sys\n"
+            "c = sqlite3.connect(sys.argv[1])\n"
+            "c.execute(\"INSERT INTO messages VALUES ('s1', 'user', 't', zeroblob(96 * 1048576))\")\n"
+            "c.commit()\n")
+    CHILD = ("import importlib.util, json, resource, subprocess, sys\n"
+             "from pathlib import Path\n"
+             "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+             "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+             "mod._OCTETS = None  # the fallback a SQLite before 3.43 takes\n"
+             "db, grow = sys.argv[2], sys.argv[3]\n"
+             "real = mod._open_watched\n"
+             "def grow_then_open(*args, **kwargs):\n"
+             "    mod._open_watched = real\n"
+             "    subprocess.run([sys.executable, '-I', '-c', grow, db], check=True)\n"
+             "    return real(*args, **kwargs)\n"
+             "mod._open_watched = grow_then_open\n"
+             + PEAK_KIB +
+             "base = peak_kib()\n"
+             "conn = mod._sqlite_ro(Path(db))\n"
+             "rows = mod._rows(conn, 'messages') if conn is not None else None\n"
+             "peak = peak_kib()\n"
+             "print(json.dumps({'opened': conn is not None, 'rows': None if rows is None else len(rows),\n"
+             "                  'grew_kib': peak - base}))\n")
+
+    def test_sqlite_never_loads_a_value_past_the_cap_even_in_a_store_grown_after_its_check(self):
+        self.goose_db(self.build)
+        db = self.tmp / "only-goose" / "data" / "sessions" / "sessions.db"
+        proc = subprocess.run([sys.executable, "-I", "-c", self.CHILD, str(SEARCH_PY), str(db), self.GROW],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        got = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertTrue(got["opened"], proc.stderr)
+        # sqlite3's cursor steps one row ahead, so the refusal can also cost the row before it: what
+        # is never lost is the bound, and that it is said.
+        self.assertIsNotNone(got["rows"], proc.stderr)
+        self.assertLess(got["grew_kib"], 48 * 1024,
+                        f"recall's memory grew {got['grew_kib']} KiB: SQLite loaded a 96 MiB value past the 64 MiB cap")
+        self.assertIn("SQLite was told never to load", proc.stderr)
+
+
+class TestTheLimitsComeBeforeTheSchemaIsRead(_Base):
+    """Codex round 4 on PR #723 (W5-21): the length limit was set after _open_watched's
+    sqlite_master probe, and SQLite parses the schema on that first read, so a store under the
+    1 GiB guard whose CREATE TABLE holds a 450 MiB DEFAULT was loaded whole first. _connect, the
+    only way recall opens a store, now sets SQLITE_LIMIT_LENGTH and SQLITE_LIMIT_SQL_LENGTH before
+    any statement. The child lowers the cap through the module's knob (4 MiB) against a 48 MiB
+    DEFAULT and measures its own peak RSS across the open."""
+
+    # argv: module, store, mode. "real" keeps the runtime's own capability probes; "no-octets" and
+    # "no-limits" force the fallback a SQLite before 3.43 or a Python before 3.11 takes.
+    CHILD = ("import importlib.util, io, json, resource, sys, contextlib\n"
+             "from pathlib import Path\n"
+             "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+             "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+             "mod.MAX_FILE_BYTES = 4 << 20\n"
+             "mode = sys.argv[3]\n"
+             "if mode == 'no-octets': mod._OCTETS = None\n"
+             "if mode == 'no-limits': mod._LIMITS = False\n"
+             "connects = []\n"
+             "real = mod._connect\n"
+             "def counted(*args, **kwargs):\n"
+             "    connects.append(1)\n"
+             "    return real(*args, **kwargs)\n"
+             "mod._connect = counted\n"
+             + PEAK_KIB +
+             "base = peak_kib()\n"
+             "err = io.StringIO()\n"
+             "with contextlib.redirect_stderr(err):\n"
+             "    conn = mod._sqlite_ro(Path(sys.argv[2]))\n"
+             "peak = peak_kib()\n"
+             "print(json.dumps({'opened': conn is not None, 'grew_kib': peak - base, 'said': err.getvalue(),\n"
+             "                  'capable': mod._OCTETS is not None and bool(mod._LIMITS),\n"
+             "                  'connects': len(connects)}))\n")
+
+    def big_schema_store(self):
+        db = self.tmp / "big-schema" / "sessions.db"
+        db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE messages (session_id TEXT, content_json TEXT DEFAULT '"
+                         + "d" * (48 << 20) + "')")
+            conn.commit()
+        self.assertLess(db.stat().st_size, self.mod.MAX_STORE_BYTES, "the store must pass the store-size guard")
+        return db
+
+    def child(self, db, mode):
+        proc = subprocess.run([sys.executable, "-I", "-c", self.CHILD, str(SEARCH_PY), str(db), mode],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        got = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertLess(got["grew_kib"], 24 * 1024,
+                        f"recall's memory grew {got['grew_kib']} KiB: SQLite loaded the 48 MiB schema ({mode})")
+        self.assertFalse(got["opened"], f"a store whose schema is over the cap was opened ({mode})")
+        return got
+
+    def test_a_store_whose_schema_is_over_the_cap_is_refused_without_loading_it(self):
+        # The runtime's own probes pick the branch; neither is skipped. On a capable runtime
+        # (octet_length and setlimit) this is the ordering regression: SQLite opens the store and
+        # must refuse the schema under limits set before its first statement.
+        got = self.child(self.big_schema_store(), "real")
+        if got["capable"]:
+            self.assertEqual(got["connects"], 1, "the store never reached SQLite, so the ordering went untested")
+            self.assertIn("schema holds a statement over", got["said"])
+        else:
+            self.assertEqual(got["connects"], 0)
+            self.assertIn("without octet_length", got["said"])
+
+    def test_without_octet_length_or_setlimit_the_store_is_refused_by_its_size(self):
+        # The fallback, forced, so CI runs it whatever its SQLite and Python: the store-size bound
+        # refuses the store before SQLite is asked to open it.
+        db = self.big_schema_store()
+        for mode in ("no-octets", "no-limits"):
+            with self.subTest(mode=mode):
+                got = self.child(db, mode)
+                self.assertEqual(got["connects"], 0, "SQLite was asked to open the store at all")
+                self.assertIn("without octet_length (before 3.43) or a Python without setlimit", got["said"])
+
+    def test_every_recall_connection_is_opened_by_the_one_helper(self):
+        source = SEARCH_PY.read_text(encoding="utf-8")
+        self.assertEqual(source.count("sqlite3.connect("), 1, "a recall path opens SQLite outside _connect")
+        helper = source[source.index("def _connect("):source.index("def _open_watched(")]
+        self.assertIn("sqlite3.connect(", helper)
+        first = helper.index("sqlite3.connect(")
+        self.assertLess(helper.index("SQLITE_LIMIT_LENGTH"), helper.index("return conn"))
+        self.assertGreater(helper.index("SQLITE_LIMIT_SQL_LENGTH"), first)
+
+
+class TestNestingNeverAbortsTheScan(_Base):
+    """Re-check of W5-21: json.loads raises RecursionError, not JSONDecodeError, on a line nested
+    100 000 deep, and _extract_text recursed once per level of a 1 400-deep list the parser
+    accepts -- either one record in one transcript, or one manifest under --runs-dir, aborted
+    every recall with a traceback."""
+
+    def scan(self, query, *argv):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args([query, "--local-harnesses", "--limit", "50", *argv])
+            return self.mod.search_local_harnesses(ns)["hits"]
+
+    def test_a_deeply_nested_record_is_skipped_not_fatal(self):
+        path = self.tmp / "claude" / "projects" / "-workspace-deep" / "deep-session.jsonl"
+        ok = json.dumps({"type": "user", "sessionId": "deep-ok", "cwd": "/workspace/deep",
+                         "timestamp": "2026-10-10T12:00:00Z", "message": {"role": "user", "content": "sigma_token"}})
+        head = ('{"type": "user", "sessionId": "deep-bad", "cwd": "/workspace/deep", '
+                '"timestamp": "2026-10-10T12:00:00Z", "message": {"role": "user", "content": ')
+        lines = [ok, head + "[" * 1400 + "]" * 1400 + "}}", head + "[" * 100_000 + "]" * 100_000 + "}}",
+                 head + json.dumps("[" * 100_000 + "]" * 100_000) + "}}"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        hits = self.scan("sigma_token", "--agent", "claude-code")
+        self.assertEqual(len(hits), 1, "one deeply nested record aborted or emptied the scan")
+
+    def test_a_deeply_nested_manifest_is_skipped_not_fatal(self):
+        runs = self.tmp / "runs"
+        (runs / "deep").mkdir(parents=True)
+        (runs / "deep" / "manifest.json").write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+        (runs / "real").mkdir()
+        (runs / "real" / "manifest.json").write_text(json.dumps(
+            {"units": [{"id": "U-1", "status": "merged", "files_touched": ["src/app.py"], "head_sha": "a" * 40}]}),
+            encoding="utf-8")
+        self.assertEqual(len(self.mod._prior_hints(["src/app.py"], runs)), 1)
+
+
+
+class TestARefusedFileIsSaid(_Base):
+    """Re-check of 50b2615e (W5-21): a transcript that is a symlink (to a real transcript) and a
+    FIFO named *manifest*.json were refused -- and nothing said so, while the module promises a
+    partial recall is never silent."""
+
+    def test_a_linked_transcript_and_a_fifo_manifest_are_said(self):
+        real = self.tmp / "elsewhere" / "real-session.jsonl"
+        _jsonl(real, [{"type": "user", "sessionId": "linked", "cwd": "/workspace/l",
+                       "timestamp": "2026-10-10T12:00:00Z", "message": {"role": "user", "content": "tau_token"}}])
+        link = self.tmp / "claude" / "projects" / "-workspace-l" / "linked.jsonl"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(real)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args(["tau_token", "--local-harnesses", "--agent", "claude-code"])
+            self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
+        self.assertIn(f"first {link}: recall is partial", err.getvalue())
+        runs = self.tmp / "runs" / "fifo"
+        runs.mkdir(parents=True)
+        os.mkfifo(runs / "x-manifest.json")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.mod._new_scan()
+            self.assertEqual(self.mod._prior_hints(["src/app.py"], runs.parent), [])
+        self.assertIn(f"first {runs / 'x-manifest.json'}: recall is partial", err.getvalue())
+
+    def test_a_linked_store_is_never_opened_and_is_said(self):
+        real = self.tmp / "elsewhere" / "sessions.db"
+        real.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(real)) as conn:
+            conn.execute("CREATE TABLE sessions (id TEXT, name TEXT, working_dir TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('s1', 'Goose', '/w')")
+            conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, created_timestamp TEXT, content_json TEXT)")
+            conn.execute("INSERT INTO messages VALUES ('s1', 'user', '2026-10-10T12:00:00Z', "
+                         "json_array(json_object('type', 'text', 'text', 'upsilon_token')))")
+            conn.commit()
+        link = self.tmp / "only-goose" / "data" / "sessions" / "sessions.db"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(real)
+        env = {"HOME": str(self.tmp / "only-goose"), "GOOSE_PATH_ROOT": str(link.parents[2]),
+               "PATH": os.environ.get("PATH", "")}
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stderr(err):
+            ns = self.mod.parse_args(["upsilon_token", "--local-harnesses", "--agent", "goose"])
+            self.assertEqual(self.mod.search_local_harnesses(ns)["hits"], [])
+        self.assertIn(f"first {link}: recall is partial", err.getvalue())
+
+
+    def test_a_fifo_or_a_link_to_dev_zero_named_like_a_transcript_is_said(self):
+        # Re-attack of 2d254d0f: _glob kept only what is_file() accepted, so a FIFO, or a link to
+        # /dev/zero, named like a transcript was left out in silence, never reaching the read that
+        # says a refused file.
+        where = self.tmp / "claude" / "projects" / "-workspace-odd"
+        where.mkdir(parents=True)
+        for name, make in (("a-fifo.jsonl", os.mkfifo), ("b-zero.jsonl", lambda p: p.symlink_to("/dev/zero"))):
+            with self.subTest(name=name):
+                make(where / name)
+                err = io.StringIO()
+                with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+                    ns = self.mod.parse_args(["zeta_token", "--local-harnesses", "--agent", "claude-code"])
+                    hits = self.mod.search_local_harnesses(ns)["hits"]
+                self.assertEqual(len(hits), 1, "the regular transcript beside them was not read")
+                self.assertIn(f"first {where / name}: recall is partial", err.getvalue())
+                self.assertIn("not a regular file", err.getvalue())
+                (where / name).unlink()
+
+
+# A recall run in a child of its own, which measures its own peak and its children's (the contained
+# scans', reaped by it): VmHWM for itself, RUSAGE_CHILDREN's ru_maxrss for them (KiB on Linux).
+# argv: module, env (JSON), main's argv (JSON), the memory knob in MiB, and "zstd" to stand in for
+# Python 3.14's compression.zstd with _FrameZstd's frames.
+AMPLIFY_CHILD = ("import contextlib, importlib.util, io, json, os, resource, sys, types\n"
+                 "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+                 "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+                 "mod.SCAN_MEMORY_BYTES = int(sys.argv[4]) << 20\n"
+                 "os.environ.clear(); os.environ.update(json.loads(sys.argv[2]))\n"
+                 "if sys.argv[5:] == ['zstd']:\n"
+                 "    class D:\n"
+                 "        def __init__(self):\n"
+                 "            self.eof, self.needs_input, self.unused_data = False, True, b''\n"
+                 "        def decompress(self, data, max_length=-1):\n"
+                 "            data = bytes(data)\n"
+                 "            count, size = int.from_bytes(data[2:6], 'big'), int.from_bytes(data[6:10], 'big')\n"
+                 "            out = data[10:10 + size] * count\n"
+                 "            self.eof, self.needs_input, self.unused_data = True, False, data[10 + size:]\n"
+                 "            return out[:max_length] if max_length >= 0 else out\n"
+                 "    zstd = types.ModuleType('compression.zstd'); zstd.ZstdDecompressor = D\n"
+                 "    pkg = types.ModuleType('compression'); pkg.zstd = zstd\n"
+                 "    sys.modules['compression'], sys.modules['compression.zstd'] = pkg, zstd\n"
+                 + PEAK_KIB +
+                 "err, out = io.StringIO(), io.StringIO()\n"
+                 "with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):\n"
+                 "    rc = mod.main(json.loads(sys.argv[3]))\n"
+                 "children = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
+                 "print(json.dumps({'rc': rc, 'err': err.getvalue(), 'out': out.getvalue(), 'own_kib': peak_kib(),\n"
+                 "                  'children_kib': children // (1024 if sys.platform == 'darwin' else 1)}))\n")
+
+# 16 bytes of JSON that parse to three dicts (~360 bytes): the re-attack's amplifier.
+AMPLIFIER = b'{"a":{},"b":{}}\n'
+
+
+class TestParsingNeverMultipliesPastTheScansMemory(_Base):
+    """Re-attack of 2d254d0f (W5-21): the byte caps held, but parsing multiplies them, and the
+    comment calling them "the memory a scan can hold" was false. One 63 MiB .jsonl of
+    {"a":{},"b":{}} lines held 1.71 GB (eight held 3.12 GB over 87 s), a 5.6 KB .zst 1.81 GB, a
+    60 MiB --runs-dir manifest 1.81 GB, and a 62 MB opencode.db whose schema holds a 31M-item IN
+    list 5.61 GB -- rc 0, nothing said. Every scan of untrusted stores now runs in a forked child
+    under SCAN_MEMORY_BYTES (RLIMIT_DATA, which Linux enforces) and SOURCE_SECONDS per source, and a
+    store's schema statement is held to MAX_SQL_BYTES. Each case runs here at 20 MiB against a
+    128 MiB limit, and the whole recall -- the child and every scan it forked -- must stay under
+    300 MiB, say the skip, and still read everything else."""
+
+    LIMIT_MIB, BOUND_KIB = 128, 300 * 1024
+
+    def recall(self, env, argv, zstd=False, limit_mib=None):
+        proc = subprocess.run([sys.executable, "-I", "-c", AMPLIFY_CHILD, str(SEARCH_PY), json.dumps(env),
+                               json.dumps(argv), str(limit_mib or self.LIMIT_MIB), *(["zstd"] if zstd else [])],
+                              capture_output=True, text=True, timeout=600)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        got = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(got["rc"], 0, got["err"][-2000:])
+        return got
+
+    def bounded(self, got, source, why="memory limit"):
+        if not sys.platform.startswith("linux"):
+            return  # only Linux enforces RLIMIT_DATA: elsewhere the bound is documented, not held
+        peak = max(got["own_kib"], got["children_kib"])
+        self.assertLess(peak, self.BOUND_KIB, f"recall peaked at {peak} KiB parsing {source}")
+        self.assertIn(why, got["err"], "a source past the scan's limit was not said")
+        self.assertIn(str(source), got["err"])
+
+    def test_an_amplifying_transcript_is_skipped_within_the_limit_and_said(self):
+        where = self.tmp / "claude" / "projects" / "-workspace-amp"
+        where.mkdir(parents=True)
+        for name in ("amp-1.jsonl", "amp-2.jsonl"):  # several: the bound is the scan's, not a file's
+            (where / name).write_bytes(AMPLIFIER * ((20 << 20) // len(AMPLIFIER)))
+        got = self.recall(self.env, ["zeta_token", "--local-harnesses", "--limit", "50"])
+        self.bounded(got, where / "amp-1.jsonl")
+        self.assertEqual(got["out"].count("HIT "), 10, "the other harnesses' sessions were not all read")
+
+    def test_an_amplifying_compressed_transcript_is_skipped_within_the_limit_and_said(self):
+        packed = self.tmp / "codex" / "sessions" / "2026" / "10" / "10" / \
+            "rollout-2026-10-10T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl.zst"
+        packed.parent.mkdir(parents=True, exist_ok=True)
+        count = (20 << 20) // len(AMPLIFIER)
+        packed.write_bytes(b"ZF" + count.to_bytes(4, "big") + len(AMPLIFIER).to_bytes(4, "big") + AMPLIFIER)
+        self.assertLess(packed.stat().st_size, 64, "the compressed transcript is not tiny")
+        got = self.recall(self.env, ["zeta_token", "--local-harnesses", "--limit", "50"], zstd=True)
+        self.bounded(got, packed)
+        self.assertEqual(got["out"].count("HIT "), 10, "the other harnesses' sessions were not all read")
+
+    def test_an_amplifying_run_manifest_is_skipped_within_the_limit_and_said(self):
+        runs = self.tmp / "runs"
+        (runs / "amp").mkdir(parents=True)
+        unit = AMPLIFIER.strip() + b","
+        (runs / "amp" / "manifest.json").write_bytes(b'{"units":[' + unit * ((20 << 20) // len(unit)) + b"{}]}")
+        (runs / "real").mkdir()
+        (runs / "real" / "manifest.json").write_text(json.dumps(
+            {"units": [{"id": "U-1", "status": "merged", "files_touched": ["src/app.py"], "head_sha": "a" * 40}]}),
+            encoding="utf-8")
+        got = self.recall(self.env, ["--episodic-hint", "--path", "src/app.py", "--runs-dir", str(runs)])
+        self.bounded(got, runs / "amp" / "manifest.json")
+        self.assertIn("PRIOR_RUNS=1 ", got["out"], "the manifest beside it was not read")
+
+    def test_a_store_whose_schema_is_one_huge_expression_is_refused_unparsed(self):
+        # SQLite parses a store's schema on its first statement: a 62 MB IN list under the old 64 MiB
+        # statement limit built a 5.61 GB expression tree. MAX_SQL_BYTES (1 MiB) refuses it unparsed,
+        # on every platform; SCAN_MEMORY_BYTES would stop it where that holds too.
+        db = self.tmp / "amp-opencode" / "opencode.db"
+        db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE session (id, directory, title)")
+            conn.execute("INSERT INTO session VALUES ('s1', '/w', 'zeta_token')")
+            conn.commit()
+            conn.execute("PRAGMA writable_schema = ON")
+            conn.execute("UPDATE sqlite_master SET sql = ? WHERE name = 'session'",
+                         ("CREATE TABLE session (id, directory, title DEFAULT (0 IN (" + "1," * (4 << 20) + "1)))",))
+            conn.commit()
+        self.assertLess(db.stat().st_size, self.mod.MAX_STORE_BYTES)
+        got = self.recall({**self.env, "OPENCODE_DB": str(db)},
+                          ["zeta_token", "--local-harnesses", "--limit", "50"])
+        self.assertIn(f"first {db}", got["err"])
+        self.assertIn("schema holds a statement over", got["err"])
+        self.assertEqual(got["out"].count("HIT "), 9, "the other harnesses' sessions were not all read")
+        if sys.platform.startswith("linux"):
+            peak = max(got["own_kib"], got["children_kib"])
+            self.assertLess(peak, self.BOUND_KIB, f"recall peaked at {peak} KiB parsing the store's schema")
+
+    def test_what_a_scan_returns_never_carries_its_parse_into_the_parent(self):
+        # Codex round 11 on 8fe153d2: a manifest with one matching unit beside 6 MiB of empty objects
+        # fits the scan child's memory, and each hint kept the unit and the manifest it came from;
+        # pickled back and unpickled in the parent, unbounded, they rebuilt every dict there. The
+        # child now returns a flat JSON projection of the fields the parent reads, its size and
+        # structure checked before the parent decodes it. Here the scan child may hold 768 MiB, so
+        # the hint is found, and the parent itself must stay under 100 MiB.
+        amplifier = "[" + "{}," * (2 << 20) + "{}]"
+
+        def manifest(unit_extra="", top_extra=""):
+            return ('{"units":[{"id":"U-1","status":"merged","files_touched":["src/app.py"],"head_sha":"'
+                    + "a" * 40 + '"' + unit_extra + "}]" + top_extra + "}")
+        cases = {"beside the units": manifest(top_extra=',"pad":' + amplifier),
+                 "in the matching unit": manifest(unit_extra=',"pad":' + amplifier),
+                 "as its invariant": manifest(unit_extra=',"intent":{"invariant":' + amplifier + "}"),
+                 "as what it supersedes": manifest(unit_extra=',"supersedes":' + amplifier),
+                 "nested in its id": manifest(unit_extra="").replace('"id":"U-1"', '"id":{"a":{"b":' + amplifier + "}}")}
+        for what, text in cases.items():
+            with self.subTest(manifest=what):
+                runs = self.tmp / f"runs-{len(what)}-{abs(hash(what)) % 997}"
+                (runs / "run-a").mkdir(parents=True)
+                (runs / "run-a" / "manifest.json").write_text(text, encoding="utf-8")
+                got = self.recall(self.env, ["--episodic-hint", "--path", "src/app.py", "--runs-dir", str(runs)],
+                                  limit_mib=768)
+                self.assertIn("PRIOR_RUNS=1 ", got["out"], "the matching unit was not found: nothing crossed")
+                if sys.platform.startswith("linux"):
+                    self.assertLess(got["own_kib"], 100 * 1024,
+                                    f"the parent peaked at {got['own_kib']} KiB rebuilding what its scan parsed ({what})")
+        # A session's matching record holds 24 MiB of text with one emoji (96 MiB as a str) beside
+        # the empty objects: what crosses back is its snippet, cut.
+        path = self.tmp / "claude" / "projects" / "-workspace-amp" / "amp-session.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = ('{"type":"user","sessionId":"amp","cwd":"/w","timestamp":"2026-10-10T12:00:00Z","pad":'
+                  + amplifier + ',"message":{"role":"user","content":"zeta_token ' + "x" * (24 << 20) + '😀"}}\n')
+        path.write_text(record, encoding="utf-8")
+        got = self.recall(self.env, ["zeta_token", "--local-harnesses", "--limit", "50"], limit_mib=768)
+        self.assertEqual(got["out"].count("HIT "), 11, "the session beside the others was not found")
+        if sys.platform.startswith("linux"):
+            self.assertLess(got["own_kib"], 100 * 1024,
+                            f"the parent peaked at {got['own_kib']} KiB holding a hit's whole record")
+
+    def test_a_source_past_its_wall_clock_is_skipped_and_said_and_the_rest_is_read(self):
+        slow = self.tmp / "claude" / "projects" / "-workspace-slow" / "slow-session.jsonl"
+        _jsonl(slow, [{"type": "user", "sessionId": "slow", "cwd": "/w", "timestamp": "2026-10-10T12:00:00Z",
+                       "message": {"role": "user", "content": "zeta_token"}}])
+        real = self.mod._read_capped
+
+        def stalls(fp, follow=False):
+            data = real(fp, follow)
+            if data is not None and Path(fp).name == "slow-session.jsonl":
+                time.sleep(30)
+            return data
+        err = io.StringIO()
+        with mock.patch.object(self.mod, "_read_capped", stalls), \
+                mock.patch.object(self.mod, "SOURCE_SECONDS", 1.0), \
+                mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            started = time.monotonic()
+            hits = self.mod.search_local_harnesses(self.mod.parse_args(["zeta_token", "--local-harnesses",
+                                                                         "--limit", "50"]))["hits"]
+            took = time.monotonic() - started
+        self.assertLess(took, 20, "the scan waited out a stalled source")
+        self.assertEqual(len(hits), 10, "the sources beside the stalled one were not all read")
+        self.assertIn(f"after SOURCE_SECONDS (1 s), first {slow}: recall is partial", err.getvalue())
+
+    def test_a_memory_error_anywhere_in_a_source_skips_that_source_and_the_scan_goes_on(self):
+        # Past the per-source catches -- in the reader's own work on a record -- the child dies of it,
+        # and the scan is restarted past the source it was reading.
+        bomb = self.tmp / "claude" / "projects" / "-workspace-bomb" / "bomb-session.jsonl"
+        _jsonl(bomb, [{"type": "user", "sessionId": "bomb", "cwd": "/w", "timestamp": "2026-10-10T12:00:00Z",
+                       "message": {"role": "user", "content": "zeta_token psi_bomb"}}])
+        real = self.mod._extract_text
+
+        def explodes(val, depth=0):
+            if isinstance(val, str) and "psi_bomb" in val:
+                raise MemoryError
+            return real(val, depth)
+        err = io.StringIO()
+        with mock.patch.object(self.mod, "_extract_text", explodes), \
+                mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stderr(err):
+            hits = self.mod.search_local_harnesses(self.mod.parse_args(["zeta_token", "--local-harnesses",
+                                                                         "--limit", "50"]))["hits"]
+        self.assertEqual(len(hits), 10, "the sources beside the failed one were not all read")
+        self.assertIn(f"memory limit (SCAN_MEMORY_BYTES, {self.mod.SCAN_MEMORY_BYTES} bytes", err.getvalue())
+        self.assertIn(f"first {bomb}: recall is partial", err.getvalue())
+
+
+class TestAStoreSwappedForAFifoNeverHangsRecall(_Base):
+    """Re-check of a5f39065 (W5-21): the checks before a SQLite store is opened see a regular file,
+    but SQLite then opens the store, its -wal and its -shm by NAME, with blocking calls. A FIFO
+    put at any of the three right before the open blocked recall forever (a 0444 FIFO cannot even
+    be unblocked by opening it for writing, and at -shm SQLite blocks holding its process-wide VFS
+    lock, so every later store open in the process hung behind it), and a 0600 FIFO at -wal was
+    read as an empty WAL in silence. Each case runs in a child under a timeout, whose hook swaps
+    the name for a FIFO immediately before the real connect, then opens a second, regular store."""
+
+    DRIVER = (
+        "import importlib.util, os, sqlite3, sys\n"
+        "from pathlib import Path\n"
+        "spec = importlib.util.spec_from_file_location('ss', sys.argv[1])\n"
+        "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+        "mod.SQLITE_OPEN_SECONDS = 600.0  # the watch, not the deadline, must catch these\n"
+        "db, other, side, mode = sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5], 8)\n"
+        "real = sqlite3.connect\n"
+        "def swap(*args, **kwargs):\n"
+        "    sqlite3.connect = real\n"
+        "    os.rename(db + side, db + side + '.away'); os.mkfifo(db + side, mode)\n"
+        "    return real(*args, **kwargs)\n"
+        "sqlite3.connect = swap\n"
+        "for path in (db, other):\n"
+        "    conn = mod._sqlite_ro(Path(path))\n"
+        "    print('OPENED' if conn is not None else 'REFUSED', flush=True)\n"
+    )
+
+    def store(self, where):
+        db = self.tmp / where / "sessions.db"
+        db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("CREATE TABLE sessions (id TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('s1')")
+            conn.commit()
+        for side in ("-wal", "-shm"):  # both present: the store is opened through its WAL
+            Path(f"{db}{side}").touch()
+        return db
+
+    def test_a_fifo_at_the_store_its_wal_or_its_shm_fails_closed_and_is_said(self):
+        for side in ("", "-wal", "-shm"):
+            for mode in (0o600, 0o444):
+                with self.subTest(name=f"sessions.db{side}", mode=oct(mode)):
+                    db, other = self.store(f"swap{side}-{mode:o}"), self.store(f"other{side}-{mode:o}")
+                    try:
+                        proc = subprocess.run(
+                            [sys.executable, "-I", "-c", self.DRIVER, str(SEARCH_PY), str(db), str(other),
+                             side, oct(mode)[2:]], capture_output=True, text=True, timeout=30)
+                    except subprocess.TimeoutExpired:
+                        self.fail("recall hung opening a store swapped for a FIFO (or the store after it)")
+                    finally:
+                        with contextlib.suppress(OSError):
+                            os.chmod(f"{db}{side}", 0o600)
+                    first, second = (proc.stdout.split() + ["", ""])[:2]
+                    self.assertEqual(first, "REFUSED", f"a store read through a FIFO was used: {proc.stderr}")
+                    self.assertIn(f"first {db}: recall is partial", proc.stderr)
+                    self.assertIn(second, ("OPENED", "REFUSED"), proc.stderr)
+                    if mode == 0o600:  # a FIFO the watch can unblock leaves nothing stuck behind it
+                        self.assertEqual(second, "OPENED", proc.stderr)
+
+    def test_an_open_that_never_returns_is_abandoned_at_the_deadline(self):
+        # The backstop for a FIFO the watch cannot see (swapped back once the open blocked on it):
+        # an open that does not return in SQLITE_OPEN_SECONDS is abandoned, and said.
+        db, release, found, err = self.store("stuck"), threading.Event(), [], io.StringIO()
+        self.addCleanup(release.set)
+
+        def stuck(*args, **kwargs):
+            release.wait()
+            raise sqlite3.OperationalError("released")
+
+        def run():
+            with contextlib.redirect_stderr(err):
+                self.mod._new_scan()
+                found.append(self.mod._sqlite_ro(db))
+        with mock.patch.object(self.mod, "SQLITE_OPEN_SECONDS", 0.5, create=True), \
+                mock.patch.object(sqlite3, "connect", stuck):
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+            worker.join(15)
+        self.assertFalse(worker.is_alive(), "recall hung on an open that never returns")
+        self.assertEqual(found, [None])
+        self.assertIn(f"first {db}: recall is partial", err.getvalue())
+        release.set()
+
+    def test_a_regular_store_still_opens(self):
+        self.mod._new_scan()
+        conn = self.mod._sqlite_ro(self.store("plain"))
+        self.assertIsNotNone(conn)
+        conn.close()
 
 
 if __name__ == "__main__":

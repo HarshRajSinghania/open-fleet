@@ -2,31 +2,47 @@
 """orca.py — `stablyai/orca` RuntimeProvider implementation."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
-import platform
 import subprocess
+from pathlib import Path
 from typing import Any
 
-from .base import ProviderError, RuntimeProvider, env_get, split_output_flag
+from .base import ProviderError, RuntimeProvider, split_output_flag
 
 LINUX_COMMAND = "orca-ide"
 DEFAULT_COMMAND = "orca"
 DEV_COMMAND = "orca-dev"
 
 
+_ORCA_CLI_PATH = Path(__file__).resolve().parent.parent / "scripts" / "orca_cli.py"
+_ORCA_CLI = None
+
+
+def _orca_cli():
+    """runtime/scripts/orca_cli.py, loaded by path once: it holds the ONE resolution (precedence
+    and validation) of the CLI command, and imports nothing from this package at load time."""
+    global _ORCA_CLI
+    if _ORCA_CLI is None:
+        spec = importlib.util.spec_from_file_location("open_fleet_orca_cli_policy", _ORCA_CLI_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _ORCA_CLI = mod
+    return _ORCA_CLI
+
+
 def resolve_orca_binary(env: dict[str, str] | None = None, system: str | None = None) -> str:
-    """Resolve the Orca CLI binary name per upstream `cli-resolution.md`."""
-    source = os.environ if env is None else env
-    configured = env_get("ORCA_CLI_COMMAND", "OPEN_FLEET_CLI_COMMAND", source, "")
-    if configured:
-        return configured
-    if (source.get("ORCA_DEV_REPO_ROOT") or "").strip():
-        return DEV_COMMAND
-    sys_name = platform.system() if system is None else system
-    if sys_name == "Linux":
-        return LINUX_COMMAND
-    return DEFAULT_COMMAND
+    """The Orca CLI binary per upstream `cli-resolution.md`, through orca_cli.resolve_orca: the
+    same precedence (OPEN_FLEET_CLI_COMMAND, else ORCA_CLI_COMMAND) and the same one-executable
+    rule as every other resolver (W4-15/W2-03 re-attack: this copy read ORCA_CLI_COMMAND first
+    and checked nothing). A configured value that breaks the rule is ProviderError
+    `invalid_cli_command`."""
+    cli = _orca_cli()
+    try:
+        return cli.resolve_orca(os.environ if env is None else env, system)
+    except cli.CliCommandError as exc:
+        raise ProviderError("invalid_cli_command", str(exc)) from None
 
 
 class OrcaProvider(RuntimeProvider):

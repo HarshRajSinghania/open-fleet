@@ -18,6 +18,7 @@ import os
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,24 @@ def run_cli(argv: list[str], *, provider: str, timeout: float = 60, cwd: str | N
     return {"stdout": out, "stderr": proc.stderr or "", "returncode": proc.returncode, "raw": out.strip()}
 
 
+def origin(url: str) -> tuple[str, str, int | None]:
+    """(scheme, host, port) of `url`, the unit a redirect may not leave."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or {"https": 443, "http": 80}.get(scheme)
+
+
+def credentialed_request(url: str, data: bytes | None, method: str, plain: dict[str, str],
+                         secret: dict[str, str]) -> urllib.request.Request:
+    """A Request whose `secret` headers are UNREDIRECTED: urllib copies an ordinary header onto the
+    request a 3xx makes, to whatever host its Location names, and never an unredirected one
+    (2026-10-27 audit, W5-08's class; runtime/scripts/upstream_probe.py does the same)."""
+    req = urllib.request.Request(url, data=data, headers=plain, method=method)
+    for key, value in secret.items():
+        req.add_unredirected_header(key, value)
+    return req
+
+
 def http_json(
     base_url: str,
     method: str,
@@ -98,14 +117,19 @@ def http_json(
     raw_body: bytes | None = None,
     allow_empty: bool = False,
 ) -> Any:
-    """One JSON HTTP exchange; HTTP errors keep their status, bad JSON is an error."""
+    """One JSON HTTP exchange; HTTP errors keep their status, bad JSON is an error.
+
+    Every caller header (an adapter's API key rides one) is unredirected, and an answer that ends
+    at another origin than `base_url`'s is `<provider>_redirected`, never parsed."""
     url = f"{base_url.rstrip('/')}{path}"
     data = raw_body if raw_body is not None else (json.dumps(body).encode("utf-8") if body is not None else None)
-    hdrs = {"Content-Type": "application/json", "Accept": "application/json"}
-    hdrs.update(headers or {})
-    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+    req = credentialed_request(url, data, method, {"Content-Type": "application/json", "Accept": "application/json"},
+                               dict(headers or {}))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if origin(getattr(resp, "url", None) or url) != origin(url):  # where the redirects ended
+                raise ProviderError(f"{provider}_redirected", f"{method} {path} was redirected to another origin",
+                                    {"path": path})
             text = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = ""

@@ -31,11 +31,14 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import tracemalloc
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -92,6 +95,12 @@ if argv[:1] == ["create"]:
             fh.write("".join(json.dumps(line) + "\n" for line in scenario["ledger_lines"]))
 if argv[:1] == ["build"]:
     entry["context"] = sorted(os.listdir(argv[-1]))
+    if scenario.get("edit_during_build"):  # the Dockerfile changes while docker reads it
+        with open(argv[argv.index("-f") + 1], "ab") as fh:
+            fh.write(b"RUN echo changed during the build\n")
+    if "--iidfile" in argv and not scenario.get("build_exit"):  # the id THIS build produced
+        with open(argv[argv.index("--iidfile") + 1], "w") as fh:
+            fh.write(scenario.get("built_id") or (scenario.get("image") or {}).get("Id") or "")
 with open(os.environ["FAKE_DOCKER_LOG"], "a") as fh:
     fh.write(json.dumps(entry) + "\n")
 if argv[:1] == ["kill"] and "kill" in scenario.get("fail", []):
@@ -100,10 +109,11 @@ if argv[:1] == ["kill"] and "kill" in scenario.get("fail", []):
 if argv[:1] in (["kill"], ["rm"], ["create"]) and argv[0] in scenario.get("hang", []):
     time.sleep(scenario.get("hang_s", 5))  # a create that hangs has already made its container: `orphan`
 if argv[:2] == ["image", "inspect"]:
-    if scenario.get("image") is None:
+    image = scenario.get("images_by_ref", {}).get(argv[-1], scenario.get("image"))
+    if image is None:
         sys.stderr.write("Error: No such image\n")
         sys.exit(1)
-    print(json.dumps(scenario["image"]))
+    print(json.dumps(image))
 elif argv[:1] == ["ps"]:
     flt = argv[argv.index("--filter") + 1]
     if flt == "label=" + scenario["label"]:
@@ -154,6 +164,8 @@ class Harness(unittest.TestCase):
             path.write_text("print('arm')\n", encoding="utf-8")
         (self.repo / WRAPPER.parent.relative_to(ROOT)).mkdir(parents=True)
         shutil.copy2(WRAPPER, self.repo / WRAPPER.relative_to(ROOT))
+        # The commit holds the Dockerfile: a launch trusts the digest of the copy its commit holds.
+        shutil.copy2(lc.DOCKERFILE, self.repo / lc.DOCKERFILE_REL)
         git(self.repo.parent, "init", "-q", str(self.repo))
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "fixture")
@@ -174,7 +186,13 @@ class Harness(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != lc.TOKEN_ENV}
         env.update(PATH=os.pathsep.join([str(bin_dir), env.get("PATH", "")]), FAKE_DOCKER_LOG=str(self.log),
                    FAKE_DOCKER_SCENARIO=str(self.scenario_path))
-        for patch in (mock.patch.dict(os.environ, env, clear=True), mock.patch.object(lc, "REPO", self.repo)):
+        # The launcher's own record of the images its `build` produced, kept here, never in the
+        # operator's ~/of-live: the fixture image is one it built from the committed Dockerfile.
+        self.images = self.tmp / "images.json"
+        self.images.write_text(json.dumps({IMAGE_ID: {"ref": lc.IMAGE, "dockerfile_sha256": lc.sha256_file(lc.DOCKERFILE)}}),
+                               encoding="utf-8")
+        for patch in (mock.patch.dict(os.environ, env, clear=True), mock.patch.object(lc, "REPO", self.repo),
+                      mock.patch.object(lc, "IMAGES", str(self.images), create=True)):
             patch.start()
             self.addCleanup(patch.stop)
         self.assertEqual(shutil.which("docker"), str(stand_in), "a test would reach the real docker")
@@ -590,6 +608,159 @@ class RefusalsCreateNothing(Harness):
                 self.assertIn("--cap-usd", err)
         self.assertEqual(self.calls(), [])
 
+    def test_an_image_not_built_from_the_committed_dockerfile_is_refused_unless_named(self):
+        # 2026-10-27 audit, W5-13: `from_committed_dockerfile` was recorded and never gated on.
+        for labels in ({}, {lc.DOCKERFILE_LABEL: "0" * 64}):
+            with self.subTest(labels=labels):
+                self.scenario({"image": {"Id": IMAGE_ID, "RepoDigests": [], "Config": {"Labels": labels}}})
+                rc, err = self.launch()
+                self.assertEqual(rc, 2, err)
+                self.assertIn("committed Dockerfile", err)
+                self.assertEqual(self.creates(), [])
+        rc, err = self.launch("--allow-foreign-image")
+        self.assertEqual(rc, 0, err)
+        image = self.receipt()["image"]
+        self.assertIs(image["from_committed_dockerfile"], False)
+        self.assertIs(image["foreign_image_allowed"], True, "the opt-in is not on the record")
+
+    def test_an_image_derived_from_the_launchers_own_is_refused_despite_its_inherited_label(self):
+        # Re-attack of 82a2d00c (W5-13): docker copies a parent's labels to a child, so
+        # `FROM open-fleet-live` + any RUN carried the committed Dockerfile's digest label and the
+        # label-only gate passed it. The gate is the launcher's own record of what its build made.
+        derived = "sha256:" + "ee" * 32
+        self.scenario({"image": {"Id": derived, "RepoDigests": [],
+                                 "Config": {"Labels": {lc.DOCKERFILE_LABEL: lc.sha256_file(lc.DOCKERFILE)}}}})
+        rc, err = self.launch()
+        self.assertEqual(rc, 2, err)
+        self.assertIn("not built by this launcher", err)
+        self.assertEqual(self.creates(), [])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(lc.main(["build"]), 0)
+        self.assertIn(derived, json.loads(self.images.read_text(encoding="utf-8")), "a build is not recorded")
+        rc, err = self.launch()
+        self.assertEqual(rc, 0, err)
+        self.assertIs(self.receipt()["image"]["built_by_this_launcher"], True)
+
+    def test_the_build_records_the_id_it_produced_not_what_its_tag_names_after(self):
+        # Re-attack of 4b24dfde (W5-13): `build` recorded the id `docker image inspect <tag>` found
+        # once the build was over, so a tag moved to another image in between (a second build of a
+        # changed Dockerfile, a `docker tag`) was recorded as built from the committed Dockerfile.
+        built, moved = "sha256:" + "11" * 32, "sha256:" + "22" * 32
+        label = {lc.DOCKERFILE_LABEL: lc.sha256_file(lc.DOCKERFILE)}
+        self.scenario({"built_id": built,
+                       "images_by_ref": {built: {"Id": built, "RepoDigests": [], "Config": {"Labels": label}}},
+                       "image": {"Id": moved, "RepoDigests": [], "Config": {"Labels": label}}})
+        self.images.unlink()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(lc.main(["build"]), 0)
+        self.assertEqual(list(json.loads(self.images.read_text(encoding="utf-8"))), [built])
+        rc, err = self.launch()  # the tag names `moved` now, which no build of this launcher made
+        self.assertEqual(rc, 2, err)
+        self.assertIn("not built by this launcher", err)
+        self.assertEqual(self.creates(), [])
+
+    def test_an_uncommitted_dockerfile_edit_never_builds_or_runs_as_the_committed_one(self):
+        # Re-attack of 2d254d0f (W5-13): `build` labelled and recorded the digest of the Dockerfile
+        # ON DISK, and a launch compared the label to the same file, so an uncommitted edit -- one
+        # `git update-index --skip-worktree` keeps out of the dirty check -- was built, recorded and
+        # run with `from_committed_dockerfile: true`. Both digests are now the git object's.
+        dockerfile = self.repo / lc.DOCKERFILE_REL
+        edited = dockerfile.read_bytes() + b"RUN echo an uncommitted edit\n"
+        dockerfile.write_bytes(edited)
+        git(self.repo, "update-index", "--skip-worktree", lc.DOCKERFILE_REL)
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "", "the edit is not hidden from the dirty check")
+        committed = hashlib.sha256(subprocess.run(["git", "-C", str(self.repo), "cat-file", "blob",
+                                                  f"HEAD:{lc.DOCKERFILE_REL}"], capture_output=True,
+                                                 check=True).stdout).hexdigest()
+        digest = hashlib.sha256(edited).hexdigest()
+        self.assertNotEqual(digest, committed)
+        with mock.patch.object(lc, "DOCKERFILE", dockerfile):  # the launcher's own checkout, as in use
+            before = self.images.read_bytes()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = lc.main(["build"])
+            self.assertEqual(rc, 2, err.getvalue())
+            self.assertIn("committed at HEAD", err.getvalue())
+            self.assertEqual([c for c in self.calls() if c["argv"][:1] == ["build"]], [], "an uncommitted edit was built")
+            self.assertEqual(self.images.read_bytes(), before, "an uncommitted edit was recorded")
+            # Built by hand and recorded with its own digest, the edit still never runs as committed.
+            self.images.write_text(json.dumps({IMAGE_ID: {"ref": lc.IMAGE, "dockerfile_sha256": digest}}),
+                                   encoding="utf-8")
+            self.scenario({"image": {"Id": IMAGE_ID, "RepoDigests": [], "Config": {"Labels": {lc.DOCKERFILE_LABEL: digest}}}})
+            rc, err = self.launch()
+            self.assertEqual(rc, 2, err)
+            self.assertIn("committed Dockerfile", err)
+            self.assertEqual(self.creates(), [])
+            rc, err = self.launch("--allow-foreign-image")
+        self.assertEqual(rc, 0, err)
+        image = self.receipt()["image"]
+        self.assertIs(image["from_committed_dockerfile"], False)
+        self.assertEqual(image["committed_dockerfile_sha256"], committed)
+
+    def test_a_dockerfile_changed_while_docker_builds_it_is_not_recorded(self):
+        dockerfile = self.repo / lc.DOCKERFILE_REL
+        self.scenario({"edit_during_build": True})
+        self.images.unlink()
+        err = io.StringIO()
+        with mock.patch.object(lc, "DOCKERFILE", dockerfile), contextlib.redirect_stderr(err):
+            rc = lc.main(["build"])
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn("changed while docker built it", err.getvalue())
+        self.assertFalse(self.images.exists(), "an image built from bytes nobody checked was recorded")
+
+    def test_a_build_that_reports_no_image_id_records_nothing(self):
+        self.scenario({"built_id": "not-an-id"})
+        self.images.unlink()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(lc.main(["build"]), 2)
+        self.assertIn("image id", err.getvalue())
+        self.assertFalse(self.images.exists(), "a build whose id is unknown was recorded")
+
+    def test_a_staging_path_docker_would_split_is_refused_before_anything_is_created(self):
+        # W5-14: --results/--receipts/--token-file were comma-checked, the derived staging paths
+        # (the export, the attestation, the settings) were not, and they go into a --mount too.
+        for name in ("tmp,with-comma", 'tmp"quote'):
+            with self.subTest(name=name):
+                staging = self.tmp / name
+                staging.mkdir()
+                with mock.patch.object(tempfile, "tempdir", str(staging)):
+                    rc, err = self.launch("--per-call-usd", "1")
+                self.assertEqual(rc, 2, err)
+                self.assertIn("--mount", err)
+                self.assertEqual(self.creates(), [])
+                self.assertEqual(list(staging.iterdir()), [], "the staging directory outlived the refusal")
+
+    def test_a_refused_staging_path_makes_nothing_outside_the_staging_directory(self):
+        # Why the derived mount sources are checked before the export, though broker_argv and
+        # arm_argv would refuse the same path before any `docker create` (re-attack of 2d254d0f
+        # called the check redundant): the launch makes the results directory, the receipts
+        # directory and this launch's broker-ledger directory before it builds either argv, and a
+        # refused start leaves none of them behind, nor runs the export's clone.
+        staging = self.tmp / "tmp,with-comma"
+        staging.mkdir()
+        with mock.patch.object(tempfile, "tempdir", str(staging)), \
+                mock.patch.object(lc, "export_checkout", side_effect=AssertionError("the export was cloned")):
+            rc, err = self.launch()
+        self.assertEqual(rc, 2, err)
+        self.assertIn("--mount", err)
+        self.assertFalse(self.results.exists(), "a refused start made the results directory")
+        self.assertFalse(self.receipts.exists(), "a refused start made the receipts directory and a ledger in it")
+
+    def test_a_staging_path_with_a_line_break_is_refused_before_anything_is_created(self):
+        # W5-14's rule names a comma, a quote and a line break: docker reads a --mount as CSV, where
+        # a line break ends the record. TMPDIR is the operator's environment, so any byte can be in it.
+        for name in ("tmp\nline", "tmp\rreturn"):
+            with self.subTest(name=name):
+                staging = self.tmp / name
+                staging.mkdir()
+                with mock.patch.object(tempfile, "tempdir", str(staging)):
+                    rc, err = self.launch()
+                self.assertEqual(rc, 2, err)
+                self.assertIn("--mount", err)
+                self.assertEqual(self.creates(), [])
+                self.assertEqual(list(staging.iterdir()), [], "the staging directory outlived the refusal")
+
     def test_results_or_receipts_the_container_could_reach_are_refused(self):
         for results, receipts in ((self.repo / "out", self.receipts), (self.results, self.results / "receipts")):
             with self.subTest(results=results, receipts=receipts):
@@ -801,8 +972,20 @@ class TheImageIsBuiltFromTheCommittedDockerfile(Harness):
         self.assertEqual(len(froms), 1)
         self.assertRegex(froms[0], r"^FROM python:3\.13\.15-slim@sha256:[0-9a-f]{64}$")
         self.assertIn("git", re.search(r"apt-get install[^\n]*", text).group(0))
-        install = f"curl -fsSL https://claude.ai/install.sh | bash -s {lc.CLAUDE_CODE}"
+        # The installer runs from a file whose sha256 is pinned and checked first, never piped
+        # into a shell, and the binary it leaves must have the release's own pinned sha256
+        # (2026-10-27 audit, W5-12: a version argument is not a pin).
+        install = f"bash /tmp/claude-install.sh {lc.CLAUDE_CODE}"
         self.assertIn(install, text)
+        self.assertNotRegex(text, r"\|\s*(?:ba)?sh\b", "a downloaded script is piped into a shell")
+        pinned = re.search(r'echo "[0-9a-f]{64}  /tmp/claude-install\.sh" \| sha256sum -c -', text)
+        self.assertIsNotNone(pinned, "the installer runs without a pinned digest")
+        self.assertLess(text.index(pinned.group(0)), text.index(install), "the digest is checked after it ran")
+        real = f"/home/runner/.local/share/claude/versions/{lc.CLAUDE_CODE}"
+        for arch in ("x86_64", "aarch64"):
+            self.assertRegex(text, rf"\b{arch}\) want=[0-9a-f]{{64}} ;;", f"no pinned binary digest for {arch}")
+        self.assertIn(f'echo "$want  {real}" | sha256sum -c -', text)
+        self.assertLess(text.index(install), text.index(f'echo "$want  {real}"'))
         users = [i for i, ln in enumerate(lines) if ln.startswith("USER ")]
         at = next(i for i, ln in enumerate(lines) if install in ln)
         self.assertTrue(users and users[-1] < at and lines[users[-1]] == "USER runner", "installed as root")
@@ -1129,6 +1312,784 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         resp = conn.getresponse()
         self.assertEqual((resp.status, json.loads(resp.read())), (200, {"ok": True, "cap_usd": 7.0}))
         conn.close()
+
+    # 2026-10-27 security audit, wave 5: W5-16 (a silent client parks a thread forever), W5-17
+    # (count_tokens is unmetered and unbounded) and W5-18 (a fault skips the settle, and its
+    # traceback goes to a log nobody keeps: the broker runs --log-driver none).
+
+    def test_a_client_that_never_sends_is_cut_off_and_idle_connections_are_bounded(self):
+        with mock.patch.object(lb, "HANDLER_TIMEOUT_S", 1.5, create=True), \
+                mock.patch.object(lb, "MAX_CONNECTIONS", 2, create=True):
+            self.broker()
+        idle = []
+        for _ in range(3):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            self.addCleanup(sock.close)
+            idle.append(sock)
+        # The connection past the bound evicts the idle one that has waited longest, at once: idle
+        # connections never keep a new one out (re-attack of 4b24dfde).
+        idle[0].settimeout(1.0)
+        try:
+            self.assertEqual(idle[0].recv(1), b"", "idle connections kept the one past the bound out")
+        except TimeoutError:
+            self.fail("idle connections kept the one past the bound out")
+        # And a connection that sends nothing is closed after the handler timeout.
+        idle[1].settimeout(5)
+        started = time.monotonic()
+        try:
+            self.assertEqual(idle[1].recv(1), b"")
+        except TimeoutError:
+            self.fail("a silent connection held its thread past the handler timeout")
+        self.assertLess(time.monotonic() - started, 4)
+        status, _data = self.post(path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})
+        self.assertEqual(status, 200, "the broker stopped answering once idle connections were cut")
+
+    def test_a_trickling_request_is_cut_off_by_a_total_deadline_and_every_drop_is_recorded(self):
+        # Re-attack of 82a2d00c (W5-16): the handler timeout restarts with every byte, so 32 clients
+        # each sending one byte of the request line every 20 s held every slot; and a dropped or
+        # expired connection left no trace in the ledger. Since the re-attack of 4b24dfde the
+        # connection past the slots evicts the trickling one, and is itself cut at its deadline.
+        with mock.patch.object(lb, "HANDLER_TIMEOUT_S", 5, create=True), \
+                mock.patch.object(lb, "REQUEST_DEADLINE_S", 1.0, create=True), \
+                mock.patch.object(lb, "MAX_CONNECTIONS", 1, create=True):
+            self.broker()
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            self.addCleanup(sock.close)
+            stop = threading.Event()
+            self.addCleanup(stop.set)
+
+            def trickle():
+                for byte in b"POST /v1/messages HTTP/1.1\r\n":
+                    if stop.wait(0.3):
+                        return
+                    with contextlib.suppress(OSError):
+                        sock.sendall(bytes([byte]))
+
+            threading.Thread(target=trickle, daemon=True).start()
+            time.sleep(0.2)
+            extra = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            self.addCleanup(extra.close)
+            self.assertEqual(extra.recv(1), b"", "a connection that sends nothing outlived its deadline")
+            started = time.monotonic()
+            try:
+                closed = sock.recv(1) == b""
+            except ConnectionResetError:
+                closed = True
+            except TimeoutError:
+                closed = False
+            self.assertTrue(closed and time.monotonic() - started < 4,
+                            "a request trickling one byte at a time outlived its total deadline")
+            stop.set()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and len([e for e in self.events() if e["event"] == "drop"]) < 2:
+                time.sleep(0.05)
+        drops = {e["why"] for e in self.events() if e["event"] == "drop"}
+        self.assertIn("stalled request evicted", drops)  # "connection slots full": test_slots_busy_with_calls_in_flight_*
+        self.assertIn("request timed out", drops)
+
+    def test_count_tokens_is_bounded_and_recorded(self):
+        with mock.patch.object(lb, "FREE_CALLS_MAX", 3, create=True), \
+                mock.patch.object(lb, "FREE_RECORD_EVERY", 2, create=True):
+            self.broker()
+            statuses = []
+            for _ in range(4):
+                self.api.replies.append((200, "application/json", b'{"input_tokens": 12}'))
+                statuses.append(self.post(path="/v1/messages/count_tokens",
+                                          doc={"model": "claude-haiku-5-5", "messages": []})[0])
+        self.assertEqual(statuses, [200, 200, 200, 403])
+        self.assertEqual(len(self.api.requests), 3, "a call past the free-call bound reached the API")
+        events = self.events()
+        self.assertIn({"event": "free", "calls": 2}, [{k: e[k] for k in ("event", "calls") if k in e}
+                                                     for e in events])
+        refusal = events[-1]
+        self.assertEqual(refusal["event"], "refuse")
+        self.assertIn("count_tokens", refusal["why"])
+
+    def test_a_usage_report_settled_cannot_price_still_settles_and_is_recorded(self):
+        self.broker()
+        answer = json.dumps({"id": "msg_1", "content": [], "usage": {
+            "input_tokens": 10, "output_tokens": 10, "inference_geo": "global",
+            "iterations": [{"input_tokens": "not-a-number"}]}}).encode()
+        self.api.replies.append((200, "application/json", answer))
+        status, _data = self.post(doc=self.body(stream=False))
+        self.assertEqual(status, 200)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and "settle" not in [e["event"] for e in self.events()]:
+            time.sleep(0.05)
+        events = self.events()
+        start = next(e for e in events if e["event"] == "start")
+        settles = [e for e in events if e["event"] == "settle"]
+        self.assertEqual(len(settles), 1, "the call's reservation was never settled")
+        self.assertEqual(settles[0]["cost_usd"], start["reserved_usd"], "an unpriceable call settles its reservation")
+        faults = [e for e in events if e["event"] == "fault"]
+        self.assertEqual([f["error"] for f in faults], ["ValueError"])
+        self.assertNotIn(self.token, self.ledger_path.read_text(encoding="utf-8"))
+
+    def test_a_handler_fault_is_recorded_in_the_ledger_not_lost(self):
+        self.broker()
+        with mock.patch.object(lb, "terms", side_effect=RuntimeError(f"boom {self.token}")):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request("POST", "/v1/messages", body=json.dumps(self.body()).encode(),
+                         headers={"Content-Type": "application/json"})
+            with contextlib.suppress(http.client.HTTPException, OSError):
+                conn.getresponse().read()
+            conn.close()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and "fault" not in [e["event"] for e in self.events()]:
+                time.sleep(0.05)
+        faults = [e for e in self.events() if e["event"] == "fault"]
+        self.assertEqual(len(faults), 1, "the fault left no record anyone keeps")
+        self.assertEqual(faults[0]["error"], "RuntimeError")
+        self.assertTrue(faults[0]["frames"], "the fault names no frame")
+        self.assertNotIn(self.token, self.ledger_path.read_text(encoding="utf-8"))
+        self.assertNotIn("boom", self.ledger_path.read_text(encoding="utf-8"), "a fault records no message text")
+
+    def test_an_upstream_that_resets_mid_call_is_recorded_as_a_fault(self):
+        # Codex review of 82a2d00c: relay() caught the upstream's (or the client's) exception,
+        # maybe answered 502, and recorded nothing, so the container (--log-driver none) kept
+        # no trace of it. A stand-in API that resets the connection before, then after, its status.
+        def resetting(send):
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(4)
+            self.addCleanup(listener.close)
+
+            def serve():
+                while True:
+                    try:
+                        conn, _ = listener.accept()
+                    except OSError:
+                        return
+                    with conn:
+                        conn.settimeout(5)
+                        with contextlib.suppress(OSError):
+                            conn.recv(1 << 16)
+                            conn.sendall(send)
+                        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            threading.Thread(target=serve, daemon=True).start()
+            return f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+        for when, send in (("before its status", b""),
+                           ("mid-response", b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                                            b"Content-Length: 100000\r\n\r\nevent: message_start\n")):
+            with self.subTest(when=when):
+                self.ledger_path = self.tmp / f"spend-{len(send)}.jsonl"
+                server, ledger = lb.serve(self.token, self.ledger_path, 5.0, port=0, upstream=resetting(send))
+                self.addCleanup(ledger.fh.close)
+                self.addCleanup(server.server_close)
+                self.addCleanup(server.shutdown)
+                self.port = server.server_address[1]
+                with contextlib.suppress(http.client.HTTPException, OSError):
+                    self.post()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and "settle" not in [e["event"] for e in self.events()]:
+                    time.sleep(0.05)
+                events = self.events()
+                faults = [e for e in events if e["event"] == "fault"]
+                self.assertTrue(faults, f"an upstream reset {when} left no fault in the ledger: {events}")
+                self.assertEqual(faults[0]["where"], "relay")
+                self.assertTrue(faults[0]["frames"])
+                self.assertEqual([e["event"] for e in events].count("settle"), 1, "the call was not settled")
+                self.assertNotIn(self.token, self.ledger_path.read_text(encoding="utf-8"))
+
+    def served_broker(self, upstream=None):
+        """lb.serve with the module's constants as patched now; the server itself, for its slots."""
+        server, ledger = lb.serve(self.token, self.ledger_path, 5.0, port=0, upstream=upstream or self.api.url)
+        self.addCleanup(ledger.fh.close)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.port = server.server_address[1]
+        return server
+
+    def wait_slots_taken(self, server, n):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and server.slots._value != server.slots._initial_value - n:
+            time.sleep(0.01)
+        self.assertEqual(server.slots._value, server.slots._initial_value - n, "the connections were not served")
+
+    def test_trickling_requests_cannot_keep_the_arms_own_calls_out(self):
+        # Re-attack of 4b24dfde (W5-16): the total deadline bounds ONE connection, but a client
+        # reopening them kept every slot: four connections, each trickling its request line or its
+        # body under the real deadlines (30 s, 120 s), and the arm's own count_tokens call was
+        # closed unanswered every time. A request still arriving gives its slot to a new connection.
+        with mock.patch.object(lb, "MAX_CONNECTIONS", 4, create=True):
+            server = self.served_broker()
+        held = []
+        for i in range(4):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            self.addCleanup(sock.close)
+            sock.sendall(b"P" if i % 2 else b"POST /v1/messages/count_tokens HTTP/1.1\r\nContent-Length: 1000\r\n\r\nx")
+            held.append(sock)
+        self.wait_slots_taken(server, 4)
+        for _ in range(3):
+            self.api.replies.append((200, "application/json", b'{"input_tokens": 12}'))
+            status, _data = self.post(path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})
+            self.assertEqual(status, 200, "a stalled request kept the arm's own call out")
+        held[0].settimeout(5)  # the one that had waited longest
+        try:
+            self.assertEqual(held[0].recv(1), b"", "a stalled request was answered")
+        except ConnectionResetError:
+            pass
+        drops = [e for e in self.events() if e["event"] == "drop"]
+        self.assertIn("stalled request evicted", {e["why"] for e in drops})
+        self.assertNotIn("fault", [e["event"] for e in self.events()], "an eviction was recorded as a fault")
+
+    def test_slots_busy_with_calls_in_flight_still_close_a_connection_past_them(self):
+        # Only a request still arriving is evicted: a call already relayed keeps its slot, and the
+        # connection past the bound is closed unanswered and counted, as before.
+        release, relayed = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def slow_api():
+            conn, _ = listener.accept()
+            with conn:
+                conn.recv(1 << 16)
+                relayed.set()
+                release.wait(10)
+                data = b'{"input_tokens": 12}'
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+                             % (len(data), data))
+        threading.Thread(target=slow_api, daemon=True).start()
+        with mock.patch.object(lb, "MAX_CONNECTIONS", 1, create=True):
+            server = self.served_broker(f"http://127.0.0.1:{listener.getsockname()[1]}")
+        result = {}
+        call = threading.Thread(target=lambda: result.update(status=self.post(
+            path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})[0]), daemon=True)
+        call.start()
+        self.wait_slots_taken(server, 1)
+        self.assertTrue(relayed.wait(5), "the call never reached the API")
+        extra = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(extra.close)
+        self.assertEqual(extra.recv(1), b"", "a connection past the slots was parked")
+        release.set()
+        call.join(10)
+        self.assertEqual(result.get("status"), 200, "the call in flight lost its slot")
+        self.assertIn("connection slots full", {e["why"] for e in self.events() if e["event"] == "drop"})
+
+    def test_a_request_trickled_a_byte_at_a_time_is_cut_off_at_its_total_deadline(self):
+        for phase in ("request line", "body"):
+            with self.subTest(phase=phase):
+                self.ledger_path = self.tmp / f"spend-{phase[0]}.jsonl"
+                with mock.patch.object(lb, "HANDLER_TIMEOUT_S", 5, create=True), \
+                        mock.patch.object(lb, "REQUEST_DEADLINE_S", 1.0, create=True), \
+                        mock.patch.object(lb, "BODY_DEADLINE_S", 1.0, create=True):
+                    self.served_broker()
+                    sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+                    self.addCleanup(sock.close)
+                    if phase == "body":
+                        sock.sendall(b"POST /v1/messages HTTP/1.1\r\nContent-Length: 1000\r\n\r\n")
+                    stop = threading.Event()
+                    self.addCleanup(stop.set)
+
+                    def trickle(sock=sock, stop=stop, byte=b"P" if phase == "request line" else b"x"):
+                        while not stop.wait(0.3):
+                            with contextlib.suppress(OSError):
+                                sock.sendall(byte)
+
+                    threading.Thread(target=trickle, daemon=True).start()
+                    started, answer = time.monotonic(), b""
+                    with contextlib.suppress(ConnectionResetError, TimeoutError):
+                        while chunk := sock.recv(4096):
+                            answer += chunk
+                    stop.set()
+                    self.assertLess(time.monotonic() - started, 4, f"a {phase} trickled a byte at a time outlived its deadline")
+                    if phase == "body":
+                        self.assertIn(b" 408 ", answer.split(b"\r\n", 1)[0])
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline and "drop" not in [e["event"] for e in self.events()]:
+                        time.sleep(0.05)
+                    whys = {e["why"] for e in self.events() if e["event"] == "drop"}
+                    self.assertIn("request timed out" if phase == "request line" else "body did not arrive", whys)
+
+    def test_a_client_that_leaves_mid_answer_is_recorded_as_a_fault(self):
+        # Codex review of 82a2d00c, its second case: the client disconnects while the broker is
+        # still relaying the API's answer. The broker's write fails inside relay(); that is a fault.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def streaming_api():
+            conn, _ = listener.accept()
+            with conn, contextlib.suppress(OSError):
+                conn.recv(1 << 16)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+                for _ in range(100):
+                    chunk = b'data: {"type": "ping"}\n\n' * 400
+                    conn.sendall(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                    time.sleep(0.02)
+                conn.sendall(b"0\r\n\r\n")
+        threading.Thread(target=streaming_api, daemon=True).start()
+        self.served_broker(f"http://127.0.0.1:{listener.getsockname()[1]}")
+        body = json.dumps(self.body()).encode()
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        sock.sendall(b"POST /v1/messages HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+                     % (len(body), body))
+        self.assertTrue(sock.recv(64).startswith(b"HTTP/1.0 200"))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.close()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and "settle" not in [e["event"] for e in self.events()]:
+            time.sleep(0.05)
+        events = self.events()
+        faults = [e for e in events if e["event"] == "fault"]
+        self.assertEqual([(f["where"], bool(f["frames"])) for f in faults][:1], [("relay", True)],
+                         f"a client that left mid-answer left no fault in the ledger: {events}")
+        self.assertEqual([e["event"] for e in events].count("settle"), 1, "the call was not settled")
+
+    def test_a_flood_of_faults_cannot_flood_the_ledger(self):
+        # Recording every fault made each one a ledger write and an fsync: a client resetting its
+        # connection mid-body in a loop grew the host's ledger without bound. Faults are counted,
+        # and written per kind at most once a DROP_RECORD_S, like drops; the count rides every line.
+        server = self.served_broker()
+        n, started = 200, time.monotonic()
+        for _ in range(n):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            sock.sendall(b"POST /v1/messages HTTP/1.1\r\nContent-Length: 100\r\n\r\nx")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            sock.close()
+        self.wait_slots_taken(server, 0)
+        self.api.replies.append((200, "application/json", b'{"input_tokens": 12}'))
+        self.assertEqual(self.post(path="/v1/messages/count_tokens", doc={"model": "claude-haiku-5-5", "messages": []})[0],
+                         200)
+        counted = lambda e: sum((e.get("faults") or {}).values()) + sum((e.get("dropped") or {}).values())
+        deadline = time.monotonic() + 5  # no later event is needed: a tally line catches the count up
+        while time.monotonic() < deadline and counted(self.events()[-1]) < n:
+            time.sleep(0.05)
+        events = self.events()
+        lines = [e for e in events if e["event"] in ("fault", "drop", "tally")]
+        kinds = {(e["event"], e.get("where"), e.get("error"), e.get("why")) for e in lines}
+        # One line per kind per DROP_RECORD_S at most, however long a loaded host took over the flood.
+        bound = len(kinds) * ((time.monotonic() - started) / lb.DROP_RECORD_S + 1)
+        self.assertLessEqual(len(lines), min(bound, n / 4), f"{n} resets wrote {len(lines)} ledger lines")
+        self.assertGreaterEqual(counted(events[-1]), n, f"the resets are not all counted on the ledger's last line: {events[-1]}")
+
+    def test_refusals_cannot_flood_the_ledger_and_are_all_counted(self):
+        # Pre-existing on main, the same class as the fault flood: every refusal was one fsynced
+        # line quoting what the client sent, twice (a model name in `why` and in `model`), so 20
+        # requests naming an 8 MiB model wrote 335 MB to the operator's disk in seconds. A refusal's
+        # text is bounded, refusals are counted per kind and written like drops, and the receipt's
+        # `refused` is the count, not the number of lines.
+        self.broker()
+        n_body, n_path, started = 10, 100, time.monotonic()
+        big = {**self.body(), "model": "m" * (1 << 20)}
+        for _ in range(n_body):
+            self.assertEqual(self.post(doc=big)[0], 400)
+        for i in range(n_path):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request("GET", f"/{i}" + "x" * 4000)
+            self.assertEqual(conn.getresponse().status, 403)
+            conn.close()
+        refused = lambda e: sum((e.get("refused") or {}).values())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and refused(self.events()[-1]) < n_body + n_path:
+            time.sleep(0.05)
+        self.assertLess(self.ledger_path.stat().st_size, 64 << 10, "refusals copied what the client sent into the ledger")
+        events = self.events()
+        lines = [e for e in events if e["event"] in ("refuse", "tally")]
+        bound = 2 * ((time.monotonic() - started) / lb.DROP_RECORD_S + 1)  # two kinds: terms, path
+        self.assertLessEqual(len(lines), min(bound, 20), f"{n_body + n_path} refusals wrote {len(lines)} lines")
+        self.assertEqual(refused(events[-1]), n_body + n_path)
+        self.assertEqual(lc.spend(self.ledger_path)["refused"], n_body + n_path, "the receipt miscounts refusals")
+
+    def test_a_body_whose_fields_have_the_wrong_type_is_refused_not_crashed_on(self):
+        self.broker()
+        for extra in ({"context_management": "x"}, {"inference_geo": ["us"]}):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.post(doc=self.body(**extra))[0], 400)
+        self.assertEqual(self.api.requests, [])
+
+    def test_stalled_holders_and_budget_waiters_cannot_keep_an_ordinary_call_out(self):
+        # Codex round 10 on c952fa4f: two stalled requests whose reservations left 12 bytes of the
+        # budget, the other slots filled by requests waiting for budget, and more stalled requests
+        # arriving: an evicted budget waiter kept its slot until its 30 s budget deadline (the new
+        # connection waited 5 s for it, holding up every connection behind it), and the budget an
+        # evicted holder gave back went to another stalled waiter, so an ordinary call never got
+        # in. Every wait is now evictable at once, budget goes only to a body that is arriving, and
+        # a request waiting for budget takes back, for itself, what a stalled body holds. With the
+        # arrivals still coming while the call is made, and with them stopped (then only the call's
+        # own eviction and its taking back of a stalled share can let it in).
+        for during in (True, False):
+            with self.subTest(arrivals_during_the_call=during):
+                self.ordinary_call_behind_stalled_requests(during)
+
+    def test_a_max_size_call_behind_a_stalled_max_size_body_is_answered(self):
+        # Codex round 11 on 8fe153d2: a stalled 32,000,000-byte body held its 416,000,000-byte share;
+        # a complete call of the same length took back the share's parse part but not the stalled
+        # body's buffer, and the eviction that would free it ran only after the 30 s wait, so the
+        # call got 503. The stalled body is now evicted the moment its share is taken back, and the
+        # call waits for its buffer to come back.
+        self.broker(cap=1e9)
+        stalled = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(stalled.close)
+        stalled.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                        b"Content-Length: %d\r\n\r\n{" % lb.MAX_BODY)  # one byte of a max-size body
+        time.sleep(0.3)
+        head = b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"'
+        end = b'"}]}'
+        body = head + b"a" * (lb.MAX_BODY - len(head) - len(end)) + end
+        started = time.monotonic()
+        try:
+            status, data = self.post(raw=body)
+        except (OSError, http.client.HTTPException) as err:
+            status, data = None, repr(err)
+        took = time.monotonic() - started
+        self.assertEqual(status, 200, data)
+        self.assertLess(took, 10, f"a max-size call waited {took:.1f} s behind a stalled body")
+        self.assertEqual(len(self.api.requests[-1]["body"]), lb.MAX_BODY)
+
+    def test_a_stalled_body_whose_share_is_taken_back_is_closed_at_once(self):
+        # Codex round 12 on 419a8435: when taking back a stalled body's share made a small call fit,
+        # take() returned before evicting it, so the stalled socket stayed open, holding its buffer
+        # until its own timeout; repeated, such buffers piled up out of reach. A stalled max-size
+        # body and a stalled filler fill the budget; once they have stalled, a small call takes back
+        # the max-size body's share: the call is answered and that body's socket is closed at once.
+        # Then, on one broker, round after round of the same: no evicted body is left holding a share.
+        for _round in range(2):
+            server = self.served_broker()
+            big, _filler = self.fill_with_stalled_bodies(server)
+            time.sleep(lb.BODY_GRACE_S + 0.5)  # both have stalled
+            started = time.monotonic()
+            status, data = self.post()
+            self.assertEqual(status, 200, data)
+            self.assertLess(time.monotonic() - started, 5)
+            big.settimeout(5)
+            try:
+                closed = big.recv(1) == b""
+            except ConnectionResetError:
+                closed = True
+            except TimeoutError:
+                closed = False
+            self.assertTrue(closed, "the stalled body whose share was taken back was left open")
+        server = self.served_broker()
+        for _round in range(3):
+            self.fill_with_stalled_bodies(server)
+            time.sleep(lb.BODY_GRACE_S + 0.5)
+            self.assertEqual(self.post()[0], 200)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and [t for t in server.bodies.tickets if t.cancelled]:
+            time.sleep(0.05)
+        self.assertEqual([t.held for t in server.bodies.tickets if t.cancelled], [],
+                         "evicted bodies still hold shares of the budget")
+
+    def fill_with_stalled_bodies(self, server):
+        """A stalled max-size body and a stalled filler, holding all but 12 bytes of the budget the
+        rest leaves; (the max-size body's socket, the filler's or None)."""
+        def stall(length):
+            conn = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            self.addCleanup(conn.close)
+            conn.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: %d\r\n\r\n{" % length)  # one body byte, then nothing
+            return conn
+
+        def settles(want):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not want(server.bodies.held):
+                time.sleep(0.01)
+            return server.bodies.held
+
+        before = server.bodies.held
+        big = stall(lb.MAX_BODY)
+        held = settles(lambda h: h >= before + lb.WORST_PER_BYTE * lb.MAX_BODY)
+        length = (lb.BODY_BUDGET - held - 12) // lb.WORST_PER_BYTE
+        if length <= 0:
+            return big, None
+        filler = stall(length)
+        settles(lambda h: h >= lb.BODY_BUDGET - 12 - lb.WORST_PER_BYTE)
+        return big, filler
+
+    def test_budget_goes_only_to_a_body_that_is_arriving(self):
+        # A request whose body has not begun holds no share of the budget, however long it waits:
+        # what is given back can go only to bodies actually arriving.
+        server = self.served_broker()
+        body = json.dumps(self.body()).encode()
+        conn = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(conn.close)
+        conn.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                     b"Content-Length: %d\r\n\r\n" % len(body))
+        time.sleep(0.5)
+        self.assertEqual(server.bodies.held, 0, "a request with no body byte yet holds budget")
+        conn.sendall(body)
+        self.assertTrue(conn.recv(64).startswith(b"HTTP/1.0 200"))
+
+    def ordinary_call_behind_stalled_requests(self, during):
+        server = self.served_broker()
+        big = 32_000_000
+        small = (lb.BODY_BUDGET - lb.WORST_PER_BYTE * big - 12) // lb.WORST_PER_BYTE
+        self.assertEqual(lb.BODY_BUDGET - lb.WORST_PER_BYTE * (big + small), 12)
+        stalled = []
+
+        def stall(length):
+            conn = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            stalled.append(conn)
+            conn.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: %d\r\n\r\n{" % length)  # one body byte, then nothing
+        self.addCleanup(lambda: [conn.close() for conn in stalled])
+        for length in (big, small):  # the budget, but for 12 bytes
+            stall(length)
+            time.sleep(0.2)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and server.bodies.held != lb.BODY_BUDGET - 12:
+            time.sleep(0.01)
+        self.assertEqual(server.bodies.held, lb.BODY_BUDGET - 12, "the stalled holders did not take the budget")
+        for length in [big] * (lb.MAX_CONNECTIONS - 3) + [small]:  # every other slot waits for budget
+            stall(length)
+        time.sleep(0.3)
+        for _ in range(2):  # evict both holders: stalled waiters take what they gave back
+            stall(big)
+            time.sleep(0.3)
+        stop = threading.Event()
+
+        def keep_arriving():
+            while not stop.wait(0.05):
+                with contextlib.suppress(OSError):
+                    stall(big)
+        flood = threading.Thread(target=keep_arriving, daemon=True)
+        flood.start()
+        self.addCleanup(flood.join, 5)
+        self.addCleanup(stop.set)
+        time.sleep(0.3)
+        if not during:
+            stop.set()
+            flood.join(5)
+            time.sleep(0.2)
+        started = time.monotonic()
+        try:
+            status, data = self.post()
+        except (OSError, http.client.HTTPException) as err:
+            status, data = None, repr(err)
+        took = time.monotonic() - started
+        stop.set()
+        self.assertEqual(status, 200, data)
+        self.assertLess(took, 10, f"an ordinary call took {took:.1f} s behind stalled requests")
+
+    def test_a_body_is_held_once_not_twice(self):
+        # Re-attack of 2d254d0f: read_body kept every chunk and then joined them, so each body was
+        # held twice -- four concurrent 64 MiB bodies took the broker to 506 MB of its 512m.
+        n = 8 << 20
+        fake = types.SimpleNamespace(rfile=io.BufferedReader(io.BytesIO(b"x" * n)), connection=None, ledger=None,
+                                     server=types.SimpleNamespace(was_evicted=lambda _conn: False),
+                                     ticket=lb._Ticket(None, n))
+        tracemalloc.start()
+        try:
+            body = lb.Broker.read_body(fake, n)
+            _now, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(len(body), n)
+        self.assertLess(peak, n + (n >> 2), f"reading a {n}-byte body peaked at {peak} bytes")
+
+    def test_the_bodies_held_at_once_fit_the_brokers_container(self):
+        # MAX_CONNECTIONS x MAX_BODY is 1 GB; the broker's container has 512m. What every connection
+        # takes at once -- bodies and the bound parse_cost puts on parsing them -- is BODY_BUDGET,
+        # which must leave the interpreter, its threads and its parse children room in that memory,
+        # and hold the worst body MAX_BODY allows (13 times its bytes). That the bounds hold against
+        # parsing itself is measured below, with adversarial and accepted bodies.
+        memory = lc.BROKER_LIMITS["memory"]
+        self.assertTrue(memory.endswith("m"), memory)
+        limit = int(memory[:-1]) << 20
+        self.assertLessEqual(lb.MAX_BODY, 32_000_000, "the API refuses a larger request")
+        self.assertLessEqual(13 * lb.MAX_BODY + (1 << 20), lb.BODY_BUDGET)
+        self.assertLessEqual(lb.BODY_BUDGET + lb.PARSERS * lb.PARSE_SLACK + (64 << 20), limit)
+
+    # The broker alone in a child (the test's own copies of the bodies are not its memory), under a
+    # 1 GiB data limit so a broker that parses them anyway fails there, not on the host. It prints
+    # its port, serves until a line arrives on stdin, then prints its own peak (VmHWM) and the peak
+    # of the largest parse child it forked (RUSAGE_CHILDREN, which counts the pages it shares with
+    # the broker as well: an overcount). argv: live_broker.py, ledger, upstream, BODY_BUDGET in MiB,
+    # the spend cap.
+    BROKER_CHILD = ("import importlib.util, json, resource, sys\n"
+                    "spec = importlib.util.spec_from_file_location('lb', sys.argv[1])\n"
+                    "lb = importlib.util.module_from_spec(spec); spec.loader.exec_module(lb)\n"
+                    "resource.setrlimit(resource.RLIMIT_DATA, (1 << 30, resource.getrlimit(resource.RLIMIT_DATA)[1]))\n"
+                    "lb.BODY_BUDGET = int(sys.argv[4]) << 20\n"
+                    "server, ledger = lb.serve('sk-ant-oat01-child', sys.argv[2], float(sys.argv[5]), port=0,\n"
+                    "                          upstream=sys.argv[3])\n"
+                    "print(server.server_address[1], flush=True)\n"
+                    "sys.stdin.readline()\n"
+                    "with open('/proc/self/status', encoding='ascii') as fh:\n"
+                    "    peak = next(int(line.split()[1]) for line in fh if line.startswith('VmHWM:'))\n"
+                    "print(json.dumps({'peak_kib': peak, 'children_kib': resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss}),\n"
+                    "      flush=True)\n")
+
+    def test_a_body_whose_parse_would_pass_the_budget_is_refused_unparsed_and_counted(self):
+        # Codex round 7 on 72739991: a ~60 MiB array of 20 million empty objects fits MAX_BODY and the
+        # byte budget, but answer_post json.loads()-ed it before looking at its shape, and the dicts
+        # need well over the container's 512m. parse_cost now bounds the parse first. Four bodies at
+        # once, against the real budget: empty objects, nesting, tiny strings, numbers. Parsed, they
+        # need some 700 MB together; refused, the broker never holds more than their bytes.
+        if not sys.platform.startswith("linux"):
+            return  # the broker runs in a Linux container; VmHWM is Linux's
+        pad = {"empty objects": b"{}," * (4 << 20), "nesting": b"[" * 100_000, "tiny strings": b'"ab",' * (4 << 20),
+               "numbers": b"1000," * (4 << 20)}
+        head = b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"pad":['
+        bodies = {what: head + filler + (b"]" * 100_000 if what == "nesting" else b"0") + b"]}"
+                  for what, filler in pad.items()}
+        answers, line = self.served_in_a_child(bodies)
+        self.assertTrue(line, "the broker died parsing the bodies")
+        peak = json.loads(line)["peak_kib"]
+        self.assertLess(peak, 120 * 1024, f"the broker peaked at {peak} KiB on bodies it should never parse")
+        self.assertEqual(answers, dict.fromkeys(bodies, 413), "a body was parsed rather than refused by its bound")
+        self.assertEqual(self.api.requests, [])
+        counts = [e["refused"] for e in self.events() if isinstance(e.get("refused"), dict)]
+        self.assertEqual(counts[-1].get("body-parse"), len(bodies), counts[-1:])
+
+    def served_in_a_child(self, bodies, cap=5.0):
+        """Send `bodies` at once to a broker in its own process (BROKER_CHILD, the real BODY_BUDGET);
+        ({name: HTTP status}, the line it reports its peaks on, empty if it died)."""
+        child = subprocess.Popen([sys.executable, "-I", "-c", self.BROKER_CHILD, str(ROOT / "scripts" / "live_broker.py"),
+                                  str(self.ledger_path), self.api.url, str(lb.BODY_BUDGET >> 20), str(cap)],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        for done in (child.wait, child.kill, child.stdout.close, child.stdin.close):  # run in reverse
+            self.addCleanup(done)
+        self.port = int(child.stdout.readline())
+        answers = {}
+
+        def send(what):
+            with contextlib.suppress(OSError, http.client.HTTPException):
+                answers[what] = self.post(raw=bodies[what])[0]
+        senders = [threading.Thread(target=send, args=(what,)) for what in bodies]
+        for sender in senders:
+            sender.start()
+        for sender in senders:
+            sender.join(120)
+        time.sleep(lb.DROP_RECORD_S + 0.5)  # the ledger's tally line catches up the counts
+        with contextlib.suppress(OSError):
+            child.stdin.write("report\n")
+            child.stdin.flush()
+        return answers, child.stdout.readline()
+
+    def test_the_pre_scan_itself_holds_no_memory_whatever_a_string_holds(self):
+        # Codex round 8 on 70805faa: 129 literal [ inside a string forced the token walk, whose
+        # regex matched a string by repeating a group per escape and kept state per repetition: 30
+        # million \n escapes exhausted the broker before any bound was checked (4 MiB of them took
+        # 235 MiB). The walk now finds one structural byte at a time and skips a string with find,
+        # counting back only the backslashes right before a quote. Escapes, escaped quotes, long
+        # backslash runs, brackets and quotes inside strings: each body costs the walk nothing but
+        # time, bounded by MAX_SCAN_STEPS, and is answered.
+        if not sys.platform.startswith("linux"):
+            return  # the broker runs in a Linux container; VmHWM is Linux's
+        brackets = b"[" * (lb.MAX_DEPTH + 1)  # inside the string: the structural count cannot answer
+        content = {"escapes": b"\\n" * (2 << 20), "escaped quotes": b'\\"' * (lb.MAX_SCAN_STEPS + 1),
+                   "backslash runs": b"\\\\" * (2 << 20), "structure inside": b'a,[b]:{c}\\"d\\\\ ' * (1 << 18)}
+        bodies = {what: b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"'
+                  + brackets + inner + b'"}],"pad":1}' for what, inner in content.items()}
+        for what, body in bodies.items():  # each is the JSON it looks like
+            self.assertIsInstance(json.loads(body), dict, what)
+        answers, line = self.served_in_a_child(bodies)
+        self.assertTrue(line, "the broker died scanning the bodies")
+        peak = json.loads(line)["peak_kib"]
+        self.assertLess(peak, 120 * 1024, f"the broker peaked at {peak} KiB scanning strings")
+        children = json.loads(line)["children_kib"]
+        self.assertLess(children, 160 * 1024, f"a parse child peaked at {children} KiB on strings of a few MiB")
+        # Past MAX_SCAN_STEPS escaped quotes the walk stops and refuses; every other body is parsed
+        # within its bound and refused on its terms (the "pad" field), never relayed.
+        self.assertEqual(answers, {"escapes": 400, "escaped quotes": 413, "backslash runs": 400,
+                                   "structure inside": 400})
+        self.assertEqual(self.api.requests, [])
+        counts = [e["refused"] for e in self.events() if isinstance(e.get("refused"), dict)][-1]
+        self.assertEqual((counts.get("body-parse"), counts.get("terms")), (1, 3), counts)
+
+    def test_max_size_unicode_bodies_are_accepted_and_parsed_within_the_container(self):
+        # Codex round 9 on bdba24e5: 63 MiB of ASCII and one emoji fit parse_cost's old bound (5x),
+        # but json.loads decodes the body to a UCS-4 str (4x) and parses the text to another (4x)
+        # beside the body: past the 512m container before the terms were read. The bound now
+        # charges the decoded input and the strings at their widths, MAX_BODY is the API's 32 MB,
+        # and the parse runs in a child held to its bound. Max-size bodies, ASCII but for one emoji
+        # (raw, or as an escaped surrogate pair) near the end, are parsed and relayed: alone, then
+        # several at once. Parent and parse child together stay under the container's memory.
+        if not sys.platform.startswith("linux"):
+            return  # the broker runs in a Linux container; VmHWM is Linux's
+        head = b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"'
+        end = b'"}]}'
+
+        def body(tail):
+            return head + b"a" * (lb.MAX_BODY - len(head) - len(end) - len(tail)) + tail + end
+        limit = int(lc.BROKER_LIMITS["memory"][:-1]) << 10  # KiB
+        for bodies in ({"raw emoji": body("😀".encode())},
+                       {"raw emoji": body("😀".encode()), "escaped emoji": body(b"\\ud83d\\ude00"),
+                        "escaped emoji, early": body(b"\\ud83d\\ude00" + b"b" * 1024),
+                        "raw emoji, early": body("😀".encode() + b"b" * 1024)}):
+            with self.subTest(bodies=sorted(bodies)):
+                for raw in bodies.values():
+                    self.assertEqual(len(raw), lb.MAX_BODY)
+                self.api.requests.clear()
+                answers, line = self.served_in_a_child(bodies, cap=1e6)
+                self.assertTrue(line, "the broker died parsing the bodies")
+                got = json.loads(line)
+                self.assertEqual(answers, dict.fromkeys(bodies, 200), "a max-size ordinary body was not relayed")
+                self.assertEqual(sorted(len(r["body"]) for r in self.api.requests), [lb.MAX_BODY] * len(bodies))
+                self.assertLess(got["peak_kib"] + got["children_kib"], limit,
+                                f"broker {got['peak_kib']} KiB and a parse child {got['children_kib']} KiB pass the "
+                                f"container's {limit} KiB")
+                # Each body is held, parsed and freed in turn: glibc keeps no freed body buffer in a
+                # thread's heap (it held 114 MB after four, before its mmap threshold was fixed).
+                self.assertLess(got["peak_kib"], 96 * 1024, "freed body buffers stayed in the broker's memory")
+
+    def test_a_parse_past_its_bound_fails_in_its_child_not_in_the_broker(self):
+        # The bound parse_cost puts on a parse is the child's RLIMIT_DATA, so an estimate that ever
+        # fell short would refuse the body, never grow the broker.
+        if not sys.platform.startswith("linux"):
+            return  # RLIMIT_DATA is enforced on Linux, where the broker runs
+        body = (b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"'
+                + b"a" * (8 << 20) + "😀".encode() + b'"}]}')
+        self.assertEqual(lb._parse_in_child(body, 1 << 20), {"memory": True})
+        facts = lb._parse_in_child(body, lb.parse_cost(body, 1 << 40) - len(body))
+        self.assertEqual((facts.get("why"), facts.get("model"), facts.get("max_tokens")), (None, "claude-haiku-5-5", 10))
+
+    def test_ordinary_large_bodies_still_pass_the_parse_bound(self):
+        # Long text, non-ASCII text, a base64 image, thousands of messages and a hundred tools.
+        self.broker(cap=10_000.0)  # 20 MB of input tokens at the cache-write price passes a $5 cap
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBO" * (2 << 20)}}
+        tools = [{"name": f"tool_{i}", "description": "run it, {carefully}: [a, b]",
+                  "input_schema": {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+                                   "required": ["a"]}} for i in range(100)]
+        turns = [{"role": "user" if i % 2 == 0 else "assistant", "content": [{"type": "text", "text": f"turn {i}, {{x}}: [y]"}]}
+                 for i in range(3000)]
+        big = {"model": "claude-haiku-5-5", "max_tokens": 1000, "stream": True, "tools": tools,
+               "messages": [{"role": "user", "content": [{"type": "text", "text": "x, {y}: [z]\n" * (1 << 20)}, image]},
+                            *turns[1:], {"role": "user", "content": "é😀 " * (1 << 20)}]}
+        body = json.dumps(big, ensure_ascii=False).encode()
+        self.assertGreater(len(body), 16 << 20)
+        self.assertIsNotNone(lb.parse_cost(body, lb.BODY_BUDGET))
+        self.assertEqual(self.post(raw=body)[0], 200)
+
+    def test_a_body_past_the_budget_held_at_once_waits_then_is_refused_and_counted(self):
+        # A budget its small body fits alone (the most a body of its length can take parsed, held
+        # before it is read), and a held request that leaves less than that.
+        big = self.body(messages=[{"role": "user", "content": "y" * 1800}])
+        raw = json.dumps(big).encode()
+        budget = lb.WORST_PER_BYTE * len(raw) + 64
+        length = len(raw)
+        held = lb.WORST_PER_BYTE * length
+        for patch in (mock.patch.object(lb, "BODY_BUDGET", budget), mock.patch.object(lb, "BODY_WAIT_S", 0.5)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        server = self.served_broker()
+        self.assertEqual(server.bodies.limit, budget)
+        holder = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(holder.close)
+        holder.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                       b"Content-Length: %d\r\n\r\n{" % length)  # its body is still arriving: `held` held
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and server.bodies.held != held:
+            time.sleep(0.01)
+        self.assertEqual(server.bodies.held, held)
+        status, data = self.post(doc=big)
+        self.assertEqual(status, 503, data)
+        self.assertEqual(self.api.requests, [], "a body past the budget reached the API")
+        refused = [e for e in self.events() if e["event"] == "refuse"]
+        self.assertEqual([e["kind"] for e in refused], ["body-budget"])
+        holder.close()  # its body never arrives: its bytes go back to the budget
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and server.bodies.held:
+            time.sleep(0.01)
+        self.assertEqual(server.bodies.held, 0, "a request's bytes were never given back")
+        self.assertEqual(self.post(doc=big)[0], 200)
 
 
 # ---------------------------------------------------------------------------- the arm's `claude`

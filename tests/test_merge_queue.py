@@ -578,6 +578,36 @@ class OfflineAndPromotion(QueueCase):
         self.assertEqual([(x["sink"], x["payload_class"], x["consent"]) for x in lines],
                          [("merge-queue", kind, "grant:merge-to-integration") for kind in ("pr-merge", "branch-delete") * 2])
 
+    def test_every_egress_receipt_id_leaves_the_ledger_so_a_close_can_bind_it(self):
+        # Re-attack of 82a2d00c (W5-05): merge_queue wrote its receipts and discarded the record,
+        # so no id of them ever left the ledger, and a rewrite of the newest one (host, payload
+        # hash, recomputed id) verified clean against every anchor a close held. Each id is now
+        # recorded in the queue's own store (and printed), where the close takes it from.
+        token = self.acquire()
+        self.board(token, self.w.unit("alpha"), self.w.unit("beta"))
+        self.w.cli("release", "--token", token)
+        self.assertEqual(self.w.cli("drain", "--base", W.BASE, "--holder", "c1", "--ack")[0], 0)
+        rc, out = self.w.cli("--repo", self.repo, "receipts", "--base", W.BASE)
+        self.assertEqual(rc, 0, out)
+        recorded = [r["body"] for r in out["receipts"] if r["kind"] == "egress_receipt"]
+        ledger = [json.loads(x) for x in self.w.ledger.read_text().splitlines()]
+        self.assertEqual([r["id"] for r in recorded], [x["id"] for x in ledger],
+                         "an egress receipt the queue wrote has no id outside the ledger")
+        self.assertEqual({r["ledger"] for r in recorded}, {str(self.w.ledger)})
+        verify = [sys.executable, str(ROOT / "runtime" / "scripts" / "egress.py"), "--ledger", str(self.w.ledger),
+                  "verify"]
+        anchors = [a for r in recorded for a in ("--expect-ancestor", r["id"])]
+        honest = subprocess.run([*verify, *anchors], capture_output=True, text=True)
+        self.assertEqual(honest.returncode, 0, honest.stderr)
+        lines = self.w.ledger.read_text().splitlines()
+        rec = json.loads(lines[-1])
+        rec.update(host="gitlab.example", payload_sha256="0" * 64)
+        rec["id"] = egress.record_id(rec)
+        lines[-1] = egress.canonical_line(rec)
+        self.w.ledger.write_text("\n".join(lines) + "\n")
+        forged = subprocess.run([*verify, *anchors], capture_output=True, text=True)
+        self.assertEqual(forged.returncode, 3, forged.stdout + forged.stderr)
+
     def test_no_receipt_means_no_send(self):
         token = self.acquire()
         (entry,) = self.board(token, self.w.unit("alpha"))
@@ -587,6 +617,36 @@ class OfflineAndPromotion(QueueCase):
         self.assertEqual((rc, out.get("code")), (1, "egress_failed"), out)
         self.assertEqual(self.w.merge_log("start"), [])
         self.assertEqual(self.state_of(entry), "queued")
+
+    def test_the_default_ledger_is_the_repository_roots_wherever_the_queue_runs(self):
+        # Re-check of 4b24dfde (W5-03): with no ledger variable the queue wrote to
+        # `<--repo-dir>/.orca/egress.jsonl`, and --repo-dir defaults to the working directory, so a
+        # drain run from a subdirectory receipted into `<sub>/.orca` while the close verified the
+        # root. It now picks the ledger egress.py's own default picks: the repository root's, and
+        # none at all (the merge refused before the send) under a `.git` nested in the repository.
+        del self.w.env[egress.PRIMARY_LEDGER_ENV]
+        sub = self.w.conductor / "sub"
+        sub.mkdir()
+        token = self.acquire()
+        (entry,) = self.board(token, self.w.unit("alpha"))
+        self.w.cli("plan", "--token", token)
+        rc, out = self.w.cli("--repo-dir", str(sub), "merge", "--token", token)
+        self.assertEqual((rc, out.get("result")), (0, "merged"), out)
+        self.assertFalse((sub / ".orca").exists(), "the receipt landed under the working subdirectory")
+        root_ledger = self.w.conductor / egress.DEFAULT_LEDGER
+        self.assertEqual([json.loads(x)["id"] for x in root_ledger.read_text().splitlines()][:1],
+                         [out["egressReceipt"]])
+        self.assertEqual(self.w.cli("ack", "--token", token, "--entry", entry)[0], 0)
+        nested = self.w.conductor / "vendor"
+        (nested / ".git").mkdir(parents=True)
+        (entry2,) = self.board(token, self.w.unit("beta"))
+        self.w.cli("plan", "--token", token)
+        before = self.w.merge_log("start")
+        rc, out = self.w.cli("--repo-dir", str(nested), "merge", "--token", token)
+        self.assertEqual((rc, out.get("code")), (1, "egress_failed"), out)
+        self.assertEqual(self.w.merge_log("start"), before, "a merge was sent with no receipt on the run's ledger")
+        self.assertFalse((nested / ".orca").exists())
+        self.assertEqual(self.state_of(entry2), "queued")
 
 
 class NonCooperatingWriters(QueueCase):

@@ -28,7 +28,9 @@ same user. A token mounted there would be readable by any of them, copied, or us
 ledger records. So the token never enters the arm's container. It is mounted into the broker's
 container, which runs [`scripts/live_broker.py`](../../scripts/live_broker.py) and nothing else.
 The arm's container shares the broker's network namespace and nothing more: no file, process or
-environment of it.
+environment of it. Sharing the namespace shares its route out too, so the arm can open its own
+connections to any host without passing through the broker: the broker caps and records model
+calls, which need the token, and is not an egress control for anything else.
 
 Inside the arm's container, `claude` on `PATH` is
 [`scripts/live_container_bin/claude`](../../scripts/live_container_bin/claude). It waits for the
@@ -87,8 +89,47 @@ The launcher starts both containers with these properties:
   `trajectories` must also name an `--out`, and `first_run` a `--workdir`, because each one's
   default is a temp dir that dies with the container;
 - the broker writes its ledger beside the receipt, out of the arm's reach: one JSON line when it
-  opens, and one for each call it starts, settles or refuses. It never holds the token, a request
-  or a response;
+  opens, one for each call it starts and settles, and a counted `refuse` line per kind of refusal
+  (path, terms, cap, count_tokens) at most once a second, its text cut short, since it quotes what
+  the arm sent; the receipt's `refused` is the count. It never holds the token, a request or a
+  response. Its container keeps no log, so a fault in the broker is a `fault` line here (the
+  exception's type and frames only), and a call whose usage it cannot price settles its whole
+  reservation. `count_tokens` is free but bounded (5,000 calls, 2 GiB of bodies per launch), with
+  a running tally every 100 calls and on every later line. A connection that sends nothing is cut
+  off after 60 s, its request line and headers must arrive within 30 s in all and its body within
+  120 s (a byte at a time extends neither), and at most 32 are served at once. When all 32 are
+  taken, a new connection evicts the one that has waited longest for its own request to arrive,
+  so connections trickling requests, however many a process reopens, never keep the arm's own
+  model calls out; a call already read in full keeps its slot. Every wait before a request is read
+  in full -- for its headers, its body's first byte, its share of the body budget below, its body --
+  ends at once when it is evicted, so an evicted connection's slot is free at once. A request body
+  gets its share of that budget only once its first byte is here, and one whose bytes then arrive
+  slower than 1 MiB/s (after a second's grace) is stalled: a request waiting for budget takes back,
+  for itself, what a stalled body holds and evicts it at once, then waits for that body's buffer to
+  come back (5 s past its own deadline at most), so stalled requests, however many arrive,
+  cannot keep an ordinary call's body out. A request body is at most 32 MB (the
+  API's own limit) and held once, and what the bodies take together -- their bytes and the most
+  parsing them can allocate -- is at most 400 MiB (`BODY_BUDGET`), which leaves the interpreter and
+  its parse children room in the broker's 512m. Before a body is read, the most one of its length
+  can take parsed -- 13 times its bytes: the body, the string `json.loads` decodes it to, and the
+  strings parsed out of it, the last two at up to four bytes a character (one emoji widens a whole
+  string) and the last held twice over while the parser builds it -- is taken from that budget. A
+  pre-scan of the bytes then bounds the parse more closely (each character at the width the body's
+  widest character, or a `\u` escape, gives it; each JSON value at its worst parsed size) and the
+  rest goes back. The pre-scan holds no memory of its own (it finds one structural byte at a time
+  and skips each string with a plain search, whatever escapes it holds) and stops after two million
+  steps. The body is parsed in a child process whose memory limit is that bound, so a parse that
+  would pass it fails there, never in the broker, which holds no parsed body. A budget take waits
+  up to 30 s for room and is otherwise answered 503 (a `body-budget` refusal); a body whose bound
+  alone could pass the budget, that nests more than 128 deep, whose pre-scan would pass its steps,
+  or whose parse passes its bound, is answered 413 (a `body-parse` refusal). Ordinary requests --
+  long or non-ASCII text, base64 images, thousands of messages, many tools, and a 32 MB request
+  that is all ASCII but for one emoji -- pass.
+  Every connection closed unanswered
+  (evicted, past the bound, timed out, malformed, a body cut short) is counted as a `drop`. Drops
+  and faults are counted per kind and written at most once a second per kind, with the running
+  counts on every line and a `tally` line a second after the last one not written, so a client
+  resetting connections in a loop cannot grow this file without bound;
 - the arm sees the launcher's attestation, read-only. The attestation holds a fresh nonce, the
   commit, the arm, the image and the host's name, hashed (`host_sha256`), which names the machine
   across launches. The broker's container has the hostname `of-live-<nonce>`, and the arm's
@@ -134,10 +175,24 @@ python3 scripts/live_container.py build
 This builds `open-fleet-live:claude-2.1.304` from
 [`scripts/live_container.Dockerfile`](../../scripts/live_container.Dockerfile). The base,
 `python:3.13.15-slim`, is pinned by digest. The image adds git, and installs Claude Code 2.1.304
-with its official installer as the non-root user. The build fails on any other version. This is
-the only step that downloads anything. The image carries the Dockerfile's sha256 as a label. A
-receipt records whether its image was built from the Dockerfile at that commit. Both containers
-run this image.
+with its official installer as the non-root user. The installer is saved to a file and runs only
+when its sha256 is the pinned one, and the build fails unless the installed binary has the sha256
+the 2.1.304 release manifest gives for the platform (x86_64 or aarch64) and reports that version.
+A version bump re-pins both digests. The apt packages (git, curl, certificates) are the base's
+distribution's current ones, not pinned. This is
+the only step that downloads anything. The build refuses unless the Dockerfile on disk is
+byte for byte the one your checkout's HEAD commits (read from the git object, not the working copy),
+before docker reads it and after; commit an edit before you build. The image carries that committed
+Dockerfile's sha256 as a label, and the build records the image ID it produced (the one docker writes to its `--iidfile`, never what
+the tag names once the build is over), with that sha256, in `~/of-live/images.json`, outside the
+image. A launch refuses an image whose ID this launcher's build did not record from the
+committed Dockerfile, or whose label differs, where the committed Dockerfile is the one the commit
+being run holds (its git object; an edit hidden from the dirty check changes nothing), unless you pass `--allow-foreign-image`; the receipt
+records all three (`built_by_this_launcher`, `from_committed_dockerfile`, `foreign_image_allowed`).
+The label alone is not enough: docker copies it into any image built `FROM` this one. Both checks
+guard against accidents, a stale or derived image run by mistake. Anyone who can run docker is
+root-equivalent and can forge either, so they are not a check against that person, and neither is
+a check of the image's contents. Both containers run this image.
 
 ## 2. Store the token
 
@@ -248,7 +303,7 @@ output as `.log` and the broker's ledger in `.broker/spend.jsonl`. The receipt h
 |---|---|
 | `arm`, `arm_args`, `argv` | The arm, your arguments, and the exact command the container ran |
 | `commit` | The checkout's `HEAD`, which `/repo` held |
-| `image` | The image's id and digests, its labels, and `from_committed_dockerfile` |
+| `image` | The image's id and digests, its labels, `built_by_this_launcher`, `from_committed_dockerfile`, and `foreign_image_allowed` |
 | `nonce`, `hostname` | The attestation's nonce, and the hostname derived from it |
 | `container` | The arm's container: its id, user, limits and mounts |
 | `broker` | The broker's container, its cap, and `spend`: calls started, refused and settled, the settled USD, and any call still open when it was destroyed with its reservation |
@@ -274,6 +329,8 @@ label=org.open-fleet.live-harness`), and 124 when the limit ended the run.
 |---|---|
 | `the checkout … is dirty` | Commit or remove the listed paths |
 | `no image …: build it first` | Run step 1 |
+| `the image … was not built by this launcher from the committed Dockerfile` | Run step 1 at this commit, or pass `--allow-foreign-image` to run it anyway |
+| `… holds a comma, a quote or a line break, which a docker --mount cannot carry` | Rename the path; for a staging path, point `TMPDIR` at a directory without one |
 | `another launch holds …live-harness.lock` | One arm runs at a time. Wait for the other launch to end |
 | `a harness container already exists` | A launch left one behind. Inspect the leftover, then `docker rm -f` it |
 | `the token file … is readable by others` | `chmod 600` the file |

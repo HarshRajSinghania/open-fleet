@@ -90,7 +90,7 @@ def write_stub(tmp, *, receipt=None, request_show=None, task_create=None,
 def run_spawn(args, env_extra=None, **stub_kw):
     with tempfile.TemporaryDirectory() as tmp:
         log, env_rec = write_stub(tmp, **stub_kw)
-        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "SETTLE_SECS": "0", "ORCA_CLI_COMMAND": "orca"}
+        env = {"PATH": f"{tmp}:/usr/bin:/bin", "SP": tmp, "HOME": tmp, "SPAWN_ROOT_WAIT_SECS": "0", "SETTLE_SECS": "0", "ORCA_CLI_COMMAND": "orca"}
         env.update(env_extra or {})
         p = subprocess.run(["bash", str(SPAWN), *args], env=env,
                            capture_output=True, text=True)

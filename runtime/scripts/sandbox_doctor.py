@@ -286,6 +286,61 @@ def _backend_findings(backend: str, doc: dict) -> list[str]:
     return issues
 
 
+def _dicts(node, skip=()):
+    """Every dict in `node`, at any depth, never descending into a value whose (normalised) key
+    is in `skip`."""
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            yield item
+            stack.extend(v for k, v in item.items() if _norm(k) not in skip)
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+
+
+def _norm(key) -> str:
+    """A key as the reader compares it: case-folded, without `-`, `_`, `.` or spaces, so
+    `prelaunchPlacementBound`, `Ephemeral` and `recipe-id` are the names they look like."""
+    return re.sub(r"[-_.\s]", "", str(key).lower())
+
+
+class DuplicateKey(ValueError):
+    """A JSON object that names one key twice, as written or in two spellings the reader takes as
+    one (`id`/`ID`, `recipeId`/`recipe-id`): which value holds would be an accident of order."""
+
+
+def _no_duplicates(pairs):
+    out, spelled = {}, {}
+    for key, value in pairs:
+        norm = _norm(key)
+        if key in out or norm in spelled:
+            raise DuplicateKey(f"{spelled.get(norm, key)!r} and {key!r}")
+        out[key] = value
+        spelled[norm] = key
+    return out
+
+
+def _parse(raw):
+    """The transcript as JSON, refusing a repeated key (W4-10 re-attack: `"ephemeral": false ...
+    "ephemeral": true` read as true, and --require-placement passed). Raises DuplicateKey for
+    that, ValueError for text that is not JSON."""
+    return json.loads(raw, object_pairs_hook=_no_duplicates)
+
+
+# The transcript's own placement claims (W4-10): read at the top level, and a report that says
+# anything but true for one of them, in any spelling or at any level — the report's own, and every
+# envelope's around it (_envelope_findings) — contradicts itself.
+SELF_CLAIMS = ("ephemeral", "prelaunch_placement_bound")
+_SELF_CLAIMS_NORM = frozenset(_norm(c) for c in SELF_CLAIMS)
+
+
+def _contradicted_claims(doc: dict) -> list[str]:
+    return [f"{key}={value!r} contradicts {_norm(key)}=true"
+            for d in _dicts(doc)
+            for key, value in d.items() if _norm(key) in _SELF_CLAIMS_NORM and value is not True]
+
+
 def portable_findings(doc: dict) -> list[str]:
     """Validate portable sandbox recipe invariants (#585) when `backend` is specified."""
     if not isinstance(doc, dict) or "backend" not in doc:
@@ -316,6 +371,7 @@ def portable_findings(doc: dict) -> list[str]:
                 issues.append(reason)
     if doc.get("prelaunch_placement_bound") is not True:
         issues.append("prelaunch_placement_bound=true required")
+    issues.extend(_contradicted_claims(doc))
     issues.extend(_backend_findings(backend, doc))
     return list(dict.fromkeys(issues))
 
@@ -359,6 +415,57 @@ def findings(obj):
     return found
 
 
+# Fields that NAME a recipe (W4-10), matched by normalised key (_norm: `recipe-id`, `recipeId`,
+# `Recipe_ID` are one name): a string, or an object whose id (else recipeId, else name) is one.
+RECIPE_FIELDS = ("recipe", "recipeid", "recipename")
+_RECIPE_OBJECT_IDS = ("id", "recipeid", "name")
+# Generic identity fields, consulted only by a report that has no recipe field at all, and never
+# inside a check, a finding, an error or a mount: a check's id is the check's, not the recipe's.
+_ID_FIELDS = ("id", "name")
+_NOT_IDENTITY = frozenset({"checks", "failures", "warnings", "errors", "error", "problems", "issues",
+                           "mounts", "volumes", "bindmounts", "binds", "credentialmounts"})
+
+
+def _declaration(value):
+    """The recipe ids one recipe field declares, or None when its value declares nothing: a
+    non-empty string, a non-empty list of them, or an object whose first present id key
+    (id, recipeId, recipe_id, name) holds one. null, a number, a bool, an empty value, a list
+    holding anything else, an object without a usable id: none of these is a declaration."""
+    if isinstance(value, str):
+        return [value] if value.strip() else None
+    if isinstance(value, list):
+        return list(value) if value and all(isinstance(v, str) and v.strip() for v in value) else None
+    if isinstance(value, dict):
+        low = {_norm(k): v for k, v in value.items()}
+        key = next((k for k in _RECIPE_OBJECT_IDS if k in low), None)
+        ident = low.get(key) if key else None
+        return [ident] if isinstance(ident, str) and ident.strip() else None
+    return None
+
+
+def recipe_declarations(doc) -> tuple[list[str], list[str]]:
+    """(declared ids, malformed fields) of a JSON transcript, read from recipe fields at any depth,
+    never from a dict key or any other value. A recipe field that is present but declares nothing
+    is MALFORMED, not absent (Codex review of W4-10): dropping it let the `id`/`name` fallback
+    certify a recipe from an unrelated check id."""
+    declared, malformed = [], []
+    for d in _dicts(doc):
+        for key, value in d.items():
+            if _norm(key) not in RECIPE_FIELDS:
+                continue
+            ids = _declaration(value)
+            if ids is None:
+                malformed.append(f"{key}={value!r}"[:80])
+            else:
+                declared.extend(ids)
+    return declared, malformed
+
+
+def declared_recipes(doc) -> list[str]:
+    """The recipe ids a JSON transcript DECLARES (recipe_declarations, malformed fields aside)."""
+    return recipe_declarations(doc)[0]
+
+
 def names_recipe(doc, raw, recipe):
     """Whether the transcript names THIS recipe — the whole id, not a piece of a longer one.
 
@@ -366,41 +473,138 @@ def names_recipe(doc, raw, recipe):
     about `prod` (#298). Recipe ids are drawn from [A-Za-z0-9._-], so in JSON the
     exact answer is a string VALUE equal to the id, and in plain text it is the id bounded by
     characters an id cannot contain — the reading `grep -F -x` gives a line, applied to a token.
+
+    In JSON the value must sit in a recipe FIELD (W4-10): this used to search every dict key and
+    every string value, so `{"web": {…}}` or `{"image": "web"}` named `web` even beside
+    `"recipe": "other"`. Recipe fields are authoritative — every one must name this recipe — and
+    a portable backend's placement claim must say which recipe it binds. Only a report with no
+    recipe field at all (Orca's doctor shape is source-, not binary-witnessed) falls back to its
+    `id`/`name` fields outside checks, findings and mounts, and every one of those must be the
+    id; a recipe field that is present but malformed names no recipe, and nothing falls back past
+    it. The fallback never authorizes a launch: on Orca danger is refused outright, and a portable
+    backend must declare its recipe in a recipe field.
     """
     want = recipe.lower()
     if doc is not None:
-        stack = [doc]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, str):
-                if node.lower() == want:
-                    return True
-            elif isinstance(node, dict):
-                stack.extend(node.keys())
-                stack.extend(node.values())
-            elif isinstance(node, (list, tuple)):
-                stack.extend(node)
-        return False
+        found, malformed = recipe_declarations(doc)
+        if malformed:
+            return False
+        declared = {d.lower() for d in found}
+        if declared:
+            return declared == {want}
+        report = _portable_doc(doc)
+        if isinstance(report, dict) and str(report.get("backend") or "").strip().lower() in PORTABLE_BACKENDS:
+            return False
+        named = {value.lower() for d in _dicts(doc, _NOT_IDENTITY) for key, value in d.items()
+                 if _norm(key) in _ID_FIELDS and isinstance(value, str)}
+        return named == {want}
     return re.search(r"(?<![A-Za-z0-9._-])" + re.escape(recipe) + r"(?![A-Za-z0-9._-])",
                      raw, re.IGNORECASE) is not None
 
 
+MAX_WRAPPERS = 16
+
+
+def _unwrap(doc):
+    """(the doctor report proper, every envelope around it, outermost first, each without its
+    `result`). `orca_cli.py` wraps a non-Orca provider's answer in an `{"ok": …, "result": {…}}`
+    envelope, and a wrapper can be wrapped again: reading only the top level, or only one level
+    down, skipped every portable isolation check on exactly the runtimes that need them (Codex
+    round 6: a report wrapped twice was read as its middle wrapper, which names no backend)."""
+    wrappers = []
+    while _wrapper(doc) and len(wrappers) < MAX_WRAPPERS:
+        wrappers.append({k: v for k, v in doc.items() if k != "result"})
+        doc = doc["result"]
+    return doc, wrappers
+
+
+def _wrapper(doc) -> bool:
+    return isinstance(doc, dict) and "backend" not in doc and isinstance(doc.get("result"), dict)
+
+
+def _too_deep(parsed) -> bool:
+    """Whether the report sits inside more than MAX_WRAPPERS envelopes. Reading stops there, so
+    what it would take for the report is still a wrapper (Codex round 7: 17 envelopes around a
+    privileged report read as clear): a REFUSAL, never a report."""
+    return _wrapper(_portable_doc(parsed))
+
+
 def _portable_doc(doc):
-    """The doctor report proper. `orca_cli.py` wraps a non-Orca provider's answer in an
-    `{"ok": …, "result": {…}}` envelope; reading only the top level would skip every
-    portable isolation check on exactly the runtimes that need them."""
-    if isinstance(doc, dict) and "backend" not in doc and isinstance(doc.get("result"), dict):
-        return doc["result"]
-    return doc
+    """The doctor report proper, out of every envelope around it (_unwrap)."""
+    return _unwrap(doc)[0]
+
+
+def _envelope_findings(parsed) -> list[str]:
+    """What the envelopes around the report say against it, at EVERY wrapping level and at any
+    depth inside each (Codex round 6: `{"metadata": {"ephemeral": false}, "result": <report>}`
+    passed, since only the outer object's own keys were read): its `ok`, `error` or any finding,
+    and a placement claim in any spelling that is not true."""
+    out = []
+    for outer in _unwrap(parsed)[1]:
+        out += findings(outer) + _contradicted_claims(outer)
+    if _too_deep(parsed):
+        out.append(f"the report is wrapped more than {MAX_WRAPPERS} levels deep and was not read")
+    return out
+
+
+TOO_DEEP = ("doctor output is nested too deep to read, far more than 16 levels deep: refused, never "
+            "read as a report")
+
+
+def _shape_findings(parsed) -> list[str]:
+    """What is wrong with the SHAPE of a JSON transcript (Codex round 8). The doctor's documented
+    output is one report object, optionally inside `{ok, result}` envelopes (_unwrap). Anything
+    else is an unsupported container and refused, never assessed: an array or a scalar at the top,
+    a list as the report's `result`, and a report's `backend` anywhere but at the top of the report
+    proper, or spelt otherwise (`[<report>]` was read as a report naming no backend, so a privileged
+    docker report inside an array skipped every isolation check and read as clear)."""
+    if not isinstance(parsed, dict):
+        return [f"the doctor output is a JSON {type(parsed).__name__}, not a report object"]
+    if _too_deep(parsed):  # the report was never reached: say that, not what lies past the limit
+        return [f"the report is wrapped more than {MAX_WRAPPERS} levels deep and was not read"]
+    report = _portable_doc(parsed)
+    out = []
+    if isinstance(report.get("result"), list):
+        out.append("the report's `result` is a list: a container of reports, not a report")
+    for d in _dicts(parsed):
+        for key in d:
+            if _norm(key) == "backend" and (d is not report or key != "backend"):
+                out.append(f"a report field {key!r} outside the report proper (a nested or misspelt "
+                           "`backend`): an unsupported report container")
+    return list(dict.fromkeys(out))
+
+
+# The first token of a JSON value inside an array, by the JSON grammar: an object, an array, a
+# string, an empty array's close, or a number or literal that ends at a delimiter (whitespace, a
+# comma, the array's close, or the end of the text). `[PASS]`, `[timestamp]`, `[12:00:01]` and
+# `[2026-10-28]` open plain-text lines, not arrays.
+_ARRAY_FIRST = re.compile(r"""\[\s*(?:[{\["\]]|(?:-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"""
+                          r"""|true|false|null)(?=[\s,\]]|\Z))""")
+
+
+def _looks_like_json(raw) -> bool:
+    """A transcript that opens as a JSON document by the JSON grammar's first token (a byte-order
+    mark and whitespace aside): `{`, or `[` followed by the first token of a value or by `]`
+    (_ARRAY_FIRST). One that then does not parse is refused (Codex rounds 7 and 9): read as plain
+    text it skipped every structural and isolation check, so a truncated report of a privileged
+    container, `[true, {…` included, read as clear."""
+    head = raw.lstrip().lstrip("\ufeff").lstrip()
+    return head[:1] == "{" or _ARRAY_FIRST.match(head) is not None
 
 
 def placement_bound(raw) -> bool:
     """Whether the transcript is a PORTABLE backend that binds the worker's placement before
     launch. Orca's own doctor proves recipe health only, so it never answers yes here."""
     try:
-        doc = _portable_doc(json.loads(raw))
-    except ValueError:
+        return _placement_bound(_parse(raw))
+    except (ValueError, RecursionError):  # DuplicateKey, a report too deep to read: binds nothing
         return False
+
+
+def _placement_bound(parsed) -> bool:
+    if _shape_findings(parsed) or _envelope_findings(parsed):
+        return False
+    doc = _portable_doc(parsed)
     if not isinstance(doc, dict):
         return False
     backend = str(doc.get("backend") or "").strip().lower()
@@ -410,17 +614,47 @@ def placement_bound(raw) -> bool:
 
 def assess(raw, recipe):
     """(clear, reason, exposes_host). `exposes_host` marks a credential/isolation finding — the
-    exit-2 class — apart from an ordinary fail/warn."""
+    exit-2 class — apart from an ordinary fail/warn. Output nested deeper than the reader goes is
+    refused (Codex round 7), however it would otherwise have read."""
     try:
-        doc = _portable_doc(json.loads(raw))
-    except ValueError:
-        doc = None
+        return _assess(raw, recipe)
+    except RecursionError:
+        return False, TOO_DEEP, False
 
-    if not names_recipe(doc, raw, recipe):
+
+def _assess(raw, recipe):
+    is_json = True  # `null` parses to None too: whether it is JSON is not whether parsed is None
+    try:
+        parsed = _parse(raw)
+    except DuplicateKey as exc:
+        return False, (f"doctor output names one key twice in one object ({exc.args[0]}): it "
+                       "repeats the key or spells it two ways, and which value holds would be an "
+                       "accident of order, not the doctor's"), False
+    except ValueError as exc:
+        if _looks_like_json(raw):
+            return False, (f"doctor output opens as JSON but does not parse ({str(exc)[:80]}): "
+                           "refused, never read as plain text"), False
+        parsed, is_json = None, False
+    if is_json:  # past this, a JSON transcript is a dict: every `parsed is not None` below is JSON
+        shape = _shape_findings(parsed)
+        if shape:
+            return False, "unsupported doctor output shape: " + "; ".join(shape[:3]), False
+    doc = _portable_doc(parsed) if parsed is not None else None
+
+    envelope = _envelope_findings(parsed)
+    if envelope:
+        return False, "the envelope around the doctor report contradicts it: " + ", ".join(envelope[:4]), False
+    malformed = recipe_declarations(parsed)[1] if parsed is not None else []
+    if malformed:
+        return False, ("doctor output carries a malformed recipe field (" + "; ".join(malformed[:3])
+                       + "): a recipe field that names no recipe is refused, never read past"), False
+    if not names_recipe(parsed, raw, recipe):
         return False, f"doctor output does not name recipe {recipe!r}", False
 
     if doc is not None:
         isolation = portable_findings(doc) if isinstance(doc, dict) else []
+        if not isolation:  # a report naming no portable backend may not contradict itself either
+            isolation = _contradicted_claims(doc)
         if isolation:
             return False, "sandbox isolation: " + "; ".join(isolation[:4]), True
         bad = sorted(set(findings(doc)))
@@ -460,7 +694,9 @@ def main(argv=None):
         return 1
     clear, reason, exposes_host = assess(raw, recipe)
     if not clear:
-        print(reason, file=sys.stderr)
+        # Inert and on one line (Codex round 2, swept): a reason can quote a transcript key raw,
+        # and _norm folds whitespace out of keys, so a line break in one reached stderr.
+        print("".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in reason), file=sys.stderr)
         return 2 if exposes_host else 1
     if require_placement and not placement_bound(raw):
         print("no portable sandbox backend in this transcript binds the worker's placement "

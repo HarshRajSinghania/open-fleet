@@ -314,8 +314,8 @@ def _resolve_provider(runtime: str) -> str:
     """Canonical provider name for `runtime`, through dispatch's own resolver.
 
     `active_provider_name` maps `local-posix` to `posix` and resolves `auto`
-    exactly as dispatch does (resolve_orca_binary: ORCA_CLI_COMMAND /
-    OPEN_FLEET_CLI_COMMAND, then ORCA_DEV_REPO_ROOT -> orca-dev, then orca-ide
+    exactly as dispatch does (resolve_orca_binary: OPEN_FLEET_CLI_COMMAND, else
+    ORCA_CLI_COMMAND, then ORCA_DEV_REPO_ROOT -> orca-dev, then orca-ide
     on Linux / orca elsewhere — and only a binary actually on PATH counts).
     Raises the registry's ProviderError for an unknown name.
     """

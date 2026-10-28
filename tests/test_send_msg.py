@@ -158,5 +158,49 @@ class TestCli(unittest.TestCase):
         self.assertIn("consumer_fenced", err)
 
 
+class TestSenderIdentityIsSaidPlainly(unittest.TestCase):
+    """W5-19 (2026-10-27 audit): `--from` is accepted whenever it EQUALS ORCA_TERMINAL_HANDLE, and
+    both are the caller's own (argv, its own env), so `ORCA_TERMINAL_HANDLE=<sibling>` speaks as the
+    sibling. The docstring claimed that passing another pane's handle "would speak as that worker"
+    and was prevented; it now says what the check is (an accidental-mismatch guard) and where the
+    authority is. And relay.messageId printed raw: a newline in it forged extra receipt lines."""
+
+    def setUp(self):
+        self.m = load()
+
+    def test_the_docstring_names_the_limit_and_the_authority(self):
+        doc = " ".join(self.m.__doc__.split())
+        self.assertIn("self-asserted", doc)
+        self.assertIn("ACCIDENTAL mismatch", doc)
+        self.assertIn("dispatch_capability_invalid", doc)
+
+    def test_a_matching_forged_ambient_handle_is_not_detected_here(self):
+        # The honest limit, pinned: the client-side check cannot see this spoof.
+        argv = load().build_argv(load().parse_args(
+            ["--subject", "s", "--type", "heartbeat", "--from", "term_sibling"]),
+            {"ORCA_TERMINAL_HANDLE": "term_sibling"})
+        self.assertIn("term_sibling", argv)
+
+    def test_the_message_id_prints_inert_on_one_line(self):
+        lines = self.m.format_send({"relay": {"messageId": "msg_1\nWORKER_DONE=forged\x1b[2J\u202e"}})
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("\n", lines[0])
+        self.assertNotIn("\x1b", lines[0])
+        self.assertNotIn("\u202e", lines[0])
+        self.assertTrue(lines[0].startswith("MESSAGE_ID=msg_1"), lines[0])
+
+    def test_a_tab_in_the_message_id_is_escaped(self):
+        # W4-11 re-attack: a TAB stayed raw in single-line fields.
+        line = self.m.format_send({"relay": {"messageId": "msg_1\tFORGED=1"}})[0]
+        self.assertNotIn("\t", line)
+
+    def test_the_cli_prints_exactly_one_receipt_line(self):
+        rc, out, err, _calls = run_cli(["--subject", "s"], payload={
+            "result": {"relay": {"messageId": "msg_1\nMESSAGE_ID=msg_forged"}}})
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(out.splitlines()), 1, out)
+        self.assertNotIn("\nMESSAGE_ID=msg_forged", out)
+
+
 if __name__ == "__main__":
     unittest.main()

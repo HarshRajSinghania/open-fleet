@@ -44,7 +44,7 @@ The remaining reference sections cover:
   [sending](#send_msgpy), [decision log](#decisionspy), [human asks](#hitl_askpy),
   [ask/reply loop](#hitl-looptemplatesh), [gate batches](#gate-batchpy),
   [one-way door registry](#one-way-doorsjson).
-- **Workers and workspace operations:** [spawn](#spawn_workersh), [workers](#worker_opspy),
+- **Workers and workspace operations:** [spawn](#spawn_workersh), [spawn identity](#spawn_identitypy), [workers](#worker_opspy),
   [tasks](#task_opspy), [terminals](#terminal_opspy), [worktrees](#worktree_opspy),
   [working-tree fingerprints](#wtreesh), [session search](#search_sessionspy) and its
   [episodic-hint provenance](#hint_provenancepy),
@@ -234,7 +234,7 @@ unreadable `SKILL.md` also exits 1, with a traceback) · 2 usage. An `audit --ro
 ## `check_reply.py`
 
 Fail-closed invoker for `check` and `reply` — pm.py parses the inbox, this issues
-it. Source `runtime/scripts/check_reply.py:1-22`; behavior pinned by
+it. Source `runtime/scripts/check_reply.py:1-24`; behavior pinned by
 `tests/test_check_reply.py`.
 
 Usage: `check_reply.py {check,reply} ...`
@@ -253,18 +253,26 @@ Each message prints as a `--- <id> (<type>) from <handle>` block with `SUBJ:` an
 the body (capped at 2000 chars with a truncation marker); malformed entries skip
 with a stderr WARN. Consuming reads show what they consumed — a later check may
 never see these messages again. Every message field (id, type, sender, subject, body) passes
-through pm.py's `_visible`, so control and invisible characters render inertly, never actively;
-the `COUNT=… DELIVERY=… TIMED_OUT=…` and `REPLIED=… FOR=…` receipt lines print the runtime's ids
-and your `--id` as-is.
+through pm.py's `_visible`, so control and invisible characters render inertly, never actively.
+The single-line fields (id, type, sender, `SUBJ`, and the runtime's ids and your `--id` on the
+`COUNT=… DELIVERY=… TIMED_OUT=…` and `REPLIED=… FOR=…` receipt lines) go through `_visible_line`,
+newline and tab escaped too. A body's continuation lines are indented, and so is a first line
+that starts like any line a fleet printer writes at column 0 — a `KEY=` receipt line, a `---`
+header or `===` rule, a `(…)`/`[…]` marker, or this printer's `SUBJ: ` — so no body line can
+start one; a first line of plain prose keeps its column (W5-19, W4-11, Codex round 2).
 
 Exits: 0 checked/replied · 1 runtime/refusal/receipt failure · 2 usage or
 validation refusal (nothing invoked).
 
 > Why: at most one read mode, because the handler refuses more — and on older
 > runtimes an unknown `--peek` strips while `--unread` still marks read, so a
-> combined read would destroy what it meant to preview. Naming the sender is an
-> identity claim: a wrong `--from` speaks as a sibling worker, so disagreement with
-> the ambient handle refuses rather than misattributes.
+> combined read would destroy what it meant to preview. A `--from` that disagrees
+> with the ambient handle refuses rather than misattributes, but both are the
+> caller's own, so this catches an accidental mismatch only: the sender is
+> self-asserted here and the runtime is the authority (W5-19). Printed receipt
+> fields (`DELIVERY`, `REPLIED`, header parts, `SUBJ`) are inert and on one line,
+> and no body line stands at column 0 in a printer line's shape, so a message cannot
+> forge a `--- <id> (<type>) from <handle>` header or another receipt line.
 
 ## `decisions.py`
 
@@ -609,9 +617,9 @@ Exits: n/a (library).
 
 ## `egress.py`
 
-Content-free, hash-chained receipts for everything the fleet sends off-repo. One JSON
-object per line in `.orca/egress.jsonl` (mode 0600), appended BEFORE the send. Source
-`runtime/scripts/egress.py:1-76`; behavior pinned by `tests/test_egress.py`.
+Content-free, hash-chained receipts for everything the fleet sends off-repo. One canonical JSON
+object per line in `<repository root>/.orca/egress.jsonl` (mode 0600), appended BEFORE the send.
+Source `runtime/scripts/egress.py:1-101`; behavior pinned by `tests/test_egress.py`.
 
 Status: doctrine names it (`egress.py write ... && <send>`); since #561 the deny-hook
 refuses an unreceipted `gh` write wherever it is wired, and run close anchors the
@@ -623,35 +631,81 @@ appends a receipt before each merge it sends (#599), since the hook never sees t
 
 Usage: `egress.py [--ledger PATH] <write|verify|head|grants> ...`
 
-Subcommands: `write`, `verify`, `head` (verify, then print the head to anchor),
-`grants`.
+Subcommands: `write` (verify, append, print the receipt's id), `verify`, `head` (verify, then
+print the head to anchor), `grants` (verify, with `verify`'s anchors, then list the consents).
 
 Flags: `--ledger` (default `$OPEN_FLEET_EGRESS_LEDGER`, legacy `$ORCA_EGRESS_LEDGER`, else
-`.orca/egress.jsonl`). `write` takes
-`--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file`,
+`.orca/egress.jsonl` under the repository root — the nearest directory at or above the working
+directory holding `.git`; outside a repository the default refuses, exit 3, and so does a root
+nested inside another repository — a submodule, a vendored repository or a planted `.git` — unless
+it is a linked worktree of it, whose own ledger `write` then names on stderr; a `.git` file counts
+as a linked worktree only when git's back-link, `.git/worktrees/<name>/gitdir`, names it again). A
+ledger named by flag or variable that is not the repository's own (the ledger of a nested root
+included), or reached through a symlinked directory, is reported on `write`'s stderr, and `verify`
+prints the absolute path and where it came from. Only the ledger's own directory is
+ever created. `write` takes
+`--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file` (streamed),
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
-else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger) and
-`--expect-ancestor` (close-to-close, appends tolerated); `grants` takes `--json`.
-`verify` also fails any record whose field carries a line break: `id` hashes newline-joined
-`key=value` lines, so such a field makes the encoding ambiguous.
+else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger),
+`--expect-ancestor` (repeatable; close-to-close, appends tolerated) and `--require-receipts` (a
+close that expects receipts); `grants` takes `--json` and the same `--expect-head` and
+`--expect-ancestor`, checked the same way (a rewrite since an anchor exits 3); without either it
+says `UNANCHORED` (on stdout, or on stderr beside `--json`), as `verify` does.
+Text fields are printable ASCII; `--consent` names a grant (letters, digits, `` ._:/#()@+,=-``,
+starting with a letter or digit).
 
-Record fields: `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
-`consent`, `prev` — never the payload text (sha256 + byte count + kind only). `prev`
-chains to the previous raw line; `id` names the line and its chain position. `verify`
-recomputes the chain and prints the head digest; pass `--expect-head` with a head anchored
-off the writer to catch a wholesale rewrite.
+Record (format v2): `v`, `id`, `ts`, `sink`, `host`, `payload_class`, `bytes`, `payload_sha256`,
+`consent`, `prev` — never the payload text (sha256 + byte count + kind only). `id` is the sha256
+of the record's canonical serialisation without `id`; a line must BE the canonical serialisation
+of exactly those keys, so an extra key, a re-spacing, a type swap, a blank line or a missing final
+newline is TAMPER — on the last line as on any other (2026-10-27 audit, W5-05). `prev` chains to
+the previous raw line. `write` reads the ledger through the descriptor it holds locked, refuses
+(exit 3, before the send) any ledger `verify` would refuse, and fsyncs the receipt — and a new
+ledger's directory — before printing the id.
 
-Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, or chain broken).
+Anchors: the head digest `head` prints, and the `id` each `write` prints, each name one line byte
+for byte and, through `prev`, every line before it. Keep them off the writer (the loop-log, a
+ledger row) and pass them back: `--expect-ancestor` requires each still in the chain,
+`--expect-head` requires the ledger to end there. A receipt written since the last close is bound
+only by the id its `write` printed — the close head alone cannot see a rewrite after it. No
+receipts — no ledger file ("no ledger file there") or an empty one — is never called an intact
+chain: plain `verify` exits 0 and says `NO RECEIPTS`, `verify --require-receipts` (the close's
+form) exits 4 unless a sealed empty head (`--expect-head "(empty)"`) says none were expected, and
+any anchor naming a receipt against it is TAMPER (exit 3).
+
+Migration: a pre-v2 ledger (no `v` key) keeps verifying while each legacy line is exactly what the
+v1 writer produced (its keys, canonical bytes, types and v1 id), which binds it as fully; v2
+receipts chain onto it, and a legacy line after a v2 one is refused. A legacy line the v1 writer
+could not have produced was never bound and now reads as TAMPER — so does one whose text fields
+are not printable ASCII (a legacy consent carrying terminal escapes, 2026-10-27 re-attack).
+
+Recovery from a broken ledger. One appended byte that `verify` refuses stops every receipted send —
+each `egress.py write … &&`, and `merge_queue.py`'s merges and branch deletions — until a human
+acts. That is the fail-closed design, not a fault to route around, and the procedure is:
+1. *Inspect.* `egress.py verify` names the first broken line and why; read it and every line
+   after it. Do not send meanwhile.
+2. *Preserve, never edit.* Move the ledger aside whole, keeping it 0600:
+   `mv .orca/egress.jsonl .orca/egress.jsonl.broken-<UTC timestamp>`. Never truncate, re-chain or
+   correct a line in place: a repaired ledger cannot be told from a forged one.
+3. *Record.* In the run's loop-log (or `docs/DECISIONS.md` for a standing ledger) write the moved
+   file's name and sha256, the head digest of its last good line, the broken line's number and
+   reason, the receipt ids the coordinator holds for it, who moved it and why. The close that
+   follows reads the old file with those ids as anchors (`--ledger <moved file>`) and counts the
+   rotation as a RED leg until that record is reviewed.
+4. *Resume.* The next `write` starts a new chain at genesis; until it does, the close verifies the
+   new ledger without `--require-receipts`, and the next close anchors from the new chain's head.
+
+Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, an anchor missing, or a ledger that is not a regular file — a FIFO there is refused at once by every command, never waited on) · 4 `verify --require-receipts` found no receipts.
 
 > Why: the integrity inventory hashes what a run produced, but nothing recorded what it
 > sent — this ledger is the second half. Receipts are content-free (hash + count + kind)
 > because the ledger is forensic observability, not an exfiltration control: it records
 > attempted egress so an accident is auditable, while anything with a shell can still
-> send without one. The chain (`runtime/scripts/egress.py:record_id` over fixed
-> `runtime/scripts/egress.py:FIELDS`) proves continuity with a genesis, never with THE
-> genesis — a rewritten history links correctly — so `verify` prints the head
-> (`runtime/scripts/egress.py:head_digest`) for anchoring off the writer, and unanchored
-> output says so rather than reading as a clean bill.
+> send without one. The chain (`runtime/scripts/egress.py:record_id` over the canonical record,
+> `runtime/scripts/egress.py:FIELDS` in fixed order) proves continuity with a genesis, never with
+> THE genesis — a rewritten history links correctly — so `verify` prints the head
+> (`runtime/scripts/egress.py:head_digest`) and `write` the id for anchoring off the writer, and
+> unanchored output says so rather than reading as a clean bill.
 
 ## `first_run.py`
 
@@ -678,6 +732,14 @@ operator's real harness. That run spends, and its receipt reads
 `live-unreviewed` until a maintainer binds it into `docs/runs/`. A live run refuses at `prereqs`
 when the run's PATH, which puts the interpreter's directory first, resolves the harness to a
 different file than the operator's own PATH does (`harness_shadow`).
+Every command of a run, the worker included, gets an ALLOWLISTED environment
+(`runtime/scripts/first_run.py:SANDBOX_ENV_ALLOW`: `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`,
+the POSIX/glibc locale names `LC_ALL`, `LC_CTYPE`, … `LC_TELEPHONE` by exact name, never an `LC_` prefix, `TZ`, `TERM`, `TMPDIR`, `DISABLE_AUTOUPDATER`, `PYTHONDONTWRITEBYTECODE`) plus the run's own
+settings, never the operator's whole environment (W5-20): an exported `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN` or `AWS_*` cannot reach the worker or the code it runs, the
+guarantee the container lane already gave. `--worker live` needs no credential from it: its
+`claude` is the live harness's wrapper, whose broker holds the token. Inert runs also get a
+private `HOME`.
 
 `ro` (the default, the review-it shape) takes the report from the transcript and commits it on
 the coordinator's evidence branch. A ro unit settles in one of two ways. posix can relay the
@@ -1375,7 +1437,7 @@ What a worker DOES with fenced text is graded separately, on tool events and git
 ## `hint_provenance.py`
 
 Provenance and currency for episodic memory hints (#605): is a historical finding still true
-against the live source? Import-only library used by `search_sessions.py --episodic-hint`.
+against the live source? Import-only library used by `search_sessions.py --episodic-hint`. Its checks run inside `search_sessions.py`'s contained scan, on each matched record whole.
 Source `runtime/scripts/hint_provenance.py:1-32`; behavior pinned by
 `tests/test_hint_provenance.py` and the replay corpus `tests/fixtures/hint-replay.json`
 (runner: `scripts/hint_replay.py`).
@@ -1387,7 +1449,7 @@ API: `LiveSource(repo, rev=None)`, `Archive(runs_dir)`, `assess`, `supersede`, `
 | Label | Reasons | Current mode |
 |---|---|---|
 | `CURRENT` | none: the source revision is in the live repo and an ancestor of it, and nothing below fired | shown |
-| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `scope-unverifiable:<p>`, `tests-unverifiable:<t>`, `dependencies-changed:<file>`, `dependencies-unverifiable:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `provenance-unreadable` | shown, labelled, never upgraded |
+| `UNKNOWN` | `no-live-source`, `no-revision`, `revision-malformed`, `revision-not-in-live-repo`, `scope-unresolved`, `scope-not-at-source:<p>`, `scope-unverifiable:<p>`, `tests-unverifiable:<t>`, `dependencies-changed:<file>`, `dependencies-unverifiable:<file>`, `contradicted-by:<run>/<unit>`, `artifact-untracked`, `artifact-unversioned`, `artifact-missing:<f>`, `artifact-unreadable:<f>`, `artifact-irregular:<f>`/`:manifest`, `artifact-oversized:<f>`/`:manifest`, `provenance-unreadable` | shown, labelled, never upgraded |
 | `STALE` | `path-changed:<p>`, `path-deleted:<p>`, `path-renamed:<old>-><new>`, `symbol-changed:<p>::<s>`, `symbol-gone:<p>::<s>`, `tests-changed:<t>`, `divergent-branch`, `ahead-of-live`, `artifact-modified:<f>`/`:manifest` | suppressed |
 | `SUPERSEDED` | `superseded-by:<run>/<unit>` (a strictly newer record of the same unit with the opposite outcome, or one listing it in `supersedes` — only a record whose own revision and artifact checks held may supersede), `current-evidence:<p>=<outcome>` | suppressed |
 
@@ -1420,7 +1482,14 @@ assume-unchanged or skip-worktree flag or a stale stat cache cannot hide an edit
 alone are not one — or an `artifacts[]` file no longer hashes to its recorded sha256 (paths confined
 to the archive root); an archive outside git has no committed bytes to check, so every entry it
 yields is `artifact-unversioned`, and an evidence file that cannot be read leaves only its own
-entry `artifact-unreadable` (an unreadable live file, `provenance-unreadable`). Newer means descendant by ancestry when the live repo has both revisions,
+entry `artifact-unreadable` (an unreadable live file, `provenance-unreadable`). Every file the hint
+reads in its own process -- the re-read of a matched manifest, an evidence file it hashes, a live file
+it compares -- is opened without following a final link and without blocking, must be a regular
+file by its descriptor, and is bounded: a manifest or live file is held only up to
+`MAX_READ_BYTES` (64 MiB), an evidence file hashed as it streams up to `MAX_HASH_BYTES` (1 GiB). A
+manifest or evidence file refused that way is `artifact-irregular:<f>`/`:manifest` or
+`artifact-oversized:<f>`/`:manifest` (UNKNOWN); a live file refused that way is unverifiable, as an
+unreadable one is. Newer means descendant by ancestry when the live repo has both revisions,
 else later commit time, else — equal commit times, as for two runs at one revision — later
 claimed time; two contradicting records of one unit that nothing orders are both
 `contradicted-by` the other.
@@ -1696,7 +1765,12 @@ and `ack` for each unit. `drain` is that whole turn, ending in `release`. What e
   deleted, as a compare-and-swap, only when GitHub merged that PR into BASE and reports its head
   branch in the queue's own repository: a fork's branch, or a same-named branch of the queue's
   repository behind a cross-repository PR, is never touched. The deletion is fenced and
-  egress-receipted like the merge, and its push inherits the merge boundary's lock as the merge's
+  egress-receipted like the merge. Each egress receipt's id is kept off the ledger, as an
+  `egress_receipt` in the queue's own receipts (`receipts`), on stderr, and as `egressReceipt` in a
+  merge's result, so run close can anchor it; a ledger routed by `$OPEN_FLEET_EGRESS_LEDGER` is said
+  on stderr, and the default is the one `egress.py` picks — the repository root's, wherever under
+  it `--repo-dir` points, and none (the send refused) under a nested `.git` (2026-10-27 re-attack,
+  W5-05/W5-03). Its push inherits the merge boundary's lock as the merge's
   send does, so a conductor killed mid-deletion holds the boundary until that push ends and the
   next owner records the branch as gone. Owed teardowns are read only once the boundary is held,
   and each deletion is claimed (`deleting`) in a fenced transaction that re-reads the entry just
@@ -1742,7 +1816,7 @@ or refused input · 3 not the owner (fenced, lease held, unknown token).
 ## `orca_cli.py`
 
 Resolves the Orca CLI command name once, for every script that talks to Orca. Source
-`runtime/scripts/orca_cli.py:1-46`; behavior pinned by `tests/test_orca_cli.py`, which also
+`runtime/scripts/orca_cli.py:1-53`; behavior pinned by `tests/test_orca_cli.py`, which also
 fails on any script under `runtime/scripts/` that spells the executable itself.
 
 Usage: `orca_cli.py [--path | --version | <domain> ARGS…]`; library `from orca_cli import resolve, run_json`.
@@ -1763,9 +1837,24 @@ sessions it manages; the test suite points it at a stub) → `orca_cli.py` itsel
 `OPEN_FLEET_RUNTIME`/`ORCA_FLEET_RUNTIME` selects a non-Orca runtime → `orca-dev` when
 `ORCA_DEV_REPO_ROOT` is set → `orca-ide` on Linux and WSL → `orca` elsewhere. Resolution never consults PATH; `--path` additionally
 looks the resolved name up and fails when it is absent.
+A configured command must name ONE executable — a bare name or an absolute path; a command line
+(`python3 /tmp/orca.py`), an option-shaped value, a cwd-relative path or a control character is
+refused by name, "(it must name one executable, without arguments)", and `run_json` also refuses
+a configured name that is not on PATH with that message instead of an errno. The precedence
+lives in `configured_command` and the rule in `cli_command_problem` (which also refuses C1,
+bidi/format and separator characters), and every resolver goes through them: `resolve_orca`, to
+which `runtime/providers/orca.py`'s `resolve_orca_binary` (the Orca provider, `auto`,
+`preflight.py`, `install.sh`) delegates, raising `invalid_cli_command`, and `upstream_probe.py`'s
+`capture` resolver, so the override it runs is the one every fleet call runs (W4-15/W2-03).
+Under `OPEN_FLEET_RUNTIME=auto` the registry decides whether Orca answers, so `resolve` never
+names an Orca binary `active_provider_name` rejected. It differs on purpose, and only, where `capture` must reach the
+real Orca CLI: the override must also be on PATH, an `ORCA_DEV_REPO_ROOT` without `orca-dev` on
+PATH falls through to the platform default, and `OPEN_FLEET_RUNTIME` is ignored (this module's
+non-Orca shim is not Orca).
 
 Exits: 0 printed · 1 (`--path`) the resolved command is not on PATH, or a provider dispatch
-failed · 2 usage, or an unknown `OPEN_FLEET_RUNTIME`.
+failed · 2 usage, a configured command that is not one executable, or an unknown
+`OPEN_FLEET_RUNTIME`.
 
 > Why: Orca's Linux executable, `.deb` and `.rpm` are all `orca-ide` by construction
 > (`src/main/cli/bundled-cli-launcher-path.ts` LINUX_CLI_COMMAND_NAME), and bare `orca` on a
@@ -1810,10 +1899,13 @@ Flags: none — the single argument is the input file. There is no help flag: pa
 Output prints `MESSAGES: <n>`, then per message `ID`, `FROM`, `TYPE`, `SUBJ`, `BODY`,
 `PAYLOAD`. Missing `ID`/`FROM`/`TYPE`/`SUBJ` print as `?`, but a missing `BODY` prints
 as an empty string and a missing `PAYLOAD` prints as `None`. Every printed field passes
-through escaping for C0/C1 controls (except LF and TAB, kept literal for readability), DEL, and
-invisible Unicode (Cf, Zl, Zp), so hostile text can neither drive the terminal nor reorder
-characters. Because LF passes through, a multi-line field (a `BODY`) can print a line that looks
-like a message header: read the message boundaries from the structure, never from a line's look. Malformed segments are skipped line-wise
+through escaping for C0/C1 controls, DEL, invisible Unicode (Cf, Zl, Zp) and lone surrogates
+(Cs), so hostile text can neither drive the terminal nor reorder characters. `ID`, `FROM`,
+`TYPE`, `SUBJ` and `PAYLOAD` escape LF and TAB too, so each stays on its line; `BODY` keeps its
+lines for readability, but one that starts like a line a fleet printer writes (this printer's
+`ID:`/`SUBJ:`/`BODY:`/`PAYLOAD:`/`MESSAGES:`, a `KEY=` line, `===`, `---`, a `(…)`/`[…]`
+marker) is indented off column 0, so a body cannot draw the
+fields of a message that never arrived (Codex round 2). Prose lines keep their column. Malformed segments are skipped line-wise
 (counted on stderr); envelopes carrying a `messages` key outside the expected shape warn
 as unrecognized rather than silently undercounting.
 
@@ -1879,12 +1971,36 @@ Flags: `--require-placement` (also require a portable backend that binds the wor
 before launch; Orca's own doctor never does). Otherwise two positional arguments.
 
 Verdict rule: the transcript must name THIS recipe (the whole id, not a substring of a
-longer one) and report no fail and no warn. JSON transcripts read structurally (empty
+longer one) and report no fail and no warn. In JSON the id must sit in a recipe field
+(`recipe`, `recipeId`, `recipe-id`, `recipeName` in any case or separator, or a `recipe`
+object's id), never a dict key or another value, and every recipe field must name this recipe;
+a portable backend must declare one, and only a report with no recipe field at all falls back
+to its `id`/`name` fields outside checks, findings and mounts, all of which must be the id
+(W4-10). A recipe field that is present but declares nothing (null, a number, an empty value, a
+list holding a non-string, an object without a usable id) is refused as malformed, never read
+past to that fallback. JSON that names a key twice inside one object, as written or in two spellings the reader takes as one (`id`/`ID`, `recipeId`/`recipe-id`), is refused at every level (which value wins
+would be the parser's choice), placement claims are read in every spelling
+(`prelaunchPlacementBound`, `Ephemeral`) and at every level, and every `{ok, result}` envelope
+around the report, at every wrapping level, is held to it: its own `ok:false`, `error` or any
+finding, or a false placement claim anywhere inside it (its `metadata` included), refuses. A
+report wrapped more than once is read out of all of its wrappers (up to 16), and a false placement
+claim anywhere in a report that names no portable backend refuses too. Whatever stops the reader
+short of the report is a refusal, in the assessment and in `--require-placement` alike: more than
+16 wrappers, output nested too deep to parse, and a transcript that opens as JSON by the JSON
+grammar's first token (a byte-order mark and whitespace aside: `{`, or `[` followed by `]` or by
+any value's first token — an object, an array, a string, or a number, `true`, `false` or `null`
+that ends at a delimiter) but does not parse, which is never read as plain text; `[PASS] …`,
+`[12:00:01] …` and `[2026-10-28] …` lines are still read as text. The documented JSON output is one report object, optionally inside
+those envelopes; every other shape is refused the same way, never assessed: an array or a scalar
+(`null` included) at the top, a list as the report's `result`, and a report's `backend` anywhere
+but at the top of the report proper or spelt otherwise (an array-wrapped report was read as one
+naming no backend, so its isolation checks were skipped). JSON transcripts read structurally (empty
 finding collections are good news; `ok:false` is a finding); plain-text transcripts first
 strip "none of these" shapes (`"failures": []`, `failures: 0`, `0 warnings`, `no
 failures`) before matching fail/warn/error words. A transcript naming a portable `backend`
 (#585) must also prove its isolation: ephemeral, no credential mounts, placement bound before
-launch, and the backend's own flags (docker family: cap-drop ALL, no-new-privileges, a pids
+launch (claims read at the top level; the same claim false at any nested level is a
+contradiction and an isolation finding), and the backend's own flags (docker family: cap-drop ALL, no-new-privileges, a pids
 limit; bwrap: workspace filesystem scope, no host network; gondolin: only `/workspace`
 mounted). Any backend fails on `privileged: true`, host networking, a mount of a runtime socket
 or a directory holding one, or a mount of the real home, `/root`, a home root (`/home`,
@@ -1895,7 +2011,8 @@ resolved. Called by
 `runtime/scripts/spawn_worker.sh`, which runs the doctor itself and passes its own output
 here — a transcript the caller names is not evidence.
 
-Exits: 0 clear · 1 not clear (reason on stderr), an unreadable transcript, or no placement
+Exits: 0 clear · 1 not clear (reason on stderr, escaped onto one line: a reason can quote a
+transcript key, and `spawn_worker.sh` splices it into its refusal), an unreadable transcript, or no placement
 under `--require-placement` · 2 a credential or isolation finding (the sandbox would expose the
 host), or usage.
 
@@ -1916,10 +2033,10 @@ host), or usage.
 ## `search_sessions.py`
 
 `orca search` behind an `--index-status` precheck: never query an index the host
-reports broken. Source `runtime/scripts/search_sessions.py:1-43`; behavior pinned by
+reports broken. Source `runtime/scripts/search_sessions.py:1-50`; behavior pinned by
 `tests/test_search_sessions.py` and (episodic hints) `tests/test_hint_provenance.py`.
 
-Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`.
+Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`. Every read is bounded: a transcript or run manifest over `MAX_FILE_BYTES` (64 MiB) is skipped, and so are a SQLite store's rows past it; a store over `MAX_STORE_BYTES` (1 GiB with its `-wal`) is never opened, and on a SQLite without `octet_length` (before 3.43, where sizing a value loads it) neither is one over `MAX_FILE_BYTES`, so no value inside can exceed the cap — the bound chosen because it is decided from the checked file before SQLite opens it; every store connection is opened by one helper that sets `SQLITE_LIMIT_LENGTH` to `MAX_FILE_BYTES` and `SQLITE_LIMIT_SQL_LENGTH` to `MAX_SQL_BYTES` (1 MiB, so a schema statement's expression tree stays small on every platform) before its first statement (Python 3.11+; without `setlimit` the same store bound applies), so SQLite refuses to load a larger value, or a schema holding a larger statement, at all, even in a store grown after its check (said; for a value, that table's later rows are lost); a scan reads at most `MAX_RUN_BYTES` (512 MiB) in all; and each skip is said on stderr, so a partial recall is never silent. Those caps bound the bytes read, not the memory, since parsing multiplies them (a 63 MiB transcript of `{"a":{},"b":{}}` lines held 1.71 GB): the scan of the stores, and the episodic hint's scan of the manifests, run in a forked child that holds the parse; on Linux its `RLIMIT_DATA` allows it `SCAN_MEMORY_BYTES` (1 GiB) past what the process held, so a source whose parse passes that is skipped and said, and on every platform a source still being read after `SOURCE_SECONDS` (60 s) is skipped and said; a child stopped by either is restarted past that source, at most `SCAN_ATTEMPTS` (8) times, after which the scan is abandoned and said; the episodic hint's prior-run entries are assessed and labelled in that child too (`hint_provenance.assess`, `supersede`, `verdict`, on the whole record), so no cap can leave out what a label is decided on; the child returns only a flat JSON projection of what the parent shows -- a hit's strings cut (its snippet to 64 KiB, or shorter to fit), a prior-run entry's display fields cut and its lists capped, with its computed label, at most 500 entries, never a parsed unit or manifest -- at most `RESULT_BYTES` (8 MiB) with at most `RESULT_VALUES` structural bytes, both checked before the parent decodes it. macOS does not enforce `RLIMIT_DATA`, so there the memory a scan holds is bounded only by the byte caps times the parse's amplification (some 25 to 30 times its bytes for adversarial JSON) and, for a store's schema, by `MAX_SQL_BYTES`; only regular files are read (a transcript, store or manifest that is a link, FIFO or device is never opened, and that skip is said too, a FIFO or a link to `/dev/zero` named like a transcript included); SQLite opens a store, its `-wal` and its `-shm` by name with blocking calls, so the open runs in a worker thread while the three names are watched: one that stops being a regular file during the open (a FIFO swapped in) fails the store closed, an open still blocked after `SQLITE_OPEN_SECONDS` (10 s) is abandoned, and once an abandoned open stays blocked no further store is opened in that process (SQLite may hold its process-wide lock), each said; a SQLite store is read only from its plain tables' stored columns — never a view, a virtual table (an fts5 table can front a view) or a virtual generated column (computed on each read) — one row at a time, each row's stored size charged as SQLite reads it, in the query itself, before any of its values is handed to Python, so no value past either cap ever reaches Python, and no table or column name over 256 bytes, nor any column's declared type or DEFAULT, is ever fetched; a `.zst` transcript is walked frame by frame in work linear in the file, every frame charged at least 512 bytes, and a damaged or truncated frame keeps the whole frames before it and is said (without Python 3.14's `compression.zstd` every `.zst` is skipped, and said); a record nested past the JSON parser's depth is skipped, never fatal to the scan (2026-10-27 audit and re-attack, W5-21).
 
 The precheck runs first: `enabled=false` or phase `degraded`/`closed` refuses with
 exit 2 before the query fires; `current`/`idle`/`indexing` proceed (`--fresh` asks
@@ -1989,7 +2106,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt failure · 2 usage or precheck refusal.
 ## `send_msg.py`
 
 Orchestration `send` with the handler's rules enforced client-side plus sender
-assertion. Source `runtime/scripts/send_msg.py:1-24`; behavior pinned by
+assertion. Source `runtime/scripts/send_msg.py:1-32`; behavior pinned by
 `tests/test_send_msg.py`.
 
 Usage: `send_msg.py --subject S [--to DEST] [--run R] [--from SENDER] [--body B] [--type T] [--priority P] [--thread-id T] [--payload JSON] [--task-id ID] [--dispatch-id ID] [--outcome O] [--files-modified JSON] [--report-path P] [--phase P] [--retry-request ID] [--dispatch-capability C]`
@@ -1998,7 +2115,12 @@ Gates (all exit 2, zero side effects): `--type` from the 9-value keyset;
 `worker_done` requires `--outcome succeeded|failed` and `--outcome` rides nothing
 else; `worker_done`/`heartbeat` never target a group address and never run
 identity-less (needs `--from` or `ORCA_TERMINAL_HANDLE`; disagreement between them
-refuses). `--payload` must be JSON.
+refuses). `--payload` must be JSON. That disagreement check catches an ACCIDENTAL mismatch
+only: both sides are the caller's own, so a worker that sets `ORCA_TERMINAL_HANDLE` to a
+sibling's handle passes it. The sender is self-asserted client-side; the authority is the
+runtime (Orca's `sender_not_assignee` / `task_dispatch_mismatch`, and `dispatch_capability_invalid`
+for a wrong `--dispatch-capability`, the one secret-bound proof when the preamble carries one),
+and posix records the sender as given (W5-19). The receipt's `MESSAGE_ID` prints inert, on one line.
 
 Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refusal.
 
@@ -2006,6 +2128,63 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 > from nobody either fans out or speaks as a sibling. The runtime would refuse each
 > of these after the fact; refusing client-side keeps the mistake a usage error with
 > no dispatch touched.
+
+## `spawn_identity.py`
+
+Who is spawning, by process tree: the identity `spawn_worker.sh` reads when an environment says
+nothing (W4-04, Codex rounds 3 and 4). Source `runtime/scripts/spawn_identity.py`; behavior pinned
+by `tests/test_spawn_worker.py` (`TestIdentitySurvivesAScrubbedEnvironment`,
+`TestUnknownIsNeverAbsent`).
+
+Usage: `spawn_identity.py whoami --registry <dir> --pid <pid>` (one line per fact: `ROOT <profile>
+<key>` for each recorded worker root among the pid's ancestors, `INTREE`, `ANCHORED`, `LIVE
+<profile>` per live worker, `RESERVATION <profile> <in-flight> <path>` per open launch reservation
+the caller is not exempt from, `SELF <key>`); `spawn_identity.py record-root --registry <dir>
+--handle <h> --profile <p> [--launcher <pid>] [--since <pid>] [--wait <secs>]` (record the topmost process whose
+initial environment names pane `h` as a root, its parent as a host, and — with `--launcher`, for
+an uncapped launch only — the launcher's own ancestors below the one it shares with the worker
+as anchors). A key is `<pid>.<start time>`, so a reused pid never matches; dead roots, hosts and
+anchors are pruned on read, and an anchor stops counting once a live root or a host descends
+from it.
+
+Exits: 0 answered, or the pane's root recorded · 2 (`record-root`) a root recorded but not
+verified: a carrier's start time or parent could not be read, or a root with no parent to record
+as its host (reparented to init) was found by a scan that was not complete, so it may be a carrier
+that escaped a pane whose own process could not be read · 3 a COMPLETE scan found no process
+carrying the handle (no local worker process: `spawn_worker.sh` drops the reservation, the handle
+record stands) · 1 nothing found by a scan that was not complete, or a read the answer needs
+failed (`spawn_worker.sh` keeps the reservation on 2 and 1, and caps a `whoami` caller at `ro`
+on 1).
+
+A pane found is recorded: its process tree is identified, and another carrier of the handle
+outside it would have to have escaped it (the residual below). Completeness decides what finding
+NOTHING means. A scan is complete only when every process of this uid that could be the launch's
+pane was read; a read that fails for any reason but the process being gone is UNKNOWN, never
+"absent" (Codex round 4): an environment that stays unreadable (`EACCES` from a non-dumpable
+process, `EIO`) makes the scan incomplete. It is read again for up to 0.25 s first, since a
+process caught exiting answers `EACCES` for a moment and then is gone, and one that has exited
+but is not yet reaped (a zombie) answers it for as long as it lingers and is absent too; a
+process that vanishes mid-scan is gone, not unknown (the scan re-lists a few times for a carrier it forked just before
+it exited, which would be outside the pane's live tree: the residual below). With
+`--since <pid>` (`spawn_worker.sh` passes itself) an unreadable process that started before that
+pid is not counted, since it cannot be a pane this launch created; a runtime that handed a launch
+a pre-existing pane whose environment cannot be read is not covered. Without `/proc`, `ps -E`
+(BSD/macOS, unwitnessed) leaves out an environment it may not read without saying so, so no scan
+there is complete: finding nothing there exits 1, never 3. The same rule holds for every other
+read: an ancestor, a recorded root, host or anchor, a registry directory or a reservation that
+cannot be read is unknown (an entry whose liveness is unknown is kept, not pruned; an anchor
+counts only while it is certainly alive). On a host that hides other users' processes (`hidepid`), a caller whose
+ancestry passes through a hidden process cannot be identified while any worker root is live, so
+`whoami` exits 1 and the caller is capped at `ro`. A `/proc` that is not this process's own pid
+namespace's (a sandbox that unshares pids but keeps the host's `/proc`, so every pid read there
+is another process) answers nothing: exit 1.
+
+What it identifies is the pane's process tree. A worker process outside it is not identified
+when its environment no longer carries the pane handle: one that daemonized out of the tree
+(reparented, it descends from no recorded root or host, whether or not its root is still alive),
+a command a harness runs from a process started outside the pane, or a spawn in another pid
+namespace with its own `/proc` (its pids are not the recorded ones). Whether any harness does
+one of these as ordinary behaviour is unwitnessed.
 
 ## `spawn_worker.sh`
 
@@ -2045,9 +2224,79 @@ refused beside `--spec`); `--parent-profile` (the parent's profile, for monotoni
 `--pairing-code`, `--cli-cwd` (routing; ambient disagreement refuses, `--from`
 against `ORCA_TERMINAL_HANDLE`);
 `--task-brief` (brief spawn-time read); `--parent-profile ro|rw|danger` (monotonic narrowing:
-the most restrictive of this flag, `OPEN_FLEET_PARENT_PROFILE`/`ORCA_PARENT_PROFILE` and the
-caller's `OPEN_FLEET_SANDBOX_PROFILE`/`ORCA_SANDBOX_PROFILE` caps `PROFILE`; a wider child
-refuses, exit 2). Documented refusals, not silent drops:
+the most restrictive of this flag, `OPEN_FLEET_PARENT_PROFILE`/`ORCA_PARENT_PROFILE`, the
+caller's `OPEN_FLEET_SANDBOX_PROFILE`/`ORCA_SANDBOX_PROFILE` and the spawn registry caps
+`PROFILE`; a wider child refuses, exit 2). The spawn registry (W4-04): every launch, on both
+lanes and with or without an override, is recorded in `~/.open-fleet/spawn-profiles/<handle>`
+under the pane handle the runtime returns, which the worker's pane then carries as
+`ORCA_TERMINAL_HANDLE`, so a spawn from a recorded pane is capped at its record (an empty record
+reads `ro`, a foreign value refuses); the launch command itself is never changed, so nothing
+depends on the pane's shell. Because the worker's command runs before the runtime returns its
+handle, each launch first RESERVES its profile in `~/.open-fleet/spawn-profiles/.pending/`
+(before any task mutation or launch call; a reservation that cannot be written — `HOME` unset or
+unwritable — refuses the spawn, exit 2), and the worker's records replace it. Identity does not
+rest on the environment alone, since a harness may drop `ORCA_*` from the worker's shell (Codex's
+`shell_environment_policy` does): for a worker that runs on this host as an Orca or posix pane,
+registration also records its pane ROOT process by pid and start time
+([`spawn_identity.py`](#spawn_identitypy) finds it by the handle in the pane's initial
+environment), and every spawn walks its own process ancestry, so a recorded root among its
+ancestors caps it whatever its environment says (what that does not identify is listed below). A session that no record and no root identifies
+waits for every open reservation it is not exempt from (`RESERVATION_WAIT_SECS`, default 120) and
+is then capped at the most restrictive one still open; inside a provider's process tree (under a
+recorded pty host or tmux pane) it is capped at the most restrictive LIVE worker. Only an ANCHORED
+session is exempt: a process of a coordinator that launched a worker while uncapped (recorded at
+that launch: its ancestors below the one it shares with the worker), which no worker can descend
+from; and never from a reservation whose launch it descends from. Every response that names a
+pane handle (`worker-start`, `terminal create`, and the `request-show` triage) is read by one
+extraction before anything judges it — wherever the handle sits: the result, the error envelope
+or its `data`, a nested worker or terminal object, an effect — and each handle it names is
+registered whatever the exit code, error code or state says; a refused or failed verdict prints
+the pane it names (`HANDLE=`) and says a worker may be live there. A response that does not
+parse whole is searched for handle-shaped fields too, and one that reads two ways (a duplicate
+key at any depth, `NaN`/`Infinity`, a number that overflows) has every occurrence of a handle
+key extracted; every other reader of a runtime response (the verdict, task-list, the triage,
+terminal wait, dispatch) treats such a response as unparseable and takes its fail-closed path,
+since `json.load` would keep only the last of two equal keys. A launch that may have left a worker live
+without a complete record — a successful start whose receipt names no handle, a failure the
+receipt does not prove came before any launch effect (see below), a handle record that cannot be written, a
+handle that is not a registry key, a response that does not parse whole, or a worker whose
+process tree is UNVERIFIED (`spawn_identity.py` exits 1: nothing found by a scan that could not
+read every candidate — an environment that stayed unreadable, a host without `/proc`; or 2: a root it found but could not verify) — KEEPS its reservation and says so, and it
+caps every unanchored session until removed; on the custom-argv lane a pane whose handle record
+fails gets no task. Otherwise the reservation goes: when no launch call was made; on either
+launch path (`worker-start`, `terminal create`), on a refusal PROVEN to precede any launch effect
+— a response, naming no pane, that is exactly one refusal by a strict schema at every level: one
+error, at the top level (beside only `id` and `ok: false`) or alone in `result`, holding only a
+`code` among `task_not_found`, `task_not_startable`, `nested_worker_depth_exceeded`,
+`worktree_not_found`, `selector_not_found` and `invalid_argument`, a string `message`, and `data`
+with only the documented refusal fields (`nextSteps`, `unmetDependencies`, `retryOf`,
+`failureCount`, `reason`) in their documented types. Anything else keeps it: a second error, a
+result beside the error, any other key at any depth, `runtime_error`, an unknown or untyped code,
+and `inject_rejected`, `consumer_fenced` and `dispatch_inactive`, which can follow a pane's creation
+and still exit 2 as refusals; or once the WORKER's own pane is named (an agent-role handle:
+`agentTerminalHandle`, a terminal effect with `role: agent`, or a terminal handle on the result
+itself or in its `worker` object; any other pane, a coordinator-role, unknown-role or role-less one
+included, never releases it) and every handle
+named is recorded — with its root, or by its handle record alone when a complete scan finds no
+process carrying it (`SPAWN_ROOT_WAIT_SECS`, default 1: the worker is not a local process — it
+exited, runs remotely or in another uid's container, or the backend is a dry run) or the worker
+is not a local pane at all (another runtime's, or placed with `--environment`/`--on`). A session
+whose identity cannot be read is capped at `ro`, whether the first read failed or a later one while
+it waited on a reservation: the cap is taken from the last read. A session carrying fleet worker identity — `OPEN_FLEET_DISPATCH_ID`,
+`OPEN_FLEET_WORKER_ID`, `OPEN_FLEET_UNIT_WORKTREE` or an `ORCA_` alias — with no profile in its
+environment or the registry is capped at `ro`, and `--parent-profile` cannot raise that (the flag
+only narrows). A capped session cannot use a command override (`WORKER_CMD`, `CLAUDE_CMD`,
+`CODEX_CMD`): overrides are a coordinator-only facility. All of it is files the worker's uid can
+write and a process tree it runs in: it bounds the fleet's spawn path against an omitted,
+inherited or scrubbed profile, not a worker that edits the registry or calls the runtime CLI or
+an agent directly. Nor does it identify a worker process outside its pane's process tree whose
+environment no longer carries the pane handle — one that daemonized out of it (reparented, it
+descends from no recorded root or host), a command a harness runs from a process started outside
+the pane, a spawn in another pid namespace with its own `/proc` — or cover a worker whose HOME is
+not its coordinator's (it reads another registry) or a launch whose pane process itself carries
+no handle (a command that clears its environment, `env -i …`). Whether any harness does one of
+these as ordinary behaviour is unwitnessed. On a host without `/proc`, roots are found through
+`ps -E` (BSD/macOS; unwitnessed there). Documented refusals, not silent drops:
 `--task-status`/`--task-ready` (a filtered view cannot verify deps, so the DAG check
 would be unsound) and `--host` (upstream rejects it as an unknown flag on
 orchestration verbs).
@@ -2146,7 +2395,12 @@ other question — refused like upstream's `incompatible_runtime` instead of
 certifying accumulated output as the rendered screen; `screen-unavailable` is
 degraded output, likewise never certified. Successful reads print the `tail` lines
 under `--- tail` (a receipt without `tail` fails closed — the payload is the point
-of the read); tail lines and titles render through pm.py's `_visible`, inertly.
+of the read); tail lines and titles render through pm.py's `_visible`, inertly, and every
+single-line field (`HANDLE`, `SOURCE`, `TITLE`, list rows) and every tail item goes through
+`_visible_line`, its newline and tab escaped, so a receipt value cannot forge another line
+(W4-11); a tail item or list row that starts like one of the receipt's own lines (`KEY=`,
+`---`) is also indented off column 0, so a pane printing `TRUNCATED=no` cannot pass for this
+receipt's field (Codex round 2); `agent: done` and other prose keep their column.
 Mutating verbs
 (close/rename/set-pane-title/split/switch/stop/send/wait) stay out (lifecycle-risk).
 
@@ -2161,7 +2415,7 @@ Exits: 0 ok · 1 runtime/refusal/receipt/evidence failure · 2 usage.
 
 Drift probe against the Orca pin: has upstream moved past `runtime/pins.json`, and —
 when a binary is at hand — how do its surfaces differ from the last re-pin's receipts?
-Source `runtime/scripts/upstream_probe.py:1-59`; behavior pinned by
+Source `runtime/scripts/upstream_probe.py:1-60`; behavior pinned by
 `tests/test_upstream_probe.py`. The weekly `upstream-drift` workflow
 (`.github/workflows/upstream-drift.yml`) runs `latest` and `review-date` and opens — or
 comments on — an issue labeled `upstream-drift` when either says a re-pin is due. Neither check
@@ -2197,8 +2451,9 @@ over https or loopback http only and never across a redirect, and skips `-rc`, `
 the first component that moved; `patches_behind` counts the stable tags strictly newer
 than the pin. `--json` prints exactly `{"pin","latest","drift","patches_behind"}`.
 
-`capture` resolves the CLI the way upstream's skill stubs do — `ORCA_CLI_COMMAND` if set
-(one executable, no arguments), else `orca-dev` when `ORCA_DEV_REPO_ROOT` is set and it is
+`capture` resolves the CLI the way upstream's skill stubs do — `OPEN_FLEET_CLI_COMMAND`, else
+`ORCA_CLI_COMMAND`, if set (`orca_cli.py`'s precedence and rule: one executable, no
+arguments), else `orca-dev` when `ORCA_DEV_REPO_ROOT` is set and it is
 on PATH, else `orca-ide` on Linux, else `orca` — and refuses when it is not on PATH. It
 runs `agent-context --json`, `--help`, `terminal --help`, and for the `orchestration` and
 `orca-cli` guides `skills get <topic>`, `--references`, then one `--reference <name>` per
@@ -2308,7 +2563,13 @@ Flags: `show` takes `--dispatch` (fleet verdict: `projection.nextAction.argv`, l
 `--source` (`auto|transcript|terminal`; `transcript` certifies — a non-transcript effective
 source is exit 1; transcript reads print each message as `--- <id> (<role>)` with joined
 text blocks capped at 2000 chars, terminal reads print `--- tail` plus the lines, and a
-missing payload fails closed; all of it through pm.py's `_visible`, inertly); `stop` and
+missing payload fails closed; all of it through pm.py's `_visible`, inertly — and every
+single-line field, `STATE`/`STAGE`/`NEXT_ACTION`/`AGENT_WAIT`/`CURSOR`/`FALLBACK`, the fencing
+`DISPATCH`/`STATE`, the list rows and each tail item, through `_visible_line` (newline and tab
+escaped), a message body's continuation lines indented, and a body's first line, a tail item
+or a list row that starts like one of the receipt's own lines (`KEY=`, `---`, the
+`(unreadable message skipped)` marker) indented too, so none can pass for a `--- <id> (<role>)`
+header or a `SOURCE=`/`STATE=` field, W4-11, Codex round 2); `stop` and
 `abandon` take `--dispatch`, `--retry-request` (scripted fencing; `stop_unknown` fails,
 never claims); `release` and `retain` take `--dispatch`, `--retry-request` (reclaim; only
 `release_unknown` fails); `list` takes `--run`, `--terminal-state`, `--include-remote`,

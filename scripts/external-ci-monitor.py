@@ -6,7 +6,10 @@ changing main. This tool only reads GitHub and emits JSON; the host routes alert
 
 --transport gh (default) reads through an authenticated `gh` CLI. --transport rest
 reads the public REST API with no CLI and no token (GITHUB_TOKEN is sent when set),
-for a host like a scheduled cloud session where `gh` is not logged in (#528).
+for a host like a scheduled cloud session where `gh` is not logged in (#528). The token is an
+unredirected header (urllib re-sends an ordinary one to whatever a 3xx names), an answer from any
+origin but the API's is refused, and so is a body over MAX_BODY; --repo must be OWNER/NAME
+before it is put into a URL or a gh argv (2026-10-27 audit, W5-08/W5-09).
 --quiet-when-current keeps a green run on main's CURRENT head healthy past 24 hours:
 a quiet repository with no new commits is not an outage, while a head that CI never
 finished still goes stale.
@@ -18,10 +21,14 @@ import json
 import os
 import re
 import subprocess
+import urllib.parse
 import urllib.request
 
 REPO = "ravidsrk/open-fleet"
 API = "https://api.github.com"
+MAX_BODY = 32 << 20  # far above any answer read here; an endless one is refused, never held whole
+# GitHub's own shapes: an owner is letters, digits and hyphens (up to 39); a name letters, digits, ._-
+REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
 
 
 def assess(run, now, max_age_hours=24, main_sha=None):
@@ -63,21 +70,46 @@ def gh_json(args):
     return json.loads(proc.stdout)
 
 
+def repo_path(repo):
+    """`repo` as a URL path segment pair, once it is exactly OWNER/NAME: a `?`, `#`, `%`, `..`
+    or an extra segment would change which endpoint is read, and the verdict would be about
+    something else (W5-09)."""
+    if not isinstance(repo, str) or not REPO_RE.fullmatch(repo) or repo.split("/")[1] in (".", ".."):
+        raise ValueError("--repo must be OWNER/NAME")
+    return "/".join(urllib.parse.quote(part, safe="") for part in repo.split("/"))
+
+
+def _origin(url):
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or {"https": 443, "http": 80}.get(scheme)
+
+
 def rest_json(path):
-    """GET one public REST endpoint. Never echoes the response on failure."""
-    request = urllib.request.Request(f"{API}/{path}", headers={
+    """GET one public REST endpoint. Never echoes the response on failure.
+
+    The token rides an UNREDIRECTED header: urllib copies an add_header() value onto the request a
+    3xx makes, to whatever host its Location names (W5-08; upstream_probe.py does the same). An
+    answer that ends anywhere but the API's origin is refused, and so is a body over MAX_BODY."""
+    url = f"{API}/{path}"
+    request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "open-fleet-external-ci-monitor"})
     token = os.environ.get("GITHUB_TOKEN")
     if token:
-        request.add_header("Authorization", f"Bearer {token}")
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(request, timeout=45) as response:
-            body = response.read()
+            # A real response names the URL it was finally read from, redirects followed.
+            if _origin(getattr(response, "url", None) or url) != _origin(API):
+                raise RuntimeError("GitHub redirected the monitor to another origin; the answer is refused")
+            body = response.read(MAX_BODY + 1)
     except http.client.HTTPException as err:
         # A dropped or truncated response (IncompleteRead) is not an OSError; it must
         # still reach main() as a monitor error, never a traceback with the wrong exit.
         raise RuntimeError("GitHub response was cut off") from err
+    if len(body) > MAX_BODY:
+        raise RuntimeError(f"GitHub response exceeds {MAX_BODY} bytes; refused")
     return json.loads(body.decode("utf-8"))
 
 
@@ -89,7 +121,7 @@ def _from_rest(run):
 
 def main_head(repo, transport="gh"):
     """The commit main points at now."""
-    path = f"repos/{repo}/commits/main"
+    path = f"repos/{repo_path(repo)}/commits/main"
     commit = rest_json(path) if transport == "rest" else gh_json(["api", path])
     sha = commit.get("sha") if isinstance(commit, dict) else None
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -98,8 +130,9 @@ def main_head(repo, transport="gh"):
 
 
 def fetch_run(repo, drill_run=None, transport="gh"):
+    safe = repo_path(repo)
     if drill_run is not None:
-        path = f"repos/{repo}/actions/runs/{drill_run}"
+        path = f"repos/{safe}/actions/runs/{int(drill_run)}"
         run = rest_json(path) if transport == "rest" else gh_json(["api", path])
         # A drill uses a real failed validate run, never a synthetic success/failure.
         if (run["name"] != "validate" or run["status"] != "completed"
@@ -107,7 +140,7 @@ def fetch_run(repo, drill_run=None, transport="gh"):
             raise ValueError("drill target must be a completed unsuccessful validate run")
         return _from_rest(run)
     if transport == "rest":
-        page = rest_json(f"repos/{repo}/actions/workflows/validate.yml/runs"
+        page = rest_json(f"repos/{safe}/actions/workflows/validate.yml/runs"
                          "?branch=main&event=push&status=completed&per_page=1")
         runs = page.get("workflow_runs") if isinstance(page, dict) else None
         if not isinstance(runs, list) or len(runs) > 1:

@@ -32,9 +32,11 @@ bounds its parse (the str json.loads decodes it to and the strings parsed out of
 characters' width, and every JSON value): what that bound does not need goes back, and a body whose
 values need more takes the rest. At most one request waits for budget while holding any: of the
 bodies read in full, one may wait for that rest, every other take leaving what it needs free, and
-any other whose rest does not fit at once is refused (503) and gives its share back, so no request
-ever waits for a share another waiting request holds (_BodyBudget; Codex round 13 on 594f7265).
-Once its parse is over a body keeps only its buffer while it is relayed.
+any other whose rest does not fit at once is refused (503) and gives back all but its bytes'
+charge, so no request ever waits for a share another waiting request holds (_BodyBudget; Codex
+round 13 on 594f7265). Once its parse is over a body keeps only its bytes' charge while it is
+relayed. The charge for a body's bytes goes back only once its buffer is freed, on every way out
+of the request, an exception included (Codex round 1 on PR #732).
 Budget goes only to a body that is arriving (its first byte is here); a body arriving slower than
 MIN_BODY_RATE, past BODY_GRACE_S, is stalled, and a request waiting for budget takes back, for
 itself, what a stalled body holds past its buffer, evicting it. A take that may wait waits up to
@@ -784,6 +786,7 @@ class Broker(BaseHTTPRequestHandler):
             return self.fail(413, "invalid_request_error", "the body is too large for the broker to parse within "
                                                            "its memory")
         self.ticket = ticket = _Ticket(self.connection, length)
+        self.body = None  # the body's one buffer, once read_body allocates it
         self.server.track(self.connection, ticket)
         try:
             # Budget goes only to a body that is arriving: its first byte must be here (a stalled
@@ -802,7 +805,19 @@ class Broker(BaseHTTPRequestHandler):
             ticket.since, ticket.arriving = time.monotonic(), True
             self.answer_post(path, length)
         finally:
+            # The charge for a body's bytes goes back only once its buffer is gone, on every way
+            # out: an exception's frames still reference it here, so it is emptied in place first
+            # (Codex round 1 on PR #732). What is past its bytes may go back earlier, never they.
+            self.drop_body()
             bodies.give(ticket)
+
+    def drop_body(self):
+        """Free this request's body buffer in place, whatever still references it. Its one export,
+        read_body's view, is released before read_body returns, so this never fails; if it did, the
+        BufferError would escape (a fault) before the bytes' charge went back, which then stays."""
+        body, self.body = self.body, None
+        if body is not None:
+            body.clear()
 
     def body_arriving(self):
         """Whether the body's first byte arrives before the body's deadline (or an eviction)."""
@@ -839,13 +854,14 @@ class Broker(BaseHTTPRequestHandler):
             return self.fail(413, "invalid_request_error", "the body's JSON is too large or too deeply nested "
                                                            "for the broker to parse within its memory")
         # A larger charge than the one taken before the body was read is waited for by at most one
-        # body read in full at a time; any other is refused at once and gives its share back, so
-        # bodies read in full never wait on one another's shares (_BodyBudget, Codex round 13).
+        # body read in full at a time; any other is refused at once and gives back all but its
+        # bytes' charge, so bodies read in full never wait on one another's shares (_BodyBudget,
+        # Codex round 13); its bytes' charge goes back with its buffer (do_POST).
         if cost <= ticket.held:
             bodies.give(ticket, ticket.held - cost)
         elif not bodies.take(ticket, cost - ticket.held, time.monotonic() + BODY_WAIT_S, self.server.reclaimed,
                              grow=True):
-            bodies.give(ticket)
+            bodies.give(ticket, ticket.held - len(body))  # its parse's share; its bytes' stays until they go
             self.ledger.refuse("body-budget", f"a parse of up to {cost} bytes past the {bodies.limit} held at once")
             return self.fail(503, "overloaded_error", "the broker holds as many request bodies as it can; retry")
         self.price_and_relay(body, cost - len(body))
@@ -883,7 +899,8 @@ class Broker(BaseHTTPRequestHandler):
         """The request's `length` body bytes, or None when they do not all arrive by the deadline:
         the socket timeout bounds each read, this bounds the trickle (W5-16). Read into ONE buffer
         of exactly `length` bytes, never chunks joined after (which held each body twice)."""
-        body, got, deadline = bytearray(length), 0, time.monotonic() + BODY_DEADLINE_S
+        body = self.body = bytearray(length)  # do_POST frees it before its charge goes back
+        got, deadline = 0, time.monotonic() + BODY_DEADLINE_S
         view = memoryview(body)
         try:
             while got < length:
@@ -1029,14 +1046,16 @@ class _BodyBudget:
     ANY. A body's first take is made before it holds any (do_POST); only a body read in full whose
     parse needs more than it took before it was read takes again holding a share (`grow`), and of
     those only one -- the grower -- may wait: any other whose charge does not fit at once is refused
-    and gives its share back. While the grower waits every other take leaves what it still needs
-    free, so nothing granted after it can keep it out. Every share it waits for is held by a request
-    that never waits for budget -- a body arriving (ended by BODY_DEADLINE_S, or taken back once
-    stalled), pre-scanned (MAX_SCAN_STEPS), parsed (PARSERS at a time, each in PARSE_SECONDS) or
-    relayed, or one refused and ending -- and every other waiter holds nothing anyone waits for,
-    so no set of requests can wait on one another: the grower is served once those end, or its own
-    deadline answers it (Codex round 13 on 594f7265: 32 completed ~1 MB bodies, each holding its
-    first share and waiting for a larger one, waited on one another until every one was refused)."""
+    and gives back at once all it holds past its bytes, whose charge it keeps only until its buffer
+    is freed, as it ends (do_POST). While the grower waits every other take leaves what it still
+    needs free, so nothing granted after it can keep it out. Every share it waits for is held by a
+    request that never waits for budget -- a body arriving (ended by BODY_DEADLINE_S, or taken back
+    once stalled), pre-scanned (MAX_SCAN_STEPS), parsed (PARSERS at a time, each in PARSE_SECONDS)
+    or relayed, or one refused and ending, its 503 written -- and every other waiter holds nothing
+    anyone waits for, so no set of requests can wait on one another: the grower is served once those
+    end, or its own deadline answers it (Codex round 13 on 594f7265: 32 completed ~1 MB bodies, each
+    holding its first share and waiting for a larger one, waited on one another until every one was
+    refused). No share is ever given back below a body's bytes while its buffer holds them."""
 
     def __init__(self, limit):
         self.limit, self.held, self.cond = limit, 0, threading.Condition()

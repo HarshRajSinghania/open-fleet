@@ -237,8 +237,6 @@ GUARD_SURFACE_KEYS = (
     ("bench/vf-bench/gate.py", re.compile(r"\bEXPECTED_CORPUS_SHA256\s*=")),
 )
 
-DEFAULT_BASES = ("origin/main", "origin/master", "main", "master")
-
 # Diff RENDERING pins, at command-line precedence over the guarded repo's own config
 # (2026-10-23 review, P2-4). A repo-local `diff.mnemonicPrefix` (c/ i/ w/), `diff.srcPrefix`/
 # `dstPrefix` or `diff.noprefix` relabels the a/ b/ that strip_prefix removes, so every path
@@ -289,7 +287,9 @@ def git(repo, *args, blanks=()):
         )
     except (OSError, subprocess.SubprocessError) as err:
         raise GuardError(f"git {' '.join(args)} failed to run: {err}") from err
-    return _text(r.stdout) if r.returncode == 0 else None
+    # surrogateescape, not _text's "replace": two refnames that differ only in non-UTF-8 bytes
+    # (zz\xff, zz\xfe) must not decode alike, or the anchor listing refuses itself (W3-07).
+    return r.stdout.decode("utf-8", "surrogateescape") if r.returncode == 0 else None
 
 
 def repo_root(start):
@@ -300,21 +300,43 @@ def repo_root(start):
 
 
 def resolve_base(repo, base):
-    """Pick a base ref. An explicit --base that does not resolve is an error, not
-    a fallback: silently guarding against the wrong base is a false clean."""
-    if base:
-        if git(repo, "rev-parse", "--verify", "-q", base + "^{commit}") is None:
-            raise GuardError(f"base ref {base!r} is not resolvable (shallow clone or missing fetch)")
-        return base
-    head = git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
-    if head and head.strip():
-        candidate = head.strip().replace("refs/remotes/", "", 1)
-        if git(repo, "rev-parse", "--verify", "-q", candidate + "^{commit}") is not None:
-            return candidate
-    for candidate in DEFAULT_BASES:
-        if git(repo, "rev-parse", "--verify", "-q", candidate + "^{commit}") is not None:
-            return candidate
-    raise GuardError("no base ref could be resolved (tried origin/HEAD, origin/main, origin/master, main, master)")
+    """(commit, shown): the base resolved ONCE, by exact ref names only (gitexec.base_commit,
+    W3-07 class). The diff, the waivers and the human-grant pin are all read at `commit`, never at
+    the name. An explicit --base that does not resolve is an error, not a fallback: silently
+    guarding against the wrong base is a false clean.
+
+    `rev-parse <base>^{commit}` expanded the name — refs/tags/ and refs/heads/ come before
+    refs/remotes/ — so a tag or local branch spelled `origin/main` stood in for the remote-tracking
+    branch, and this base is where the waivers are read; an origin/HEAD pointed at a local branch
+    was used as-is. Now a remote-tracking name (`origin/main`, `refs/remotes/…`) or a commit id
+    goes through gitexec.remote_tracking_commit; a bare `main` is that local branch by its exact
+    name, and `HEAD` or an abbreviated commit id (an object id, never a ref of that spelling) is
+    the same advisory kind — refused on a lane claiming soundness (gitexec.sound_lane:
+    ORCA_PROVENANCE / OPEN_FLEET_PROVENANCE set, as decisions.py and run_report.py read it), and
+    said in a NOTE to be advisory elsewhere (the change can move a local name)."""
+    def run(*args):
+        out = git(repo, *args)
+        return (0, out) if out is not None else (1, "")
+
+    commit, shown, local, why = gitexec.base_commit(run, base)
+    if commit is None:
+        if base:
+            raise GuardError(f"base ref {base!r} is not resolvable by its exact name (shallow clone "
+                             f"or missing fetch?): {base!r} {why}")
+        raise GuardError(f"no base ref could be resolved (tried {shown}): {why}")
+    if local:
+        lane = gitexec.sound_lane()
+        if lane:
+            raise GuardError(f"{lane} claims a sound lane, but base {shown!r} is {local} "
+                             f"({commit[:12]}), not a remote-tracking ref or a full commit id: "
+                             "there the waivers and the human-grant pin are read only at one of "
+                             "those — --base origin/<branch> or a full commit id (W3-07)")
+        print(f"floor-guard: NOTE — base {shown!r} is {local} ({commit[:12]}), not a "
+              "remote-tracking ref or a full commit id: the change under check can move a local "
+              "name and nothing binds an abbreviation, so the waivers and the human-grant pin read "
+              "there are advisory; --base origin/<branch> (or a full commit id) reads them where "
+              "it cannot write", file=sys.stderr)
+    return commit, shown
 
 
 def merge_base(repo, base):
@@ -1031,7 +1053,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         repo = repo_root(args.repo)
-        base = resolve_base(repo, args.base)
+        base, shown = resolve_base(repo, args.base)  # a commit id; `shown` names it for people
         mb = merge_base(repo, base)
         added, removed = parse_diff(collect_diff(repo, mb))
         findings = scan(added, removed, args.constraints, repo)
@@ -1067,10 +1089,10 @@ def main(argv=None):
     for f in live:
         print(f"  [{f['rule']}] {f['path']}:{f['line']} ({f['detail']})", file=sys.stderr)
         for raw, why in refused_waivers(f, waivers, _decisions, grant_pub):
-            print(f"      waiver at {base} not honoured — {why}:\n        {raw.strip()[:200]}",
+            print(f"      waiver at {shown} not honoured — {why}:\n        {raw.strip()[:200]}",
                   file=sys.stderr)
     print(
-        f"\nEach lowers the bar. Fix the code, or land a waiver on {base} FIRST: a DECISIONS "
+        f"\nEach lowers the bar. Fix the code, or land a waiver on {shown} FIRST: a DECISIONS "
         "record whose id is `floor-waiver:<rule>:<path>` (or `:<dir>/**`), class `one-way`, "
         "answer `allow`, appended with `decisions.py append --source human:<name>` (plus "
         "`--grant-sig` when .orca/human-grant-pubkey is pinned). Waivers are read at the base "

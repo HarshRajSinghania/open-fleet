@@ -573,14 +573,19 @@ def invocation_args(text, manifest):
     return out
 
 
-# The grading base: the default branch's current tip, resolved the way floor_guard/diff_scope do.
-# HEAD is the last resort — the checkout run_report is running in — never a header field.
+# The grading base: the default branch's current tip, on the ADVISORY lane only. Each candidate
+# goes through `rev-parse`, i.e. git's ref-name expansion (a tag or local branch spelled
+# `origin/main` comes before the remote-tracking ref), and it falls back to local main/master and
+# HEAD — the checkout run_report is running in, never a header field. It is never a trust anchor:
+# a lane claiming soundness reads every trust-bearing fact at trusted_base, below, which resolves
+# by exact name (W3-07); floor_guard.py and diff_scope.py now resolve their bases that way too.
 GRADING_BASES = ("origin/HEAD", "origin/main", "origin/master", "main", "master", "HEAD")
 
 
 def grading_base(root, base=None):
-    """The commit the unsigned lane is proven against: `base` if named, else the first of
-    GRADING_BASES that resolves. None only in a repository with no commit at all."""
+    """ADVISORY: the commit the unsigned lane is proven against — `base` if named, else the first
+    of GRADING_BASES that resolves, through git's ref-name expansion. None only in a repository
+    with no commit at all. Never used where a lane claims soundness (trusted_base is)."""
     for candidate in ((base,) if base else GRADING_BASES):
         proc = subprocess.run(
             _git_cmd("rev-parse", "--verify", "-q", f"{candidate}^{{commit}}"),
@@ -1364,10 +1369,12 @@ def main(argv=None):
     parser.add_argument("--mission", help="mission the report is claimed by (with `report`)")
     parser.add_argument("--tier", help="tier claimed (with `report`)")
     parser.add_argument("--base", default=None, metavar="REV",
-                        help="the grading base the unsigned lane is proven against (default: "
-                             "origin/HEAD, then origin/main, origin/master, main, master, HEAD). "
-                             "On a lane claiming soundness (ORCA_PROVENANCE set) only a commit id "
-                             "or a ref whose final target is remote-tracking; the default is then "
+                        help="the grading base the unsigned lane is proven against — advisory "
+                             "there (default: origin/HEAD, then origin/main, origin/master, main, "
+                             "master, HEAD, resolved by git's usual name expansion). On a lane "
+                             "claiming soundness (ORCA_PROVENANCE set) only a commit id or a full "
+                             "remote-tracking ref that exists under exactly that name; the default "
+                             "is then "
                              "refs/remotes/origin/HEAD (if it points at a remote-tracking ref), "
                              "…/main, …/master, and none is could-not-run (exit 2)")
     args = parser.parse_args(argv)

@@ -33,5 +33,7 @@
   `floor_guard` read a planted waiver (`clean (1 waived)`) and `diff_scope` diff against the
   change's own tip (the AUTH lens off). All three now resolve once through
   `gitexec.remote_tracking_commit` (`gitexec.base_commit` for the two diff tools, where a bare
-  local branch name such as `main` stays usable by its exact name with an advisory NOTE), and
-  every later diff, waiver, pin, merge-base and grep read names the resolved commit.
+  local branch name such as `main` is refused on a lane claiming soundness — `ORCA_PROVENANCE` /
+  `OPEN_FLEET_PROVENANCE` set — and elsewhere stays usable by its exact name with an advisory
+  NOTE), and every later diff, waiver, pin, merge-base and grep read names the resolved commit.
+  `run_report.py`'s grading base, used only on the advisory lane, now says so.

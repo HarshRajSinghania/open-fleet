@@ -329,11 +329,16 @@ def grant_pubkey(log_path, pin_ref=None):
             raise DecisionsError(f"{pin} is unreadable: {err}") from err
         tree = parse_grant_pubkey(text, pin)
     if pin_ref is None:
-        if tree is not None:
-            print(f"decisions.py: NOTE — the human-grant key was read from the working tree "
-                  f"({root / GRANT_PUBKEY_REL}), which a change under check can swap or delete; "
-                  "pass --pin-ref refs/remotes/origin/<default> (or a commit id) to anchor it "
-                  "(W3-07, #635)", file=sys.stderr)
+        # Never silent, whatever the tree holds (W3-07, Codex review P2): an ABSENT pin is the
+        # deleted case — one-way grants then check unsigned — and nothing here can tell it from a
+        # repository that never pinned one; only a ref read can.
+        said = (f"the human-grant key was read from the working tree ({root / GRANT_PUBKEY_REL})"
+                if tree is not None else
+                f"no human-grant key is pinned in the working tree ({root / GRANT_PUBKEY_REL} is "
+                "absent), so one-way grants are checked unsigned")
+        print(f"decisions.py: NOTE — {said}; a change under check can swap or delete that pin. "
+              "Pass --pin-ref refs/remotes/origin/<default> (or a commit id) to anchor it "
+              "(W3-07, #635)", file=sys.stderr)
         return tree
     trusted = _pin_at_ref(root, pin_ref)
     if tree != trusted:

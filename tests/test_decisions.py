@@ -1264,7 +1264,7 @@ class TestPinRefIsAnExactNameW307(TestPinRefIsTheTrustAnchor):
     refs/heads/<name>, …): with refs/remotes/worker/key absent, a local branch
     refs/heads/refs/remotes/worker/key answered for it, and a revision suffix passed the prefix
     check too. A ref anchors only when it exists under exactly its name; a commit id only when it
-    names that commit object."""
+    names that commit object. And with no --pin-ref an ABSENT pin was silent."""
 
     def rogue_branch(self, ref):
         """The change's own key and a grant it signed, committed on the LOCAL ref `ref`."""
@@ -1324,6 +1324,23 @@ class TestPinRefIsAnExactNameW307(TestPinRefIsTheTrustAnchor):
         r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("differs", r.stderr)
+
+    def test_a_deleted_working_tree_pin_is_never_silent(self):
+        # Codex review P2: with neither --pin-ref nor a provenance variable, the NOTE fired only
+        # when a pin was present, so the deleted case — unsigned one-way grants valid — was the
+        # one that said nothing.
+        shutil.rmtree(Path(self.tmp) / ".orca")
+        self.seed(["2026-09-01T00:00:00Z · gate-pin · one-way · approved · deploy to production "
+                   "[source=human:lia] · t-1"])
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        for command in ("check", "active"):
+            with self.subTest(command=command):
+                r = subprocess.run([sys.executable, str(DECISIONS), "--file", str(self.log),
+                                    command], capture_output=True, text=True, env=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("NOTE", r.stderr)
+                self.assertIn("absent", r.stderr)
+                self.assertIn("--pin-ref", r.stderr)
 
 
 class TestGrantPayloadBindsTsAndClassP23(PinnedLedger):

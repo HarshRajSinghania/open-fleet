@@ -2390,7 +2390,7 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
             with self.subTest(ppid=ppid, complete=complete):
                 real_stat = mod.stat
 
-                def fake_stat(pid, ppid=ppid):
+                def fake_stat(pid, ppid=ppid, real_stat=real_stat):
                     return (ppid, "77") if pid == 4242 else real_stat(pid)
                 with mock.patch.object(mod, "processes_with_handle", return_value=([4242], complete)), \
                         mock.patch.object(mod, "stat", side_effect=fake_stat), quiet():
@@ -2488,7 +2488,7 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
             with self.subTest(handle=handle):
                 failures = [PermissionError(13, "Permission denied")] * 3
 
-                def reader(p):
+                def reader(p, failures=failures):
                     if p == pid and failures:
                         raise failures.pop()
                     return real(p)

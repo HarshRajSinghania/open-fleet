@@ -862,11 +862,16 @@ class _Authority:
         `where` says which kind it was, so the verdict and the transcript tell them apart. A
         dispatch record with an unpinned key does not open the enforcement lane at all (main()).
 
-        The class is decided by what the ref RESOLVES to, never by its spelling (PR #719 review):
-        a `refs/remotes/…` name may be a symbolic ref to a local branch. The ref is followed
-        through any symbolic chain to its final target ONCE, that target must itself be
-        remote-tracking, it is resolved to a commit ONCE, and the bytes are read at that commit —
-        nothing re-resolves the name afterwards.
+        The class is decided by what the ref RESOLVES to, never by its spelling (PR #719 review),
+        and the resolution is by EXACT name (W3-07, Codex review): gitexec.remote_tracking_commit,
+        the rule decisions.py and gate-batch.py --pin-ref and run_report's trusted base answer to,
+        run through this verifier's own custody-classed git. A commit id anchors only when it
+        names that commit object (64 hex digits in a SHA-1 repository are no object id, and
+        rev-parse expands them as a branch name); a ref only when it is a full refs/remotes/… name
+        that EXISTS under exactly that name, every symbolic hop remote-tracking too — never what
+        `rev-parse` expands it to (refs/heads/refs/remotes/… when the remote-tracking ref is
+        absent), never a revision suffix (~1, ^, @{1}). It is resolved to a commit ONCE and the
+        bytes are read at that commit — nothing re-resolves the name afterwards.
 
         What a remote-tracking ref guarantees, precisely: it is what the clone's last fetch wrote.
         On a lane claiming soundness the coordinator (or the CI runner) owns that clone, so the
@@ -880,29 +885,37 @@ class _Authority:
         elif ref.startswith("-"):
             return f"{path} at {ref!r}", source, False, None  # read_source refuses it
         else:
-            target = ref
-            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref):
-                code, out = _git(["symbolic-ref", "-q", ref])
-                target = out if code == 0 and out else ref  # the FINAL target of a symbolic chain
-            code, commit = _git(["rev-parse", "--verify", "-q", f"{target}^{{commit}}"])
-            if code != 0 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
-                # Off a sound lane the read itself reports the missing ref; on one, a name that
-                # names no commit is refused here (a tree id, say, is no commit to anchor on).
-                where, read, pinned = f"{path} at {ref!r}, which names no commit", source, False
-            elif target == ref and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref):
-                where, read, pinned = f"{path} at commit {commit[:12]}", f"{path}@{commit}", True
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    "gitexec_for_verify", Path(__file__).resolve().parent / "gitexec.py")
+                gitexec = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(gitexec)
+                commit, target, why = gitexec.remote_tracking_commit(lambda *a: _git(list(a)), ref)
+            except Exception as err:  # noqa: BLE001 - no rule loaded is no anchor, never a pass
+                commit, target, why = None, ref, f"could not be classed (gitexec.py: {err})"
+            if commit is not None:
+                read, pinned = f"{path}@{commit}", True
+                via = f" (a symbolic ref to {target})" if target not in (ref, commit) else ""
+                where = (f"{path} at commit {commit[:12]}" if target == commit else
+                         f"{path} at remote-tracking ref {ref}{via} = commit {commit[:12]}")
             else:
-                via = f" (a symbolic ref to {target})" if target != ref else ""
-                read, pinned = f"{path}@{commit}", target.startswith("refs/remotes/")
-                where = (f"{path} at remote-tracking ref {ref}{via} = commit {commit[:12]}"
-                         if pinned else f"{path} at {ref!r}{via} = commit {commit[:12]}, a "
-                         "local name the graded worker can move")
+                # Not an anchor. Off a sound lane the read stands where git's own resolution puts
+                # it, said to be a local name; on one it is refused below. A name that names no
+                # commit at all is reported as such (a tree id, say, is no commit to anchor on).
+                code, local = _git(["rev-parse", "--verify", "-q", f"{ref}^{{commit}}"])
+                pinned = False
+                if code != 0 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", local):
+                    where, read = f"{path} at {ref!r}, which names no commit", source
+                else:
+                    where = (f"{path} at {ref!r} = commit {local[:12]}, a local name the graded "
+                             f"worker can move ({ref!r} {why})")
+                    read = f"{path}@{local}"
         if not pinned and sound:
             return where, read, False, (f"{what} {source!r} is {where} — a lane claiming soundness "
-                                 f"({cls.lane}) reads trust material only at a commit id or a ref "
-                                 "whose final target is remote-tracking (what the coordinator's own "
-                                 "fetch wrote): path@refs/remotes/… or path@<commit id>; "
-                                 "fail-closed (W3-03)")
+                                 f"({cls.lane}) reads trust material only at a commit id or a full "
+                                 "remote-tracking ref that exists under exactly that name (what the "
+                                 "coordinator's own fetch wrote): path@refs/remotes/… or "
+                                 "path@<commit id>; fail-closed (W3-03, W3-07)")
         if pinned:
             # Said in every verdict, not only the docs (PR #719 re-attack): in the worker's own
             # clone `git update-ref refs/remotes/origin/main <its commit>` succeeds, and a commit id

@@ -6785,6 +6785,50 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         keys = [c.args[0] for c in spy.call_args_list if "dispatch-pubkey" in c.args[0]]
         self.assertEqual(keys, [f".orca/dispatch-pubkey@{self.pinned}"], spy.call_args_list)
 
+    def assert_refused(self, ref, because):
+        out = self._check(f".orca/dispatch-pubkey@{ref}")
+        self.assertEqual(len(out), 1, out)
+        self.assertFalse(out[0].startswith("NOTE:"), out)
+        self.assertNotIn("signature verified", out[0])
+        self.assertIn("W3-03", out[0])
+        self.assertIn(because, out[0])
+
+    def test_a_local_branch_spelled_as_an_absent_remote_tracking_ref_is_refused(self):
+        # W3-07 class, Codex review (P1): with refs/remotes/worker/key ABSENT, symbolic-ref
+        # failed, the target kept the supplied spelling, and rev-parse expanded it to the local
+        # branch refs/heads/refs/remotes/worker/key — the worker's key — so its self-signed
+        # record verified on a lane claiming soundness. Same through origin/HEAD pointing at
+        # that absent spelling.
+        worker = self._worker_branch_key()
+        self.git("update-ref", "refs/heads/refs/remotes/worker/key", worker)
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/worker/key")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/origin/HEAD"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "exactly that name")
+
+    def test_a_hex_named_branch_is_not_a_commit_id(self):
+        # 64 hex digits are no object id in a SHA-1 repository: rev-parse expands them as a ref.
+        worker = self._worker_branch_key()
+        hexname = "0f" * 32
+        self.git("update-ref", f"refs/heads/{hexname}", worker)
+        self.assert_refused(hexname, "names no commit object")
+
+    def test_a_revision_suffix_on_a_remote_tracking_ref_is_refused(self):
+        # A key rotation retired the worker's key: origin/main's parent (and the reflog entry
+        # before the rotation) still pins it, and every suffix passed the prefix check.
+        self._worker_branch_key()
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.write(".orca/dispatch-pubkey", verify._load_ed25519().publickey(self.SEED).hex() + "\n")
+        self.commit("rotate back to the coordinator key")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        for ref in ("refs/remotes/origin/main~1", "refs/remotes/origin/main^",
+                    "refs/remotes/origin/main@{1}"):
+            with self.subTest(ref=ref):
+                self.assert_refused(ref, "not a valid ref name")
+        # The exact name reads the current key, which did not sign the worker's record.
+        out = self._check(".orca/dispatch-pubkey@refs/remotes/origin/main")
+        self.assertNotIn("signature verified", "\n".join(out))
+
 
 class SoundLaneNeverRunsAWorkerWritableGitleaks(RepoCase):
     """W3-10 (2026-10-27 security audit, P3): a worker-writable gitleaks was consulted on every

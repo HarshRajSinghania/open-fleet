@@ -695,7 +695,7 @@ class NothingIsReResolvedAfterItsCheck(unittest.TestCase):
                 (victim / "keep.txt").write_text("a user's own file outside --out\n", encoding="utf-8")
                 real = bundle._claim
 
-                def claim_then_swap(*args, swapped=swapped, **kwargs):
+                def claim_then_swap(*args, swapped=swapped, real=real, out=out, victim=victim, **kwargs):
                     decided = real(*args, **kwargs)
                     (out / swapped).rename(out / f"{swapped}.aside")
                     (out / swapped).symlink_to(victim, target_is_directory=True)

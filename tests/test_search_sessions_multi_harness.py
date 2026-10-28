@@ -883,6 +883,15 @@ class TestZstdFramesAreWalkedInBoundedWork(_Base):
         hits, _err = self.scan("mu_token")
         self.assertEqual(len(hits), 1, "the frame after the empty ones was not read")
         size = path.stat().st_size
+        # The scan walks the frames in its contained child, whose counter this process never sees
+        # (Codex round 8 on 70805faa: the assertion read a parent counter that stayed 0, so the
+        # quadratic walk passed): the same walk is measured here, in this process.
+        _FrameZstd.fed = 0
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.mod._new_scan()
+            walked = self.mod._unzstd_capped(_FrameZstd, path.read_bytes(), path)
+        self.assertIsNotNone(walked, "the walk measured here did not read the file")
+        self.assertGreater(_FrameZstd.fed, 0, "the walk measured here fed nothing: it was not measured")
         self.assertLess(_FrameZstd.fed, 4 * size + empties * 1024,
                         f"the walk re-fed {_FrameZstd.fed} bytes for a {size}-byte file: quadratic in frames")
 

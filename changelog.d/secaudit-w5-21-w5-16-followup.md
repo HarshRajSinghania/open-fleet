@@ -15,5 +15,7 @@
   together (32 of ~1 MB, ~416 MB of first shares) waited on one another until every one was answered
   503. Now at most one request waits for budget while holding any: of the bodies read in full, one
   may wait for its larger charge, and while it waits every other take leaves what it needs free;
-  any other whose charge does not fit at once is answered 503 at once and gives its share back. A
-  parsed body also gives back its parse's share before it is relayed, keeping only its bytes.
+  any other whose charge does not fit at once is answered 503 at once and gives back all of its
+  share but its bytes'. A parsed body also gives back its parse's share before it is relayed,
+  keeping only its bytes', and on every way out of a request -- an exception included -- the
+  bytes' share goes back only once the body's buffer has been freed.

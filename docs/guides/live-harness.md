@@ -119,10 +119,11 @@ The launcher starts both containers with these properties:
   each JSON value at its worst parsed size): what the bound does not need goes back, and a body
   whose JSON values need more than its first share takes the difference then. Only one body read
   in full at a time may wait for that difference while holding its share; any other whose
-  difference does not fit at once is answered 503 at once and gives its share back, and while one
-  waits every other take leaves room for what it needs, so no request ever waits for a share
-  another waiting request holds. Once the parse is over, the body keeps only its own bytes while
-  it is relayed. The pre-scan holds no memory of its own (it finds one structural byte at a time
+  difference does not fit at once is answered 503 at once and gives back all of its share but its
+  bytes', and while one waits every other take leaves room for what it needs, so no request ever
+  waits for a share another waiting request holds. Once the parse is over, the body keeps only
+  its bytes' share while it is relayed. However a request ends -- answered, refused, or with an
+  exception -- its bytes' share goes back only once its buffer has been freed. The pre-scan holds no memory of its own (it finds one structural byte at a time
   and skips each string with a plain search, whatever escapes it holds) and stops after two million
   steps. The body is parsed in a child process whose memory limit is that bound, so a parse that
   would pass it fails there, never in the broker, which holds no parsed body. A budget take waits

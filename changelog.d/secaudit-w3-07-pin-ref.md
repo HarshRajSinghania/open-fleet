@@ -15,8 +15,12 @@
   (`refs/remotes/origin/main~1`, `^`, `@{1}`) read an older commit's retired key, and 64 hex digits
   in a SHA-1 clone expanded to a branch of that spelling. `gitexec.remote_tracking_commit` is now
   the one rule: a commit id must name that commit object; a ref must be a full `refs/remotes/…`
-  name that `check-ref-format` accepts and that exists under exactly that name, every symbolic hop
-  remote-tracking too, looked up in one `for-each-ref` listing and peeled to a commit once.
+  name that `check-ref-format` accepts and that exists under exactly that name, looked up in one
+  `for-each-ref` listing and peeled to a commit once. Every symbolic hop must be remote-tracking
+  too, and each is read on its own (`git symbolic-ref --no-recurse`, git 2.39+; without it a
+  symbolic name is refused): the listing's `%(symref)` is the chain's resolved END, so
+  `refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/<old key>` used to pass
+  with the local bridge — the checked change's to re-point — unseen (review round 2).
   `decisions.py --pin-ref`, `gate-batch.py --pin-ref`, `run_report.py`'s trusted base, `verify.py`'s
   trust keys and `release_check.py`'s gate-1 anchor call it; `verify-gate.sh` mirrors it in sh.
   Each planted exploit — the absent-remote local branch, the suffixes, the hex-named branch — had

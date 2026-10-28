@@ -281,8 +281,10 @@ default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-
 git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
 the checked tree could have been written by a worker). `REF` must be a commit id that names that
 commit object, or a full remote-tracking ref (`refs/remotes/origin/main`) that exists under exactly
-that name, every hop of a symbolic chain remote-tracking too — a local branch, tag, `HEAD`, a
-`refs/remotes/…` name symbolic to a local branch, a revision suffix (`~1`, `^`, `@{1}`), and a
+that name, every hop of a symbolic chain remote-tracking too (read one hop at a time with
+`git symbolic-ref --no-recurse`, git 2.39+; where that cannot run, a symbolic name is refused) — a
+local branch, tag, `HEAD`, a `refs/remotes/…` name symbolic to a local branch (directly or through
+a local bridge back to a remote ref), a revision suffix (`~1`, `^`, `@{1}`), and a
 local `refs/heads/refs/remotes/…` branch that `rev-parse` would find for an absent remote-tracking
 ref are all refused — and is resolved once, the reads naming that commit (W3-07; the rule is
 `gitexec.remote_tracking_commit`, shared by every trust anchor). Remote-tracking means what the clone's own

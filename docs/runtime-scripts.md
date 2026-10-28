@@ -279,14 +279,19 @@ Flags: `--file` (log path, default `$OPEN_FLEET_DECISIONS_FILE`, then `$ORCA_DEC
 then `docs/DECISIONS.md`), `--doors` (door registry,
 default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-pubkey` from that
 git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
-the checked tree could have been written by a worker). `REF` must be a commit id or a ref whose
-final target, through any symbolic chain, is remote-tracking (`refs/remotes/origin/main`) — a local
-branch, tag, `HEAD`, or a `refs/remotes/…` name symbolic to a local branch is refused — and is
-resolved once, the reads naming that commit (W3-07). Remote-tracking means what the clone's own
+the checked tree could have been written by a worker). `REF` must be a commit id that names that
+commit object, or a full remote-tracking ref (`refs/remotes/origin/main`) that exists under exactly
+that name, every hop of a symbolic chain remote-tracking too — a local branch, tag, `HEAD`, a
+`refs/remotes/…` name symbolic to a local branch, a revision suffix (`~1`, `^`, `@{1}`), and a
+local `refs/heads/refs/remotes/…` branch that `rev-parse` would find for an absent remote-tracking
+ref are all refused — and is resolved once, the reads naming that commit (W3-07; the rule is
+`gitexec.remote_tracking_commit`, shared by every trust anchor). Remote-tracking means what the clone's own
 fetch wrote: run over a coordinator's clone or a CI checkout, the checked change did not write it;
 in a worker's own clone `git update-ref refs/remotes/…` succeeds and a commit id names whatever the
 caller chose, so there the anchor is advisory. Without
-`--pin-ref` a working-tree pin is used with a stderr NOTE, and a caller that sets
+`--pin-ref` the working-tree pin is used with a stderr NOTE — whether present, swapped or absent
+(an absent pin checks one-way grants unsigned, and only a ref read can tell deleted from never
+pinned) — and a caller that sets
 `ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` (a sound lane) cannot run at all (exit 2). `append` takes `--id`, `--class`, `--answer`,
 `--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `active` takes `--json`; `tally` takes
 `--lens`, `--json`; `check` takes `--since YYYY-MM-DD` (records stamped earlier are counted, not
@@ -1015,9 +1020,11 @@ Subcommands: `init`, `add`, `answer`, `waive`, `overtake`, `list`, `stale`, `sho
 
 Flags: `--run` (run directory under docs/runs) or `--file` (explicit batch path, for
 tests and scratch); `--pin-ref REF` (the trust anchor, before or after the subcommand: a commit
-id or a ref whose final target, through any symbolic chain, is remote-tracking — a local branch,
-tag, `HEAD`, short name or a `refs/remotes/…` name symbolic to a local branch exits 2 — resolved
-once; the human grant key, through `decisions.py --pin-ref`, and the batch at this path are both
+id that names that commit object, or a full remote-tracking ref that exists under exactly that
+name, every symbolic hop remote-tracking too — a local branch, tag, `HEAD`, short name, a
+`refs/remotes/…` name symbolic to a local branch, a revision suffix, or a local
+`refs/heads/refs/remotes/…` branch standing in for an absent remote-tracking ref exits 2 (W3-07) —
+resolved once; the human grant key, through `decisions.py --pin-ref`, and the batch at this path are both
 read at that commit. Use it only in a clone the checked change cannot write refs in — the
 coordinator's own fetch or a CI checkout; in a worker's own clone any ref, `refs/remotes/*`
 included, is the worker's to move). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,

@@ -503,8 +503,9 @@ Usage: `diff_scope.py [--base REF] [--repo DIR] [--strict] [--overlap FILE] [--j
 `source <(diff_scope.py)`), or `diff_scope.py --predict-merge BASE BRANCH [--repo DIR]` (also
 `wtree.sh predict-merge`) to predict a 3-way merge in memory without touching HEAD, index or working tree.
 
-Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master),
-`--repo` (default `.`), `--strict` (any unmatched path exits nonzero), `--overlap`
+Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master; resolved
+once by exact ref names, as for `floor_guard.py` below, and the diff is taken against that
+commit), `--repo` (default `.`), `--strict` (any unmatched path exits nonzero), `--overlap`
 (pre-dispatch JSON `{units: [{id, scope: [...]}]}` intersecting declared unit globs
 against tracked repo files and pattern prefixes to emit `OVERLAP_COUNT`, or with `--json` a
 `deps` map, as serialization chains for shared hot files), `--json` (emit an object instead of
@@ -973,6 +974,15 @@ Usage: `floor_guard.py [--base REF] [--constraints FILE] [--waivers FILE] [--rep
 Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master), `--constraints`
 (numbers file, default CONSTRAINTS.md), `--waivers` (DECISIONS log, default
 `docs/DECISIONS.md`), `--repo` (default `.`), `--quiet` (findings only, no clean banner).
+The base is resolved once, by exact ref names only (`gitexec.base_commit`, W3-07), and the diff,
+the waivers and the human-grant pin are all read at that commit. A commit id, a full
+`refs/remotes/…` name, or a short remote-tracking name (`origin/main`, read only as
+`refs/remotes/origin/main`) goes through the trust-anchor rule (`gitexec.remote_tracking_commit`);
+a bare name (`main`) or `refs/heads/…` is that local branch by its exact name, with a stderr NOTE
+that it is advisory (the change under check can move a local branch). Never a tag, `HEAD`, a
+revision suffix (`origin/main~1`, `@{1}`), a local branch or tag spelled `origin/main` in place
+of the remote-tracking one, or a local `refs/heads/refs/remotes/…` branch standing in for an
+absent remote-tracking ref; unnamed, an `origin/HEAD` that points at a local branch is skipped.
 
 Rules (stable ids): `silenced-checker`, `test-made-easier`, `unfinished-work`,
 `assertion-removed` (removed lines in test paths that still exist, or that moved: a deleted

@@ -21,3 +21,17 @@
   trust keys and `release_check.py`'s gate-1 anchor call it; `verify-gate.sh` mirrors it in sh.
   Each planted exploit — the absent-remote local branch, the suffixes, the hex-named branch — had
   verified a worker's key, bound a report the PR's own policy judged, or passed gate 1.
+- **The base verify.py, floor_guard.py and diff_scope.py read against is resolved by exact name,
+  once** (W3-07 class, second review). `verify.py`'s ancestry, base-binding and `--symbol` checks
+  probed `refs/remotes/origin/<base>` and then handed the NAME to `merge-base` and `git grep`: with
+  the ref absent, a local `refs/heads/refs/remotes/origin/main` holding a worker's poison commit
+  passed both the ancestry proof and the base binding on a sound lane, and a symbol the worker
+  committed read as on base. `floor_guard.py` and `diff_scope.py` resolved `--base` (and
+  origin/HEAD's target, cut to the short `origin/<x>`) with `rev-parse`, which tries tags and
+  local branches first: a tag or local branch spelled `origin/main`, an origin/HEAD pointed at a
+  local branch, a suffix such as `origin/main~1`, or the absent-remote local spelling made
+  `floor_guard` read a planted waiver (`clean (1 waived)`) and `diff_scope` diff against the
+  change's own tip (the AUTH lens off). All three now resolve once through
+  `gitexec.remote_tracking_commit` (`gitexec.base_commit` for the two diff tools, where a bare
+  local branch name such as `main` stays usable by its exact name with an advisory NOTE), and
+  every later diff, waiver, pin, merge-base and grep read names the resolved commit.

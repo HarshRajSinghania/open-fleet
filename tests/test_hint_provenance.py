@@ -1584,6 +1584,50 @@ class JoinedFieldsAreCheckedAsShown(unittest.TestCase):
         self.assertIn("REFLECTION: the refresh test flaked · freeze the clock · repeating=no", packet)
 
 
+class NoCapDecidesALabel(unittest.TestCase):
+    """Codex round 12 on 419a8435: the scan's child returned each hint cut to its caps (32 evidence
+    artifacts, 32 scope paths, 8 symbols a path) and the parent checked what was left, so a 33rd
+    artifact that had been modified, or a changed 40th path or its symbol, was never checked and the
+    hint came out CURRENT. The checks now run in the child on the whole record; only display data,
+    and the label, cross back. Each record here is past every cap with its one change past them."""
+
+    def entry(self, scn, query, unit):
+        fx = Fixture(scn)
+        try:
+            entries = fx.select(paths=query)["entries"]
+        finally:
+            fx.close()
+        return next(e for e in entries if e["unit"] == unit)
+
+    def test_a_modified_artifact_past_the_cap_is_checked(self):
+        names = [f"evidence-{i:02d}.txt" for i in range(40)]
+        run = dict(unit_run("2026-02-01-run-a", "ART-1", "@c0", ["src/auth.py"], note="forty artifacts"),
+                   artifacts={name: f"{name}\n" for name in names}, tamper_artifacts={names[-1]: "rewritten\n"})
+        got = self.entry(scenario([{"name": "c0", "files": BASE}], [run]), ("src/auth.py",), "ART-1")
+        self.assertEqual((got["currency"], got["reasons"]), ("STALE", [f"artifact-modified:{names[-1]}"]))
+
+    def test_a_changed_path_and_symbol_past_the_caps_are_checked(self):
+        files = {f"src/mod{i:02d}.py": f"def fn{i}():\n    return {i}\n" for i in range(40)}
+        last = "src/mod39.py"
+        commits = [{"name": "c0", "files": dict(BASE, **files)},
+                   {"name": "c1", "files": {last: "def fn39():\n    return -1\n"}}]
+        for unit, touched, reason in (("PATH-1", sorted(files), f"path-changed:{last}"),
+                                      ("SYM-1", [f"{path}::fn{i}" for i, path in enumerate(sorted(files))],
+                                       f"symbol-changed:{last}::fn39")):
+            with self.subTest(unit=unit):
+                run = unit_run("2026-02-01-run-a", unit, "@c0", touched, note="forty files")
+                got = self.entry(scenario(commits, [run]), ("src",), unit)
+                self.assertEqual(got["currency"], "STALE", got)
+                self.assertIn(reason, got["reasons"])
+
+    def test_a_supersession_past_the_cap_is_applied(self):
+        old = unit_run("2026-02-01-run-a", "OLD-1", "@c0", ["src/auth.py"], note="the older record")
+        new = unit_run("2026-02-02-run-b", "NEW-1", "@c0", ["src/auth.py"], note="the newer record",
+                       supersedes=[f"OTHER-{i}" for i in range(40)] + ["OLD-1"])
+        got = self.entry(scenario([{"name": "c0", "files": BASE}], [old, new]), ("src/auth.py",), "OLD-1")
+        self.assertEqual((got["currency"], got["reasons"]), ("SUPERSEDED", ["superseded-by:2026-02-02-run-b/NEW-1"]))
+
+
 # Runs one read the hint makes, in a child of its own under a 512 MiB data limit (so a read without
 # end fails there instead of in the test runner) and the caller's timeout; prints what it returned or
 # raised, and its own peak (VmHWM). argv: search_sessions.py, case, repo, path, and for "manifest"

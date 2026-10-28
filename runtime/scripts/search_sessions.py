@@ -159,7 +159,7 @@ FIELD_CHARS = 16 << 10
 SNIPPET_CHARS = 64 << 10
 PATH_CHARS = 1 << 10
 LIST_ITEMS = 32
-TOKEN_ITEMS = 128
+REASON_ITEMS = 64
 SYMBOL_ITEMS = 8
 MAX_HINTS = 500
 # The longest schema statement SQLite is allowed to parse in a store (SQLITE_LIMIT_SQL_LENGTH): its
@@ -319,31 +319,26 @@ def _project_hits(result):
 
 
 def _project_hint(hint):
-    """One prior-run hint, carried across as exactly the fields the parent reads (rendering,
-    hint_provenance.assess and supersede), never the unit or the manifest it came from: a record's
-    only use, its artifacts, is kept as their paths and digests."""
-    records = []
-    for record in hint["records"]:
-        items = record.get("artifacts") if isinstance(record, dict) else None
-        records.append({"artifacts": [{"path": _text(item.get("path"), PATH_CHARS), "sha256": _text(item["sha256"], 128)}
-                                      for item in (items if isinstance(items, list) else [])[:LIST_ITEMS]
-                                      if isinstance(item, dict) and isinstance(item.get("sha256"), str)]})
+    """One prior-run hint, carried across as display data and the label the contained scan already
+    computed on the whole record (_judged_hints): never the unit or the manifest it came from, nor
+    anything a check would read. Every cap here cuts only what is shown; a reason list past
+    REASON_ITEMS keeps its first (worst) reasons and says how many more there were."""
     (rank, prose), field, cand, sym, query, kind = hint["match"]
+    why = [_text(reason, PATH_CHARS) for reason in hint["why"][:REASON_ITEMS]]
+    reasons = [[label, _text(reason, PATH_CHARS)] for label, reason in hint["reasons"][:REASON_ITEMS]]
+    if len(hint["why"]) > REASON_ITEMS:
+        why.append(f"+{len(hint['why']) - REASON_ITEMS} more reasons")
     return {"kind": "run", "run": _text(hint["run"], PATH_CHARS), "unit": _text(hint["unit"]),
-            "status": _text(hint["status"]), "run_key": _text(hint["run_key"], PATH_CHARS),
-            "unit_key": _text(hint["unit_key"]), "outcome": hint["outcome"], "rev": hint["rev"],
-            "rev_raw": bool(hint["rev_raw"]), "repo": _text(hint["repo"], PATH_CHARS),
-            "manifest_path": str(hint["manifest_path"]), "artifact": _text(hint["artifact"], PATH_CHARS),
-            "digest": hint["digest"], "records": records, "time": hint["time"], "claimed": hint["claimed"],
+            "status": _text(hint["status"]), "rev": hint["rev"], "repo": _text(hint["repo"], PATH_CHARS),
+            "artifact": _text(hint["artifact"], PATH_CHARS), "digest": hint["digest"], "time": hint["time"],
             "paths": [_text(p, PATH_CHARS) for p in hint["paths"][:LIST_ITEMS]],
-            "symbols": {_text(k, PATH_CHARS): sorted(_text(n, PATH_CHARS) for n in list(names)[:SYMBOL_ITEMS])
+            "path_count": len(hint["paths"]),
+            "symbols": {_text(k, PATH_CHARS): sorted(_text(n, PATH_CHARS) for n in sorted(names)[:SYMBOL_ITEMS])
                         for k, names in list(hint["symbols"].items())[:LIST_ITEMS]},
-            "tokens": [_text(t, PATH_CHARS) for t in hint["tokens"][:TOKEN_ITEMS]],
             "match": [[int(rank), bool(prose)], field, _text(cand, PATH_CHARS), _text(sym, PATH_CHARS),
                       _text(query, PATH_CHARS), kind],
-            "order": [int(n) for n in hint["order"]], "reasons": [],
-            "supersedes": [_text(item, PATH_CHARS) for item in hint["supersedes"][:LIST_ITEMS]],
-            "park": _note(hint["park"]), "inv": _note(hint["inv"])}
+            "order": [int(n) for n in hint["order"]], "currency": hint["currency"], "why": why,
+            "reasons": reasons, "park": _note(hint["park"]), "inv": _note(hint["inv"])}
 
 
 def _project_hints(hints):
@@ -362,12 +357,12 @@ def _project_hints(hints):
 
 
 def _restore_hints(hints):
-    """The projection back in the types the parent's code expects: a path, tuples, sets."""
+    """The projection back in the types the parent's code expects: tuples and sets."""
     for hint in hints:
-        hint["manifest_path"] = Path(hint["manifest_path"])
         hint["match"] = (tuple(hint["match"][0]), *hint["match"][1:])
         hint["order"] = tuple(hint["order"])
         hint["symbols"] = {path: set(names) for path, names in hint["symbols"].items()}
+        hint["reasons"] = [tuple(reason) for reason in hint["reasons"]]
     return hints
 
 
@@ -821,12 +816,34 @@ def _structured_tokens(unit):
     return out
 
 
-def _prior_hints(clean_paths, rdir):
-    """Every manifest unit whose path tokens match a query path, with its provenance attached. The
-    manifests are untrusted bytes, read and parsed in a contained scan (_contained)."""
+def _prior_hints(clean_paths, rdir, live=None, observations=()):
+    """Every manifest unit whose path tokens match a query path, with its provenance assessed and its
+    currency label computed. The manifests are untrusted bytes, read, parsed AND judged in a
+    contained scan (_contained): hint_provenance's checks (artifacts, scope, symbols, related tests,
+    supersession) run there on the whole record, so nothing a projection cap leaves out can be what
+    a label was decided on (Codex round 12 on 419a8435: the 33rd evidence artifact, cut, was never
+    checked); only display data and the label cross back."""
     if not (rdir.is_dir() and clean_paths):
         return []
-    return _contained(_scan_manifests, (clean_paths, rdir), [], _project_hints, _restore_hints)
+    return _contained(_judged_hints, (clean_paths, rdir, live, observations), [], _project_hints, _restore_hints)
+
+
+def _judged_hints(clean_paths, rdir, live, observations):
+    """_scan_manifests' hints, each assessed against the live source, superseded where a newer
+    record or the current evidence contradicts it, and labelled (hint_provenance.verdict)."""
+    prior = _scan_manifests(clean_paths, rdir)
+    archive = hp.Archive(rdir) if prior else None
+    for hint in prior:
+        try:
+            hint["reasons"].extend(hp.assess(hint, live, archive))
+        except hp.ProvenanceError as exc:
+            hint["reasons"].append((hp.UNKNOWN, f"provenance-unreadable:{exc}"))
+        if live is not None and hint["rev"] and live.has_commit(hint["rev"]):
+            hint["time"] = live.commit_time(hint["rev"]) or hint["time"]
+    hp.supersede(prior, live, observations)
+    for hint in prior:
+        hint["currency"], hint["why"] = hp.verdict(hint["reasons"])
+    return prior
 
 
 def _scan_manifests(clean_paths, rdir):
@@ -1000,7 +1017,8 @@ def _compose_prior(hint, withhold, blank, found=None):
     scope = ident(hint["paths"][0], 60) if hint["paths"] else "unresolved"
     syms = sorted(hint["symbols"].get(hint["paths"][0], ())) if hint["paths"] else []
     scope += f"::{ident(syms[0], 40)}" if syms else ""
-    scope += f"+{len(hint['paths']) - 1}" if len(hint["paths"]) > 1 else ""
+    count = hint.get("path_count", len(hint["paths"]))  # the projection carries the first LIST_ITEMS
+    scope += f"+{count - 1}" if count > 1 else ""
     when = datetime.datetime.fromtimestamp(hint["time"], datetime.timezone.utc).strftime("%Y-%m-%d") \
         if hint.get("time") is not None else "unknown"
     if not hint["repo"]:
@@ -1068,18 +1086,9 @@ def build_episodic_selection(paths, runs_dir=None, session_hits=None, max_lines=
         live = hp.LiveSource(live)
     observations = hp.load_observations(current_evidence) if current_evidence is not None else []
     rdir = Path(runs_dir) if runs_dir is not None else DEFAULT_RUNS_DIR
-    prior = _prior_hints(clean_paths, rdir)
-    archive = hp.Archive(rdir) if prior else None
-    for hint in prior:
-        try:
-            hint["reasons"].extend(hp.assess(hint, live, archive))
-        except hp.ProvenanceError as exc:
-            hint["reasons"].append((hp.UNKNOWN, f"provenance-unreadable:{exc}"))
-        if live is not None and hint["rev"] and live.has_commit(hint["rev"]):
-            hint["time"] = live.commit_time(hint["rev"]) or hint["time"]
-    hp.supersede(prior, live, observations)
+    prior = _prior_hints(clean_paths, rdir, live, observations)  # assessed and labelled, contained
     sessions = _session_hints(session_hits)
-    for hint in prior + sessions:
+    for hint in sessions:
         hint["currency"], hint["why"] = hp.verdict(hint["reasons"])
     withhold = mode == "current"
     visible = [h for h in prior if not (withhold and h["currency"] in hp.SUPPRESSED)]

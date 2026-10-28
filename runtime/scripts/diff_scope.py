@@ -284,6 +284,18 @@ def _driver_blanks(repo):
     return pairs
 
 
+def _custody(repo, **kw):
+    """gitexec.custody over ``repo``, its facts and settings read with diff_scope's own git and
+    floor: a git dir the coordinator builds over the repo's objects, whose config declares no
+    filter, textconv, diff or merge driver. A driver a `.gitattributes`/`info/attributes` line
+    selects is undefined there, however late the repo's config gained it (W4 custody sweep: the
+    blanks _driver_blanks lists cover only drivers declared BEFORE the listing)."""
+    def run(args):
+        return subprocess.run(_argv("-C", str(repo), *args), capture_output=True, timeout=60,
+                              env=_git_env(), stdin=subprocess.DEVNULL)
+    return gitexec.custody(repo, run=run, **kw)
+
+
 def git(repo, *args, tolerate=False, blanks=(), custody=None):
     """stdout of ``git <args>`` in ``repo`` (None on failure). ``custody`` (a gitexec.Custody, see
     _custody) runs it against the coordinator-built git dir over ``repo``'s work tree instead."""
@@ -300,18 +312,6 @@ def git(repo, *args, tolerate=False, blanks=(), custody=None):
     if r.returncode != 0 and not tolerate:
         return None
     return r.stdout
-
-
-def _custody(repo, **kw):
-    """gitexec.custody over ``repo``, its facts and settings read with diff_scope's own git and
-    floor: a git dir the coordinator builds over the repo's objects, whose config declares no
-    filter, textconv, diff or merge driver. A driver a `.gitattributes`/`info/attributes` line
-    selects is undefined there, however late the repo's config gained it (W4 custody sweep: the
-    blanks _driver_blanks lists cover only drivers declared BEFORE the listing)."""
-    def run(args):
-        return subprocess.run(_argv("-C", str(repo), *args), capture_output=True, timeout=60,
-                              env=_git_env(), stdin=subprocess.DEVNULL)
-    return gitexec.custody(repo, run=run, **kw)
 
 
 def resolve_base(repo, base):

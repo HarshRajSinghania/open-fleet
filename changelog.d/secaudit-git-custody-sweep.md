@@ -32,7 +32,10 @@
   would block opening it), and any promisor remote is refused as a partial clone (git 2.43 never
   writes `extensions.partialClone`). A FIFO at a work tree `.gitignore` or `.gitattributes`, which
   git opens itself, still blocks a call until its timeout (60 s; up to 120 s in the verifier) and
-  is then refused. predict-merge reports a custody refusal as such, and hint_provenance a git
-  timeout as a `ProvenanceError`. Also:
+  is then refused. The include check parses config exactly as git does (CRLF, quotes, escapes,
+  continuations, comments, case) and refuses a file it cannot. predict-merge reports a custody
+  refusal or a timeout as such, hint_provenance any git timeout (custody setup included) as a
+  `ProvenanceError`, and verify.py's control a timed-out custody query as its could-not-create
+  refusal. Also:
   the `_external.py` runner docstring no longer claims `reset --hard` runs in custody (it is
   refused).

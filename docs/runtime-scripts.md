@@ -1249,6 +1249,11 @@ every git reads the repository's config and follows its includes, and a commit w
 without running git, reads `config` and `config.worktree` (and, recursively, every
 `[include]`/`[includeIf]` `path` they name, conditions not evaluated) without blocking, and refuses
 (`GitCustodyRefused`) any of them, or the common `shallow`, that exists and is not a regular file.
+Each file is parsed as git's own config parser reads it — CRLF line endings, a UTF-8 BOM, quoted
+values with escapes, `\`-continued lines, `#`/`;` comments, case-insensitive section and key
+names, quoted subsections with escapes, `~`/`~user` and relative include paths — so the path it
+checks is the path git opens; a file git itself would reject (a bad header or escape, an
+unterminated quote, a NUL byte, a `%(prefix)/` path) refuses rather than being guessed at.
 What can still block: a FIFO the worker swaps in after that check, and one at a work tree's own
 `.gitignore` or `.gitattributes`, which git opens itself path by path. Those are bounded by the
 call's own timeout (60 s in floor_guard, diff_scope and hint_provenance; up to 120 s in verify.py's

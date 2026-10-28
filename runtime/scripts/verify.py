@@ -1097,7 +1097,9 @@ class _Authority:
     @classmethod
     def driver_blanks(cls, repo):
         """`(key, value)` config pairs blanking every filter/diff driver command `repo`'s config
-        declares (#629), for blanked_env(). A negative-control `checkout`/`apply`/`worktree add` MATERIALISES worker content,
+        declares (#629), for blanked_env(). In the executed control `repo` is the scratch worktree,
+        whose config is the verifier's own (control_git_dir: it declares none), so this is a belt
+        there that keeps the fail-closed refusal below. A negative-control `checkout`/`apply` MATERIALISES worker content,
         which runs a clean/smudge filter a `.gitattributes` (or `$GIT_DIR/info/attributes`, past
         any `--attr-source`) line selects — the one channel git_env's fixed belt and
         `--no-textconv`/`--no-ext-diff` cannot close. The command comes only from a declared
@@ -1150,6 +1152,54 @@ class _Authority:
             env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
         env["GIT_CONFIG_COUNT"] = str(first + len(blanks))
         return env
+
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def gitexec():
+        """runtime/scripts/gitexec.py, loaded once by path (it is in _Transcript.TOOLCHAIN since
+        #608): the verifier takes only its git custody dir builder (custody_git_dir), which runs
+        no git — every verifier git leg stays on the pinned git_bin() under git_env()."""
+        spec = importlib.util.spec_from_file_location(
+            "verify_gitexec", Path(__file__).resolve().parent / "gitexec.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    @classmethod
+    def control_git_dir(cls, top, head):
+        """The git dir the executed control is checked out, applied and sealed in (W4 custody
+        sweep), as a context manager yielding its path: built by the verifier (gitexec
+        custody_git_dir), never a linked worktree of `top`. A linked worktree reads the SHARED
+        config and `info/attributes` the graded worker writes, so a filter, textconv or merge driver
+        it added after driver_blanks listed the config ran in the control's checkout, revert or
+        apply as this verifier. This dir's config declares no driver at all, so one a
+        `.gitattributes` (or the source's `info/attributes`) selects is undefined here, whenever it
+        was added. Its `objects` is the source's store ("shared"): the sealed control commit lands
+        where each phase repository's alternates already reach. HEAD is `head`; `core.bare` is
+        false, as the control's work tree reaches it through a `.git` gitfile. The source's
+        `info/attributes` and the content of its own `core.attributesFile` ride as data. Raises
+        OSError (GitCustodyRefused for an unreadable or non-regular `info/exclude`/`shallow`/
+        `info/attributes`, or a `core.attributesFile` that is not a bounded regular file)."""
+        git, env = cls.git_bin(), cls.git_env()
+        code, common, gerr = _run([git, "-C", top, "rev-parse", "--path-format=absolute",
+                                   "--git-common-dir"], timeout=30, env=env)
+        code2, fmt, gerr2 = _run([git, "-C", top, "rev-parse", "--show-object-format"],
+                                 timeout=30, env=env)
+        if code != 0 or code2 != 0 or not common.strip():
+            raise OSError(f"cannot locate the source repository's object store: {(gerr or gerr2).strip()}")
+
+        def run(args):  # the source's own core.attributesFile, read under git_env (data only)
+            # Not _run_bytes: it reports a timeout as exit 1, which `config --get` means "unset", so
+            # a timed-out query read as "no attributes file" (Codex on PR #724, round 6). A timeout
+            # here is an OSError: the "could not create the control worktree" refusal.
+            try:
+                return subprocess.run([git, "-C", top, *args], capture_output=True, timeout=30, env=env,
+                                      stdin=subprocess.DEVNULL)
+            except subprocess.TimeoutExpired as exc:
+                raise OSError(f"git {' '.join(args[:2])} timed out after {exc.timeout}s") from exc
+        attributes = cls.gitexec().custody_attributes(run, top)
+        return cls.gitexec().custody_git_dir(common.rstrip("\n"), fmt.strip(), str(head), None,
+                                             objects="shared", bare=False, attributes=attributes)
 
     @classmethod
     def api(cls, repo, endpoint, *flags, timeout=20):
@@ -2184,9 +2234,11 @@ def _apply_control(wt, m, nc, tool, nc_command=None):
     """Apply the negative control inside the throwaway worktree `wt`. Returns an error string or
     None. Fail-closed on every git error: a control that did not apply is not a control."""
     # #629: checkout/revert/apply below materialise worker content and would run a repo-config
-    # clean/smudge filter a .gitattributes selects. Each blanks every declared driver command,
-    # read in `wt` itself immediately before the call (PR #649 review: read the drivers in the
-    # same directory and ref state as the git call that could run them, as late as possible).
+    # clean/smudge filter a .gitattributes selects. In the executed control `wt` runs against the
+    # verifier's own git dir (_Authority.control_git_dir), whose config defines no driver, so none
+    # runs however late the source's config gained it (W4 custody sweep). Each call still blanks
+    # every driver `wt`'s config declares, read in `wt` itself immediately before the call (PR
+    # #649 review: the same directory and ref state as the git call that could run them).
     if tool == "revert":
         base = m.get("base_sha")
         paths, err = _nc_paths(nc)
@@ -2367,18 +2419,26 @@ def execute_negative_control(m, nc_command=None):
         executes, so no run can reach it, and the sealed commit is content-addressed, so no run can
         alter what the control phase checks out."""
         holder = tempfile.mkdtemp(prefix="orca-nc-")
-        wt = str(Path(holder) / "wt")
-        # #629: populating the worktree from head_sha runs any repo-config smudge filter an
-        # attribute selects, so its drivers are blanked first — and they are read IN the new
-        # worktree, not in `top`. A linked worktree's config view is its own: an `includeIf
-        # "gitdir:**/worktrees/**"` (or `onbranch:`, or its own config.worktree) can declare a
-        # filter only there, which a list read in `top` missed (PR #649 review). So: create it
-        # EMPTY (--no-checkout materialises nothing), read its drivers, then check out under them.
-        code, _, gerr = _run([_Authority.git_bin(), "-C", top, "worktree", "add", "--no-checkout",
-                              "--detach", wt, str(head)], timeout=120, env=_Authority.git_env())
+        wt = Path(holder) / "wt"
+        # #629: populating the worktree from head_sha, restoring base paths, reverting and applying
+        # all materialise worker content, which runs any filter (and the revert/apply any merge
+        # driver) an attribute selects. Listing the drivers a config declares and blanking them
+        # (PR #649) left a window: one the graded worker added to the shared config after the
+        # listing ran here (W4 custody sweep). So the scratch worktree is no linked worktree of
+        # `top`: its `.git` is a gitfile naming a git dir this verifier builds
+        # (_Authority.control_git_dir), whose config defines no driver at all. driver_blanks still
+        # reads that config before each call, a belt that keeps the fail-closed refusal.
+        custody = None  # entered by hand: only BUILDING it is "could not create" (an OSError)
         try:
-            if code != 0:
-                return None, f"could not create the control worktree at head_sha: {gerr.strip()}"
+            try:
+                built = _Authority.control_git_dir(top, head)
+                gd = built.__enter__()
+                custody = built
+                wt.mkdir()
+                (wt / ".git").write_bytes(b"gitdir: " + os.fsencode(gd) + b"\n")
+            except OSError as err:
+                return None, f"could not create the control worktree at head_sha: {err}"
+            wt = str(wt)
             code, _, gerr = _run_at(wt, [_Authority.git_bin(), "checkout", "-q", "--detach",
                                          str(head)], timeout=120,
                                     env=_Authority.blanked_env(_Authority.driver_blanks(wt)))
@@ -2389,8 +2449,8 @@ def execute_negative_control(m, nc_command=None):
                 return None, apply_err
             return _seal_control(wt, head)
         finally:
-            _run([_Authority.git_bin(), "-C", top, "worktree", "remove", "--force", wt], timeout=60,
-                 env=_Authority.git_env())
+            if custody is not None:
+                custody.__exit__(None, None, None)  # removes the control git dir
             shutil.rmtree(holder, ignore_errors=True)
 
     def _tag_kind(raw):
@@ -2523,8 +2583,14 @@ def execute_negative_control(m, nc_command=None):
                                  timeout=30, env=env)
             if code != 0:
                 return f"could not set HEAD in the {phase} repository: {gerr.strip()}"
-        code, _, gerr = _run([git, "-C", repo, "reset", "--hard", "--quiet", str(commit)],
-                             timeout=120, env=env)
+        # The phase repository names no attributes or ignore file of its own, so git would open
+        # its default user ones (~/.config/git/attributes and .../ignore, the worker's to write on a
+        # one-uid host): a FIFO there blocked this checkout (PR #724 re-attack). Pinned to
+        # /dev/null on this call's own command line; the verifier's pinned environment is unchanged,
+        # so the system attributes file stays readable here (see docs/runtime-scripts.md).
+        code, _, gerr = _run([git, "-C", repo, "-c", f"core.attributesFile={os.devnull}",
+                              "-c", f"core.excludesFile={os.devnull}", "reset", "--hard", "--quiet",
+                              str(commit)], timeout=120, env=env)
         if code != 0:
             return f"could not check out the {phase} commit: {gerr.strip()}"
         return None

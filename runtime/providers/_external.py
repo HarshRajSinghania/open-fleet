@@ -35,11 +35,12 @@ def _run_git(argv: list[str], *, cwd: str | None, env: dict[str, str] | None, ti
     """A `git` an adapter runs: COORDINATOR-side git over a worker's worktree (the shared
     `.git/config` and `info/attributes`, the same-uid `~/.gitconfig`), so it runs through
     posix.run_git's custody exactly as posix.py's own git does (W4-01): gitexec's absolute git and
-    floor plus PROVIDER_FLOOR, a repository-selecting GIT_* in `env` dropped, `status` /
-    `reset --hard` / `merge-tree` run against a coordinator-built git dir whose config declares no
+    floor plus PROVIDER_FLOOR, a repository-selecting GIT_* in `env` dropped, `status` and
+    `merge-tree --write-tree` run against a coordinator-built git dir whose config declares no
     driver (so a sibling cannot add one mid-call, PR #720 Codex round 3), and any other subcommand
-    that could apply an attribute-selected driver refused (GitCustodyRefused, an OSError), wherever
-    it runs. Output decoded byte-for-byte with os.fsdecode: a `\r`, `\r\n` or non-UTF-8 byte in a
+    that could apply an attribute-selected driver (`reset --hard`, `checkout`, `diff`, `add`, ...)
+    refused (GitCustodyRefused, an OSError), wherever it runs. A checkout an adapter needs goes
+    through posix.checkout_worktree (`read-tree -u --reset` in that git dir), never through here. Output decoded byte-for-byte with os.fsdecode: a `\r`, `\r\n` or non-UTF-8 byte in a
     path comes back as the same path (text mode turned `\r` into `\n`)."""
     proc = run_git(argv[1:], cwd=cwd, env=env, timeout=timeout,
                    input=os.fsencode(input) if input is not None else None)

@@ -520,9 +520,23 @@ import is a could-not-run on every call, never a bare `git` re-resolved later; W
 `runtime/scripts/gitexec.py`'s whole floor, inlined (no global or system config,
 `safe.directory=*`, fsmonitor, hooks, external diff, `ext::`, replacement objects and grafts
 off), plus the diff-rendering pins of `runtime/scripts/floor_guard.py:DIFF_RENDERING` (inert
-under `-z --name-only`) and, on the working-tree diff, the declared filter/diff driver commands
-blanked (`_driver_blanks`, #629); `tests/test_diff_scope.py` pins the copy to
-`runtime/scripts/gitexec.py:HARDENED`. Twelve
+under `-z --name-only`) and gitexec's custody floor (`SELECTOR_ENV` dropped, `CUSTODY_FLOOR`,
+`CUSTODY_ENV`); `tests/test_diff_scope.py` pins the copy to
+`runtime/scripts/gitexec.py:HARDENED`. The working-tree diff and `--predict-merge`'s
+`merge-tree --write-tree` run in git custody (`gitexec.custody`, with diff_scope's own git): a git
+dir with no filter, diff or merge driver defined, so one a `.gitattributes` or `info/attributes`
+line selects runs nowhere, even one added to the repository's config mid-call (W4 custody sweep).
+The prediction's BASE and BRANCH are each resolved once by exact ref names (`gitexec.base_commit`,
+the W3-07 rule `resolve_base` follows: a remote-tracking or full commit id anchors; a local branch,
+`HEAD` or an abbreviated id is refused on a lane claiming soundness and NOTE'd elsewhere; a tag or
+revision syntax is `no_base`), merge-tree is given the two commit ids, and it writes its merged tree
+into the repository's own object store. The declared driver commands are still listed and blanked as a belt
+(`_driver_blanks`, #629): an unreadable list is `diff_failed`, and so is a repository the custody
+refuses, and so is a config, include or `shallow` git would block on (refused before git runs);
+a FIFO at a work tree `.gitignore`/`.gitattributes` blocks a git call up to 60 s, then
+`diff_failed`. The untracked listing runs in custody too. A `--predict-merge` the custody refuses
+reports the custody's reason, never a git-version guess. The committed diff compares two trees by
+name only and runs in the repository. Twelve
 independent flags: `FRONTEND`, `BACKEND`, `PROMPTS`, `TESTS`, `DOCS`, `CONFIG`,
 `MIGRATIONS`, `API`, `AUTH`, `SECURITY`, `A11Y`, `PERF` — path signals plus working-tree
 content signals (capped at 256 KiB per file; deleted files contribute path signals only).
@@ -1005,7 +1019,13 @@ the change under review, and grant only as a one-way human decision (`--source h
 plus `--grant-sig` when `.orca/human-grant-pubkey` is pinned at the base): land the waiver on
 the base branch first (2026-10-23 review, P1-7). Every diff is taken with `--text`, `--no-color`
 and pinned prefix keys, so a `.gitattributes` `-diff` or a repo-local diff prefix cannot blank
-the rules (P1-6, P2-4). Binary media (images, fonts, audio/video, archives) skip the content
+the rules (P1-6, P2-4). Both diffs (tracked against the merge base, and each untracked file
+against `/dev/null`) run in git custody (`gitexec.custody`): against a git dir the guard builds
+over the repository's objects and index, with its own work tree, so no clean filter, textconv or
+diff driver the repository names runs — including one added to its config while the guard reads
+(W4 custody sweep). A repository the custody refuses (a partial clone, a non-regular
+`info/exclude`, a config, include, `shallow` or `core.excludesFile` git would block on) is exit 2;
+a FIFO at a work tree `.gitignore`/`.gitattributes` blocks a git call up to 60 s, then exit 2. Every git the guard runs is under `gitexec.custody_env`. Binary media (images, fonts, audio/video, archives) skip the content
 rules by extension, never by a NUL byte; the guard surface still sees them by path. Run it OFF
 the worker.
 
@@ -1116,7 +1136,9 @@ Source `runtime/scripts/gitexec.py:1-76`; behavior pinned by `tests/test_invento
 `tests/test_diff_scope.py`, `tests/test_gitexec_config_commands.py`,
 `tests/test_posix_provider.py`, and `tests/test_orchestrator_providers_tier1.py`.
 
-API: `argv`, `env`, `driver_blanks`.
+API: `argv`, `env`, `driver_blanks`, and the git custody: `custody`, `Custody`, `custody_git_dir`,
+`custody_facts`, `custody_settings`, `custody_env`, `GitCustodyRefused`, `SELECTOR_ENV`,
+`CUSTODY_FLOOR`, `CUSTODY_ENV`.
 
 `argv(*args)` prepends the absolute path resolved once at import (`GIT`) and raises `GitAbsent`
 (a `FileNotFoundError`) when no `git` binary was on `PATH`; `env()` returns the caller's
@@ -1163,9 +1185,8 @@ provider and the adapters run, read at its `-C`/cwd or `--git-dir`; not `live_co
 `status` of the catalog checkout); a read of committed objects alone selects no filter and skips
 it. The listing and the call are two steps, so a driver a concurrent writer of that config adds
 between them runs unblanked: `driver_blanks` closes the channel only for a config no one writes
-while the call runs. The posix provider and the adapters do not rely on it (PR #720 Codex round
-3): a git of theirs that could apply a driver runs against a git dir they build, whose config
-declares none, and any other such git is refused (`docs/runtimes.md`, "`posix` git custody"). An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed`, hint_provenance.py's `ProvenanceError`, a posix provider git call that never runs (exit 127, surfacing as that verb's `ProviderError`, e.g. `worktree_create_failed` or `worktree_rm_failed`) and an adapter's `<provider>_cli_error`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
+while the call runs. A git that can apply such a driver therefore runs in git custody instead, and
+the listing stays beside it as a belt with its fail-closed contract. An empty list means exactly "no driver declared" — git answers an empty but valid config with exit 0 and no output — while a query that errors, times out, exits non-zero (128 for an unreadable or malformed config) or prints output that is not NUL-terminated keys raises `DriverQueryFailed`, which each caller turns into its own could-not-run: floor_guard exit 2, diff_scope `diff_failed`, a verify.py `--execute-nc` refusal, `wtree.sh` exit 1 with no fingerprint, `ablation.py prereg` exit 2, wip_curve.py's `RunFailed`, hint_provenance.py's `ProvenanceError`, a posix provider git call that never runs (exit 127, surfacing as that verb's `ProviderError`, e.g. `worktree_create_failed` or `worktree_rm_failed`) and an adapter's `<provider>_cli_error`. It never proceeds with nothing blanked (PR #649 review). stdin is the caller's to close, since `argv`/`env` cannot: every caller passes
 `stdin=subprocess.DEVNULL` (or input of its own), as `driver_blanks` does, so a hook, filter or git itself never
 waits on an inherited pipe. It pins no diff-rendering keys: `runtime/scripts/floor_guard.py`, the one caller that
 parses a diff, passes `diff.noprefix`, the prefix keys, `diff.relative` and `color.diff` on its
@@ -1177,6 +1198,93 @@ every verifier git leg runs the custody-classed git it pinned at startup under i
 environment, where this module runs `GIT` under the caller's whole environment.
 `tests/test_gitexec_config_commands.py` holds both `driver_blanks` copies to this one.
 
+Git custody (W4-01, PR #720 Codex round 3; shared with the read-side tools since the W4 custody
+sweep). `custody_git_dir(common, object_format, head, gitdir, objects=, bare=, attributes=)` builds a git dir in
+a fresh temporary directory that no worker names: its own config (repository format, object
+format, `core.bare`, and no driver of any kind), HEAD at `head`, the repository's objects —
+`objects="alternate"` (default) through `objects/info/alternates`, read only, or `"shared"`, a
+symlink to the repository's store, so an object the custody call writes lands where a later git in
+the repository finds it — and regular-file copies of the common `info/exclude`, `info/attributes`
+(data: `text`/`eol`/`working-tree-encoding` steer how a work-tree file reads as a blob, and a
+`filter=`/`diff=`/`merge=` it selects names a driver the dir never defines) and `shallow` and,
+when `gitdir` names a per-worktree admin dir, its `index` (mtime kept), split-index
+`sharedindex.*` and `info/sparse-checkout`; a FIFO, symlink or other non-regular file at any of
+those paths is refused (`GitCustodyRefused`, an `OSError`), never followed. `attributes` (bytes)
+is written to a file in the dir that its config names as `core.attributesFile`, so git reads it at
+that key's precedence (below `.gitattributes`, below `info/attributes`). It is removed on exit.
+`custody(repo, run=, index=, objects=)` reads the repository's facts (`rev-parse`) and data-only
+`core.*` settings (`custody_settings`: `filemode`, `symlinks`, `ignorecase`, sparse flags,
+`autocrlf`, `eol`, `safecrlf`, `checkRoundtripEncoding`, `checkstat`, `trustctime` — never
+`core.excludesFile`, whose ignore list could hide an untracked file) and the CONTENT of the
+repository's own `core.attributesFile` (`custody_attributes`: the path expanded as git expands it,
+a relative one from the work tree top, then read only as a regular file of at most
+`ATTRIBUTES_FILE_LIMIT` (1 MiB) bytes, opened without following a final symlink and without
+blocking; `custody_excludes` does the same for `core.excludesFile`, so a custody
+`ls-files --others` lists what the repository's own git lists; a FIFO, device, directory, symlink or
+larger file refuses, never dropped — dropped, a
+clean CRLF checkout an `eol=crlf` line there steers read as modified; a missing file or empty
+value is no attributes, as for git; a global or system value stays unread; with no repository value
+the custody still names its own empty file, and an excludes file always (that content, or
+`/dev/null` from `custody_git_dir` alone), so git never opens its default user attributes or ignore
+file, `$XDG_CONFIG_HOME/git/attributes` and `.../ignore` or under `~/.config/git/`, where a FIFO
+blocked it), refuses an `extensions.*` the dir cannot honour and a partial clone (git 2.43's
+`clone --filter` writes `remote.<name>.promisor` and `.partialclonefilter`, never
+`extensions.partialClone`, so any promisor remote refuses) and yields a `Custody` whose `lead`
+is `-C <repo> --git-dir <dir> --work-tree <top>` and whose `pairs` are those settings. A git run
+with that lead reads the repository's work tree, index and objects and no config the worker
+writes, so a `filter`, `textconv`, `diff` or `merge` driver a `.gitattributes` or `info/attributes`
+line selects is undefined, whenever the repository's config gained it. `custody_env(base, blanks)`
+is `env()` minus `SELECTOR_ENV` (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_ATTR_SOURCE`,
+`GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, ...) plus `CUSTODY_FLOOR` (`core.alternateRefsCommand`,
+submodule recursion, `log.showSignature` and every `gpg.*.program`, auto-maintenance) and
+`CUSTODY_ENV` (`GIT_ALLOW_PROTOCOL=file`, `GIT_NO_LAZY_FETCH=1`, so a planted promisor remote's
+`uploadpack`, credential helper or ssh command is never reached by a lazy fetch, and
+`GIT_ATTR_NOSYSTEM=1`, so the system attributes file is never opened). Neither reaches
+into a checked-out submodule: a git comparing the work tree probes a submodule's dirtiness with a
+child git that runs under the submodule's OWN config, so every custody diff carries
+`NO_SUBMODULE_CHILD` (`--ignore-submodules=dirty`: a moved gitlink is still reported, read from the
+submodule's refs in-process; uncommitted changes inside it are not), and a caller that stages a
+work tree keeps its gitlinks out of `git add`, which has no such option (`wtree.sh`).
+`refuse_blocking_files(path)` runs before any git in floor_guard, diff_scope and hint_provenance.
+It is BEST-EFFORT and never refuses on doubt: every git reads the repository's config and follows
+its includes, and a commit walk reads `shallow`, so a FIFO (or device) there blocked each gate
+until its timeout. It runs no git and opens nothing blocking (stat, then a non-blocking read). It
+finds the git dir the way git discovers one, and refuses (`GitCustodyRefused`) ONLY when it
+positively finds a `config`, `config.worktree`, `shallow`, `commondir` or include target that
+exists and is not a regular file. Every name it derives — a gitfile's `gitdir:`, a linked
+worktree's `commondir`, each `[include]`/`[includeIf]` `path` (config parsed like git's parser:
+CRLF, BOM, quotes and escapes, `\`-continued lines, comments, case-insensitive names,
+subsections, `~`/`~user` and relative paths; conditions not evaluated) — is checked in EVERY
+spelling a git might read it as. The spelling rules: (1) config is parsed with each whitespace
+set, git's own (space, `\t`, `\n`, `\r`) and that plus `\v` and `\f`; (2) whitespace INSIDE an
+unquoted value is rendered each way a git does or might: each byte as one space (git 2.43), kept
+byte for byte (git 2.55), each run as one space; quoted whitespace is always literal; (3) every
+resulting value, gitfile `gitdir:` and `commondir` is then taken raw and with any of space, `\t`,
+`\n`, `\v`, `\f`, `\r` trimmed from either end (each prefix and suffix of the end runs, up to 16
+bytes); (4) relative paths resolve from the including file's directory (a gitdir or commondir
+from its own), `~`/`~user` from the password database. Exact parity with each git version is not
+attempted, and nothing about
+a git version can make it refuse an ordinary repository: config it cannot parse, a value it
+cannot expand, an oversized file, add nothing. `tests/test_gitexec_config_commands.py` checks, for
+every byte in 25 positions, that each include path the installed git reads is among the spellings
+the check examines (run against git 2.43 and 2.55).
+The security property does not rest on it: no repository-named command runs either way. What it
+misses — a name it cannot follow, a FIFO swapped in after it, one at a work tree's own `.gitignore`
+or `.gitattributes`, which git opens itself path by path — is bounded by the git call's own
+timeout (60 s in floor_guard, diff_scope and hint_provenance; up to 120 s in verify.py's control),
+after which the call is refused: exit 2, `diff_failed`, a `ProvenanceError`, a refused control.
+Callers: the posix provider's `run_git` (`status`, `merge-tree`, `checkout_worktree`; see
+`docs/runtimes.md`, "`posix` git custody"), floor_guard's tracked and untracked diffs,
+diff_scope's working-tree diff and `--predict-merge` (`objects="shared"`, so the merged tree
+`merge_queue.py` commits is in the repository), hint_provenance's `diff` and `log`, and verify.py's
+negative-control checkout, apply, revert and seal (`objects="shared"`, `bare=False`, reached
+through a `.git` gitfile; its git runs under verify.py's own pinned environment, not
+`custody_env`, so the custody's own attributes and excludes files close the default user ones
+there — and each phase repository's `reset --hard` pins both to `/dev/null` on its command line —
+but `GIT_ATTR_NOSYSTEM` is not set: the system attributes file is still read, as data). floor_guard, diff_scope and hint_provenance run every other git under
+`custody_env` too.
+
 Exits: n/a (library).
 
 > Why: read-side tools inspect repositories they do not own, where a worker-planted `./bin/git`,
@@ -1184,8 +1292,10 @@ Exits: n/a (library).
 > could hijack a bare `git` call or run a command on the coordinator. Resolving
 > `runtime/scripts/gitexec.py:GIT` once at import (and raising
 > `runtime/scripts/gitexec.py:GitAbsent` when missing), overriding repo-local config via
-> `runtime/scripts/gitexec.py:env`, and blanking attribute-selected driver commands via
-> `runtime/scripts/gitexec.py:driver_blanks` keeps read-side git queries deterministic.
+> `runtime/scripts/gitexec.py:env`, and running every git that can apply an attribute-selected
+> driver in a coordinator-built git dir (`runtime/scripts/gitexec.py:custody`), where no driver is
+> defined however late the repository's config gained one, keeps read-side git queries
+> deterministic; `runtime/scripts/gitexec.py:driver_blanks` stays as the belt beside it.
 > `runtime/scripts/wtree.sh` carries the same belt and blanks for its `add -A`/`write-tree`
 > fingerprint, blanking only repository-declared drivers and leaving global/system config in
 > force; a changed path a repo-declared driver filters is refused as unverifiable (exit 3) rather
@@ -1315,8 +1425,15 @@ claimed time; two contradicting records of one unit that nothing orders are both
 `contradicted-by` the other.
 
 `git()` runs only `rev-parse`, `cat-file`, `merge-base`, `diff`, `ls-files` and `log` (anything
-else raises `ProvenanceError` before a process starts) through `gitexec.py`'s hardened
-environment with `GIT_OPTIONAL_LOCKS=0`, `--no-ext-diff` and `--no-textconv`.
+else raises `ProvenanceError` before a process starts) under `gitexec.custody_env` with
+`GIT_OPTIONAL_LOCKS=0`, `--no-ext-diff` and `--no-textconv`. `diff` and `log` run in git custody
+(`gitexec.custody`): against a git dir built over the checkout's objects and index, whose config
+defines no filter, textconv or diff driver, so none a `.gitattributes` or `info/attributes` line
+selects runs — not even one the checkout's config gained while the hint was read (W4 custody
+sweep), and so does `ls-files` (it reads the ignore files). The checkout's declared drivers are
+still listed first as a belt; an unreadable config, a checkout the custody refuses (a partial
+clone), a config, include or `shallow` git would block on, and a git that timed out (60 s: a FIFO at
+a work tree `.gitignore`/`.gitattributes`) are each a `ProvenanceError`.
 
 Replay corpus (`scripts/hint_replay.py`): 27 scenarios (37 hints), each a synthetic multi-commit
 repository plus a committed run archive (some tampered after commit), replayed with hints `off`,

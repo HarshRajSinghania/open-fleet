@@ -1024,25 +1024,31 @@ class _BodyBudget:
         grace = deadline + RELEASE_WAIT_S
         while True:
             victims = []
-            with self.cond:
-                if ticket.cancelled:
-                    return False
-                if self.held + n > self.limit:
-                    victims = self._reclaim(n)
-                if self.held + n <= self.limit:
-                    self.held += n
-                    ticket.held += n
-                    self.tickets.add(ticket)
-                    return True
-                if not victims:
-                    now = time.monotonic()
-                    releasing = sum(t.held for t in self.tickets if t.cancelled)
-                    end = grace if self.held - releasing + n <= self.limit else deadline
-                    if now >= end:
+            try:
+                with self.cond:
+                    if ticket.cancelled:
                         return False
-                    self.cond.wait(min(end - now, RECLAIM_POLL_S))
-            for victim in victims:
-                reclaimed(victim)
+                    if self.held + n > self.limit:
+                        victims = self._reclaim(n)
+                    if self.held + n <= self.limit:
+                        self.held += n
+                        ticket.held += n
+                        self.tickets.add(ticket)
+                        return True
+                    if not victims:
+                        now = time.monotonic()
+                        releasing = sum(t.held for t in self.tickets if t.cancelled)
+                        end = grace if self.held - releasing + n <= self.limit else deadline
+                        if now >= end:
+                            return False
+                        self.cond.wait(min(end - now, RECLAIM_POLL_S))
+            finally:
+                # Every request whose share was taken back is evicted, on every way out of this
+                # step, success included, once the lock is free (Codex round 12 on 419a8435: a take
+                # that the share made fit returned before evicting, and the stalled body kept its
+                # socket and its buffer until its own timeout).
+                for victim in victims:
+                    reclaimed(victim)
 
     def _reclaim(self, n):
         """Take back, stalest first, what stalled bodies hold past their buffers (which their threads

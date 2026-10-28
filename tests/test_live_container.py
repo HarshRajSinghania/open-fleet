@@ -1742,6 +1742,66 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         self.assertLess(took, 10, f"a max-size call waited {took:.1f} s behind a stalled body")
         self.assertEqual(len(self.api.requests[-1]["body"]), lb.MAX_BODY)
 
+    def test_a_stalled_body_whose_share_is_taken_back_is_closed_at_once(self):
+        # Codex round 12 on 419a8435: when taking back a stalled body's share made a small call fit,
+        # take() returned before evicting it, so the stalled socket stayed open, holding its buffer
+        # until its own timeout; repeated, such buffers piled up out of reach. A stalled max-size
+        # body and a stalled filler fill the budget; once they have stalled, a small call takes back
+        # the max-size body's share: the call is answered and that body's socket is closed at once.
+        # Then, on one broker, round after round of the same: no evicted body is left holding a share.
+        for _round in range(2):
+            server = self.served_broker()
+            big, _filler = self.fill_with_stalled_bodies(server)
+            time.sleep(lb.BODY_GRACE_S + 0.5)  # both have stalled
+            started = time.monotonic()
+            status, data = self.post()
+            self.assertEqual(status, 200, data)
+            self.assertLess(time.monotonic() - started, 5)
+            big.settimeout(5)
+            try:
+                closed = big.recv(1) == b""
+            except ConnectionResetError:
+                closed = True
+            except TimeoutError:
+                closed = False
+            self.assertTrue(closed, "the stalled body whose share was taken back was left open")
+        server = self.served_broker()
+        for _round in range(3):
+            self.fill_with_stalled_bodies(server)
+            time.sleep(lb.BODY_GRACE_S + 0.5)
+            self.assertEqual(self.post()[0], 200)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and [t for t in server.bodies.tickets if t.cancelled]:
+            time.sleep(0.05)
+        self.assertEqual([t.held for t in server.bodies.tickets if t.cancelled], [],
+                         "evicted bodies still hold shares of the budget")
+
+    def fill_with_stalled_bodies(self, server):
+        """A stalled max-size body and a stalled filler, holding all but 12 bytes of the budget the
+        rest leaves; (the max-size body's socket, the filler's or None)."""
+        def stall(length):
+            conn = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            self.addCleanup(conn.close)
+            conn.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: %d\r\n\r\n{" % length)  # one body byte, then nothing
+            return conn
+
+        def settles(want):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not want(server.bodies.held):
+                time.sleep(0.01)
+            return server.bodies.held
+
+        before = server.bodies.held
+        big = stall(lb.MAX_BODY)
+        held = settles(lambda h: h >= before + lb.WORST_PER_BYTE * lb.MAX_BODY)
+        length = (lb.BODY_BUDGET - held - 12) // lb.WORST_PER_BYTE
+        if length <= 0:
+            return big, None
+        filler = stall(length)
+        settles(lambda h: h >= lb.BODY_BUDGET - 12 - lb.WORST_PER_BYTE)
+        return big, filler
+
     def test_budget_goes_only_to_a_body_that_is_arriving(self):
         # A request whose body has not begun holds no share of the budget, however long it waits:
         # what is given back can go only to bodies actually arriving.

@@ -20,6 +20,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 GUARD = ROOT / "runtime" / "scripts" / "floor_guard.py"
 _spec = importlib.util.spec_from_file_location("floor_guard", GUARD)
 floor_guard = importlib.util.module_from_spec(_spec)
@@ -1878,6 +1884,21 @@ class TestTheBaseIsResolvedByExactNameW307(FloorGuardBase):
             with self.subTest(base=base):
                 err = self.assert_not_waived("--base", base, code=2)
                 self.assertIn("refs/heads/bridge", err)
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_base(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # so a fetched `x<U+2028>refs/remotes/origin/main` carrying a waiver replaced origin/main
+        # (and origin/HEAD's target) and the change's own violation read `clean (1 waived)`.
+        self.waiver_on("refs/heads/planted-waiver")
+        planted = git(self.repo, "rev-parse", "refs/heads/planted-waiver").stdout.strip()
+        for ch in refname_breaks.LINE_BREAKS:
+            for args in ((), ("--base", "origin/main")):
+                with self.subTest(ch=ch, args=args):
+                    unplant = refname_breaks.plant(self.repo, ch, planted)
+                    try:
+                        self.assert_not_waived(*args)
+                    finally:
+                        unplant()
 
     def test_a_revision_suffix_is_no_base(self):
         # The waiver stood at origin/main~1 and was retired by a later `superseded` line.

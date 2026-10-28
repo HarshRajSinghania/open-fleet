@@ -863,7 +863,12 @@ class _Authority:
                 "gitexec_for_verify", Path(__file__).resolve().parent / "gitexec.py")
             gitexec = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(gitexec)
-            return gitexec.remote_tracking_commit(lambda *a: _git(list(a)), name)
+            # RAW stdout: _git strips, and str.strip() eats U+2028/U+2029/U+0085, which a
+            # refname may end with; and its strict text decode would raise on a non-UTF-8 one.
+            def run(*args):
+                code, out, _err = _git_bytes(list(args))
+                return code, out.decode("utf-8", "surrogateescape")
+            return gitexec.remote_tracking_commit(run, name)
         except (OSError, ImportError, SyntaxError, AttributeError) as err:
             return None, name, f"could not be classed (gitexec.py: {err})"
 

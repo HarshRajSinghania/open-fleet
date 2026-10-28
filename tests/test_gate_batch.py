@@ -24,6 +24,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 _spec = importlib.util.spec_from_file_location(
     "gate_batch", ROOT / "runtime" / "scripts" / "gate-batch.py")
 gb = importlib.util.module_from_spec(_spec)
@@ -1087,6 +1093,22 @@ class TheOwedSetIsReadWhereTheKeyIsRead(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertEqual(r.stdout, "")
                 self.assertIn("refs/heads/bridge", r.stderr)
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_anchor(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # which git accepts in a refname, so `x<U+2028>refs/remotes/origin/main` at an emptied
+        # batch replaced origin/main and nothing was owed.
+        self.emptied_on("refs/heads/emptied")
+        emptied = self.git("rev-parse", "refs/heads/emptied")
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.tmp, ch, emptied)
+                try:
+                    out = self.owed()
+                finally:
+                    unplant()
+                self.assertIn("G1 [owed]", out)
+                self.assertIn("G2 [owed]", out)
 
     def test_a_hex_named_branch_is_no_commit_id(self):
         # In a SHA-1 repository 64 hex digits are no object id: rev-parse expands them as a ref.

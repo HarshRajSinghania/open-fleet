@@ -322,14 +322,13 @@ def _exact_ref_commit(git, name, namespace, kind, outside):
     if code != 0:
         return None, name, ("is not a valid ref name: revision syntax (~1, ^, @{…}, :) names a "
                             "commit relative to a ref, not a ref")
-    code, out = git("for-each-ref", "--format=%(refname)%00%(symref)%00%(objectname)", namespace)
+    code, out = git("for-each-ref", "--format=%(refname)%00%(symref)%00%(objectname)%00",
+                    namespace)
     if code != 0:
         return None, name, "could not be looked up: git for-each-ref failed"
-    listed = {}
-    for line in out.splitlines():
-        fields = line.split("\0")
-        if len(fields) == 3:
-            listed[fields[0]] = (fields[1], fields[2])
+    listed, bad = _ref_records(out, namespace)
+    if listed is None:
+        return None, name, f"could not be looked up: {bad}"
     target = name
     for _hop in range(_SYMREF_HOPS + 1):
         if target not in listed:
@@ -340,10 +339,12 @@ def _exact_ref_commit(git, name, namespace, kind, outside):
         symbolic, oid = listed[target]
         if not symbolic:
             break
-        # %(symref) above is the chain's END; the next hop is read on its own.
+        # %(symref) above is the chain's END; the next hop is read on its own. Only the one LF
+        # git appends is dropped: str.strip() would also eat U+2028/U+2029/U+0085, which a
+        # refname may end with, and turn one name into another.
         code, out = git("symbolic-ref", "-q", "--no-recurse", target)
-        hop = out.strip() if code == 0 else ""
-        if not hop:
+        hop = (out[:-1] if out.endswith("\n") else out) if code == 0 else ""
+        if not hop or "\n" in hop or "\0" in hop:
             return None, target, ("is a symbolic ref whose chain cannot be read one hop at a time "
                                   "here (git symbolic-ref --no-recurse, git 2.39+): refused rather "
                                   "than trusted on its recursively resolved target")
@@ -357,6 +358,34 @@ def _exact_ref_commit(git, name, namespace, kind, outside):
     if code != 0 or not COMMIT_ID.fullmatch(commit):
         return None, target, f"reaches {target}, which points at no commit"
     return commit, target, None
+
+
+def _ref_records(out, namespace):
+    """``({refname: (symref, oid)}, None)`` from ``for-each-ref`` output whose format ends every
+    record in NUL and git's LF, or ``(None, why)``. The split is on that NUL+LF terminator ONLY:
+    no field can hold NUL or LF (check-ref-format refuses both), while a refname MAY hold
+    U+2028, U+2029 and U+0085 — each a line break to ``str.splitlines()``, so a fetched branch
+    ``x<U+2028>refs/remotes/origin/main`` parsed as a second record that REPLACED the real
+    origin/main in a last-wins dict (independent re-attack). A record that is not exactly three
+    fields under ``namespace``, or a refname seen twice, refuses the whole listing: fail closed.
+    A runner that stripped the final LF is tolerated (its last record still ends in NUL)."""
+    if not out:
+        return {}, None
+    if out.endswith("\0\n"):
+        body = out[:-2]
+    elif out.endswith("\0"):
+        body = out[:-1]
+    else:
+        return None, "the for-each-ref listing is not NUL-terminated records"
+    listed = {}
+    for record in body.split("\0\n"):
+        fields = record.split("\0")
+        if len(fields) != 3 or not fields[0].startswith(namespace):
+            return None, "the for-each-ref listing holds a malformed record"
+        if fields[0] in listed:
+            return None, f"the for-each-ref listing names {fields[0]!r} twice"
+        listed[fields[0]] = (fields[1], fields[2])
+    return listed, None
 
 
 # A caller that sets one of these claims a sound (off-worker) lane: the predicate decisions.py,

@@ -222,8 +222,8 @@ def anchor_commit(root, pin_ref):
         raise GateError(f"--pin-ref {pin_ref!r} must name a commit or a ref, not an option")
 
     def run(*args):
-        proc = _git(root, *args)
-        return proc.returncode, proc.stdout.decode("utf-8", "replace")
+        proc = _git(root, *args)  # surrogateescape: two non-UTF-8 refnames never decode alike
+        return proc.returncode, proc.stdout.decode("utf-8", "surrogateescape")
 
     commit, _target, why = _gitexec().remote_tracking_commit(run, pin_ref)
     if commit is None:

@@ -375,8 +375,8 @@ def _pin_at_ref(root, ref):
     # `rev-parse refs/remotes/…` finds by ref-name expansion when the remote-tracking ref is
     # absent, and a revision suffix (`~1`, `@{1}`) names an older commit than the ref.
     def run(*args):
-        proc = git(*args)
-        return proc.returncode, proc.stdout.decode("utf-8", "replace")
+        proc = git(*args)  # surrogateescape: two non-UTF-8 refnames never decode alike
+        return proc.returncode, proc.stdout.decode("utf-8", "surrogateescape")
 
     commit, _target, why = gitexec.remote_tracking_commit(run, ref)
     if commit is None:

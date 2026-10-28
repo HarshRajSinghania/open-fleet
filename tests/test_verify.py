@@ -28,6 +28,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 _spec = importlib.util.spec_from_file_location("verify", ROOT / "runtime" / "scripts" / "verify.py")
 verify = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(verify)
@@ -6608,6 +6614,23 @@ class BaseShaIsBoundToTheIntegrationBranch(unittest.TestCase):
             self.assertTrue(any("not found on origin/main" in e
                                 for e in verify.check_symbol_on_base("raise", "main")))
 
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_base(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # so a fetched `x<U+2028>refs/remotes/origin/main` at the poison replaced origin/main:
+        # an unmerged head and a worker-chosen base_sha both passed on a sound lane.
+        verify._Authority.lane = "provenance=ci"
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, self.poison)
+                try:
+                    with self._inside_repo():
+                        ancestry = verify.check_ancestry({"head_sha": self.poison}, "main")
+                        binding = verify.check_base_binding({"base_sha": self.poison}, "main", True)
+                finally:
+                    unplant()
+                self.assertTrue(ancestry and "not an ancestor" in ancestry[0], ancestry)
+                self.assertTrue(binding and "not an ancestor" in binding[0], binding)
+
     def test_a_revision_suffix_on_the_base_is_not_a_base(self):
         verify._Authority.lane = "provenance=ci"
         with self._inside_repo():
@@ -6909,6 +6932,21 @@ class SoundLaneTrustKeysAreRefPinned(RepoCase):
         for ref in ("refs/remotes/worker/key", "refs/remotes/worker/a"):
             with self.subTest(ref=ref):
                 self.assert_refused(ref, "refs/heads/bridge")
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_key_ref(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # which git accepts in a refname, so a fetched `x<U+2028>refs/remotes/origin/main` at the
+        # worker's key replaced origin/main and its self-signed record verified.
+        worker = self._worker_branch_key()
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, worker)
+                try:
+                    out = self._check(".orca/dispatch-pubkey@refs/remotes/origin/main")
+                finally:
+                    unplant()
+                self.assertNotIn("signature verified", "\n".join(out))
+                self.assertNotIn(worker[:12], "\n".join(out))
 
     def test_a_hex_named_branch_is_not_a_commit_id(self):
         # 64 hex digits are no object id in a SHA-1 repository: rev-parse expands them as a ref.

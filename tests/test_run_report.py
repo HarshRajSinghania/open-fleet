@@ -25,6 +25,12 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 _spec = importlib.util.spec_from_file_location(
     "run_report", ROOT / "runtime" / "scripts" / "run_report.py"
 )
@@ -2061,6 +2067,22 @@ class ASoundLaneReadsTheKeyAndPolicyAtATrustedBase(SignedKeyFixture):
                 r = self.run_report("--base", base)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn("refs/heads/bridge", r.stderr)
+                self.assertNotIn("bound demo-it", r.stdout)
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_base(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # which git accepts in a refname, so a fetched `x<U+2028>refs/remotes/origin/main` at the
+        # PR replaced origin/main (and origin/HEAD's target): the PR's policy judged the PR.
+        self._scenario()
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.repo, ch, self.rev)
+                try:
+                    r = self.run_report()
+                finally:
+                    unplant()
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("mutation-class", r.stdout)
                 self.assertNotIn("bound demo-it", r.stdout)
 
     def test_a_suffixed_or_hex_named_base_is_no_trusted_base(self):

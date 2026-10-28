@@ -30,6 +30,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 SCRIPT = ROOT / "scripts" / "release_check.py"
 CHECKLIST = ROOT / "docs" / "release-1.0-checklist.md"
 
@@ -547,6 +553,35 @@ class GateOneReadsTheHumanKeyAtTheAnchor(unittest.TestCase):
                     _, status, detail = self.gate1(env)
                     self.assertEqual(status, rc.FAIL, detail)
                     self.assertIn("refs/heads/bridge", detail)
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_anchor(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # so a fetched `x<U+2028>refs/remotes/origin/main` at a commit that drops the pin and
+        # types the answer replaced the anchor and gate 1 PASSED.
+        git = ["git", "-C", str(self.root)]
+        honest = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True,
+                                text=True).stdout.strip()
+        subprocess.run([*git, "checkout", "-q", "-b", "typed"], check=True)
+        (self.root / ".orca" / "human-grant-pubkey").unlink()
+        self.answer(signed=False)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                        "commit.gpgsign=false", "commit", "-q", "-m", "no pin, typed"], check=True)
+        typed = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True,
+                               text=True).stdout.strip()
+        self.assertEqual(subprocess.run([*git, "rev-parse", "refs/remotes/origin/main"],
+                                        check=True, capture_output=True,
+                                        text=True).stdout.strip(), honest)
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.root, ch, typed)
+                try:
+                    _, status, detail = self.gate1()
+                finally:
+                    unplant()
+                # Read at the real anchor, which pins the key the tree deleted: refused.
+                self.assertEqual(status, rc.FAIL, detail)
+                self.assertIn("differs", detail)
 
     def test_a_local_branch_spelled_as_the_absent_anchor_is_no_anchor(self):
         # W3-07 class, Codex review (P1): with refs/remotes/origin/main ABSENT, symbolic-ref

@@ -20,6 +20,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 SCOPE = ROOT / "runtime" / "scripts" / "diff_scope.py"
 _spec = importlib.util.spec_from_file_location("diff_scope", SCOPE)
 diff_scope = importlib.util.module_from_spec(_spec)
@@ -744,6 +750,22 @@ class TestTheBaseIsResolvedByExactNameW307(ScopeBase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertEqual(data["error"], "no_base", r.stdout)
                 self.assertIn("refs/heads/bridge", r.stderr)
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_base(self):
+        # Independent re-attack (A): str.splitlines() broke the listing at U+2028/U+2029/U+0085,
+        # so a fetched `x<U+2028>refs/remotes/origin/main` at the change's own tip replaced
+        # origin/main: an empty diff, the AUTH lens off.
+        tip = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        for ch in refname_breaks.LINE_BREAKS:
+            for args in ((), ("--base", "origin/main")):
+                with self.subTest(ch=ch, args=args):
+                    unplant = refname_breaks.plant(self.repo, ch, tip)
+                    try:
+                        data, r = self.scoped(*args)
+                    finally:
+                        unplant()
+                    self.assertIsNone(data["error"], r.stdout + r.stderr)
+                    self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
 
     def test_an_absent_remote_ref_is_not_answered_by_a_local_branch_of_its_spelling(self):
         git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")

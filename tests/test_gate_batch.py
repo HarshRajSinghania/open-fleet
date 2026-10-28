@@ -1052,6 +1052,53 @@ class TheOwedSetIsReadWhereTheKeyIsRead(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("--pin-ref", r.stderr)
 
+    def emptied_on(self, ref):
+        """The change empties the batch, commits it, and points the LOCAL ref `ref` at that."""
+        self.edit(lambda d: d.update(gates=[]))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "no gates owed")
+        self.git("update-ref", ref, "HEAD")
+
+    def test_a_local_branch_spelled_as_an_absent_remote_tracking_ref_is_no_anchor(self):
+        # W3-07, Codex review (P1): with refs/remotes/origin/main absent, `rev-parse
+        # refs/remotes/origin/main` expands to the local branch refs/heads/refs/remotes/origin/main
+        # — the change's own, carrying an empty batch — and nothing was owed.
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.emptied_on("refs/heads/refs/remotes/origin/main")
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        for ref in ("refs/remotes/origin/main", "refs/remotes/origin/HEAD"):
+            with self.subTest(ref=ref):
+                r = self.cli("--pin-ref", ref, "list", "--status", "owed")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("exactly that name", r.stderr)
+
+    def test_a_hex_named_branch_is_no_commit_id(self):
+        # In a SHA-1 repository 64 hex digits are no object id: rev-parse expands them as a ref.
+        hexname = "cd" * 32
+        self.emptied_on(f"refs/heads/{hexname}")
+        r = self.cli("--pin-ref", hexname, "list", "--status", "owed")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("names no commit object", r.stderr)
+
+    def test_a_revision_suffix_names_no_anchor(self):
+        # The reviewed default branch asks G3 one commit after the setUp anchor; origin/main~1
+        # (or its reflog's @{1}) is the older batch without it, and passed the prefix check.
+        data = json.loads(self.batch.read_text(encoding="utf-8"))
+        add_owed(data, "G3", blocking=["#3"])
+        gb.save_batch(self.batch, data)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "G3 is asked")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.edit(lambda d: d.update(gates=[g for g in d["gates"] if g["id"] != "G3"]))
+        self.assertIn("G3 [owed]", self.owed("--blocking", "#3"))
+        for ref in ("refs/remotes/origin/main~1", "refs/remotes/origin/main^",
+                    "refs/remotes/origin/main@{1}"):
+            with self.subTest(ref=ref):
+                r = self.cli("--pin-ref", ref, "list", "--status", "owed", "--blocking", "#3")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(r.stdout, "")
+                self.assertIn("not a valid ref name", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

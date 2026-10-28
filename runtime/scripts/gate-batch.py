@@ -74,7 +74,6 @@ GRANT_SIG_RE = re.compile(r"^[0-9a-f]{128}$")
 # A caller that sets one of these claims a sound (off-worker) lane, as for verify-gate.sh.
 PROVENANCE_VARS = ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
 ANSWER_DOMAIN = "open-fleet gate-batch answer v1\n"
-COMMIT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 # What makes a gate the gate the anchor asked (PR #719 review round 3): the fields a human reads
 # before answering. `blocking` is held separately: a gate blocks every ref either record names.
 IDENTITY_FIELDS = ("title", "question", "asked")
@@ -179,9 +178,9 @@ def effective_status(data, gate, pub=None, sound=False):
 # gate; a duplicate id is a store error. What the anchor never carried — a gate added and dropped
 # on one branch — it cannot hold.
 
-def _git(root, *args):
-    """git through gitexec.py's hardened executor (no repo config, hooks or replace refs), as
-    decisions.py reads the key. gitexec.py missing beside this script is could-not-run."""
+def _gitexec():
+    """gitexec.py, by path: the hardened git the anchor is read with and the one exact-name rule
+    it is resolved under. Missing beside this script is could-not-run."""
     path = Path(__file__).resolve().parent / "gitexec.py"
     if not path.is_file():
         raise GateError("gitexec.py, the hardened git the anchor is read with, is not beside "
@@ -189,6 +188,13 @@ def _git(root, *args):
     spec = importlib.util.spec_from_file_location("gitexec_for_gate_batch", path)
     gitexec = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gitexec)
+    return gitexec
+
+
+def _git(root, *args):
+    """git through gitexec.py's hardened executor (no repo config, hooks or replace refs), as
+    decisions.py reads the key."""
+    gitexec = _gitexec()
     try:
         return subprocess.run(gitexec.argv("-C", str(root), *args), capture_output=True,
                               timeout=60, env=gitexec.env(), stdin=subprocess.DEVNULL)
@@ -204,26 +210,24 @@ def batch_repo(batch_path):
 
 
 def anchor_commit(root, pin_ref):
-    """--pin-ref resolved ONCE to a commit id, under the predicate verify.py applies to every
-    trust key, on every lane: a commit id, or a ref whose FINAL target (any symbolic chain
-    followed) is remote-tracking. A local branch, tag, HEAD or short name is the checked change's
-    to move, and the anchor is the only thing that tells a deleted gate from one never asked."""
+    """--pin-ref resolved ONCE to a commit id, under the rule decisions.py, verify.py and
+    run_report.py answer to (gitexec.remote_tracking_commit, W3-07): a commit id that names that
+    commit object, or a full refs/remotes/… ref that EXISTS under exactly that name, every
+    symbolic hop remote-tracking too. A local branch, tag, HEAD or short name is the checked
+    change's to move — and so is refs/heads/refs/remotes/…, which `rev-parse refs/remotes/…`
+    reaches by ref-name expansion when the remote-tracking ref is absent, and a revision suffix
+    (~1, @{1}) names an older commit than the ref. The anchor is the only thing that tells a
+    deleted gate from one never asked."""
     if not pin_ref or pin_ref.startswith("-"):
         raise GateError(f"--pin-ref {pin_ref!r} must name a commit or a ref, not an option")
-    target = pin_ref
-    if not COMMIT_ID_RE.fullmatch(pin_ref):
-        sym = _git(root, "symbolic-ref", "-q", pin_ref)
-        found = sym.stdout.decode("utf-8", "replace").strip()
-        target = found if sym.returncode == 0 and found else pin_ref
-        if not target.startswith("refs/remotes/"):
-            via = f" (a symbolic ref to {target})" if target != pin_ref else ""
-            raise GateError(f"--pin-ref {pin_ref!r}{via} is neither a commit id nor a full "
-                            "refs/remotes/… name: a local branch, tag, HEAD or short name is "
-                            "the checked change's to move, so it anchors nothing")
-    resolved = _git(root, "rev-parse", "--verify", "-q", f"{target}^{{commit}}")
-    commit = resolved.stdout.decode("utf-8", "replace").strip()
-    if resolved.returncode != 0 or not COMMIT_ID_RE.fullmatch(commit):
-        raise GateError(f"--pin-ref {pin_ref!r} names no commit in {root}")
+
+    def run(*args):
+        proc = _git(root, *args)
+        return proc.returncode, proc.stdout.decode("utf-8", "replace")
+
+    commit, _target, why = _gitexec().remote_tracking_commit(run, pin_ref)
+    if commit is None:
+        raise GateError(f"--pin-ref {pin_ref!r} {why} — no anchor commit in {root} (W3-07)")
     return commit
 
 

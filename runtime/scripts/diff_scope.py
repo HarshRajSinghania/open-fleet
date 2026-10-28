@@ -252,6 +252,7 @@ def _driver_blanks(repo):
     prints output that is not NUL-terminated keys raises ScopeError(diff_failed) — never [],
     which would run the diff with every planted driver live (PR #649 review)."""
     try:
+        gitexec.refuse_blocking_files(repo)  # a config or include git would block opening
         r = subprocess.run(_argv("-C", str(repo), "config", "--list", "-z", "--name-only"),
                            capture_output=True, timeout=60, env=_git_env(), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as err:
@@ -302,6 +303,7 @@ def git(repo, *args, tolerate=False, blanks=(), custody=None):
     lead = custody.lead if custody is not None else ["-C", str(repo)]
     pairs = [*(custody.pairs if custody is not None else ()), *blanks]
     try:
+        gitexec.refuse_blocking_files(repo)  # a config, include or `shallow` git would block opening
         # surrogateescape: a non-UTF-8 path round-trips instead of raising
         # UnicodeDecodeError (an uncaught crash would exit 1 — the conflict code).
         r = subprocess.run(_argv(*lead, *args), capture_output=True, text=True,
@@ -388,12 +390,15 @@ def changed_files(repo, base):
             # config); a moved gitlink is still listed (gitexec.NO_SUBMODULE_CHILD).
             worktree = git(repo, "diff", *options, gitexec.NO_SUBMODULE_CHILD, "HEAD", "--",
                            blanks=blanks, custody=custody)
+            # Untracked: the new migration/component is untracked right up until commit. Listed in
+            # custody, where the repository's own core.excludesFile is carried as data and no user
+            # default ignore file is opened.
+            untracked = git(repo, "ls-files", "-z", "--others", "--exclude-standard", custody=custody)
     except (OSError, subprocess.SubprocessError) as err:  # GitCustodyRefused is an OSError
         raise ScopeError(f"working-tree diff acquisition failed: {err}", kind="diff_failed",
                          resolved=base) from err
     absorb(worktree, "working-tree diff")
-    # Untracked: the new migration/component is untracked right up until commit.
-    absorb(git(repo, "ls-files", "-z", "--others", "--exclude-standard"), "untracked enumeration")
+    absorb(untracked, "untracked enumeration")
     return sorted(names)
 
 
@@ -584,6 +589,10 @@ def predict_merge(repo, base, branch):
                 capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
                 timeout=60, env=_git_env([*custody.pairs, *blanks]), stdin=subprocess.DEVNULL,
             )
+    except gitexec.GitCustodyRefused as err:
+        # The custody's own reason (a partial clone, an unhonourable extension, a file git would
+        # block on), never the "needs git >= 2.38" guess below (PR #724 re-attack).
+        raise ScopeError(f"predict-merge: {err}", kind="diff_failed") from err
     except (OSError, subprocess.SubprocessError):
         r = None
 

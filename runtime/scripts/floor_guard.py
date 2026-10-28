@@ -284,6 +284,8 @@ def git(repo, *args, blanks=(), custody=None):
     lead = custody.lead if custody is not None else ["-C", str(repo)]
     pairs = [*(custody.pairs if custody is not None else ()), *blanks]
     try:
+        # A config, include or `shallow` git would block opening is refused before git runs.
+        gitexec.refuse_blocking_files(repo)
         # No stdin (#629): an inherited, never-closed one would let a hook or filter block the guard.
         r = subprocess.run(
             gitexec.argv(*lead, *args),
@@ -381,6 +383,10 @@ def collect_diff(repo, mb):
     # The listing stays as a belt and keeps its fail-closed contract: an unreadable driver list is
     # could-not-run, never "no drivers" (PR #649 review).
     try:
+        gitexec.refuse_blocking_files(repo)
+    except OSError as err:
+        raise GuardError(f"git would block reading this repository: {err}") from err
+    try:
         blanks = gitexec.driver_blanks(repo)
     except gitexec.DriverQueryFailed as err:
         raise GuardError(f"cannot read the repository's driver config, so its filter commands "
@@ -393,8 +399,9 @@ def collect_diff(repo, mb):
                           mb, "--", blanks=blanks, custody=custody)
             if tracked is None:
                 raise GuardError("tracked/staged diff acquisition failed")
-            # Lists names, reads no file content: no driver can apply, so it runs in the repo.
-            others = git(repo, "ls-files", "-z", "--others", "--exclude-standard")
+            # Lists names, reads no file content, but reads the ignore files: in custody, where the
+            # repository's own core.excludesFile is carried as data and no user default is opened.
+            others = git(repo, "ls-files", "-z", "--others", "--exclude-standard", custody=custody)
             if others is None:
                 raise GuardError("untracked file enumeration failed")
             chunks = [tracked]

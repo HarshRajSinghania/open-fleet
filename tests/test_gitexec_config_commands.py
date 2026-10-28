@@ -1523,6 +1523,175 @@ class NoUserOrSystemAttributesFileIsOpened(unittest.TestCase):
                          "a custody-floored git ran with the system attributes file live")
 
 
+class NoUserIgnoreFileIsOpened(unittest.TestCase):
+    """PR #724 re-attack (item 1): the custody named its own attributes file but no
+    core.excludesFile, so a custody diff (and the in-repo `ls-files --others`) opened the default user
+    ignore file ($XDG_CONFIG_HOME/git/ignore, else ~/.config/git/ignore) and a FIFO there blocked
+    every site until its timeout. The custody now always names an excludes file - the repository's
+    own core.excludesFile content, read safely, or /dev/null - and ls-files runs in custody."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        (p.repo / "new.txt").write_text("untracked\n", encoding="utf-8")  # read through the ignores
+        return p, base
+
+    def test_a_fifo_at_either_default_user_ignore_file_is_never_opened(self):
+        sites = NoUserOrSystemAttributesFileIsOpened._sites
+        for where in ("XDG_CONFIG_HOME", "HOME"):
+            p, base = self._repo()
+            empty = p.dir / "empty-home"
+            empty.mkdir()
+            with mock.patch.dict(os.environ, {"HOME": str(empty)}):
+                os.environ.pop("XDG_CONFIG_HOME", None)
+                want = {site: call() for site, call in sites(self, p, base)}
+            fifo_root = p.dir / "fifo-home"
+            if where == "XDG_CONFIG_HOME":
+                (fifo_root / "git").mkdir(parents=True)
+                os.mkfifo(fifo_root / "git" / "ignore")
+                env = {"HOME": str(empty), "XDG_CONFIG_HOME": str(fifo_root)}
+            else:
+                (fifo_root / ".config" / "git").mkdir(parents=True)
+                os.mkfifo(fifo_root / ".config" / "git" / "ignore")
+                env = {"HOME": str(fifo_root)}
+            for site, call in sites(self, p, base):
+                with self.subTest(where=where, site=site), mock.patch.dict(os.environ, env):
+                    if "XDG_CONFIG_HOME" not in env:
+                        os.environ.pop("XDG_CONFIG_HOME", None)
+                    done, got = _finishes(call, seconds=20)
+                    self.assertTrue(done, f"{site} blocked opening a default ignore file at {where}")
+                    self.assertEqual(got, want[site])
+
+    def test_the_repositorys_own_excludes_file_still_applies(self):
+        p, base = self._repo()
+        (p.dir / "ignore-new").write_text("new.txt\n", encoding="utf-8")
+        p._git("config", "core.excludesFile", str(p.dir / "ignore-new"))
+        self.assertNotIn("new.txt", diff_scope.changed_files(p.repo, base))
+        self.assertNotIn("untracked", floor_guard.collect_diff(p.repo, floor_guard.merge_base(p.repo, base)))
+
+
+class BlockingRepositoryFilesAreRefusedUpFront(unittest.TestCase):
+    """PR #724 re-attack (item 3): every git reads the repository's config and follows its
+    includes, and a commit walk reads `shallow`, so a FIFO there blocked each site until its
+    timeout. gitexec.refuse_blocking_files checks them - without git, without blocking - before
+    any git runs, and a repository core.excludesFile is carried (read safely) rather than opened by
+    git. Each is refused at once."""
+
+    def _repo(self, kind):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        (p.repo / "a.txt").write_text("line1\nCHANGED\n", encoding="utf-8")
+        (p.repo / "new.txt").write_text("untracked\n", encoding="utf-8")
+        fifo = p.dir / "blocking"
+        os.mkfifo(fifo)
+        if kind == "shallow":
+            os.rename(fifo, p.repo / ".git" / "shallow")
+        elif kind == "include.path":
+            with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:  # `git config` would block
+                fh.write(f'[include]\n\tpath = "{fifo}"\n')
+        elif kind == "includeIf (relative)":
+            with open(p.repo / ".git" / "config", "a", encoding="utf-8") as fh:
+                fh.write(f'[includeIf "gitdir:{p.repo}/"]\n\tpath = ../../blocking\n')
+        else:
+            p._git("config", "core.excludesFile", str(fifo))
+        return p, base
+
+    def test_each_site_refuses_at_once(self):
+        for kind in ("shallow", "include.path", "includeIf (relative)", "core.excludesFile"):
+            p, base = self._repo(kind)
+            for site, call, refusal in (
+                    ("floor_guard", lambda r=p.repo, b=base: floor_guard.collect_diff(r, b), floor_guard.GuardError),
+                    ("diff_scope", lambda r=p.repo, b=base: diff_scope.changed_files(r, b), diff_scope.ScopeError),
+                    ("hint_provenance", lambda r=p.repo: hint_provenance.LiveSource(str(r)).changes_since("HEAD"),
+                     hint_provenance.ProvenanceError)):
+                with self.subTest(kind=kind, site=site):
+                    done, got = _finishes(call, seconds=20)
+                    self.assertTrue(done, f"{site} blocked on a FIFO {kind}")
+                    self.assertIsInstance(got, refusal)
+
+    def test_regular_includes_and_shallow_files_are_fine(self):
+        p, base = self._repo("core.excludesFile")
+        p._git("config", "--unset", "core.excludesFile")
+        (p.dir / "inc").write_text("[core]\n\tquotePath = false\n", encoding="utf-8")
+        p._git("config", "include.path", str(p.dir / "inc"))
+        p._git("config", "includeIf.gitdir:/nowhere/.path", str(p.dir / "absent"))
+        gitexec.refuse_blocking_files(p.repo)
+        self.assertIn("a.txt", diff_scope.changed_files(p.repo, base))
+
+
+class HintProvenanceTimeoutIsAProvenanceError(unittest.TestCase):
+    """PR #724 re-attack (item 4): a git that blocked until its timeout surfaced as a raw
+    TimeoutExpired; it is the module's own could-not-run."""
+
+    def test_a_timed_out_git_is_a_provenance_error(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        base = p.commit("a.txt", "line1\n")
+        live = hint_provenance.LiveSource(str(p.repo))
+        real = subprocess.run
+
+        def slow(argv, *a, **kw):
+            if "diff" in argv:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 60))
+            return real(argv, *a, **kw)
+        with mock.patch.object(hint_provenance.subprocess, "run", side_effect=slow):
+            with self.assertRaises(hint_provenance.ProvenanceError):
+                live.changes_since(base)
+
+
+class PartialClonesAreRefused(unittest.TestCase):
+    """PR #724 re-attack (items 5, 6): git 2.43's `clone --filter` writes remote.<n>.promisor and
+    remote.<n>.partialclonefilter, never extensions.partialClone, so the custody's refusal never
+    fired. It now refuses a promisor remote; and predict-merge reports that reason, not "needs git
+    >= 2.38"."""
+
+    def _clone(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        (tmp / "s").mkdir()
+        src = _Probe(tmp / "s")
+        src.commit("a.txt", "one\n")
+        base = src._git("rev-parse", "HEAD").stdout.strip()
+        src._git("checkout", "-q", "-b", "side")
+        src.commit("b.txt", "two\n")
+        main = src._git("rev-parse", "HEAD~0").stdout.strip()
+        src._git("config", "uploadpack.allowFilter", "true")
+        clone = tmp / "clone"
+        r = subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-local", f"file://{src.repo}",
+                            str(clone)], env=_CLEAN_ENV, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        keys = subprocess.run(["git", "-C", str(clone), "config", "--list", "--name-only"], env=_CLEAN_ENV,
+                              capture_output=True, text=True).stdout
+        self.assertIn("remote.origin.promisor", keys, "fixture: not a partial clone")
+        (clone / "a.txt").write_text("changed\n", encoding="utf-8")
+        return clone, base, main
+
+    def test_every_site_refuses_a_partial_clone(self):
+        clone, base, _main = self._clone()
+        with self.assertRaises(gitexec.GitCustodyRefused):
+            with gitexec.custody(clone):
+                pass
+        with self.assertRaises(floor_guard.GuardError):
+            floor_guard.collect_diff(clone, base)
+        with self.assertRaises(diff_scope.ScopeError):
+            diff_scope.changed_files(clone, base)
+        with self.assertRaises(hint_provenance.ProvenanceError):
+            hint_provenance.LiveSource(str(clone)).changes_since(base)
+
+    def test_predict_merge_names_the_refusal(self):
+        clone, base, main = self._clone()
+        with self.assertRaises(diff_scope.ScopeError) as cm:
+            diff_scope.predict_merge(clone, base, main)
+        self.assertIn("partial clone", str(cm.exception))
+        self.assertNotIn("2.38", str(cm.exception))
+
+
 class GitexecCustody(unittest.TestCase):
     """gitexec.custody: the coordinator-built git dir and the refusals it shares with the posix
     provider's run_git."""

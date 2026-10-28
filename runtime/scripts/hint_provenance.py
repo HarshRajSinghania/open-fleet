@@ -54,6 +54,9 @@ SUPPRESSED = frozenset({STALE, SUPERSEDED})
 READ_ONLY_GIT = frozenset({"rev-parse", "cat-file", "merge-base", "diff", "ls-files", "log"})
 # The read-only subcommands that can render content through an attribute-selected driver.
 CONTENT_GIT = frozenset({"diff", "log"})
+# The ones that run in git custody: those, and ls-files, which reads the ignore files (the
+# repository's core.excludesFile is carried as data there, and no user default is opened).
+CUSTODY_GIT = CONTENT_GIT | {"ls-files"}
 
 REV = re.compile(r"^[0-9a-f]{7,64}$")
 GLOB_CHARS = set("*?[")
@@ -94,7 +97,9 @@ class ProvenanceError(Exception):
 def git(repo, *args, text=True):
     """Run one READ-ONLY git subcommand in ``repo``. Anything else is refused, not attempted.
 
-    ``diff`` and ``log`` run in git custody (gitexec.custody, W4 custody sweep): against a git dir
+    ``diff``, ``log`` and ``ls-files`` run in git custody (gitexec.custody, W4 custody sweep;
+    ``ls-files`` because it reads the ignore files, the repository's core.excludesFile carried as
+    data and no user default opened): against a git dir
     this module builds over the checkout's objects and index, whose config declares no filter,
     textconv, diff or merge driver, with the checkout's own work tree. A working-tree diff runs a
     clean filter, and patch output a textconv or diff command, that a ``.gitattributes`` or
@@ -111,7 +116,11 @@ def git(repo, *args, text=True):
     would run under the submodule's own config)."""
     if not args or args[0] not in READ_ONLY_GIT:
         raise ProvenanceError(f"refused git {args[0] if args else '(none)'}: hints are read-only")
-    if args[0] not in CONTENT_GIT:
+    try:
+        gitexec.refuse_blocking_files(repo)  # a config, include or `shallow` git would block opening
+    except OSError as exc:
+        raise ProvenanceError(f"git would block reading {repo}: {exc}") from exc
+    if args[0] not in CUSTODY_GIT:
         return _run_git(["-C", str(repo)], args, (), text)
     try:
         blanks = gitexec.driver_blanks(repo)
@@ -131,8 +140,13 @@ def git(repo, *args, text=True):
 def _run_git(lead, args, pairs, text):
     env = gitexec.custody_env(blanks=pairs)
     env["GIT_OPTIONAL_LOCKS"] = "0"
-    return subprocess.run(gitexec.argv(*lead, *args), env=env, capture_output=True,
-                           text=text, timeout=60, check=False, stdin=subprocess.DEVNULL)
+    try:
+        return subprocess.run(gitexec.argv(*lead, *args), env=env, capture_output=True,
+                              text=text, timeout=60, check=False, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as exc:
+        # A git that blocked (a FIFO in the work tree) until its timeout: unknown, never a crash
+        # (PR #724 re-attack).
+        raise ProvenanceError(f"git {args[0]} timed out after {exc.timeout}s") from exc
 
 
 def _ok(proc):

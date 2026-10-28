@@ -1407,9 +1407,9 @@ class TestParsingNeverMultipliesPastTheScansMemory(_Base):
 
     LIMIT_MIB, BOUND_KIB = 128, 300 * 1024
 
-    def recall(self, env, argv, zstd=False):
+    def recall(self, env, argv, zstd=False, limit_mib=None):
         proc = subprocess.run([sys.executable, "-I", "-c", AMPLIFY_CHILD, str(SEARCH_PY), json.dumps(env),
-                               json.dumps(argv), str(self.LIMIT_MIB), *(["zstd"] if zstd else [])],
+                               json.dumps(argv), str(limit_mib or self.LIMIT_MIB), *(["zstd"] if zstd else [])],
                               capture_output=True, text=True, timeout=600)
         self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         got = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -1480,6 +1480,47 @@ class TestParsingNeverMultipliesPastTheScansMemory(_Base):
         if sys.platform.startswith("linux"):
             peak = max(got["own_kib"], got["children_kib"])
             self.assertLess(peak, self.BOUND_KIB, f"recall peaked at {peak} KiB parsing the store's schema")
+
+    def test_what_a_scan_returns_never_carries_its_parse_into_the_parent(self):
+        # Codex round 11 on 8fe153d2: a manifest with one matching unit beside 6 MiB of empty objects
+        # fits the scan child's memory, and each hint kept the unit and the manifest it came from;
+        # pickled back and unpickled in the parent, unbounded, they rebuilt every dict there. The
+        # child now returns a flat JSON projection of the fields the parent reads, its size and
+        # structure checked before the parent decodes it. Here the scan child may hold 768 MiB, so
+        # the hint is found, and the parent itself must stay under 100 MiB.
+        amplifier = "[" + "{}," * (2 << 20) + "{}]"
+
+        def manifest(unit_extra="", top_extra=""):
+            return ('{"units":[{"id":"U-1","status":"merged","files_touched":["src/app.py"],"head_sha":"'
+                    + "a" * 40 + '"' + unit_extra + "}]" + top_extra + "}")
+        cases = {"beside the units": manifest(top_extra=',"pad":' + amplifier),
+                 "in the matching unit": manifest(unit_extra=',"pad":' + amplifier),
+                 "as its invariant": manifest(unit_extra=',"intent":{"invariant":' + amplifier + "}"),
+                 "as what it supersedes": manifest(unit_extra=',"supersedes":' + amplifier),
+                 "nested in its id": manifest(unit_extra="").replace('"id":"U-1"', '"id":{"a":{"b":' + amplifier + "}}")}
+        for what, text in cases.items():
+            with self.subTest(manifest=what):
+                runs = self.tmp / f"runs-{len(what)}-{abs(hash(what)) % 997}"
+                (runs / "run-a").mkdir(parents=True)
+                (runs / "run-a" / "manifest.json").write_text(text, encoding="utf-8")
+                got = self.recall(self.env, ["--episodic-hint", "--path", "src/app.py", "--runs-dir", str(runs)],
+                                  limit_mib=768)
+                self.assertIn("PRIOR_RUNS=1 ", got["out"], "the matching unit was not found: nothing crossed")
+                if sys.platform.startswith("linux"):
+                    self.assertLess(got["own_kib"], 100 * 1024,
+                                    f"the parent peaked at {got['own_kib']} KiB rebuilding what its scan parsed ({what})")
+        # A session's matching record holds 24 MiB of text with one emoji (96 MiB as a str) beside
+        # the empty objects: what crosses back is its snippet, cut.
+        path = self.tmp / "claude" / "projects" / "-workspace-amp" / "amp-session.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = ('{"type":"user","sessionId":"amp","cwd":"/w","timestamp":"2026-10-10T12:00:00Z","pad":'
+                  + amplifier + ',"message":{"role":"user","content":"zeta_token ' + "x" * (24 << 20) + '😀"}}\n')
+        path.write_text(record, encoding="utf-8")
+        got = self.recall(self.env, ["zeta_token", "--local-harnesses", "--limit", "50"], limit_mib=768)
+        self.assertEqual(got["out"].count("HIT "), 11, "the session beside the others was not found")
+        if sys.platform.startswith("linux"):
+            self.assertLess(got["own_kib"], 100 * 1024,
+                            f"the parent peaked at {got['own_kib']} KiB holding a hit's whole record")
 
     def test_a_source_past_its_wall_clock_is_skipped_and_said_and_the_rest_is_read(self):
         slow = self.tmp / "claude" / "projects" / "-workspace-slow" / "slow-session.jsonl"

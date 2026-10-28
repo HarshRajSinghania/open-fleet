@@ -75,11 +75,9 @@ import errno
 import fnmatch
 import hashlib
 import importlib.machinery
-import io
 import json
 import os
 from pathlib import Path
-import pickle
 import re
 import select
 import signal
@@ -140,14 +138,30 @@ MAX_RUN_BYTES = 512 << 20
 # a child that dies of it is restarted past that source. macOS (and any system that does not
 # enforce RLIMIT_DATA on mmap) does not bound it: there the memory a scan holds is bounded only by
 # the byte caps above times the parse's amplification, and MAX_SQL_BYTES for a store's schema. The
-# parent holds only what the child returns: at most RESULT_BYTES of pickled result.
+# parent never holds what the child parsed: the child returns a flat projection of exactly the fields
+# the parent reads (_project_hits, _project_hints), every text cut to its cap and every list to its
+# count, as JSON of at most RESULT_BYTES with at most RESULT_VALUES structural bytes, both checked
+# before the parent decodes it -- never a pickled unit or manifest, which carried a parsed amplifier
+# (a matching unit beside 24 MiB of empty objects) back into the unbounded parent (Codex round 11).
 SCAN_MEMORY_BYTES = 1 << 30
 # Wall clock for one source (a file or a store, read and parsed), on every platform: the child is
 # killed past it and restarted past that source, which is said.
 SOURCE_SECONDS = 60.0
 # How many times a scan is restarted past a source that broke a limit before it gives up, said.
 SCAN_ATTEMPTS = 8
-RESULT_BYTES = MAX_RUN_BYTES + (16 << 20)
+RESULT_BYTES = 8 << 20
+RESULT_VALUES = 1 << 20
+# The projection's caps: a text field (a title, a cwd, a unit's name, status, note), a hit's snippet
+# (what a result line shows is 500 characters, a hint line 80), a path or token, list counts, and
+# the prior-run hints a scan returns. Each is far past anything shown; the scan for directive-shaped
+# text reads the field as carried.
+FIELD_CHARS = 16 << 10
+SNIPPET_CHARS = 64 << 10
+PATH_CHARS = 1 << 10
+LIST_ITEMS = 32
+TOKEN_ITEMS = 128
+SYMBOL_ITEMS = 8
+MAX_HINTS = 500
 # The longest schema statement SQLite is allowed to parse in a store (SQLITE_LIMIT_SQL_LENGTH): its
 # expression tree costs ~180 bytes per list item, so a 62 MB `DEFAULT (0 IN (1,1,...))` was 5.61 GB
 # while under the old limit (MAX_FILE_BYTES). No harness writes a schema statement near this.
@@ -199,9 +213,11 @@ class _ReadBudget:
                     "slow": f"a source still being read and parsed after SOURCE_SECONDS ({SOURCE_SECONDS:g} s)",
                     "failed": "a source whose reader failed on it",
                     "abandoned": f"the rest of a scan whose limits stopped it {SCAN_ATTEMPTS} times, or with "
-                                 "no source to blame, or whose result was over RESULT_BYTES"}[why]
+                                 "no source to blame, or whose result was over RESULT_BYTES",
+                    "hints": f"prior-run hints past the first {MAX_HINTS}, or past the result's "
+                             f"{RESULT_BYTES} bytes"}[why]
             if _WORKER is not None:  # a contained scan: the parent says it, once per scan
-                _WORKER.send(b"N", pickle.dumps((why, str(path))))
+                _WORKER.send(b"N", json.dumps([why, str(path)[:PATH_CHARS]]).encode())
                 return
             print(f"search_sessions: skipped {what}, first {path}: recall is partial", file=sys.stderr)
 
@@ -264,14 +280,107 @@ def _source(path):
     return True
 
 
-class _ResultUnpickler(pickle.Unpickler):
-    """The child's result holds plain data and paths: no other class is ever built from it."""
+def _text(value, limit=FIELD_CHARS):
+    """A field as the parent reads it: None, or its text (str() of anything else), cut to `limit`."""
+    if value is None:
+        return None
+    return (value if isinstance(value, str) else str(value))[:limit]
 
-    def find_class(self, module, name):
-        if module.split(".")[0] == "pathlib" and name in {"Path", "PosixPath", "WindowsPath", "PurePath",
-                                                          "PurePosixPath", "PureWindowsPath"}:
-            return super().find_class(module, name)
-        raise pickle.UnpicklingError(f"{module}.{name} is not a scan result")
+
+def _note(value):
+    """A free-text field the parent shows only when it is truthy (a parking reason, an invariant)."""
+    return _text(value) if value else None
+
+
+def _weight(value):
+    """(bytes, structural bytes) of `value` as the child sends it: what _decode checks."""
+    data = json.dumps(value, ensure_ascii=False).encode("utf-8", "surrogatepass")
+    return len(data), sum(data.count(c) for c in (b"{", b"[", b",", b":"))
+
+
+def _project_hits(result):
+    """The local-harness result, carried across: its hits' strings cut (a snippet to SNIPPET_CHARS,
+    and further, halving, until each hit fits its share of RESULT_BYTES), its page."""
+    hits, raw = [], result["hits"][:100]
+    share = ((RESULT_BYTES - (64 << 10)) // max(1, len(raw)), (RESULT_VALUES - 1024) // max(1, len(raw)))
+    for hit in raw:
+        evidence = hit.get("evidence") or {}
+        out = {"sessionId": _text(hit["sessionId"], PATH_CHARS), "agent": _text(hit["agent"], 256),
+               "title": _text(hit["title"]), "score": float(hit["score"]), "cwd": _text(hit["cwd"]),
+               "evidence": {"role": _text(evidence.get("role"), 256),
+                            "snippet": _text(evidence.get("snippet"), SNIPPET_CHARS)}}
+        while any(got > cap for got, cap in zip(_weight(out), share, strict=True)):
+            for holder, key in ((out["evidence"], "snippet"), (out, "title"), (out, "cwd")):
+                if holder[key]:
+                    holder[key] = holder[key][:len(holder[key]) // 2]
+        hits.append(out)
+    page = result["page"]
+    return {"kind": "results", "hits": hits, "page": {"cursor": _text(page["cursor"], 64), "hasMore": bool(page["hasMore"])}}
+
+
+def _project_hint(hint):
+    """One prior-run hint, carried across as exactly the fields the parent reads (rendering,
+    hint_provenance.assess and supersede), never the unit or the manifest it came from: a record's
+    only use, its artifacts, is kept as their paths and digests."""
+    records = []
+    for record in hint["records"]:
+        items = record.get("artifacts") if isinstance(record, dict) else None
+        records.append({"artifacts": [{"path": _text(item.get("path"), PATH_CHARS), "sha256": _text(item["sha256"], 128)}
+                                      for item in (items if isinstance(items, list) else [])[:LIST_ITEMS]
+                                      if isinstance(item, dict) and isinstance(item.get("sha256"), str)]})
+    (rank, prose), field, cand, sym, query, kind = hint["match"]
+    return {"kind": "run", "run": _text(hint["run"], PATH_CHARS), "unit": _text(hint["unit"]),
+            "status": _text(hint["status"]), "run_key": _text(hint["run_key"], PATH_CHARS),
+            "unit_key": _text(hint["unit_key"]), "outcome": hint["outcome"], "rev": hint["rev"],
+            "rev_raw": bool(hint["rev_raw"]), "repo": _text(hint["repo"], PATH_CHARS),
+            "manifest_path": str(hint["manifest_path"]), "artifact": _text(hint["artifact"], PATH_CHARS),
+            "digest": hint["digest"], "records": records, "time": hint["time"], "claimed": hint["claimed"],
+            "paths": [_text(p, PATH_CHARS) for p in hint["paths"][:LIST_ITEMS]],
+            "symbols": {_text(k, PATH_CHARS): sorted(_text(n, PATH_CHARS) for n in list(names)[:SYMBOL_ITEMS])
+                        for k, names in list(hint["symbols"].items())[:LIST_ITEMS]},
+            "tokens": [_text(t, PATH_CHARS) for t in hint["tokens"][:TOKEN_ITEMS]],
+            "match": [[int(rank), bool(prose)], field, _text(cand, PATH_CHARS), _text(sym, PATH_CHARS),
+                      _text(query, PATH_CHARS), kind],
+            "order": [int(n) for n in hint["order"]], "reasons": [],
+            "supersedes": [_text(item, PATH_CHARS) for item in hint["supersedes"][:LIST_ITEMS]],
+            "park": _note(hint["park"]), "inv": _note(hint["inv"])}
+
+
+def _project_hints(hints):
+    """At most MAX_HINTS hints, and only as many as fit RESULT_BYTES and RESULT_VALUES; any left out
+    is said."""
+    out, size, values = [], 64 << 10, 1024
+    for hint in hints:
+        projected = _project_hint(hint)
+        more, marks = _weight(projected)
+        size, values = size + more + 1, values + marks + 1
+        if len(out) >= MAX_HINTS or size > RESULT_BYTES or values > RESULT_VALUES:
+            _BUDGET.omit(hint["manifest_path"], "hints")
+            break
+        out.append(projected)
+    return out
+
+
+def _restore_hints(hints):
+    """The projection back in the types the parent's code expects: a path, tuples, sets."""
+    for hint in hints:
+        hint["manifest_path"] = Path(hint["manifest_path"])
+        hint["match"] = (tuple(hint["match"][0]), *hint["match"][1:])
+        hint["order"] = tuple(hint["order"])
+        hint["symbols"] = {path: set(names) for path, names in hint["symbols"].items()}
+    return hints
+
+
+def _decode(data):
+    """A JSON result from a contained scan, or None when it is past RESULT_BYTES or holds more than
+    RESULT_VALUES structural bytes: both checked before it is decoded, so the parent's decode is
+    bounded whatever the child sent."""
+    if len(data) > RESULT_BYTES or sum(data.count(c) for c in (b"{", b"[", b",", b":")) > RESULT_VALUES:
+        return None
+    try:
+        return json.loads(data)
+    except ValueError:
+        return None
 
 
 def _limit_memory():
@@ -296,17 +405,18 @@ def _limit_memory():
         pass  # a limit it cannot set: the wall clock and the byte caps still hold
 
 
-def _child(fd, skip, fn, args):
+def _child(fd, skip, fn, args, project):
     """The forked child's whole life; never returns (os._exit), so no frame of the parent's, a
-    test's cleanup included, ever runs here."""
+    test's cleanup included, ever runs here. It sends `project`'s flat projection of fn's result,
+    as JSON, never the objects fn parsed."""
     global _WORKER
     code = 70
     try:
         _WORKER = _Worker(fd, skip)
         _limit_memory()
         try:
-            value = fn(*args)
-            data = pickle.dumps((value, _BUDGET.used), protocol=pickle.HIGHEST_PROTOCOL)
+            value = project(fn(*args))
+            data = json.dumps([value, _BUDGET.used], ensure_ascii=False, allow_nan=False).encode("utf-8", "surrogatepass")
         except MemoryError:
             value = data = None
             _WORKER.send(b"M")
@@ -327,7 +437,7 @@ def _child(fd, skip, fn, args):
         os._exit(code)
 
 
-def _attempt(fn, args, skip):
+def _attempt(fn, args, skip, project):
     """Run fn(*args) once in a forked child. Returns ("ok", value) or (why, the source being read
     when it stopped: None when none had started)."""
     read_fd, write_fd = os.pipe()
@@ -339,7 +449,7 @@ def _attempt(fn, args, skip):
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
-        _child(write_fd, skip, fn, args)
+        _child(write_fd, skip, fn, args, project)
     os.close(write_fd)
     current, why, result, buf = None, None, None, bytearray()
     deadline = time.monotonic() + SOURCE_SECONDS
@@ -368,8 +478,9 @@ def _attempt(fn, args, skip):
                 if kind == b"S":
                     current, deadline = os.fsdecode(payload), time.monotonic() + SOURCE_SECONDS
                 elif kind == b"N":
-                    note, where = _ResultUnpickler(io.BytesIO(payload)).load()
-                    _BUDGET.omit(where, note)
+                    note = _decode(payload)
+                    if isinstance(note, list) and len(note) == 2 and all(isinstance(x, str) for x in note):
+                        _BUDGET.omit(note[1], note[0])
                 elif kind == b"R":
                     result = payload
                 elif kind == b"M":
@@ -389,7 +500,10 @@ def _attempt(fn, args, skip):
                 pass
         _pid, status = os.waitpid(pid, 0)
     if result is not None and why is None:
-        value, used = _ResultUnpickler(io.BytesIO(result)).load()
+        decoded = _decode(result)
+        if not (isinstance(decoded, list) and len(decoded) == 2 and isinstance(decoded[1], int)):
+            return "abandoned", current
+        value, used = decoded
         _BUDGET.used = max(_BUDGET.used, used)
         return "ok", value
     if why is None:  # it died without a word: out of memory where no MemoryError could be raised
@@ -397,19 +511,21 @@ def _attempt(fn, args, skip):
     return why, current
 
 
-def _contained(fn, args, empty):
+def _contained(fn, args, empty, project=lambda value: value, restore=lambda value: value):
     """fn(*args), a scan of untrusted stores, computed in a forked child under SCAN_MEMORY_BYTES and
     SOURCE_SECONDS per source, so no parse of untrusted bytes runs in this process. A child stopped
     by either -- or by a reader failing -- is restarted with the source it was reading skipped,
     which is said; with no source to blame, or past SCAN_ATTEMPTS, the scan gives up, said, and
-    `empty` is the answer. Without fork (not POSIX) fn runs here, unbounded."""
+    `empty` is the answer. What crosses back is `project`'s projection, as JSON, and `restore` turns
+    it into the types the caller reads. Without fork (not POSIX) fn runs here, unbounded, its result
+    projected the same way."""
     if _WORKER is not None or not hasattr(os, "fork"):
-        return fn(*args)
+        return restore(json.loads(json.dumps(project(fn(*args)), allow_nan=False)))
     skip = set()
     for _try in range(SCAN_ATTEMPTS):
-        outcome, value = _attempt(fn, args, frozenset(skip))
+        outcome, value = _attempt(fn, args, frozenset(skip), project)
         if outcome == "ok":
-            return value
+            return restore(value)
         if outcome == "abandoned" or value is None or value in skip:
             break
         _BUDGET.omit(value, outcome)
@@ -710,7 +826,7 @@ def _prior_hints(clean_paths, rdir):
     manifests are untrusted bytes, read and parsed in a contained scan (_contained)."""
     if not (rdir.is_dir() and clean_paths):
         return []
-    return _contained(_scan_manifests, (clean_paths, rdir), [])
+    return _contained(_scan_manifests, (clean_paths, rdir), [], _project_hints, _restore_hints)
 
 
 def _scan_manifests(clean_paths, rdir):
@@ -2201,7 +2317,7 @@ def search_local_harnesses(ns):
     build_search_argv(ns)
     offset = _local_cursor_offset(ns.cursor)  # a foreign cursor is refused before any store is read
     return _contained(_scan_local_harnesses, (ns, offset),
-                      {"kind": "results", "hits": [], "page": {"cursor": "none", "hasMore": False}})
+                      {"kind": "results", "hits": [], "page": {"cursor": "none", "hasMore": False}}, _project_hits)
 
 
 def _scan_local_harnesses(ns, offset):

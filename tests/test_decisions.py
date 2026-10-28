@@ -22,6 +22,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Fetched branch names holding a line break (tests/fixtures/refname_breaks.py; W3-07 re-attack).
+_rb_spec = importlib.util.spec_from_file_location(
+    "refname_breaks", ROOT / "tests" / "fixtures" / "refname_breaks.py")
+refname_breaks = importlib.util.module_from_spec(_rb_spec)
+_rb_spec.loader.exec_module(refname_breaks)
 DECISIONS = ROOT / "runtime" / "scripts" / "decisions.py"
 DOORS = ROOT / "runtime" / "one-way-doors.json"
 
@@ -1106,6 +1112,10 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
         self.git("branch", "unpinned")
         self.git("add", ".orca")
         self.git("commit", "-q", "-m", "pin the human grant key")
+        # The trusted refs as a coordinator's clone carries them: remote-tracking, fetched — the
+        # form a checked change cannot move (W3-07), unlike its own local branches.
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.git("update-ref", "refs/remotes/origin/unpinned", "unpinned")
 
     def git(self, *args):
         return subprocess.run(["git", "-C", self.tmp, "-c", "user.name=t", "-c", "user.email=t@x",
@@ -1120,25 +1130,25 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
 
     def test_a_pin_matching_the_ref_checks_as_before(self):
         self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
-        r = self.run_dec("--pin-ref", "main", "check")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("gate-pin", self.run_dec("--pin-ref", "main", "active").stdout)
+        self.assertIn("gate-pin", self.run_dec("--pin-ref", "refs/remotes/origin/main", "active").stdout)
 
     def test_a_pin_swapped_in_the_tree_is_refused_against_the_ref(self):
         self.swap_pin()
         self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
         # Without a trusted ref the swapped key verifies its own grant: the gap.
         self.assertEqual(self.run_dec("check").returncode, 0)
-        r = self.run_dec("--pin-ref", "main", "check")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
         self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("differs from the one pinned at main", r.stderr)
-        r = self.run_dec("--pin-ref", "main", "active")
+        self.assertIn("differs from the one pinned at refs/remotes/origin/main", r.stderr)
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "active")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertNotIn("gate-pin", r.stdout)
 
     def test_a_tree_pin_where_the_ref_pins_none_is_refused(self):
         self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
-        r = self.run_dec("--pin-ref", "unpinned", "check")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/unpinned", "check")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("differs", r.stderr)
 
@@ -1151,10 +1161,10 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
         shutil.rmtree(Path(self.tmp) / ".orca")
         self.seed(["2026-09-01T00:00:00Z · gate-pin · one-way · approved · deploy to production "
                    "[source=human:lia] · t-1"])
-        r = self.run_dec("--pin-ref", "main", "check")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("blob is unreadable", r.stderr)
-        r = self.run_dec("--pin-ref", "main", "active")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "active")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertNotIn("gate-pin", r.stdout)
 
@@ -1166,6 +1176,217 @@ class TestPinRefIsTheTrustAnchor(PinnedLedger):
                 r = self.run_dec(f"--pin-ref={ref}", "check")
                 self.assertEqual(r.returncode, 2, r.stdout)
                 self.assertIn(why, r.stderr)
+
+
+class TestPinRefIsCoordinatorOwnedW307(TestPinRefIsTheTrustAnchor):
+    """W3-07 (2026-10-27 security audit, P2): the #635 anchor degraded three ways. (a) A local
+    branch (`--pin-ref main`) is one the checked change can `update-ref`; (b) the ref was resolved
+    by `rev-parse` and then re-resolved by `ls-tree` and `cat-file`, so it could move in between;
+    (c) with no --pin-ref the working-tree pin was used silently, also where the caller claims a
+    sound lane. Now: only a remote-tracking ref or a commit id anchors, it is resolved ONCE and
+    that commit is what is read, and a sound lane without --pin-ref cannot run."""
+
+    def test_a_local_branch_or_tag_is_not_a_trust_anchor(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        self.git("tag", "pin-tag", "main")
+        for ref in ("main", "refs/heads/main", "pin-tag", "HEAD"):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("remote-tracking", r.stderr)
+                self.assertIn("W3-07", r.stderr)
+
+    def test_a_remote_tracking_name_symbolic_to_a_local_branch_is_not_a_trust_anchor(self):
+        # PR #719 review (P1, mirrored from verify.py's key_source): the class must be what the
+        # ref RESOLVES to — refs/remotes/<x> made a symbolic ref to a local branch carrying a
+        # swapped key passed by spelling.
+        self.swap_pin()
+        self.git("add", ".orca")
+        self.git("commit", "-q", "-m", "the change's own key")
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/main")
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        r = self.run_dec("--pin-ref", "refs/remotes/worker/key", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("refs/heads/main", r.stderr)
+        # the ordinary symbolic shape — origin/HEAD -> origin/main — still anchors
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/HEAD", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)  # origin/main pins the ORIGINAL key: differs
+        self.assertIn("differs", r.stderr)
+
+    def test_a_commit_id_is_a_trust_anchor(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        sha = self.git("rev-parse", "main^{commit}").stdout.strip()
+        r = self.run_dec("--pin-ref", sha, "check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.swap_pin()
+        r = self.run_dec("--pin-ref", sha, "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("differs", r.stderr)
+
+    def test_the_ref_is_resolved_once_and_the_commit_is_what_is_read(self):
+        sha = self.git("rev-parse", "refs/remotes/origin/main^{commit}").stdout.strip()
+        seen = []
+        real = subprocess.run
+
+        def spy(argv, *a, **k):
+            seen.append(list(argv))
+            return real(argv, *a, **k)
+
+        with mock.patch.object(decisions.subprocess, "run", side_effect=spy):
+            decisions._pin_at_ref(Path(self.tmp), "refs/remotes/origin/main")
+        reads = [argv for argv in seen if any(op in argv for op in ("ls-tree", "cat-file"))]
+        self.assertTrue(reads, seen)
+        for argv in reads:
+            self.assertFalse(any("refs/remotes/origin/main" in tok for tok in argv),
+                             f"the ref is re-resolved after validation: {argv}")
+            self.assertTrue(any(tok == sha or tok.startswith(sha + ":") for tok in argv), argv)
+
+    def test_a_sound_lane_without_a_pin_ref_cannot_run(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        for var in ("ORCA_PROVENANCE", "OPEN_FLEET_PROVENANCE"):
+            with self.subTest(var=var):
+                env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+                env[var] = "ci"
+                r = subprocess.run([sys.executable, str(DECISIONS), "--file", str(self.log),
+                                    "check"], capture_output=True, text=True, env=env)
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("--pin-ref", r.stderr)
+                self.assertIn("W3-07", r.stderr)
+
+    def test_the_working_tree_default_is_never_silent(self):
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        r = subprocess.run([sys.executable, str(DECISIONS), "--file", str(self.log), "check"],
+                           capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("NOTE", r.stderr)
+        self.assertIn("working tree", r.stderr)
+
+
+class TestPinRefIsAnExactNameW307(TestPinRefIsTheTrustAnchor):
+    """Codex review of the W3-07 fix (P1, P2). The prefix check read the name the caller SPELLED,
+    and `rev-parse` then expanded it (gitrevisions: refs/<name>, refs/tags/<name>,
+    refs/heads/<name>, …): with refs/remotes/worker/key absent, a local branch
+    refs/heads/refs/remotes/worker/key answered for it, and a revision suffix passed the prefix
+    check too. A ref anchors only when it exists under exactly its name; a commit id only when it
+    names that commit object. And with no --pin-ref an ABSENT pin was silent."""
+
+    def rogue_branch(self, ref):
+        """The change's own key and a grant it signed, committed on the LOCAL ref `ref`."""
+        self.swap_pin()
+        self.git("checkout", "-q", "-b", "the-change")
+        self.git("add", ".orca")
+        self.git("commit", "-q", "-m", "the change's own key")
+        self.git("update-ref", ref, "HEAD")
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+
+    def test_a_local_branch_spelled_as_an_absent_remote_tracking_ref_is_refused(self):
+        # Codex's reproduction: the real refs/remotes/worker/key never exists.
+        self.rogue_branch("refs/heads/refs/remotes/worker/key")
+        # ...and a remote-tracking symbolic ref whose target is that absent spelling
+        self.git("symbolic-ref", "refs/remotes/worker/head", "refs/remotes/worker/key")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/worker/head"):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("exactly that name", r.stderr)
+                self.assertIn("W3-07", r.stderr)
+                r = self.run_dec("--pin-ref", ref, "active")
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertNotIn("gate-pin", r.stdout)
+
+    def test_a_hex_named_branch_is_not_a_commit_id(self):
+        # In a SHA-1 repository 64 hex digits are no object id, so rev-parse expands them as a
+        # ref name: refs/heads/<64 hex> answered for "a commit id".
+        hexname = "ab" * 32
+        self.rogue_branch(f"refs/heads/{hexname}")
+        for ref in (hexname, hexname.upper()):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("names no commit object", r.stderr)
+
+    def test_a_revision_suffix_on_a_remote_tracking_ref_is_refused(self):
+        # A key rotation: the change holds the RETIRED key, which origin/main's parent (and its
+        # reflog entry before the rotation) still pins. Each suffix passed the prefix check and
+        # read that retired key, so grants it signed verified.
+        retired = self.seed_bytes
+        self.swap_pin()
+        self.git("add", ".orca")
+        self.git("commit", "-q", "-m", "rotate the human grant key")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.seed_bytes = retired
+        (Path(self.tmp) / ".orca" / "human-grant-pubkey").write_text(
+            self.ed.publickey(retired).hex() + "\n", encoding="utf-8")
+        self.seed([self.signed("gate-pin", "approved", "2026-09-01T00:00:00Z")])
+        for ref in ("refs/remotes/origin/main~1", "refs/remotes/origin/main^",
+                    "refs/remotes/origin/main@{1}", "refs/remotes/origin/main^{commit}"):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("not a valid ref name", r.stderr)
+        # The exact name reads the CURRENT key, which the retired one is not.
+        r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("differs", r.stderr)
+
+    def test_a_local_bridge_inside_a_remote_tracking_chain_is_refused(self):
+        # Codex review round 2 (P1): for-each-ref's %(symref) is the chain's recursively resolved
+        # END, so refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/retired-key
+        # read as pointing straight at a remote ref, and the local bridge — the change's to
+        # re-point at any other remote-tracking key — was never seen. Each hop is read on its own.
+        self.rogue_branch("refs/remotes/origin/retired-key")
+        self.git("symbolic-ref", "refs/heads/bridge", "refs/remotes/origin/retired-key")
+        self.git("symbolic-ref", "refs/remotes/worker/key", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/b", "refs/heads/bridge")
+        self.git("symbolic-ref", "refs/remotes/worker/a", "refs/remotes/worker/b")
+        for ref in ("refs/remotes/worker/key", "refs/remotes/worker/a"):
+            with self.subTest(ref=ref):
+                r = self.run_dec("--pin-ref", ref, "check")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("refs/heads/bridge", r.stderr)
+        # remote -> remote -> remote still anchors (the ordinary origin/HEAD shape, one hop more)
+        self.git("symbolic-ref", "refs/remotes/worker/c", "refs/remotes/origin/retired-key")
+        self.git("symbolic-ref", "refs/remotes/worker/d", "refs/remotes/worker/c")
+        r = self.run_dec("--pin-ref", "refs/remotes/worker/d", "check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_fetched_branch_name_holding_a_line_break_never_stands_in_for_the_anchor(self):
+        # Independent re-attack (A): the listing was split with str.splitlines(), which breaks on
+        # U+2028/U+2029/U+0085 — characters git accepts in a refname — so a fetched branch
+        # `x<U+2028>refs/remotes/origin/main` added a second "record" naming origin/main at the
+        # worker's commit, and the last one won. Records now split on NUL+LF only.
+        honest = self.git("rev-parse", "refs/remotes/origin/main").stdout.strip()
+        self.rogue_branch("refs/heads/rogue")
+        rogue = self.git("rev-parse", "refs/heads/rogue").stdout.strip()
+        self.assertNotEqual(rogue, honest)
+        for ch in refname_breaks.LINE_BREAKS:
+            with self.subTest(ch=ch):
+                unplant = refname_breaks.plant(self.tmp, ch, rogue)
+                try:
+                    r = self.run_dec("--pin-ref", "refs/remotes/origin/main", "check")
+                finally:
+                    unplant()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("differs", r.stderr)
+
+    def test_a_deleted_working_tree_pin_is_never_silent(self):
+        # Codex review P2: with neither --pin-ref nor a provenance variable, the NOTE fired only
+        # when a pin was present, so the deleted case — unsigned one-way grants valid — was the
+        # one that said nothing.
+        shutil.rmtree(Path(self.tmp) / ".orca")
+        self.seed(["2026-09-01T00:00:00Z · gate-pin · one-way · approved · deploy to production "
+                   "[source=human:lia] · t-1"])
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_PROVENANCE")}
+        for command in ("check", "active"):
+            with self.subTest(command=command):
+                r = subprocess.run([sys.executable, str(DECISIONS), "--file", str(self.log),
+                                    command], capture_output=True, text=True, env=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("NOTE", r.stderr)
+                self.assertIn("absent", r.stderr)
+                self.assertIn("--pin-ref", r.stderr)
 
 
 class TestGrantPayloadBindsTsAndClassP23(PinnedLedger):

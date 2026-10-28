@@ -81,7 +81,7 @@ The verifier gates (`floor_guard.py`, `decisions.py`, `verify.py`) keep their ow
 | `Recall` | `search_sessions.py build_episodic_hint` | recalled cross-worker memory is labelled and defused; a note that speaks with authority is withheld (#605) |
 | `Fail` then retry | `watchdog.py` Failure Handover Packet | sanitized, bounded, `KILL_OR_PARK` withholds the retry |
 | Verifier | `floor_guard.py --base main` | assertion removed, test made easier, and the rest of its rules |
-| Verifier | `decisions.py --pin-ref main check` | a hand-written one-way line without a verifying signature |
+| Verifier | `decisions.py --pin-ref <base commit> check` | a hand-written one-way line without a verifying signature |
 | Verifier | `verify.py check_scope`, `check_redaction` | frozen denominator; credential shapes in the manifest and its artifacts |
 
 The unit lands on `main` only when every verifier gate is clean and the work tree is exactly

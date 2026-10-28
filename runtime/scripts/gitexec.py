@@ -72,6 +72,13 @@ _Authority pinned at startup under its scrubbed nc_env floor, where this module 
 own GIT under the caller's whole environment. tests/test_gitexec_config_commands.py holds
 both driver_blanks copies (diff_scope's and verify's) to this one.
 
+``remote_tracking_commit(git, name)`` is the one rule a TRUST ANCHOR named by its caller answers
+to (W3-07): a commit id, read as an object id only, or a full ``refs/remotes/…`` ref that exists
+under exactly that name, every symbolic hop remote-tracking too. It holds the rule, not a git:
+each caller passes its own executor (verify.py its custody-classed one), so decisions.py
+``--pin-ref``, gate-batch.py ``--pin-ref``, run_report.py's trusted base, verify.py's trust keys
+and release_check.py's gate-1 anchor resolve a name the same way. verify-gate.sh mirrors it in sh.
+
 Library only: no CLI, no exit codes.
 """
 import os
@@ -238,3 +245,253 @@ def _blank_pairs(listing):
         elif _DIFF_COMMAND_KEY_RE.match(key):
             pairs.append((os.fsdecode(key), ""))
     return pairs
+
+
+# --- A trust anchor by its exact name (W3-07) ------------------------------------------------
+# `rev-parse <name>` expands a ref name (gitrevisions: <name>, refs/<name>, refs/tags/<name>,
+# refs/heads/<name>, …), so `refs/remotes/worker/key` with that ref ABSENT resolves to the local
+# branch `refs/heads/refs/remotes/worker/key` — a spelling check on the name passed it, and so
+# did any revision suffix (`refs/remotes/origin/main~1`, `^`, `@{1}`). A 64-hex name in a SHA-1
+# repository (or a 40-hex one in a SHA-256 repository) is not an object id there and expands as
+# a ref name too. The rule below never hands git a name to expand: refs are looked up by their
+# exact name in one listing, and a commit id must resolve to itself.
+COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+REMOTE_TRACKING = "refs/remotes/"
+LOCAL_BRANCH = "refs/heads/"
+_SYMREF_HOPS = 5  # git's own limit on a symbolic-ref chain
+
+
+def remote_tracking_commit(git, name):
+    """``(commit, target, None)`` when ``name`` anchors trust, else ``(None, target, why)``.
+
+    ``git(*args)`` runs one git command in the repository and returns ``(returncode, stdout
+    text)``. ``target`` is the final ref ``name`` reaches (the commit id itself for an id), for
+    the caller's message; ``why`` completes a sentence that begins with ``name``.
+
+    - A commit id (40 or 64 hex digits, any case) anchors when ``rev-parse <id>^{commit}``
+      prints that same id: it names a commit OBJECT, never a ref spelled in hex.
+    - Anything else must be a full ``refs/remotes/…`` name ``git check-ref-format`` accepts —
+      no revision syntax — that EXISTS under exactly that name in the repository's
+      ``refs/remotes/`` listing. A symbolic ref is walked one hop at a time (``symbolic-ref
+      --no-recurse``, never the listing's recursive ``%(symref)``), so every hop and the final
+      target are remote-tracking and exist; the target's object id is then peeled to a commit.
+      Resolved once: the caller reads at ``commit``, never at ``name``.
+
+    Remote-tracking means what this clone's fetch wrote: an anchor in the coordinator's clone or
+    a CI checkout, advisory in a worker's own, where every ref is the worker's to write."""
+    if not name or name.startswith("-"):
+        return None, name, "is empty or option-shaped, not a commit id or a ref"
+    if COMMIT_ID.fullmatch(name.lower()):
+        oid = name.lower()
+        code, out = git("rev-parse", "--verify", "-q", f"{oid}^{{commit}}")
+        if code != 0 or out.strip() != oid:
+            return None, name, ("is spelled as a commit id but names no commit object here (an id "
+                                "is read as an object id only, never as a ref of that spelling)")
+        return oid, oid, None
+    if not name.startswith(REMOTE_TRACKING):
+        return None, name, ("is neither a commit id nor a full remote-tracking ref name "
+                            "(refs/remotes/…): a local branch, tag, HEAD or short name is one the "
+                            "checked change can move")
+    return _exact_ref_commit(git, name, REMOTE_TRACKING, "remote-tracking ref",
+                             "is not remote-tracking (a local branch the checked change can move)")
+
+
+def local_branch_commit(git, name):
+    """``(commit, target, None)`` for a full ``refs/heads/…`` branch that exists under exactly that
+    name (every symbolic hop a local branch too), else ``(None, target, why)``. The same exact-name
+    lookup as remote_tracking_commit, in the local namespace: never a tag, never a revision
+    suffix, never what git's ref-name expansion would substitute. A local branch is NOT a trust
+    anchor — the checked change can move it — so a caller that accepts one says so."""
+    if not name or not name.startswith(LOCAL_BRANCH):
+        return None, name, "is not a full local branch name (refs/heads/…)"
+    return _exact_ref_commit(git, name, LOCAL_BRANCH, "local branch", "is not a local branch")
+
+
+def _exact_ref_commit(git, name, namespace, kind, outside):
+    """The exact-name lookup both rules share. ``name`` (already under ``namespace``) must pass
+    check-ref-format and exist under exactly that name in one ``for-each-ref <namespace>``
+    listing. A symbolic ref is walked ONE HOP AT A TIME with ``git symbolic-ref --no-recurse``:
+    the listing's ``%(symref)`` is the RECURSIVELY resolved target, so it showed
+    refs/remotes/worker/key -> refs/heads/bridge -> refs/remotes/origin/retired-key as pointing
+    straight at the remote ref and hid the local bridge — which the checked change can re-point
+    at any other remote-tracking ref (Codex review). Every hop must be a ``namespace`` ref listed
+    under exactly its name, the chain is bounded, and where one hop cannot be read on its own (git
+    older than 2.39 has no ``--no-recurse``) a symbolic name is refused, never trusted on its
+    recursive target. A plain, non-symbolic ref needs no hop reading and works on any git."""
+    code, _ = git("check-ref-format", name)
+    if code != 0:
+        return None, name, ("is not a valid ref name: revision syntax (~1, ^, @{…}, :) names a "
+                            "commit relative to a ref, not a ref")
+    code, out = git("for-each-ref", "--format=%(refname)%00%(symref)%00%(objectname)%00",
+                    namespace)
+    if code != 0:
+        return None, name, "could not be looked up: git for-each-ref failed"
+    listed, bad = _ref_records(out, namespace)
+    if listed is None:
+        return None, name, f"could not be looked up: {bad}"
+    target = name
+    for _hop in range(_SYMREF_HOPS + 1):
+        if target not in listed:
+            via = f" (through the symbolic ref to {target})" if target != name else ""
+            return None, target, (f"names no {kind} that exists under exactly that name{via}: "
+                                  f"git's ref-name expansion (refs/heads/{target}, …) is never "
+                                  "followed")
+        symbolic, oid = listed[target]
+        if not symbolic:
+            break
+        # %(symref) above is the chain's END; the next hop is read on its own. Only the one LF
+        # git appends is dropped: str.strip() would also eat U+2028/U+2029/U+0085, which a
+        # refname may end with, and turn one name into another.
+        code, out = git("symbolic-ref", "-q", "--no-recurse", target)
+        hop = (out[:-1] if out.endswith("\n") else out) if code == 0 else ""
+        if not hop or "\n" in hop or "\0" in hop:
+            return None, target, ("is a symbolic ref whose chain cannot be read one hop at a time "
+                                  "here (git symbolic-ref --no-recurse, git 2.39+): refused rather "
+                                  "than trusted on its recursively resolved target")
+        if not hop.startswith(namespace):
+            return None, hop, f"is a symbolic ref to {hop}, which {outside}"
+        target = hop
+    else:
+        return None, target, f"is a symbolic-ref chain longer than {_SYMREF_HOPS} hops"
+    code, out = git("rev-parse", "--verify", "-q", f"{oid}^{{commit}}")
+    commit = out.strip()
+    if code != 0 or not COMMIT_ID.fullmatch(commit):
+        return None, target, f"reaches {target}, which points at no commit"
+    return commit, target, None
+
+
+def _ref_records(out, namespace):
+    """``({refname: (symref, oid)}, None)`` from ``for-each-ref`` output whose format ends every
+    record in NUL and git's LF, or ``(None, why)``. The split is on that NUL+LF terminator ONLY:
+    no field can hold NUL or LF (check-ref-format refuses both), while a refname MAY hold
+    U+2028, U+2029 and U+0085 — each a line break to ``str.splitlines()``, so a fetched branch
+    ``x<U+2028>refs/remotes/origin/main`` parsed as a second record that REPLACED the real
+    origin/main in a last-wins dict (independent re-attack). A record that is not exactly three
+    fields under ``namespace``, or a refname seen twice, refuses the whole listing: fail closed.
+    A runner that stripped the final LF is tolerated (its last record still ends in NUL)."""
+    if not out:
+        return {}, None
+    if out.endswith("\0\n"):
+        body = out[:-2]
+    elif out.endswith("\0"):
+        body = out[:-1]
+    else:
+        return None, "the for-each-ref listing is not NUL-terminated records"
+    listed = {}
+    for record in body.split("\0\n"):
+        fields = record.split("\0")
+        if len(fields) != 3 or not fields[0].startswith(namespace):
+            return None, "the for-each-ref listing holds a malformed record"
+        if fields[0] in listed:
+            return None, f"the for-each-ref listing names {fields[0]!r} twice"
+        listed[fields[0]] = (fields[1], fields[2])
+    return listed, None
+
+
+# A caller that sets one of these claims a sound (off-worker) lane: the predicate decisions.py,
+# gate-batch.py and run_report.py already apply (each keeps its copy), here for floor_guard.py and
+# diff_scope.py, which refuse a LOCAL base on such a lane.
+PROVENANCE_VARS = ("OPEN_FLEET_PROVENANCE", "ORCA_PROVENANCE")
+
+
+def sound_lane(environ=None):
+    """`VAR=value` for the first provenance variable set (a lane claiming soundness), or None."""
+    env = os.environ if environ is None else environ
+    return next((f"{var}={env[var]}" for var in PROVENANCE_VARS
+                 if (env.get(var) or "").strip()), None)
+
+
+# --- A diff base by exact names (floor_guard.py, diff_scope.py; W3-07 class) -------------------
+# Both resolved a base with `rev-parse <base>^{commit}` and, unnamed, cut origin/HEAD's target to
+# the SHORT name `origin/<x>`: gitrevisions tries refs/tags/ and refs/heads/ before refs/remotes/,
+# so a tag or local branch spelled `origin/main` stood in for the remote-tracking branch — and the
+# base is where floor_guard reads its waivers and the human-grant pin. A symbolic origin/HEAD that
+# pointed at a local branch was used as-is.
+DEFAULT_BASES = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main",
+                 "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master")
+
+
+ABBREVIATED_ID = re.compile(r"[0-9a-f]{4,63}")
+
+
+def _abbreviated_commit(git, prefix):
+    """``(commit, None)`` for the ONE commit object whose id starts with ``prefix``, or
+    ``(None, why)``. ``rev-parse --disambiguate`` lists object ids by prefix and never consults
+    refs, so a planted ``refs/heads/<prefix>`` is never what an abbreviation names (where
+    ``rev-parse <prefix>`` tries the ref FIRST — independent re-attack)."""
+    code, out = git("rev-parse", f"--disambiguate={prefix}")
+    commits = []
+    for oid in (out.split() if code == 0 else []):
+        if COMMIT_ID.fullmatch(oid):
+            kind_code, kind = git("cat-file", "-t", oid)
+            if kind_code == 0 and kind.strip() == "commit":
+                commits.append(oid)
+    if len(commits) != 1:
+        return None, (f"abbreviates {len(commits)} commit objects here, not one (an abbreviated id "
+                      "is read as an object id only, never as a ref of that spelling)")
+    return commits[0], None
+
+
+def _short(ref):
+    for prefix in (REMOTE_TRACKING, LOCAL_BRANCH):
+        if ref.startswith(prefix):
+            return ref[len(prefix):]
+    return ref
+
+
+def base_commit(git, base=None):
+    """``(commit, shown, local, None)`` for a diff base, or ``(None, shown, None, why)``.
+
+    Every name is looked up EXACTLY; nothing is handed to git to expand, and the caller diffs and
+    reads at ``commit``, never at the name. ``shown`` is the human label. ``local`` is False for
+    an anchor; for an ADVISORY base it says which kind ("a LOCAL branch", "HEAD, a LOCAL name",
+    "an abbreviated commit id") — not a trust anchor (the checked change can move the first two,
+    and nothing binds the third), so the caller refuses it on a lane claiming soundness
+    (sound_lane) and says so in a NOTE elsewhere.
+
+    Named: a full commit id or a full ``refs/remotes/…`` ref goes through remote_tracking_commit;
+    a short name with a slash (``origin/main``) is the remote-tracking ref ``refs/remotes/<name>``
+    under that rule and nothing else (never a tag or local branch of that spelling); ``HEAD`` is
+    the checkout's HEAD; 4 to 63 hex digits are an ABBREVIATED commit id, resolved as an object id
+    only (``rev-parse --disambiguate``, which never consults refs — a branch spelled like the
+    abbreviation is never read) and only when it names exactly one commit; a full
+    ``refs/heads/…`` ref or another bare name (``main``) is that local branch under its exact
+    name; anything else — a tag, a revision suffix — is refused. Unnamed: DEFAULT_BASES in order,
+    origin/HEAD's target included, the remote-tracking ones under remote_tracking_commit (one that
+    points at a local branch is skipped), then the local main and master."""
+    if base:
+        if base.startswith("-"):
+            return None, base, None, "is an option, not a ref"
+        if COMMIT_ID.fullmatch(base.lower()) or base.startswith(REMOTE_TRACKING):
+            commit, _target, why = remote_tracking_commit(git, base)
+            return (commit, base, False, None) if commit else (None, base, None, why)
+        if base == "HEAD":
+            code, out = git("rev-parse", "--verify", "-q", "HEAD^{commit}")
+            commit = out.strip()
+            if code != 0 or not COMMIT_ID.fullmatch(commit):
+                return None, base, None, "names no commit (an unborn or detached-broken HEAD)"
+            return commit, base, "HEAD, a LOCAL name", None
+        if ABBREVIATED_ID.fullmatch(base.lower()):
+            commit, why = _abbreviated_commit(git, base.lower())
+            return ((commit, base, "an abbreviated commit id", None) if commit
+                    else (None, base, None, why))
+        if base.startswith(LOCAL_BRANCH) or not (base.startswith("refs/") or "/" in base):
+            full = base if base.startswith(LOCAL_BRANCH) else LOCAL_BRANCH + base
+            commit, _target, why = local_branch_commit(git, full)
+            return ((commit, base, "a LOCAL branch", None) if commit
+                    else (None, base, None, f"({full}) {why}"))
+        if base.startswith("refs/"):
+            return None, base, None, ("is neither remote-tracking (refs/remotes/…) nor a local "
+                                      "branch (refs/heads/…): a tag or other ref is no base")
+        full = REMOTE_TRACKING + base
+        commit, _target, why = remote_tracking_commit(git, full)
+        return (commit, base, False, None) if commit else (None, base, None, f"({full}) {why}")
+    skipped = []
+    for name in DEFAULT_BASES:
+        local = name.startswith(LOCAL_BRANCH)
+        rule = local_branch_commit if local else remote_tracking_commit
+        commit, target, why = rule(git, name)
+        if commit is not None:
+            return commit, _short(target), "a LOCAL branch" if local else False, None
+        skipped.append(f"{name} {why}")
+    return None, ", ".join(_short(n) for n in DEFAULT_BASES), None, "; ".join(skipped)

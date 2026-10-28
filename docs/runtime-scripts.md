@@ -279,7 +279,22 @@ Flags: `--file` (log path, default `$OPEN_FLEET_DECISIONS_FILE`, then `$ORCA_DEC
 then `docs/DECISIONS.md`), `--doors` (door registry,
 default `runtime/one-way-doors.json`), `--pin-ref REF` (read `.orca/human-grant-pubkey` from that
 git ref and refuse, exit 2, a working tree whose pin differs or an unresolvable ref; use it when
-the checked tree could have been written by a worker). `append` takes `--id`, `--class`, `--answer`,
+the checked tree could have been written by a worker). `REF` must be a commit id that names that
+commit object, or a full remote-tracking ref (`refs/remotes/origin/main`) that exists under exactly
+that name, every hop of a symbolic chain remote-tracking too (read one hop at a time with
+`git symbolic-ref --no-recurse`, git 2.39+; where that cannot run, a symbolic name is refused) — a
+local branch, tag, `HEAD`, a `refs/remotes/…` name symbolic to a local branch (directly or through
+a local bridge back to a remote ref), a revision suffix (`~1`, `^`, `@{1}`), and a
+local `refs/heads/refs/remotes/…` branch that `rev-parse` would find for an absent remote-tracking
+ref are all refused — and is resolved once, the reads naming that commit (W3-07; the rule is
+`gitexec.remote_tracking_commit`, shared by every trust anchor). Remote-tracking means what the clone's own
+fetch wrote: run over a coordinator's clone or a CI checkout, the checked change did not write it;
+in a worker's own clone `git update-ref refs/remotes/…` succeeds and a commit id names whatever the
+caller chose, so there the anchor is advisory. Without
+`--pin-ref` the working-tree pin is used with a stderr NOTE — whether present, swapped or absent
+(an absent pin checks one-way grants unsigned, and only a ref read can tell deleted from never
+pinned) — and a caller that sets
+`ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE` (a sound lane) cannot run at all (exit 2). `append` takes `--id`, `--class`, `--answer`,
 `--why`, `--task`, `--source`, `--grant-sig`, `--ts`; `active` takes `--json`; `tally` takes
 `--lens`, `--json`; `check` takes `--since YYYY-MM-DD` (records stamped earlier are counted, not
 judged — the repository's own ledger predates the human-source and class rules, so CI runs
@@ -503,8 +518,9 @@ Usage: `diff_scope.py [--base REF] [--repo DIR] [--strict] [--overlap FILE] [--j
 `source <(diff_scope.py)`), or `diff_scope.py --predict-merge BASE BRANCH [--repo DIR]` (also
 `wtree.sh predict-merge`) to predict a 3-way merge in memory without touching HEAD, index or working tree.
 
-Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master),
-`--repo` (default `.`), `--strict` (any unmatched path exits nonzero), `--overlap`
+Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master; resolved
+once by exact ref names, as for `floor_guard.py` below, and the diff is taken against that
+commit), `--repo` (default `.`), `--strict` (any unmatched path exits nonzero), `--overlap`
 (pre-dispatch JSON `{units: [{id, scope: [...]}]}` intersecting declared unit globs
 against tracked repo files and pattern prefixes to emit `OVERLAP_COUNT`, or with `--json` a
 `deps` map, as serialization chains for shared hot files), `--json` (emit an object instead of
@@ -973,6 +989,20 @@ Usage: `floor_guard.py [--base REF] [--constraints FILE] [--waivers FILE] [--rep
 Flags: `--base` (default origin/HEAD, then origin/main, origin/master, main, master), `--constraints`
 (numbers file, default CONSTRAINTS.md), `--waivers` (DECISIONS log, default
 `docs/DECISIONS.md`), `--repo` (default `.`), `--quiet` (findings only, no clean banner).
+The base is resolved once, by exact ref names only (`gitexec.base_commit`, W3-07), and the diff,
+the waivers and the human-grant pin are all read at that commit. A commit id, a full
+`refs/remotes/…` name, or a short remote-tracking name (`origin/main`, read only as
+`refs/remotes/origin/main`) goes through the trust-anchor rule (`gitexec.remote_tracking_commit`);
+a bare name (`main`) or `refs/heads/…` is that local branch by its exact name, `HEAD` is the
+checkout's HEAD, and 4 to 63 hex digits are an abbreviated commit id resolved as an object id only
+(`rev-parse --disambiguate`, never a branch of that spelling; name a hex-named branch as
+`refs/heads/<name>`) — each refused (exit 2) where `ORCA_PROVENANCE`/`OPEN_FLEET_PROVENANCE`
+claims a sound lane, the predicate `decisions.py` and `run_report.py` apply, and elsewhere used
+with a stderr NOTE that it is advisory (the change under check can move a local name, and nothing
+binds an abbreviation); the no-remote fallback to local main/master follows the same rule. Never a
+tag, a revision suffix (`origin/main~1`, `@{1}`), a local branch or tag spelled `origin/main` in place
+of the remote-tracking one, or a local `refs/heads/refs/remotes/…` branch standing in for an
+absent remote-tracking ref; unnamed, an `origin/HEAD` that points at a local branch is skipped.
 
 Rules (stable ids): `silenced-checker`, `test-made-easier`, `unfinished-work`,
 `assertion-removed` (removed lines in test paths that still exist, or that moved: a deleted
@@ -1020,9 +1050,11 @@ Subcommands: `init`, `add`, `answer`, `waive`, `overtake`, `list`, `stale`, `sho
 
 Flags: `--run` (run directory under docs/runs) or `--file` (explicit batch path, for
 tests and scratch); `--pin-ref REF` (the trust anchor, before or after the subcommand: a commit
-id or a ref whose final target, through any symbolic chain, is remote-tracking — a local branch,
-tag, `HEAD`, short name or a `refs/remotes/…` name symbolic to a local branch exits 2 — resolved
-once; the human grant key, through `decisions.py --pin-ref`, and the batch at this path are both
+id that names that commit object, or a full remote-tracking ref that exists under exactly that
+name, every symbolic hop remote-tracking too — a local branch, tag, `HEAD`, short name, a
+`refs/remotes/…` name symbolic to a local branch, a revision suffix, or a local
+`refs/heads/refs/remotes/…` branch standing in for an absent remote-tracking ref exits 2 (W3-07) —
+resolved once; the human grant key, through `decisions.py --pin-ref`, and the batch at this path are both
 read at that commit. Use it only in a clone the checked change cannot write refs in — the
 coordinator's own fetch or a CI checkout; in a worker's own clone any ref, `refs/remotes/*`
 included, is the worker's to move). `init` takes `--title`, `--run-id`, `--intro`, `--intro-file`,

@@ -2577,8 +2577,14 @@ def execute_negative_control(m, nc_command=None):
                                  timeout=30, env=env)
             if code != 0:
                 return f"could not set HEAD in the {phase} repository: {gerr.strip()}"
-        code, _, gerr = _run([git, "-C", repo, "reset", "--hard", "--quiet", str(commit)],
-                             timeout=120, env=env)
+        # The phase repository names no attributes or ignore file of its own, so git would open
+        # its default user ones (~/.config/git/attributes and .../ignore, the worker's to write on a
+        # one-uid host): a FIFO there blocked this checkout (PR #724 re-attack). Pinned to
+        # /dev/null on this call's own command line; the verifier's pinned environment is unchanged,
+        # so the system attributes file stays readable here (see docs/runtime-scripts.md).
+        code, _, gerr = _run([git, "-C", repo, "-c", f"core.attributesFile={os.devnull}",
+                              "-c", f"core.excludesFile={os.devnull}", "reset", "--hard", "--quiet",
+                              str(commit)], timeout=120, env=env)
         if code != 0:
             return f"could not check out the {phase} commit: {gerr.strip()}"
         return None

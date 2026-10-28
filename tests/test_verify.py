@@ -6497,6 +6497,30 @@ class ControlRunsNoDriverAddedAfterTheListing(MutationFixture):
         self.assertTrue(any("could not create the control worktree" in x and "core.attributesFile" in x
                             for x in msgs), msgs)
 
+    def test_no_user_attributes_or_ignore_file_is_opened(self):
+        # PR #724 re-attack (items 1, 2): a FIFO at ~/.config/git/ignore blocked the control's
+        # checkout, and one at ~/.config/git/attributes the phase repositories' reset --hard (each
+        # until its 120 s timeout). The control dir names its own attributes and excludes files;
+        # each phase's checkout pins both to /dev/null on its own command line.
+        import threading
+        home = Path(tempfile.mkdtemp(prefix="orca-fifo-home-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        (home / ".config" / "git").mkdir(parents=True)
+        for name in ("attributes", "ignore"):
+            os.mkfifo(home / ".config" / "git" / name)
+        box = {}
+
+        def run():
+            box["result"] = self._execute(self._revert_nc())
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+            worker.join(60)
+        self.assertFalse(worker.is_alive(), "the executed control blocked on a default user attributes "
+                         "or ignore file")
+        ok, msgs = box["result"]
+        self.assertTrue(ok, msgs)
+
     def test_a_crlf_repository_still_executes_and_kills(self):
         # A repository whose own attributes and config check *.py out with CRLF: the control's
         # checkout honours them (data), the seal normalises them, and only the reverted path

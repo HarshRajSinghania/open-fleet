@@ -171,6 +171,7 @@ WORST_PER_BYTE = 13
 MIN_BODY_RATE = 1 << 20
 BODY_GRACE_S = 1.0
 RECLAIM_POLL_S = 0.1
+RELEASE_WAIT_S = 5.0  # how long past its deadline a wait waits for an evicted body's buffer to come back
 MAX_DEPTH = 128  # a request's JSON nests a few levels (a tool's input schema a dozen or so)
 # The walk's steps: one per structural byte outside a string and one per escaped quote inside one.
 # An ordinary request takes tens of thousands; past this many the body is refused, so the walk's
@@ -1014,25 +1015,32 @@ class _BodyBudget:
 
     def take(self, ticket, n, deadline, reclaimed):
         """Add `n` to `ticket`'s share; False when it was evicted (cancelled) or the deadline passed
-        first. `reclaimed(ticket)` is called, outside the lock, for each stalled request whose share
-        was taken back, to evict it."""
-        victims = []
-        try:
+        first. `reclaimed(ticket)` is called, outside the lock and AT ONCE, for each stalled request
+        whose share was taken back, to evict it: its thread then ends and gives its buffer back, and
+        this wait goes on for that (re-attack of c952fa4f: the evictions ran only once the wait was
+        over, so a stalled 32 MB body kept its buffer charge and a 32 MB call behind it got 503). A
+        wait whose deadline passes while an evicted request's buffer is still on its way back waits
+        up to RELEASE_WAIT_S more for it."""
+        grace = deadline + RELEASE_WAIT_S
+        while True:
+            victims = []
             with self.cond:
-                while not ticket.cancelled:
-                    if self.held + n > self.limit:
-                        victims += self._reclaim(n)
-                    if self.held + n <= self.limit:
-                        self.held += n
-                        ticket.held += n
-                        self.tickets.add(ticket)
-                        return True
-                    left = deadline - time.monotonic()
-                    if left <= 0:
+                if ticket.cancelled:
+                    return False
+                if self.held + n > self.limit:
+                    victims = self._reclaim(n)
+                if self.held + n <= self.limit:
+                    self.held += n
+                    ticket.held += n
+                    self.tickets.add(ticket)
+                    return True
+                if not victims:
+                    now = time.monotonic()
+                    releasing = sum(t.held for t in self.tickets if t.cancelled)
+                    end = grace if self.held - releasing + n <= self.limit else deadline
+                    if now >= end:
                         return False
-                    self.cond.wait(min(left, RECLAIM_POLL_S))
-                return False
-        finally:
+                    self.cond.wait(min(end - now, RECLAIM_POLL_S))
             for victim in victims:
                 reclaimed(victim)
 

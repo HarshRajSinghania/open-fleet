@@ -105,7 +105,8 @@ The launcher starts both containers with these properties:
   ends at once when it is evicted, so an evicted connection's slot is free at once. A request body
   gets its share of that budget only once its first byte is here, and one whose bytes then arrive
   slower than 1 MiB/s (after a second's grace) is stalled: a request waiting for budget takes back,
-  for itself, what a stalled body holds and evicts it, so stalled requests, however many arrive,
+  for itself, what a stalled body holds and evicts it at once, then waits for that body's buffer to
+  come back (5 s past its own deadline at most), so stalled requests, however many arrive,
   cannot keep an ordinary call's body out. A request body is at most 32 MB (the
   API's own limit) and held once, and what the bodies take together -- their bytes and the most
   parsing them can allocate -- is at most 400 MiB (`BODY_BUDGET`), which leaves the interpreter and

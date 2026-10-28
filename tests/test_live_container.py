@@ -1717,6 +1717,31 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
             with self.subTest(arrivals_during_the_call=during):
                 self.ordinary_call_behind_stalled_requests(during)
 
+    def test_a_max_size_call_behind_a_stalled_max_size_body_is_answered(self):
+        # Codex round 11 on 8fe153d2: a stalled 32,000,000-byte body held its 416,000,000-byte share;
+        # a complete call of the same length took back the share's parse part but not the stalled
+        # body's buffer, and the eviction that would free it ran only after the 30 s wait, so the
+        # call got 503. The stalled body is now evicted the moment its share is taken back, and the
+        # call waits for its buffer to come back.
+        self.broker(cap=1e9)
+        stalled = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(stalled.close)
+        stalled.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                        b"Content-Length: %d\r\n\r\n{" % lb.MAX_BODY)  # one byte of a max-size body
+        time.sleep(0.3)
+        head = b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"'
+        end = b'"}]}'
+        body = head + b"a" * (lb.MAX_BODY - len(head) - len(end)) + end
+        started = time.monotonic()
+        try:
+            status, data = self.post(raw=body)
+        except (OSError, http.client.HTTPException) as err:
+            status, data = None, repr(err)
+        took = time.monotonic() - started
+        self.assertEqual(status, 200, data)
+        self.assertLess(took, 10, f"a max-size call waited {took:.1f} s behind a stalled body")
+        self.assertEqual(len(self.api.requests[-1]["body"]), lb.MAX_BODY)
+
     def test_budget_goes_only_to_a_body_that_is_arriving(self):
         # A request whose body has not begun holds no share of the budget, however long it waits:
         # what is given back can go only to bodies actually arriving.

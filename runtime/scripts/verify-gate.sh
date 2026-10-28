@@ -157,18 +157,50 @@ except Exception:
   printf '%s' "$_sha"
 }
 # _remote_target REF — REF followed through any symbolic chain to its FINAL target, printed only
-# when that target is itself remote-tracking. A refs/remotes/… NAME proves nothing: it can be a
-# symbolic ref to a local branch the worker moves (PR #719 review). verify.py resolves what it is
-# handed again, once, to the commit it reads the key at. Remote-tracking means "what this clone's
-# fetch wrote" — the coordinator's or the CI runner's on a sound lane; on a worker's own machine
-# any ref is the worker's to write, which is why that lane stays advisory.
+# when every hop is a remote-tracking ref that EXISTS under exactly its name (W3-07: the rule
+# gitexec.remote_tracking_commit holds for decisions.py, gate-batch.py, run_report.py and
+# verify.py, mirrored here in sh). A refs/remotes/… NAME proves nothing: it can be a symbolic ref
+# to a local branch the worker moves (PR #719 review), and with the remote-tracking ref ABSENT,
+# `cat-file -e refs/remotes/origin/HEAD:…` expands the name to the LOCAL branch
+# refs/heads/refs/remotes/origin/HEAD (Codex review) — so each hop is looked up in one
+# `for-each-ref refs/remotes/` listing, by exact name, and never handed to git to expand; a
+# revision suffix (origin/$BASE = main~1, @{1}) is no ref name at all. verify.py resolves what it
+# is handed again, once, under the same rule, to the commit it reads the key at. Remote-tracking
+# means "what this clone's fetch wrote" — the coordinator's or the CI runner's on a sound lane; on
+# a worker's own machine any ref is the worker's to write, which is why that lane stays advisory.
 _remote_target() {
-  _t=$("$GIT_BIN" -C "$TOP" symbolic-ref --quiet "$1" 2>/dev/null) || _t=$1
-  case "$_t" in
-    refs/remotes/?*) printf '%s' "$_t" ;;
-    *) echo "verify-gate: NOTE — $1 points at '$_t', which is not a remote-tracking ref; no key is read there (a local branch is the graded worker's to move)." >&2
-       return 1 ;;
-  esac
+  _rt_refs=$("$GIT_BIN" -C "$TOP" for-each-ref --format='%(refname) %(symref)' refs/remotes/ 2>/dev/null) || _rt_refs=
+  _t=$1
+  _rt_hops=0
+  while :; do
+    case "$_t" in
+      refs/remotes/?*) ;;
+      *) echo "verify-gate: NOTE — $1 points at '$_t', which is not a remote-tracking ref; no key is read there (a local branch is the graded worker's to move)." >&2
+         return 1 ;;
+    esac
+    if ! "$GIT_BIN" check-ref-format "$_t" 2>/dev/null; then
+      echo "verify-gate: NOTE — '$_t' is not a valid ref name (a revision suffix such as ~1 or @{1} names an older commit, not a ref); no key is read there." >&2
+      return 1
+    fi
+    _rt_entry=$(printf '%s\n' "$_rt_refs" | while read -r _rt_name _rt_sym; do
+      if [ "$_rt_name" = "$_t" ]; then printf '=%s' "$_rt_sym"; break; fi
+    done)
+    if [ -z "$_rt_entry" ]; then
+      # $1 itself absent is the ordinary CI shape (no origin/HEAD): nothing to say. A hop that
+      # names an absent ref is said, since git would have expanded it to a local branch.
+      [ "$_t" = "$1" ] || echo "verify-gate: NOTE — $1 points at '$_t', and no remote-tracking ref of exactly that name exists; no key is read there (git's ref-name expansion to refs/heads/$_t is never followed)." >&2
+      return 1
+    fi
+    _rt_entry=${_rt_entry#=}
+    [ -n "$_rt_entry" ] || break
+    _rt_hops=$((_rt_hops + 1))
+    if [ "$_rt_hops" -gt 5 ]; then
+      echo "verify-gate: NOTE — $1 is a symbolic-ref chain longer than 5 hops; no key is read there." >&2
+      return 1
+    fi
+    _t=$_rt_entry
+  done
+  printf '%s' "$_t"
 }
 KEY_BASE="$BASE"
 [ -n "$KEY_BASE" ] || [ "${GITHUB_ACTIONS:-}" != "true" ] || KEY_BASE="${GITHUB_BASE_REF:-}"

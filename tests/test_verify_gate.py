@@ -577,6 +577,61 @@ class VerifyGateDispatchPinDiscovery(GateCase):
         self.assertNotIn("signature verified", r.stdout + r.stderr)
         self.assertEqual(r.returncode, 2, r.stderr[-600:])
 
+    def _traced_gate(self, rec, src, **extra):
+        """verify-gate.sh under `sh -x` on a sound lane, so the discovered PUBKEY is visible."""
+        m = self.manifest(src, ["AC-1"], ["AC-1"])
+        env = {"PATH": _require_system_tools("git", "python3"), "ORCA_MANIFEST": m,
+               "ORCA_CONTRACT_SOURCE": src, "ORCA_CONTRACT_DIGEST": self.digest(src),
+               "ORCA_UNIT_CLASS": "report-only", "ORCA_PROVENANCE": "dispatch",
+               "ORCA_DISPATCH_RECORD": rec, **extra}
+        return subprocess.run(["sh", "-x", str(self.repo / "runtime" / "scripts" / "verify-gate.sh"),
+                               "--event", "task"], capture_output=True, text=True, cwd=self.repo,
+                              env=env)
+
+    def test_an_absent_remote_tracking_ref_never_reads_a_local_branch_of_that_spelling(self):
+        # W3-07 class, Codex review (P1): with refs/remotes/origin/HEAD and …/main ABSENT,
+        # `symbolic-ref` failed, the name kept its refs/remotes/ spelling, and `cat-file -e
+        # refs/remotes/origin/HEAD:.orca/dispatch-pubkey` expanded it to the LOCAL branch
+        # refs/heads/refs/remotes/origin/HEAD — the worker's key, handed to verify.py as a
+        # reviewed blob. Every hop is now looked up by its exact name.
+        (_coordinator, worker) = self.use_repo(pin_blob=True, remote_head=True)
+        _git(self.repo, "checkout", "-q", "-b", "workerbranch")
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(worker[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "my key")
+        os.remove(self.repo / ".orca" / "dispatch-pubkey")
+        _git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        _git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        for name in ("HEAD", "main"):
+            _git(self.repo, "update-ref", f"refs/heads/refs/remotes/origin/{name}", "workerbranch")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=worker)
+        r = self._traced_gate(rec, src, ORCA_BASE="main")
+        self.assertNotIn("PUBKEY=.orca/dispatch-pubkey@", r.stderr)
+        self.assertNotIn("signature verified", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 2, r.stderr[-600:])
+
+    def test_a_base_with_a_revision_suffix_is_no_key_ref(self):
+        # A key rotation retired the worker's key: origin/main's parent still pins it, and
+        # ORCA_BASE=main~1 made refs/remotes/origin/main~1, which passed the refs/remotes/ case.
+        (retired, current) = self.use_repo(pin_blob=True, remote_head=False)
+        (self.repo / ".orca").mkdir(exist_ok=True)
+        (self.repo / ".orca" / "dispatch-pubkey").write_text(current[1], encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rotate")
+        os.remove(self.repo / ".orca" / "dispatch-pubkey")
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        src = self.src(["AC-1"])
+        rec, _pub = self.sign(self.digest(src), "report-only", key=retired)
+        for base in ("main~1", "main^", "main@{0}"):
+            with self.subTest(base=base):
+                r = self._traced_gate(rec, src, ORCA_BASE=base)
+                self.assertNotIn("PUBKEY=.orca/dispatch-pubkey@", r.stderr)
+                self.assertIn("not a valid ref name", r.stderr)
+                self.assertNotIn("signature verified", r.stdout + r.stderr)
+                self.assertEqual(r.returncode, 2, r.stderr[-600:])
+
     def test_a_bare_path_env_key_is_refused_on_a_lane_claiming_soundness(self):
         # W3-03: ORCA_DISPATCH_PUBKEY=.orca/dispatch-pubkey (a bare path) is the graded worker's
         # working tree; on a sound lane verify.py refuses it rather than verify against it.

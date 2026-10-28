@@ -119,6 +119,17 @@ def _sh(path):
     return "'" + str(path).replace("'", "'\\''") + "'"
 
 
+# wtree.sh stages in a git dir it builds (W4 custody sweep): every call that stages or hashes
+# content carries this lead. A mutation control removes it to run the pre-custody script.
+_WTREE_CUSTODY = ' --git-dir="$CUSTODY" --work-tree="$TOP"'
+
+
+def _pre_custody(src):
+    """wtree.sh's source with its staging run in the repository itself again (controls only)."""
+    assert src.count(_WTREE_CUSTODY) >= 3, "the custody lead moved: update the control"
+    return src.replace(_WTREE_CUSTODY, "")
+
+
 class GitexecDriverBlanks(unittest.TestCase):
     """gitexec.driver_blanks reads the driver names the repo's OWN config declares and blanks
     each command — the attribute-selected channel a fixed -c cannot name."""
@@ -380,7 +391,8 @@ class WtreeFingerprint(unittest.TestCase):
         # wtree.sh exports, counted by one final assignment (PR #649). Zero it: core.fsmonitor is
         # honoured again and no filter key is blanked.
         self.assertEqual(src.count("GIT_CONFIG_COUNT=$_n"), 1, "the count assignment moved")
-        stripped = src.replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0")
+        # ...and stage in the repository itself, as before the git custody (W4 custody sweep).
+        stripped = _pre_custody(src).replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0")
         self.assertNotEqual(stripped, src, "the control did not change wtree.sh")
         mutant = p.dir / "wtree_control.sh"
         mutant.write_text(stripped, encoding="utf-8")
@@ -648,7 +660,9 @@ class FilteredFileFidelity(unittest.TestCase):
         src = (SCRIPTS / "wtree.sh").read_text(encoding="utf-8")
         self.assertEqual(src.count("GIT_CONFIG_COUNT=$_n"), 1)
         mutant = p.dir / "wtree_control.sh"
-        mutant.write_text(src.replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0"), encoding="utf-8")
+        # The blanks stripped AND staging in the repository itself (pre-custody, W4 custody sweep).
+        mutant.write_text(_pre_custody(src).replace("GIT_CONFIG_COUNT=$_n", "GIT_CONFIG_COUNT=0"),
+                          encoding="utf-8")
         r = subprocess.run(["sh", str(mutant), str(p.repo)], env=self.env, capture_output=True,
                            text=True, stdin=subprocess.DEVNULL, timeout=120)
         self.assertIn("clean", p.fired(), "control: the stripped wtree.sh must run the filter")
@@ -700,6 +714,111 @@ class FilteredFileFidelity(unittest.TestCase):
         self.assertIn("UNVERIFIABLE", errs[0])
         self.assertIn(_UNVERIFIABLE, errs[0])
         self.assertNotIn("STALE", errs[0])
+
+
+class WtreeStagesNoDriverAddedAfterTheListing(unittest.TestCase):
+    """W4 custody sweep (Codex on the W4-02 branch, P1): wtree.sh listed the declared drivers and
+    then `add -A` read the repository's config again, so a `filter.<n>.clean` a still-running
+    worker added in between (selected by the shared `info/attributes`) ran in the coordinator —
+    and, mapping a tampered file back to its committed bytes, made the tampered tree fingerprint
+    as HEAD. A racing `git` first on PATH (the one wtree.sh resolves) adds a NEVER-SEEN filter
+    before EVERY call. Staging now runs in a git dir wtree.sh builds, whose config defines none."""
+
+    def _repo(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "line1\nline2\n")
+        self.head_tree = p._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        # The late clean filter prints HEAD's bytes: run, it maps the tampered file back to HEAD.
+        clean = p.dir / "clean.sh"
+        clean.write_text("#!/bin/sh\necho clean >> " + _sh(p.marker) + "\nprintf 'line1\\nline2\\n'\n",
+                         encoding="utf-8")
+        clean.chmod(0o755)
+        bindir = p.dir / "racebin"
+        bindir.mkdir()
+        counter = p.dir / "race-calls"
+        # One line per call; the driver is named by the call's pid, so two gits wtree.sh runs at
+        # once (its diff-index | check-attr pipeline) each add their own.
+        (bindir / "git").write_text(
+            "#!/bin/sh\n"
+            "n=$$\n"
+            f"echo $n >> {_sh(counter)}\n"
+            f"printf '[filter \"late%s\"]\\n\\tclean = %s\\n\\tsmudge = %s\\n' \"$n\" {_sh(clean)} {_sh(clean)}"
+            f" >> {_sh(p.repo / '.git' / 'config')}\n"
+            f"printf '* filter=late%s\\n' \"$n\" >> {_sh(p.repo / '.git' / 'info' / 'attributes')}\n"
+            f"exec {_sh(shutil.which('git'))} \"$@\"\n", encoding="utf-8")
+        (bindir / "git").chmod(0o755)
+        (p.repo / ".git" / "info").mkdir(exist_ok=True)
+        self.counter = counter
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_CONFIG", "GIT_DIR"))}
+        self.env.update(PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}",
+                        GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        (p.repo / "a.txt").write_text("TAMPERED\n", encoding="utf-8")
+        return p
+
+    def _run(self, p, script):
+        return subprocess.run(["sh", str(script), str(p.repo)], env=self.env, capture_output=True,
+                              text=True, stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_a_filter_added_after_the_listing_neither_runs_nor_chooses_the_fingerprint(self):
+        p = self._repo()
+        r = self._run(p, SCRIPTS / "wtree.sh")
+        self.assertGreater(len(self.counter.read_text().split()), 1, "the race never ran")
+        self.assertEqual(p.fired(), set(), "a filter declared after the listing ran in the coordinator")
+        self.assertNotEqual(r.stdout.strip(), self.head_tree, "a tampered tree fingerprinted as HEAD")
+        # A late driver is not in the listing, so its path is hashed from its raw bytes (exit 0, a
+        # tree that is not HEAD's); one the listing saw makes the changed path unverifiable (3).
+        self.assertIn(r.returncode, (0, 3), r.stderr)
+
+    def test_mutation_control_staging_in_the_repository_runs_the_late_filter(self):
+        p = self._repo()
+        mutant = p.dir / "wtree_control.sh"
+        mutant.write_text(_pre_custody((SCRIPTS / "wtree.sh").read_text(encoding="utf-8")),
+                          encoding="utf-8")
+        r = self._run(p, mutant)
+        self.assertIn("clean", p.fired(), "control: the late filter never ran pre-custody")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, self.head_tree),
+                         "control: the late filter did not choose the fingerprint")
+
+    def test_a_partial_clone_is_no_fingerprint_not_a_guess(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        p._git("config", "core.repositoryformatversion", "1")
+        p._git("config", "extensions.partialClone", "origin")
+        r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=_CLEAN_ENV,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+        self.assertIn("extensions.partialclone", r.stderr)
+
+    def test_a_planted_symlink_where_git_reads_a_file_is_no_fingerprint(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        exclude = p.repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.unlink(missing_ok=True)
+        os.symlink(os.devnull, exclude)
+        r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=_CLEAN_ENV,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+        self.assertIn("not a regular file", r.stderr)
+
+    def test_the_fingerprint_writes_nothing_into_the_repositorys_object_store(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        p = _Probe(tmp)
+        p.commit("a.txt", "one\n")
+        (p.repo / "untracked.txt").write_text("never committed\n", encoding="utf-8")
+        before = sorted(str(f) for f in (p.repo / ".git" / "objects").rglob("*"))
+        r = subprocess.run(["sh", str(SCRIPTS / "wtree.sh"), str(p.repo)], env=_CLEAN_ENV,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(r.stdout.strip(), p._git("rev-parse", "HEAD^{tree}").stdout.strip())
+        self.assertEqual(sorted(str(f) for f in (p.repo / ".git" / "objects").rglob("*")), before)
 
 
 class WtreeTrustsNoSameUidConfigOrEnvironment(unittest.TestCase):

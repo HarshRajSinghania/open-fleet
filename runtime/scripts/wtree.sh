@@ -21,9 +21,11 @@
 # can hide a same-second rewrite, so `touch -r` restores the original mtime — and if that touch
 # FAILS we fall through to the slower `read-tree HEAD` seed rather than trusting a stale stat cache.
 #
-# Staged blobs land in the object store as unreachable objects and are gc'd like stash churn (so the
-# CONTENT of untracked, non-ignored files enters .git/objects until gc — the same property
-# `git stash -u` has).
+# Staging runs in GIT CUSTODY (W4 custody sweep): against a git dir this script builds in a temp
+# dir, whose config it writes and which defines no filter or diff driver, over the repository's
+# objects (read through `objects/info/alternates`) and work tree. The blobs `add -A` writes and the
+# tree `write-tree` writes land in that dir's own object store and are removed with it, so the
+# repository's store is never written.
 #
 # IGNORED FILES ARE OUT BY CONTRACT, and that is a stated limit, not an oversight. The consumer
 # (verify.py check_commands, evidence-manifest.md) compares this value to `<head_sha>^{tree}`, a
@@ -39,10 +41,14 @@
 #   wtree.sh predict-merge <base> <branch> [repo]  # 3-way merge conflict prediction in memory
 # Exit 1 outside a git repo, or in a repo with no commits and no usable index — callers MUST treat
 # a non-zero exit as "no fingerprint" and fail closed, never as an empty one.
+# Exit 1 too when the repository cannot be staged in custody: an `extensions.*` the custody git dir
+# cannot honour (a partial clone above all), or a non-regular `info/exclude`, `shallow`, shared
+# index or `info/sparse-checkout` where git would read one.
 # Exit 3, with the reason on stderr, when a path staged differently from HEAD is selected by a
 # filter driver a config DECLARES — the repository's, or a global/system file, which on a one-uid
 # host the worker can write as well (#629, PR #649 review, W4-02). No filter ever runs here: the
-# command is the worker's to name. But without it, a smudged file's bytes cannot be mapped back to
+# command is the worker's to name, and staging reads no config the worker can write, so not even
+# one added while this script runs is defined there (W4 custody sweep). But without it, a smudged file's bytes cannot be mapped back to
 # the committed clean blob, so for that path the comparison is genuinely unverifiable — touching
 # an unchanged expanded file would otherwise fingerprint it as different from HEAD and a good run
 # would read as STALE. Exit 3 says so instead of printing a misleading value. An untouched file is
@@ -85,8 +91,17 @@ fi
 # outrank or blind this belt (GIT_CONFIG_PARAMETERS is read after the GIT_CONFIG_COUNT pairs;
 # GIT_CONFIG is the one file `git config --list` reads) are the caller's, never the fingerprint's.
 # And git is resolved ONCE, to an absolute path (gitexec.py's rule), not per call against PATH.
+# GIT_EXEC_PATH names the directory git runs its own helper programs from, GIT_TEMPLATE_DIR what an
+# init copies and GIT_NAMESPACE the refs a call sees: the caller's too, never the fingerprint's.
+# GIT_NO_LAZY_FETCH=1 and GIT_ALLOW_PROTOCOL=file (gitexec.py CUSTODY_ENV): a planted promisor
+# remote cannot make a read of a missing object fetch, so no `uploadpack`, credential helper or
+# ssh command it names runs.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
-  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ATTR_SOURCE GIT_EXTERNAL_DIFF GIT_CONFIG GIT_CONFIG_PARAMETERS
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ATTR_SOURCE GIT_EXTERNAL_DIFF GIT_CONFIG GIT_CONFIG_PARAMETERS \
+  GIT_EXEC_PATH GIT_TEMPLATE_DIR GIT_NAMESPACE
+GIT_NO_LAZY_FETCH=1
+GIT_ALLOW_PROTOCOL=file
+export GIT_NO_LAZY_FETCH GIT_ALLOW_PROTOCOL
 GIT=$(command -v git 2>/dev/null) || GIT=
 case "$GIT" in
   /*) ;;
@@ -201,7 +216,101 @@ if [ -n "$_scope" ]; then
   echo "wtree: $TOP's config listing has a scope without its key; no fingerprint (#629)" >&2
   exit 1
 fi
+
+# W4 custody sweep: the listing above and `add -A` below are two git calls, and `add -A` used to
+# read the repository's config again — a filter a still-running worker declared in between ran
+# here unblanked (and, mapping a tampered file back to its committed blob, chose the fingerprint).
+# So everything that stages or hashes content runs against CUSTODY, a git dir built here (the
+# shared custody of runtime/scripts/gitexec.py, custody_git_dir, spelled in sh): its own config
+# (format only, no driver of any kind), HEAD at the repository's HEAD commit, the repository's
+# objects as a read-only alternate, and regular-file copies of what git reads there: the common
+# `info/exclude` and `shallow`, and the per-worktree `info/sparse-checkout` and split-index
+# `sharedindex.*`. The work tree is the repository's own (`--work-tree "$TOP"`). The pairs listed
+# above still ride as a belt; the repository's data-only core.* settings (line endings, file modes,
+# name folding, stat fields, sparse flags) ride too, read here by `config --get`, so a checkout
+# still fingerprints as its committed tree. `core.excludesFile` is NOT carried: honouring a file
+# the worker names could hide an untracked file, so it counts (fails STALE) instead.
+_gitdir=$("$GIT" -C "$TOP" rev-parse --absolute-git-dir 2>/dev/null) || exit 1
+_common=$("$GIT" -C "$TOP" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 1
+_format=$("$GIT" -C "$TOP" rev-parse --show-object-format 2>/dev/null) || exit 1
+case "$_format" in
+  sha1) _rfv=0 ;;
+  sha256) _rfv=1 ;;
+  *) echo "wtree: unknown object format '$_format'; no fingerprint" >&2; exit 1 ;;
+esac
+case "$_common" in
+  /*"$NL"*|*'"'*) echo "wtree: cannot name $TOP's object store in an alternates file; no fingerprint" >&2; exit 1 ;;
+  /*) ;;
+  *) echo "wtree: $TOP's common git dir is not absolute; no fingerprint" >&2; exit 1 ;;
+esac
+# Any extensions.* the custody dir cannot reproduce is refused, never guessed (a partial clone's
+# missing objects, above all). `config --get-regexp` exits 1 when there is none.
+_rc=0
+_ext=$("$GIT" -C "$TOP" config --name-only --get-regexp '^extensions\.' 2>/dev/null) || _rc=$?
+if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 1 ]; then
+  echo "wtree: cannot read $TOP's extensions; no fingerprint" >&2
+  exit 1
+fi
+OLDIFS=$IFS
+IFS=$NL
+set -f
+for _k in $_ext; do
+  case "$_k" in
+    extensions.objectformat|extensions.compatobjectformat|extensions.worktreeconfig) ;;
+    extensions.refstorage|extensions.relativeworktrees) ;;
+    *) echo "wtree: $TOP declares $_k, which the custody git dir cannot honour; no fingerprint" >&2
+       exit 1 ;;
+  esac
+done
+set +f
+IFS=$OLDIFS
+for _k in filemode symlinks ignorecase precomposeunicode protecthfs protectntfs sparsecheckout \
+    sparsecheckoutcone autocrlf eol checkstat trustctime; do
+  _v=$("$GIT" -C "$TOP" config --get "core.$_k" 2>/dev/null) || continue
+  set -- "$@" "GIT_CONFIG_KEY_$_n=core.$_k" "GIT_CONFIG_VALUE_$_n=$_v"
+  _n=$((_n + 1))
+done
+_head=$("$GIT" -C "$TOP" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || _head=
 set -- "$@" "GIT_CONFIG_COUNT=$_n"
+
+CUSTODY=$(mktemp -d "${TMPDIR:-/tmp}/orca-wtree-git-XXXXXX") || exit 1
+trap 'rm -rf "$CUSTODY"' EXIT INT TERM
+# A regular file is copied (mtime kept); a missing one is skipped; anything else (a symlink, a
+# FIFO) where git would read one is refused, never followed.
+copy_regular() {
+  if [ -L "$1" ]; then return 1; fi
+  if [ -e "$1" ]; then
+    [ -f "$1" ] || return 1
+    cp -p "$1" "$2" || return 1
+  fi
+  return 0
+}
+mkdir "$CUSTODY/refs" "$CUSTODY/refs/heads" "$CUSTODY/refs/tags" "$CUSTODY/info" \
+  "$CUSTODY/objects" "$CUSTODY/objects/info" || exit 1
+printf '[core]\n\trepositoryformatversion = %s\n\tbare = true\n' "$_rfv" >"$CUSTODY/config" || exit 1
+if [ "$_format" = sha256 ]; then
+  printf '[extensions]\n\tobjectformat = sha256\n' >>"$CUSTODY/config" || exit 1
+fi
+if [ -n "$_head" ]; then
+  printf '%s\n' "$_head" >"$CUSTODY/HEAD" || exit 1
+else
+  printf 'ref: refs/heads/open-fleet-unborn\n' >"$CUSTODY/HEAD" || exit 1
+fi
+printf '%s/objects\n' "$_common" >"$CUSTODY/objects/info/alternates" || exit 1
+for _pair in "info/exclude:$_common" "shallow:$_common" "info/sparse-checkout:$_gitdir"; do
+  _rel=${_pair%%:*}
+  if ! copy_regular "${_pair#*:}/$_rel" "$CUSTODY/$_rel"; then
+    echo "wtree: ${_pair#*:}/$_rel is not a regular file; no fingerprint" >&2
+    exit 1
+  fi
+done
+for _f in "$_gitdir"/sharedindex.*; do
+  [ -e "$_f" ] || [ -L "$_f" ] || continue
+  if ! copy_regular "$_f" "$CUSTODY/${_f##*/}"; then
+    echo "wtree: $_f is not a regular file; no fingerprint" >&2
+    exit 1
+  fi
+done
 
 # Resolve the REAL index path BEFORE exporting GIT_INDEX_FILE: with the variable set,
 # `rev-parse --git-path index` returns the temp index itself and the stat-cache seed self-copies.
@@ -212,13 +321,13 @@ case "$REAL_INDEX" in
 esac
 
 TMPIDX=$(mktemp "${TMPDIR:-/tmp}/orca-wtree-XXXXXX") || exit 1
-trap 'rm -f "$TMPIDX"' EXIT INT TERM
+trap 'rm -f "$TMPIDX"; rm -rf "$CUSTODY"' EXIT INT TERM
 GIT_INDEX_FILE="$TMPIDX"
 export GIT_INDEX_FILE
 
 seed_from_head() {
   rm -f "$TMPIDX" 2>/dev/null || true
-  "$GIT" -C "$TOP" read-tree HEAD 2>/dev/null || return 1
+  "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" read-tree HEAD 2>/dev/null || return 1
 }
 
 if [ -n "$REAL_INDEX" ] && [ -f "$REAL_INDEX" ] && cp "$REAL_INDEX" "$TMPIDX" 2>/dev/null; then
@@ -229,23 +338,27 @@ else
   seed_from_head || exit 1
 fi
 
-env "$@" "$GIT" -C "$TOP" add -A 2>/dev/null || exit 1
+env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" add -A 2>/dev/null || exit 1
 # write-tree too: a racily-clean index entry (its mtime equals the temp index's, which `touch -r`
-# above makes likely) is re-hashed here, which re-runs the clean filter — so the blanks (#629)
-# ride this call as well, not only `add -A`.
-TREE=$(env "$@" "$GIT" -C "$TOP" write-tree 2>/dev/null) || exit 1
+# above makes likely) is re-hashed here, which would re-run a clean filter — so it runs in custody
+# with the blanks (#629), as `add -A` does.
+TREE=$(env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" write-tree 2>/dev/null) || exit 1
 
 # Exit 3 (see the header): a path staged differently from HEAD that a declared driver filters.
-# `diff-index --cached` compares the temp index to HEAD's tree and `check-attr` reads attributes;
-# neither runs any command. check-attr -z prints `path NUL filter NUL value NUL`: NUL and newline
+# `diff-index --cached` compares the temp index to HEAD's tree (in custody, where the blobs it
+# staged live) and `check-attr` reads the repository's attributes (in the repository, against its
+# real index: the temp one may name a shared index only the custody dir holds); neither runs any
+# command. A driver declared only after the listing is not in DECLARED: it never ran, so its path
+# was hashed from its raw bytes and the fingerprint states that content, as for any changed file.
+# check-attr -z prints `path NUL filter NUL value NUL`: NUL and newline
 # are swapped so each field is one line (a newline inside a path becomes a NUL that `read` drops,
 # which keeps every third line the value). A value is never a path, and holds no whitespace.
 if [ -n "$DECLARED" ]; then
   HEAD_TREE=$("$GIT" -C "$TOP" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null) \
     || HEAD_TREE=$("$GIT" -C "$TOP" hash-object -t tree /dev/null)
-  HIT=$("$GIT" -C "$TOP" diff-index --cached --no-ext-diff -z --name-only --no-renames \
-          --diff-filter=AMT "$HEAD_TREE" -- 2>/dev/null \
-        | "$GIT" -C "$TOP" check-attr --stdin -z filter 2>/dev/null \
+  HIT=$(env "$@" "$GIT" -C "$TOP" --git-dir="$CUSTODY" --work-tree="$TOP" diff-index --cached \
+          --no-ext-diff -z --name-only --no-renames --diff-filter=AMT "$HEAD_TREE" -- 2>/dev/null \
+        | GIT_INDEX_FILE=${REAL_INDEX:-$TMPIDX} "$GIT" -C "$TOP" check-attr --stdin -z filter 2>/dev/null \
         | tr '\0\n' '\n\0' \
         | { _i=0; _path=
             while IFS= read -r _f; do

@@ -356,6 +356,51 @@ class TheTranscriptCannotDisagreeWithItself(unittest.TestCase):
                 self.assertFalse(self.assess(doc, "web")[0])
 
 
+class EveryEnvelopeLevelIsHeldToTheReport(unittest.TestCase):
+    """W4-10, Codex round 6 (P2): the envelope rule read only the outer object's own keys, and the
+    report was unwrapped one level only. `{"metadata": {"ephemeral": false}, "result": <report>}`
+    certified both the assessment and placement, and a report wrapped twice was read as its middle
+    wrapper, which names no backend, so its isolation was never checked at all."""
+
+    def check(self, doc, clear, placed):
+        raw = json.dumps(doc)
+        self.assertEqual(sandbox_doctor.assess(raw, "lane-7")[0], clear, raw)
+        self.assertEqual(sandbox_doctor.placement_bound(raw), placed, raw)
+
+    def test_a_claim_nested_in_an_envelope_contradicts_the_report(self):
+        good = GOOD["docker"]
+        for outer in ({"metadata": {"ephemeral": False}},
+                      {"ok": True, "meta": {"info": {"prelaunchPlacementBound": False}}},
+                      {"ok": True, "metadata": [{"Ephemeral": False}]}):
+            with self.subTest(outer=outer):
+                self.check(dict(outer, result=good), False, False)
+
+    def test_every_wrapping_level_is_read(self):
+        good, bad = GOOD["docker"], dict(GOOD["docker"], privileged=True)
+        for name, doc, ok in (
+                ("a claim in a deeper wrapper", {"ok": True, "result": {"metadata": {"ephemeral": False},
+                                                                        "result": good}}, False),
+                ("ok:false in a deeper wrapper", {"ok": True, "result": {"ok": False, "result": good}}, False),
+                ("a bad report wrapped twice", {"ok": True, "result": {"ok": True, "result": bad}}, False),
+                ("a clean report wrapped twice", {"ok": True, "result": {"ok": True, "result": good}}, True)):
+            with self.subTest(name):
+                self.check(doc, ok, ok)
+        clear, reason, exposes = sandbox_doctor.assess(
+            json.dumps({"ok": True, "result": {"ok": True, "result": bad}}), "lane-7")
+        self.assertTrue(exposes, reason)
+        self.assertIn("privileged", reason)
+
+    def test_a_report_naming_no_backend_cannot_contradict_itself_either(self):
+        # Orca's doctor shape (no portable backend): a false placement claim anywhere in it.
+        doc = {"recipe": "lane-7", "failures": [],
+               "checks": [{"id": "vm", "status": "pass", "ephemeral": False}]}
+        clear, reason, _ = sandbox_doctor.assess(json.dumps(doc), "lane-7")
+        self.assertFalse(clear)
+        self.assertIn("ephemeral", reason)
+        doc["checks"][0]["ephemeral"] = True
+        self.assertTrue(sandbox_doctor.assess(json.dumps(doc), "lane-7")[0])
+
+
 class PortableBackends(unittest.TestCase):
     """#585: a portable sandbox must PROVE its isolation, per backend, and fail with exit 2."""
 

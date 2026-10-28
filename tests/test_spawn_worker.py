@@ -2723,6 +2723,86 @@ class TestTheFinalReadingDecides(unittest.TestCase):
         self.assertNotIn("worker-start", (Path(tmp) / "orca-calls.log").read_text())
 
 
+class TestOnlyAProvenRefusalReleases(unittest.TestCase):
+    """W4-04, Codex round 6 (P1): terminal create's EXIT trap dropped the reservation for ANY error
+    envelope, so a pane started and then answered `{"error": {"code": "runtime_error"}}` without its
+    handle left no record, no root and no reservation, and its scrubbed child spawned uncapped. And
+    worker-start dropped it for every typed policy refusal, some of which can follow a pane's
+    creation. A reservation is now released, with no handle named, only on a refusal proven to
+    precede any launch effect (prelaunch_refusal's allowlist), on both launch paths."""
+
+    READY_RECEIPT = TestSpawnWorkerV5Lanes.READY_RECEIPT
+    _stub = TestSpawnWorkerV5Lanes._stub
+    tree = TestIdentitySurvivesAScrubbedEnvironment.tree
+    lane = TestIdentitySurvivesAScrubbedEnvironment.lane
+    scrubbed = TestIdentitySurvivesAScrubbedEnvironment.scrubbed
+    assert_capped = TestIdentitySurvivesAScrubbedEnvironment.assert_capped
+    RW = TestIdentitySurvivesAScrubbedEnvironment.RW
+    DANGER = TestIdentitySurvivesAScrubbedEnvironment.DANGER
+    CHILD = TestIdentitySurvivesAScrubbedEnvironment.CHILD
+    LAUNCH = TestIdentitySurvivesAScrubbedEnvironment.LAUNCH
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def launch(self, name, files, env, ws_rc=0, receipt=None):
+        """A launch whose runtime starts a pane (handle term_orphan, never named back) and answers
+        with `files`; returns (rc, err, reservations left, the pane's tree, the scratch dir)."""
+        tmp = Path(self.tmp) / name
+        tmp.mkdir()
+        self._stub(str(tmp), ws_rc=ws_rc, receipt=receipt)
+        for fname, payload in files.items():
+            (tmp / fname).write_text(payload if isinstance(payload, str) else json.dumps(payload))
+        pty = self.tree()
+        pty.spawn("pane", {"PATH": "/usr/bin:/bin", "ORCA_TERMINAL_HANDLE": "term_orphan"})
+        lane = {**self.lane(**env), "PATH": f"{tmp}:/usr/bin:/bin", "SP": str(tmp), "HOME": str(tmp)}
+        rc, out, err = self.tree().run(self.LAUNCH, lane)
+        pend = tmp / ".open-fleet" / "spawn-profiles" / ".pending"
+        left = [p for p in pend.iterdir() if p.name.startswith("r.")] if pend.is_dir() else []
+        return rc, out + err, left, pty, tmp
+
+    def child(self, pty, tmp, profile):
+        return pty.run(self.CHILD, {**self.scrubbed(**profile), "HOME": str(tmp), "SP": str(tmp)}, via="pane")
+
+    def test_a_terminal_create_error_that_is_not_a_proven_refusal_keeps_the_reservation(self):
+        for i, answer in enumerate((
+                {"error": {"code": "runtime_error", "message": "pane spawn timed out"}},
+                {"error": {"code": "a_code_this_script_never_heard_of"}},
+                {"error": "boom"},
+                {"error": {"message": "no code at all"}},
+                {"error": {"code": "inject_rejected"}},
+                # an allowlisted code beside a result that says something happened
+                {"error": {"code": "worktree_not_found"}, "result": {"terminal": {"title": "t"}}})):
+            with self.subTest(answer=answer):
+                rc, text, left, pty, tmp = self.launch(f"tc{i}", {"terminal-create.json": answer}, {"PROFILE": "ro"})
+                self.assertNotEqual(rc, 0, text)
+                self.assertEqual(len(left), 1, text)
+                self.assertIn("reservation KEPT", text)
+                self.assert_capped(self.child(pty, tmp, self.RW), "parent profile 'ro'")
+        rc, text, left, _pty, _tmp = self.launch(
+            "tc-proven", {"terminal-create.json": {"error": {"code": "worktree_not_found", "message": "no"}}},
+            {"PROFILE": "ro"})
+        self.assertNotEqual(rc, 0, text)
+        self.assertEqual(left, [], text)  # proven pre-launch: nothing started, nothing kept
+
+    def test_a_worker_start_refusal_not_proven_pre_launch_keeps_the_reservation(self):
+        for code, want_rc in (("inject_rejected", 2), ("consumer_fenced", 2), ("dispatch_inactive", 2),
+                              ("runtime_error", 1), ("a_code_this_script_never_heard_of", 1)):
+            with self.subTest(code=code):
+                rc, text, left, pty, tmp = self.launch(
+                    f"ws-{code}", {}, self.RW, ws_rc=1, receipt={"error": {"code": code, "message": "no"}})
+                self.assertEqual(rc, want_rc, text)  # the verdict is unchanged; only the reservation
+                self.assertEqual(len(left), 1, text)
+                self.assert_capped(self.child(pty, tmp, self.DANGER), "exceeds parent profile 'rw'")
+        for code in ("task_not_found", "task_not_startable", "nested_worker_depth_exceeded"):
+            with self.subTest(code=code):
+                rc, text, left, _pty, _tmp = self.launch(
+                    f"ws-{code}", {}, self.RW, ws_rc=1, receipt={"error": {"code": code, "message": "no"}})
+                self.assertEqual(rc, 2, text)
+                self.assertEqual(left, [], text)
+
+
 class TestNonOrcaDanger(unittest.TestCase):
     """#585: off Orca, danger is decided by the runtime's own doctor — proven isolation AND
     prelaunch placement — instead of an unconditional refusal; everything short of that refuses."""

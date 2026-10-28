@@ -2498,6 +2498,38 @@ class TestUnknownIsNeverAbsent(unittest.TestCase):
                                                "--profile", "ro", "--wait", "0"]), want)
                 self.assertEqual(failures, [])
 
+    def test_an_exited_unreaped_process_is_absent_not_unreadable(self):
+        # A zombie (exited, its parent has not reaped it yet) answers EACCES for its environment
+        # for as long as it lingers. Counted as unreadable it made a busy host's scans
+        # inconclusive and kept the reservations of workers that had exited (test_wip_curve's dry
+        # runs, now and then). It runs and forks nothing: absent, so the scan is complete (3).
+        mod = self.identity()
+        zombie = subprocess.Popen(["sh", "-c", "exit 0"])  # not waited on until cleanup: a zombie
+        self.addCleanup(zombie.wait)
+        for _ in range(1000):
+            if mod._proc_state(zombie.pid) == "Z":
+                break
+            os.sched_yield()
+            subprocess.run(["true"])
+        self.assertEqual(mod._proc_state(zombie.pid), "Z")
+        with self.assertRaises(PermissionError):  # the premise: its environment is unreadable
+            (Path("/proc") / str(zombie.pid) / "environ").read_bytes()
+        args = ["record-root", "--registry", str(self.registry()), "--handle", "term_none", "--profile", "ro",
+                "--wait", "0"]
+        with mock.patch.object(mod, "PROC", self.proc_listing(zombie.pid)), quiet():
+            self.assertEqual(mod.main(args), 3)
+        # A LIVE process whose environment stays unreadable still leaves the scan unknown.
+        live = self.tree().spawn("pane", {"PATH": "/usr/bin:/bin"})
+        real = mod._read_environ
+
+        def reader(p, live=live, real=real):
+            if p == live:
+                raise PermissionError(13, "Permission denied")
+            return real(p)
+        with mock.patch.object(mod, "PROC", self.proc_listing(zombie.pid, live)), \
+                mock.patch.object(mod, "_read_environ", side_effect=reader), quiet():
+            self.assertEqual(mod.main(args), 1)
+
     def proc_listing(self, *pids):
         """/proc as this process sees it, listing only `pids`: a host with nothing else running."""
         real = Path("/proc")

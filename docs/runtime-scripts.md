@@ -2147,7 +2147,7 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 Who is spawning, by process tree: the identity `spawn_worker.sh` reads when an environment says
 nothing (W4-04, Codex rounds 3 and 4). Source `runtime/scripts/spawn_identity.py`; behavior pinned
 by `tests/test_spawn_worker.py` (`TestIdentitySurvivesAScrubbedEnvironment`,
-`TestUnknownIsNeverAbsent`).
+`TestUnknownIsNeverAbsent`, `TestIdentityIsTheProcessCredentials`).
 
 Usage: `spawn_identity.py whoami --registry <dir> --pid <pid>` (one line per fact: `ROOT <profile>
 <key>` for each recorded worker root among the pid's ancestors, `INTREE`, `ANCHORED`, `LIVE
@@ -2172,7 +2172,14 @@ on 1).
 A pane found is recorded: its process tree is identified, and another carrier of the handle
 outside it would have to have escaped it (the residual below). Completeness decides what finding
 NOTHING means. A scan is complete only when every process of this uid that could be the launch's
-pane was read; a read that fails for any reason but the process being gone is UNKNOWN, never
+pane was read. Whose a process is comes from its credentials, the real, effective, saved and
+filesystem uids on the `Uid:` line of `/proc/<pid>/status`: it is this uid's when ANY of the four
+is this uid, so a same-uid pane that went non-dumpable or runs a setuid program (effective uid
+root) is still read. The owner of `/proc/<pid>` or of its files never decides it (Codex round 10):
+that owner is the effective uid alone, and root for every file of a non-dumpable process. A
+process none of whose four uids is this uid is another user's and is skipped; one whose `status`
+cannot be read or holds no single well-formed `Uid:` line of four uids leaves the scan incomplete
+(exit 1, never 3). A read that fails for any reason but the process being gone is UNKNOWN, never
 "absent" (Codex round 4): an environment that stays unreadable (`EACCES` from a non-dumpable
 process, `EIO`) makes the scan incomplete. It is read again for up to 0.25 s first, since a
 process caught exiting answers `EACCES` for a moment and then is gone, and one that has exited
@@ -2188,7 +2195,10 @@ read: an ancestor, a recorded root, host or anchor, a registry directory or a re
 cannot be read is unknown (an entry whose liveness is unknown is kept, not pruned; an anchor
 counts only while it is certainly alive). On a host that hides other users' processes (`hidepid`), a caller whose
 ancestry passes through a hidden process cannot be identified while any worker root is live, so
-`whoami` exits 1 and the caller is capped at `ro`. A `/proc` that is not this process's own pid
+`whoami` exits 1 and the caller is capped at `ro`. There, under `hidepid=1`, the `status` of
+another user's process cannot be read, so no `record-root` scan is complete and finding nothing
+exits 1; under `hidepid=2` a non-dumpable process of this uid is not listed at all, so a scan
+cannot count it (not covered). A `/proc` that is not this process's own pid
 namespace's (a sandbox that unshares pids but keeps the host's `/proc`, so every pid read there
 is another process) answers nothing: exit 1.
 

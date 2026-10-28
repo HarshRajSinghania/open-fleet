@@ -154,7 +154,8 @@ class TestDiffAcquisition(ScopeBase):
                 with self.subTest(phase=phase, failure=failure):
                     def failing_read(argv, phase=phase, failure=failure, **kwargs):
                         target = ("untracked" if "ls-files" in argv else
-                                  "committed" if "main...HEAD" in argv else
+                                  # the merge-base diff names the resolved base COMMIT (W3-07)
+                                  "committed" if any(str(a).endswith("...HEAD") for a in argv) else
                                   "working-tree" if "diff" in argv and "HEAD" in argv else None)
                         if target == phase:
                             if isinstance(failure, Exception):
@@ -686,6 +687,78 @@ class PredictMergeContract(ScopeBase):
         doc = json.loads(out.getvalue())
         self.assertEqual(doc["error"], "diff_failed")
         self.assertIn("boom", doc["detail"])
+
+
+
+class TestTheBaseIsResolvedByExactNameW307(ScopeBase):
+    """W3-07 class (Codex review follow-up): resolve_base ran `rev-parse <base>^{commit}` and,
+    unnamed, cut origin/HEAD's target to the SHORT name `origin/<x>`, which gitrevisions resolves
+    through refs/tags/ and refs/heads/ first. The base decides which paths count as changed, so
+    which review lenses run: a tag or local branch spelled `origin/main` at the change's own tip
+    (or an origin/HEAD pointed at the change's branch) emptied the diff and turned the AUTH lens
+    off. The change below touches auth code; every plant used to report SCOPE_AUTH=false."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.repo, "update-ref", "refs/remotes/origin/main", "main")
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        write(self.repo, "src/auth/login.py", "def login():\n    return True\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "touch auth")
+
+    def scoped(self, *args):
+        r = self.run_scope("--json", *args)
+        return json.loads(r.stdout), r
+
+    def test_a_tag_or_local_branch_spelled_origin_main_never_stands_in(self):
+        for planted in ("refs/tags/origin/main", "refs/heads/origin/main"):
+            git(self.repo, "update-ref", planted, "HEAD")
+            for args in ((), ("--base", "origin/main")):
+                with self.subTest(planted=planted, args=args):
+                    data, r = self.scoped(*args)
+                    self.assertIsNone(data["error"], r.stdout + r.stderr)
+                    self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
+            git(self.repo, "update-ref", "-d", planted)
+
+    def test_an_origin_head_pointed_at_the_change_s_branch_is_skipped(self):
+        git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/work")
+        data, r = self.scoped()
+        self.assertIsNone(data["error"], r.stdout + r.stderr)
+        self.assertTrue(data["flags"]["AUTH"], r.stdout + r.stderr)
+
+    def test_an_absent_remote_ref_is_not_answered_by_a_local_branch_of_its_spelling(self):
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/HEAD")
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        git(self.repo, "update-ref", "refs/heads/refs/remotes/origin/main", "HEAD")
+        data, r = self.scoped("--base", "refs/remotes/origin/main")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(data["error"], "no_base", r.stdout)
+        self.assertIn("exactly that name", r.stderr)
+
+    def test_a_revision_suffix_is_no_base(self):
+        for base in ("origin/main~0", "origin/main@{0}", "main^0"):
+            with self.subTest(base=base):
+                data, r = self.scoped("--base", base)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(data["error"], "no_base", r.stdout)
+                self.assertIn("not a valid ref name", r.stderr)
+
+    def test_the_diff_is_taken_against_the_resolved_commit(self):
+        tip = git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        seen = []
+        real = diff_scope.git
+
+        def spy(repo, *args, **kwargs):
+            seen.append(list(args))
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(diff_scope, "git", side_effect=spy):
+            flags, _unmatched, shown = diff_scope.scope(self.repo, "origin/main")
+        self.assertTrue(flags["AUTH"])
+        self.assertEqual(shown, "origin/main")
+        diffs = [a for a in seen if a[:1] == ["diff"] and any("..." in t for t in a)]
+        self.assertEqual(len(diffs), 1, seen)
+        self.assertIn(f"{tip}...HEAD", diffs[0])
 
 
 if __name__ == "__main__":

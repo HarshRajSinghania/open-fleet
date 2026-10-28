@@ -357,7 +357,8 @@ class MutationControls(unittest.TestCase):
     def mutated(self, guard: tuple[str, str]) -> Path:
         tmp = Path(tempfile.mkdtemp(prefix="mq-mutant-"))
         self.addCleanup(shutil.rmtree, tmp, True)
-        for name in ("merge_queue.py", "egress.py", "diff_scope.py"):
+        # diff_scope.py loads its git custody from gitexec.py beside it (W4 custody sweep).
+        for name in ("merge_queue.py", "egress.py", "diff_scope.py", "gitexec.py"):
             shutil.copy2(SCRIPTS / name, tmp / name)
         text = (tmp / "merge_queue.py").read_text(encoding="utf-8")
         self.assertEqual(text.count(guard[0]), 1, "the guard moved: update the recipe")

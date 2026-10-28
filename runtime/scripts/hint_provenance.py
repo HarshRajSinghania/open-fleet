@@ -25,8 +25,8 @@ clean. This module answers the second question, read-only, against the LIVE sour
 Memory stays advisory data: nothing here writes a file, and every git call is a read-only
 subcommand (``git()`` refuses anything else) with optional locks off, so building a hint cannot
 edit agent instructions, permissions, the live checkout or the run archive -- and a ``diff`` or
-``log`` runs with the checkout's own filter and diff drivers blanked, so reading it runs nothing
-its owner named (#629).
+``log`` runs in git custody, against a git dir whose config defines no filter or diff driver, so
+reading it runs nothing its owner named, even one added while it reads (#629, W4 custody sweep).
 
 Library only: no CLI, no exit codes.
 """
@@ -54,6 +54,9 @@ SUPPRESSED = frozenset({STALE, SUPERSEDED})
 READ_ONLY_GIT = frozenset({"rev-parse", "cat-file", "merge-base", "diff", "ls-files", "log"})
 # The read-only subcommands that can render content through an attribute-selected driver.
 CONTENT_GIT = frozenset({"diff", "log"})
+# The ones that run in git custody: those, and ls-files, which reads the ignore files (the
+# repository's core.excludesFile is carried as data there, and no user default is opened).
+CUSTODY_GIT = CONTENT_GIT | {"ls-files"}
 
 REV = re.compile(r"^[0-9a-f]{7,64}$")
 GLOB_CHARS = set("*?[")
@@ -94,25 +97,60 @@ class ProvenanceError(Exception):
 def git(repo, *args, text=True):
     """Run one READ-ONLY git subcommand in ``repo``. Anything else is refused, not attempted.
 
-    ``diff`` and ``log`` run with every filter/diff/merge driver the repo's own config declares
-    blanked (gitexec.driver_blanks, #629): a working-tree diff runs a clean filter, and patch
-    output a textconv or diff command, that a ``.gitattributes`` or ``$GIT_DIR/info/attributes``
-    line selects -- a command the worker who owns the checkout named. The other subcommands never
-    read content through attributes, so they skip the extra config read; a ``rev-parse`` probe
-    of a path that is not a repository still comes back as a failed process, not an exception.
-    A config that cannot be read is a ProvenanceError, never a diff run with nothing blanked."""
+    ``diff``, ``log`` and ``ls-files`` run in git custody (gitexec.custody, W4 custody sweep;
+    ``ls-files`` because it reads the ignore files, the repository's core.excludesFile carried as
+    data and no user default opened): against a git dir
+    this module builds over the checkout's objects and index, whose config declares no filter,
+    textconv, diff or merge driver, with the checkout's own work tree. A working-tree diff runs a
+    clean filter, and patch output a textconv or diff command, that a ``.gitattributes`` or
+    ``$GIT_DIR/info/attributes`` line selects -- a command the worker who owns the checkout named.
+    Blanking the drivers its config declares (gitexec.driver_blanks, #629) left a window: one added
+    after the listing ran. In custody a selected driver is undefined, whenever it was added. The
+    listing stays as a belt and keeps its contract: a config that cannot be read is a
+    ProvenanceError, never a diff run with nothing blanked; so is a checkout the custody refuses
+    (a partial clone, say). The other subcommands never read content through attributes, so they
+    run in ``repo`` itself; a ``rev-parse`` probe of a path that is not a repository still comes
+    back as a failed process, not an exception. Every call runs under gitexec.custody_env: no lazy
+    fetch, no transport but ``file``, no signature-verifying child, no inherited
+    repository selector; a ``diff`` never probes a checked-out submodule with a child git (which
+    would run under the submodule's own config)."""
     if not args or args[0] not in READ_ONLY_GIT:
         raise ProvenanceError(f"refused git {args[0] if args else '(none)'}: hints are read-only")
-    blanks = ()
-    if args[0] in CONTENT_GIT:
-        try:
-            blanks = gitexec.driver_blanks(repo)
-        except gitexec.DriverQueryFailed as exc:
-            raise ProvenanceError(f"cannot neutralise {repo}'s filter and diff drivers: {exc}") from exc
-    env = gitexec.env(blanks=blanks)
+    try:
+        gitexec.refuse_blocking_files(repo)  # a config, include or `shallow` git would block opening
+    except OSError as exc:
+        raise ProvenanceError(f"git would block reading {repo}: {exc}") from exc
+    if args[0] not in CUSTODY_GIT:
+        return _run_git(["-C", str(repo)], args, (), text)
+    try:
+        blanks = gitexec.driver_blanks(repo)
+    except gitexec.DriverQueryFailed as exc:
+        raise ProvenanceError(f"cannot neutralise {repo}'s filter and diff drivers: {exc}") from exc
+    if args[0] == "diff":
+        # Never a child git inside a checked-out submodule, which would run under the submodule's
+        # own config; a moved gitlink still shows (gitexec.NO_SUBMODULE_CHILD).
+        args = ("diff", gitexec.NO_SUBMODULE_CHILD, *args[1:])
+    try:
+        with gitexec.custody(repo) as custody:
+            return _run_git(custody.lead, args, [*custody.pairs, *blanks], text)
+    except gitexec.GitCustodyRefused as exc:
+        raise ProvenanceError(f"cannot read {repo} in git custody: {exc}") from exc
+    except subprocess.SubprocessError as exc:
+        # A git the custody's own setup ran (rev-parse, config) that timed out: unknown, never a
+        # raw TimeoutExpired (Codex on PR #724, round 6).
+        raise ProvenanceError(f"cannot set up git custody for {repo}: {exc}") from exc
+
+
+def _run_git(lead, args, pairs, text):
+    env = gitexec.custody_env(blanks=pairs)
     env["GIT_OPTIONAL_LOCKS"] = "0"
-    return subprocess.run(gitexec.argv("-C", str(repo), *args), env=env, capture_output=True,
-                          text=text, timeout=60, check=False, stdin=subprocess.DEVNULL)
+    try:
+        return subprocess.run(gitexec.argv(*lead, *args), env=env, capture_output=True,
+                              text=text, timeout=60, check=False, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as exc:
+        # A git that blocked (a FIFO in the work tree) until its timeout: unknown, never a crash
+        # (PR #724 re-attack).
+        raise ProvenanceError(f"git {args[0]} timed out after {exc.timeout}s") from exc
 
 
 def _ok(proc):

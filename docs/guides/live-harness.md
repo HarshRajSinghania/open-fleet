@@ -105,10 +105,12 @@ The launcher starts both containers with these properties:
   320 MiB (`BODY_BUDGET`), which leaves the interpreter room in the broker's 512m. A request takes
   its `Content-Length` from that budget before its body is read; then, before the body is parsed, a
   linear pre-scan counts its JSON values and nesting and takes that bound (each value at its
-  worst parsed size, each string character at up to four bytes) from the same budget. Either waits
-  up to 30 s for room and is otherwise answered 503 (a `body-budget` refusal); a body whose parse
-  alone could pass the budget, or that nests more than 128 deep, is answered 413 unparsed (a
-  `body-parse` refusal). Ordinary requests -- long or non-ASCII text, base64 images, thousands of
+  worst parsed size, each string character at up to four bytes) from the same budget. The pre-scan
+  holds no memory of its own (it finds one structural byte at a time and skips each string with a
+  plain search, whatever escapes it holds) and stops after two million steps. Either budget take
+  waits up to 30 s for room and is otherwise answered 503 (a `body-budget` refusal); a body whose
+  parse alone could pass the budget, that nests more than 128 deep, or whose pre-scan would pass
+  its steps, is answered 413 unparsed (a `body-parse` refusal). Ordinary requests -- long or non-ASCII text, base64 images, thousands of
   messages, many tools -- pass.
   Every connection closed unanswered
   (evicted, past the bound, timed out, malformed, a body cut short) is counted as a `drop`. Drops

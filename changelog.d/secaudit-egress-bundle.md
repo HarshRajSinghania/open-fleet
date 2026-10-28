@@ -33,7 +33,8 @@
   follow a redirect either. The live harness's broker cuts off idle and trickling connections and
   evicts a stalled request when its slots are full, so trickling connections never keep the arm's
   calls out; it holds each request body once, and bounds what parsing it can allocate before
-  parsing it, by a linear pre-scan of its JSON values and nesting, so the bodies held at once and
+  parsing it, by a linear pre-scan of its JSON values and nesting that holds no memory of its own
+  and stops after two million steps whatever its strings hold, so the bodies held at once and
   their parses stay within 320 MiB of its 512m container (a body over its share waits, then is
   refused and counted; one whose parse alone could pass that, such as millions of empty objects,
   is refused unparsed); it bounds `count_tokens`, settles every call, and counts refusals, drops and faults

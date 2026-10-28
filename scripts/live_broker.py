@@ -141,9 +141,16 @@ BODY_WAIT_S = 30
 # bytes each (one non-Latin-1 character makes the whole string UCS-4).
 VALUE_COST = 128
 MAX_DEPTH = 128  # a request's JSON nests a few levels (a tool's input schema a dozen or so)
-# One JSON token: a string (unrolled, so a long one is one C-speed match), an opening or closing
-# bracket, or a bare scalar. Commas, colons and whitespace are skipped.
-_TOKEN = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"|[\[{]|[\]}]|[^\s\[\]{},:"]+')
+# The walk's steps: one per structural byte outside a string and one per escaped quote inside one.
+# An ordinary request takes tens of thousands; past this many the body is refused, so the walk's
+# time is bounded whatever the body holds.
+MAX_SCAN_STEPS = 2_000_000
+# The next structural byte: ONE byte, never a repeated group (a regex that matched a string by
+# repeating a group per escape kept state per repetition, so 30 million \n escapes made the
+# pre-scan itself exhaust the broker -- Codex round 8). Strings are skipped with bytes.find.
+_STRUCTURAL = re.compile(rb'["\[\]{},:]')
+_BACKSLASH = 0x5C
+_RUN_CHUNK = 4096
 UPSTREAM_TIMEOUT_S = 900
 HANDLER_TIMEOUT_S = 60  # each read or write on a client connection (W5-16)
 REQUEST_DEADLINE_S = 30  # the request line and headers, in all: a byte at a time never extends it
@@ -251,33 +258,74 @@ def content_problem(node, found):
     return None
 
 
+def _string_end(body, at, steps):
+    """(the index just past the string whose content starts at `at`, len(body) when it never
+    closes; the walk's steps, one more per escaped quote passed), or None past MAX_SCAN_STEPS. A
+    quote ends the string unless an odd run of backslashes precedes it; only that run is looked
+    at, from the quote backwards in fixed chunks, so the extra memory is O(1) and the work linear:
+    every other escape (a \\n, a \\u) cannot hide a quote and is passed over by find."""
+    while True:
+        quote = body.find(b'"', at)
+        if quote < 0:
+            return len(body), steps
+        run, end = 0, quote
+        while end > at and body[end - 1] == _BACKSLASH:
+            start = max(at, end - _RUN_CHUNK)
+            chunk = body[start:end]
+            kept = len(chunk.rstrip(b"\\"))
+            run += len(chunk) - kept
+            if kept:
+                break
+            end = start
+        if run % 2 == 0:
+            return quote + 1, steps
+        steps += 1
+        if steps > MAX_SCAN_STEPS:
+            return None
+        at = quote + 1
+
+
 def parse_cost(body, limit):
     """An upper bound on the memory json.loads(body) can take, the body itself included, or None
-    when that is past `limit` or the body nests past MAX_DEPTH. Its bytes count twice (once held,
-    once as string characters), or five times when a character of a string may be wider than a byte
-    (a non-ASCII body, or a \\u escape), and every value VALUE_COST. A count from the structural
-    bytes alone (each value follows a bracket, a comma or a colon) answers when it is within bounds,
-    which covers an ordinary request at C speed; otherwise the tokens are walked once, strings
-    whole, and the walk stops as soon as the bound is passed, so it costs at most the budget's
-    worth of values whatever the body holds."""
+    when that is past `limit`, the body nests past MAX_DEPTH, or walking it takes more than
+    MAX_SCAN_STEPS steps. Its bytes count twice (once held, once as string characters), or five
+    times when a character of a string may be wider than a byte (a non-ASCII body, or a \\u
+    escape), and every JSON value VALUE_COST, where values are bounded from the structure: one for
+    the top, two per opening bracket (itself and its first element), one per comma or colon.
+
+    A count of those bytes over the whole body answers at C speed when it is within bounds (it
+    can only overcount, by bytes inside strings), which covers an ordinary request. Otherwise the
+    body is walked once outside its strings: the next structural byte is found by a one-byte regex,
+    a string is skipped to its closing quote by _string_end. Its extra memory is O(1), and the walk
+    stops as soon as a bound is passed."""
     wide = 1 if body.isascii() and b"\\u" not in body else 4
     base = len(body) * (1 + wide)
+    if base > limit:
+        return None
     opens = body.count(b"[") + body.count(b"{")
-    crude = 2 * opens + body.count(b",") + body.count(b":") + 1
+    crude = 1 + 2 * opens + body.count(b",") + body.count(b":")
     if opens <= MAX_DEPTH and base + crude * VALUE_COST <= limit:
         return base + crude * VALUE_COST
-    values = depth = 0
-    for match in _TOKEN.finditer(body):
-        first = body[match.start()]
-        if first in b"[{":
+    values, depth, steps, at = 1, 0, 0, 0
+    while (found := _STRUCTURAL.search(body, at)) is not None:
+        here = found.start()
+        byte, at = body[here], here + 1
+        steps += 1
+        if byte == 0x22:  # a string: its content is never structure
+            skipped = _string_end(body, at, steps)
+            if skipped is None:
+                return None
+            at, steps = skipped
+        elif byte in b"[{":
             depth += 1
+            values += 2
             if depth > MAX_DEPTH:
                 return None
-        elif first in b"]}":
+        elif byte in b"]}":
             depth -= 1
-            continue
-        values += 1
-        if base + values * VALUE_COST > limit:
+        else:  # a comma or a colon: one more value follows
+            values += 1
+        if steps > MAX_SCAN_STEPS or base + values * VALUE_COST > limit:
             return None
     return base + values * VALUE_COST
 

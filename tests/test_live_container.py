@@ -1758,6 +1758,18 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         head = b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"pad":['
         bodies = {what: head + filler + (b"]" * 100_000 if what == "nesting" else b"0") + b"]}"
                   for what, filler in pad.items()}
+        answers, line = self.served_in_a_child(bodies)
+        self.assertTrue(line, "the broker died parsing the bodies")
+        peak = json.loads(line)["peak_kib"]
+        self.assertLess(peak, 120 * 1024, f"the broker peaked at {peak} KiB on bodies it should never parse")
+        self.assertEqual(answers, dict.fromkeys(bodies, 413), "a body was parsed rather than refused by its bound")
+        self.assertEqual(self.api.requests, [])
+        counts = [e["refused"] for e in self.events() if isinstance(e.get("refused"), dict)]
+        self.assertEqual(counts[-1].get("body-parse"), len(bodies), counts[-1:])
+
+    def served_in_a_child(self, bodies):
+        """Send `bodies` at once to a broker in its own process (BROKER_CHILD, a 64 MiB budget);
+        ({name: HTTP status}, the line it reports its peak on, empty if it died)."""
         child = subprocess.Popen([sys.executable, "-I", "-c", self.BROKER_CHILD, str(ROOT / "scripts" / "live_broker.py"),
                                   str(self.ledger_path), self.api.url, "64"],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
@@ -1775,16 +1787,39 @@ class TheBrokerHoldsTheTokenAndTheCap(unittest.TestCase):
         for sender in senders:
             sender.join(120)
         time.sleep(lb.DROP_RECORD_S + 0.5)  # the ledger's tally line catches up the counts
-        child.stdin.write("report\n")
-        child.stdin.flush()
-        line = child.stdout.readline()
-        self.assertTrue(line, "the broker died parsing the bodies")
+        with contextlib.suppress(OSError):
+            child.stdin.write("report\n")
+            child.stdin.flush()
+        return answers, child.stdout.readline()
+
+    def test_the_pre_scan_itself_holds_no_memory_whatever_a_string_holds(self):
+        # Codex round 8 on 70805faa: 129 literal [ inside a string forced the token walk, whose
+        # regex matched a string by repeating a group per escape and kept state per repetition: 30
+        # million \n escapes exhausted the broker before any bound was checked (4 MiB of them took
+        # 235 MiB). The walk now finds one structural byte at a time and skips a string with find,
+        # counting back only the backslashes right before a quote. Escapes, escaped quotes, long
+        # backslash runs, brackets and quotes inside strings: each body costs the walk nothing but
+        # time, bounded by MAX_SCAN_STEPS, and is answered.
+        if not sys.platform.startswith("linux"):
+            return  # the broker runs in a Linux container; VmHWM is Linux's
+        brackets = b"[" * (lb.MAX_DEPTH + 1)  # inside the string: the structural count cannot answer
+        content = {"escapes": b"\\n" * (2 << 20), "escaped quotes": b'\\"' * (lb.MAX_SCAN_STEPS + 1),
+                   "backslash runs": b"\\\\" * (2 << 20), "structure inside": b'a,[b]:{c}\\"d\\\\ ' * (1 << 18)}
+        bodies = {what: b'{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"'
+                  + brackets + inner + b'"}],"pad":1}' for what, inner in content.items()}
+        for what, body in bodies.items():  # each is the JSON it looks like
+            self.assertIsInstance(json.loads(body), dict, what)
+        answers, line = self.served_in_a_child(bodies)
+        self.assertTrue(line, "the broker died scanning the bodies")
         peak = json.loads(line)["peak_kib"]
-        self.assertLess(peak, 120 * 1024, f"the broker peaked at {peak} KiB on bodies it should never parse")
-        self.assertEqual(answers, dict.fromkeys(bodies, 413), "a body was parsed rather than refused by its bound")
+        self.assertLess(peak, 120 * 1024, f"the broker peaked at {peak} KiB scanning strings")
+        # Past MAX_SCAN_STEPS escaped quotes the walk stops and refuses; every other body is parsed
+        # within its bound and refused on its terms (the "pad" field), never relayed.
+        self.assertEqual(answers, {"escapes": 400, "escaped quotes": 413, "backslash runs": 400,
+                                   "structure inside": 400})
         self.assertEqual(self.api.requests, [])
-        counts = [e["refused"] for e in self.events() if isinstance(e.get("refused"), dict)]
-        self.assertEqual(counts[-1].get("body-parse"), len(bodies), counts[-1:])
+        counts = [e["refused"] for e in self.events() if isinstance(e.get("refused"), dict)][-1]
+        self.assertEqual((counts.get("body-parse"), counts.get("terms")), (1, 3), counts)
 
     def test_ordinary_large_bodies_still_pass_the_parse_bound(self):
         # Long text, non-ASCII text, a base64 image, thousands of messages and a hundred tools.

@@ -347,6 +347,20 @@ class TestSpawnWorkerHardening(unittest.TestCase):
                 self.assertFalse(key.startswith("-"), key)
                 self.assertLessEqual(len(key), 80, key)
 
+    def test_the_cli_resolver_ignores_the_callers_python_environment(self):
+        # W4-13 (2026-10-27 audit): the first python3 the script runs (orca_cli.py, which decides
+        # the executable every later call execs) was its one call without -I, so a caller-side
+        # PYTHONPATH sitecustomize ran inside it.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "sitecustomize-ran"
+            (Path(tmp) / "sitecustomize.py").write_text(
+                f"open({str(marker)!r}, 'w').write('x')\n", encoding="utf-8")
+            p = subprocess.run(["bash", str(SPAWN), "task_test", "active", "t", "claude", "high"],
+                               env={"SW_SELFTEST": "1", "PATH": "/usr/bin:/bin", "PYTHONPATH": tmp},
+                               capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertFalse(marker.exists(), "a PYTHONPATH sitecustomize ran inside spawn_worker.sh")
+
     def test_invalid_effort_is_refused(self):
         # #43: effort is interpolated into the codex launch command; an unknown value must
         # be rejected (fail closed), never interpolated verbatim. Same strict contract as

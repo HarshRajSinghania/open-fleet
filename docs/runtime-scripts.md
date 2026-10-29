@@ -660,10 +660,10 @@ ever created. `write` takes
 `--sink`, `--host`, `--payload-class`, `--consent`, `--bytes`, `--payload-file` (streamed),
 `--payload-sha256`, `--ts` (ISO-8601 with an offset, e.g. `2026-01-02T03:04:05Z`; anything
 else is a usage error, exit 2); `verify` takes `--expect-head` (sealed ledger),
-`--expect-ancestor` (repeatable; close-to-close, appends tolerated) and `--require-receipts` (a
-close that expects receipts); `grants` takes `--json` and the same `--expect-head` and
-`--expect-ancestor`, checked the same way (a rewrite since an anchor exits 3); without either it
-says `UNANCHORED` (on stdout, or on stderr beside `--json`), as `verify` does.
+`--expect-ancestor` (repeatable; close-to-close, appends tolerated) and `--allow-empty` (this run
+sent nothing); `grants` takes `--json` and the same `--expect-head` and `--expect-ancestor`,
+checked the same way (a rewrite since an anchor exits 3); without either it says `UNANCHORED` (on
+stdout, or on stderr beside `--json`), as `verify` does.
 Text fields are printable ASCII; `--consent` names a grant (letters, digits, `` ._:/#()@+,=-``,
 starting with a letter or digit).
 
@@ -681,10 +681,10 @@ for byte and, through `prev`, every line before it. Keep them off the writer (th
 ledger row) and pass them back: `--expect-ancestor` requires each still in the chain,
 `--expect-head` requires the ledger to end there. A receipt written since the last close is bound
 only by the id its `write` printed — the close head alone cannot see a rewrite after it. No
-receipts — no ledger file ("no ledger file there") or an empty one — is never called an intact
-chain: plain `verify` exits 0 and says `NO RECEIPTS`, `verify --require-receipts` (the close's
-form) exits 4 unless a sealed empty head (`--expect-head "(empty)"`) says none were expected, and
-any anchor naming a receipt against it is TAMPER (exit 3).
+receipts — no ledger file ("no ledger file there") or an empty one — is never a pass: `verify`
+exits 4 (`NO RECEIPTS`) unless the caller says none were expected with `--allow-empty` or a
+sealed empty head (`--expect-head "(empty)"`), and any anchor naming a receipt against it is
+TAMPER (exit 3), `--allow-empty` or not.
 
 Migration: a pre-v2 ledger (no `v` key) keeps verifying while each legacy line is exactly what the
 v1 writer produced (its keys, canonical bytes, types and v1 id), which binds it as fully; v2
@@ -706,9 +706,9 @@ acts. That is the fail-closed design, not a fault to route around, and the proce
    follows reads the old file with those ids as anchors (`--ledger <moved file>`) and counts the
    rotation as a RED leg until that record is reviewed.
 4. *Resume.* The next `write` starts a new chain at genesis; until it does, the close verifies the
-   new ledger without `--require-receipts`, and the next close anchors from the new chain's head.
+   new ledger with `--allow-empty`, and the next close anchors from the new chain's head.
 
-Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, an anchor missing, or a ledger that is not a regular file — a FIFO there is refused at once by every command, never waited on) · 4 `verify --require-receipts` found no receipts.
+Exits: 0 ok · 2 usage · 3 fail-closed (receipt unwritable, chain broken, an anchor missing, or a ledger that is not a regular file — a FIFO there is refused at once by every command, never waited on) · 4 `verify` found no receipts and none was allowed.
 
 > Why: the integrity inventory hashes what a run produced, but nothing recorded what it
 > sent — this ledger is the second half. Receipts are content-free (hash + count + kind)
@@ -2049,7 +2049,7 @@ host), or usage.
 reports broken. Source `runtime/scripts/search_sessions.py:1-50`; behavior pinned by
 `tests/test_search_sessions.py` and (episodic hints) `tests/test_hint_provenance.py`.
 
-Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`. Every read is bounded: a transcript or run manifest over `MAX_FILE_BYTES` (64 MiB) is skipped, and so are a SQLite store's rows past it; a store over `MAX_STORE_BYTES` (1 GiB with its `-wal`) is never opened, and on a SQLite without `octet_length` (before 3.43, where sizing a value loads it) neither is one over `MAX_FILE_BYTES`, so no value inside can exceed the cap — the bound chosen because it is decided from the checked file before SQLite opens it; every store connection is opened by one helper that sets `SQLITE_LIMIT_LENGTH` to `MAX_FILE_BYTES` and `SQLITE_LIMIT_SQL_LENGTH` to `MAX_SQL_BYTES` (1 MiB, so a schema statement's expression tree stays small on every platform) before its first statement (Python 3.11+; without `setlimit` the same store bound applies), so SQLite refuses to load a larger value, or a schema holding a larger statement, at all, even in a store grown after its check (said; for a value, that table's later rows are lost); a scan reads at most `MAX_RUN_BYTES` (512 MiB) in all; and each skip is said on stderr, so a partial recall is never silent. Those caps bound the bytes read, not the memory, since parsing multiplies them (a 63 MiB transcript of `{"a":{},"b":{}}` lines held 1.71 GB): the scan of the stores, and the episodic hint's scan of the manifests, run in a forked child that holds the parse; on Linux its `RLIMIT_DATA` allows it `SCAN_MEMORY_BYTES` (1 GiB) past what the process held, so a source whose parse passes that is skipped and said, and on every platform a source still being read after `SOURCE_SECONDS` (60 s) is skipped and said; a child stopped by either is restarted past that source, at most `SCAN_ATTEMPTS` (8) times, after which the scan is abandoned and said; the episodic hint's prior-run entries are assessed and labelled in that child too (`hint_provenance.assess`, `supersede`, `verdict`, on the whole record), so no cap can leave out what a label is decided on; the child returns only a flat JSON projection of what the parent shows -- a hit's strings cut (its snippet to 64 KiB, or shorter to fit), a prior-run entry's display fields cut and its lists capped, with its computed label, at most 500 entries, never a parsed unit or manifest -- at most `RESULT_BYTES` (8 MiB) with at most `RESULT_VALUES` structural bytes, both checked before the parent decodes it. macOS does not enforce `RLIMIT_DATA`, so there the memory a scan holds is bounded only by the byte caps times the parse's amplification (some 25 to 30 times its bytes for adversarial JSON) and, for a store's schema, by `MAX_SQL_BYTES`; only regular files are read (a transcript, store or manifest that is a link, FIFO or device is never opened, and that skip is said too, a FIFO or a link to `/dev/zero` named like a transcript included); SQLite opens a store, its `-wal` and its `-shm` by name with blocking calls, so the open runs in a worker thread while the three names are watched: one that stops being a regular file during the open (a FIFO swapped in) fails the store closed, an open still blocked after `SQLITE_OPEN_SECONDS` (10 s) is abandoned, and once an abandoned open stays blocked no further store is opened in that process (SQLite may hold its process-wide lock), each said; a SQLite store is read only from its plain tables' stored columns — never a view, a virtual table (an fts5 table can front a view) or a virtual generated column (computed on each read) — one row at a time, each row's stored size charged as SQLite reads it, in the query itself, before any of its values is handed to Python, so no value past either cap ever reaches Python, and no table or column name over 256 bytes, nor any column's declared type or DEFAULT, is ever fetched; a `.zst` transcript is walked frame by frame in work linear in the file, every frame charged at least 512 bytes, and a damaged or truncated frame keeps the whole frames before it and is said (without Python 3.14's `compression.zstd` every `.zst` is skipped, and said); a record nested past the JSON parser's depth is skipped, never fatal to the scan (2026-10-27 audit and re-attack, W5-21).
+Usage: `search_sessions.py [--precheck-only] [--episodic-hint [--runs-dir DIR] [--repo DIR [--live-rev REV]] [--hint-mode current|historical] [--current-evidence FILE] [--hint-json]] [query] [--query TEXT] [--scope conversation|all] [--fresh] [--limit 1-100] [--cursor CURSOR] [--agent A]... [--path P]... [--since ISO] [--sort relevance|newest] [--debug] [--environment E] [--pairing-code C] [--local-harnesses]` — `--local-harnesses` scans the local transcript stores of all 10 harnesses read-only (and is the automatic fallback when the Orca/provider search fails on a non-Orca runtime or with `OPEN_FLEET_LOCAL_SEARCH=1`); every snippet and title is fenced by `guard_text`. Every read is bounded: a transcript or run manifest over `MAX_FILE_BYTES` (64 MiB) is skipped, and so are a SQLite store's rows past it; a store over `MAX_STORE_BYTES` (1 GiB with its `-wal`) is never opened, and on a SQLite without `octet_length` (before 3.43, where sizing a value loads it) neither is one over `MAX_FILE_BYTES`, so no value inside can exceed the cap — the bound chosen because it is decided from the checked file before SQLite opens it; every store connection is opened by one helper that sets `SQLITE_LIMIT_LENGTH` to `MAX_FILE_BYTES` and `SQLITE_LIMIT_SQL_LENGTH` to `MAX_SQL_BYTES` (1 MiB, so a schema statement's expression tree stays small on every platform) before its first statement (Python 3.11+; without `setlimit` the same store bound applies), so SQLite refuses to load a larger value, or a schema holding a larger statement, at all, even in a store grown after its check (said; for a value, that table's later rows are lost); a scan reads at most `MAX_RUN_BYTES` (512 MiB) in all; and each skip is said on stderr, so a partial recall is never silent. Those caps bound the bytes read, not the memory, since parsing multiplies them (a 63 MiB transcript of `{"a":{},"b":{}}` lines held 1.71 GB): the scan of the stores, the episodic hint's scan of the manifests, and its read of `--current-evidence`, run in a forked child that holds the parse (no byte of a store, a manifest or the evidence file is parsed in the parent); on Linux its `RLIMIT_DATA` allows it `SCAN_MEMORY_BYTES` (1 GiB) past what the process held, so a source whose parse passes that is skipped and said, and on every platform a source still being read after `SOURCE_SECONDS` (60 s) is skipped and said; a child stopped by either is restarted past that source, at most `SCAN_ATTEMPTS` (8) times, after which the scan is abandoned and said; the episodic hint's prior-run entries are assessed and labelled in that child too (`hint_provenance.assess`, `supersede`, `verdict`, on the whole record), so no cap can leave out what a label is decided on; the child returns only a flat JSON projection of what the parent shows -- a hit's strings cut (its snippet to 64 KiB, or shorter to fit), a prior-run entry's display fields cut and its lists capped, with its computed label, at most 500 entries, never a parsed unit or manifest -- at most `RESULT_BYTES` (8 MiB) with at most `RESULT_VALUES` structural bytes, both checked before the parent decodes it. macOS does not enforce `RLIMIT_DATA`, so there the memory a scan holds is bounded only by the byte caps times the parse's amplification (some 25 to 30 times its bytes for adversarial JSON) and, for a store's schema, by `MAX_SQL_BYTES`; only regular files are read (a transcript, store or manifest that is a link, FIFO or device is never opened, and that skip is said too, a FIFO or a link to `/dev/zero` named like a transcript included); SQLite opens a store, its `-wal` and its `-shm` by name with blocking calls, so the open runs in a worker thread while the three names are watched: one that stops being a regular file during the open (a FIFO swapped in) fails the store closed, an open still blocked after `SQLITE_OPEN_SECONDS` (10 s) is abandoned, and once an abandoned open stays blocked no further store is opened in that process (SQLite may hold its process-wide lock), each said; a SQLite store is read only from its plain tables' stored columns — never a view, a virtual table (an fts5 table can front a view) or a virtual generated column (computed on each read) — one row at a time, each row's stored size charged as SQLite reads it, in the query itself, before any of its values is handed to Python, so no value past either cap ever reaches Python, and no table or column name over 256 bytes, nor any column's declared type or DEFAULT, is ever fetched; a `.zst` transcript is walked frame by frame in work linear in the file, every frame charged at least 512 bytes, and a damaged or truncated frame keeps the whole frames before it and is said (without Python 3.14's `compression.zstd` every `.zst` is skipped, and said); a record nested past the JSON parser's depth is skipped, never fatal to the scan (2026-10-27 audit and re-attack, W5-21).
 
 The precheck runs first: `enabled=false` or phase `degraded`/`closed` refuses with
 exit 2 before the query fires; `current`/`idle`/`indexing` proceed (`--fresh` asks
@@ -2088,7 +2088,13 @@ merges live `orca search` hits when a query is passed, and emits a bounded `<= 1
   are `CURRENT`, `UNKNOWN`, `STALE` or `SUPERSEDED` per the reason table under
   [`hint_provenance.py`](#hint_provenancepy). `--current-evidence FILE` (`[{path, outcome:
   pass|fail, source}]`, the frozen task's own observations) supersedes any entry whose claimed
-  outcome it contradicts; agreeing evidence never upgrades an entry.
+  outcome it contradicts; agreeing evidence never upgrades an entry. The file is read (a link
+  named on the command line is followed; at most `MAX_FILE_BYTES`), parsed and shape-checked in a
+  contained child of its own under the manifests' limits (`SCAN_MEMORY_BYTES`,
+  `SOURCE_SECONDS`), and only the checked observations cross back -- at most `MAX_OBSERVATIONS`
+  (4,096), each path at most 1,024 characters, within `RESULT_BYTES`; anything else (unreadable,
+  not UTF-8 JSON, nested past the parser's depth, the wrong shape, past a bound, or a parse past a
+  limit) refuses the hint whole, exit 2, never a partial read.
 - **Modes.** `--hint-mode current` (default, worker-facing) suppresses `STALE`/`SUPERSEDED`
   entries and withholds a note whose own words (outside quotes) assert a grant or speak as an
   authority (`grant-claim`, `instruction-override`, `authority-claim`, `suppression-request`,
@@ -2147,7 +2153,7 @@ Exits: 0 sent · 1 runtime/refusal/receipt failure · 2 usage or validation refu
 Who is spawning, by process tree: the identity `spawn_worker.sh` reads when an environment says
 nothing (W4-04, Codex rounds 3 and 4). Source `runtime/scripts/spawn_identity.py`; behavior pinned
 by `tests/test_spawn_worker.py` (`TestIdentitySurvivesAScrubbedEnvironment`,
-`TestUnknownIsNeverAbsent`).
+`TestUnknownIsNeverAbsent`, `TestIdentityIsTheProcessCredentials`).
 
 Usage: `spawn_identity.py whoami --registry <dir> --pid <pid>` (one line per fact: `ROOT <profile>
 <key>` for each recorded worker root among the pid's ancestors, `INTREE`, `ANCHORED`, `LIVE
@@ -2172,7 +2178,14 @@ on 1).
 A pane found is recorded: its process tree is identified, and another carrier of the handle
 outside it would have to have escaped it (the residual below). Completeness decides what finding
 NOTHING means. A scan is complete only when every process of this uid that could be the launch's
-pane was read; a read that fails for any reason but the process being gone is UNKNOWN, never
+pane was read. Whose a process is comes from its credentials, the real, effective, saved and
+filesystem uids on the `Uid:` line of `/proc/<pid>/status`: it is this uid's when ANY of the four
+is this uid, so a same-uid pane that went non-dumpable or runs a setuid program (effective uid
+root) is still read. The owner of `/proc/<pid>` or of its files never decides it (Codex round 10):
+that owner is the effective uid alone, and root for every file of a non-dumpable process. A
+process none of whose four uids is this uid is another user's and is skipped; one whose `status`
+cannot be read or holds no single well-formed `Uid:` line of four uids leaves the scan incomplete
+(exit 1, never 3). A read that fails for any reason but the process being gone is UNKNOWN, never
 "absent" (Codex round 4): an environment that stays unreadable (`EACCES` from a non-dumpable
 process, `EIO`) makes the scan incomplete. It is read again for up to 0.25 s first, since a
 process caught exiting answers `EACCES` for a moment and then is gone, and one that has exited
@@ -2188,7 +2201,10 @@ read: an ancestor, a recorded root, host or anchor, a registry directory or a re
 cannot be read is unknown (an entry whose liveness is unknown is kept, not pruned; an anchor
 counts only while it is certainly alive). On a host that hides other users' processes (`hidepid`), a caller whose
 ancestry passes through a hidden process cannot be identified while any worker root is live, so
-`whoami` exits 1 and the caller is capped at `ro`. A `/proc` that is not this process's own pid
+`whoami` exits 1 and the caller is capped at `ro`. There, under `hidepid=1`, the `status` of
+another user's process cannot be read, so no `record-root` scan is complete and finding nothing
+exits 1; under `hidepid=2` a non-dumpable process of this uid is not listed at all, so a scan
+cannot count it (not covered). A `/proc` that is not this process's own pid
 namespace's (a sandbox that unshares pids but keeps the host's `/proc`, so every pid read there
 is another process) answers nothing: exit 1.
 

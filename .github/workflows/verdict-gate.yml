@@ -50,7 +50,7 @@ permissions: {}
 jobs:
   resolve:
     if: github.event.workflow_run.event == 'pull_request_review'
-    runs-on: ubuntu-latest
+    runs-on: codebuild-gha-open-fleet-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -68,6 +68,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
           python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
+      - name: register setup-python's libpython with ldconfig (CodeBuild runners)
+        # Subprocesses that drop LD_LIBRARY_PATH otherwise fail to load libpython.
+        run: |
+          if [ -n "${pythonLocation:-}" ] && [ -d "$pythonLocation/lib" ]; then
+            SUDO=""; [ "$(id -u)" = 0 ] || SUDO=sudo
+            echo "$pythonLocation/lib" | $SUDO tee /etc/ld.so.conf.d/zz-setup-python.conf >/dev/null
+            $SUDO ldconfig
+          fi
       - id: pr
         name: Name the pull request this review belongs to
         env:
@@ -85,7 +93,7 @@ jobs:
 
   gate:
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: codebuild-gha-open-fleet-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 10
     environment: verdict-gate
     permissions:
@@ -106,6 +114,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 (Node 24, #367)
         with:
           python-version: "3.13"  # pin: CI 3.x was a moving target (G-03)
+      - name: register setup-python's libpython with ldconfig (CodeBuild runners)
+        # Subprocesses that drop LD_LIBRARY_PATH otherwise fail to load libpython.
+        run: |
+          if [ -n "${pythonLocation:-}" ] && [ -d "$pythonLocation/lib" ]; then
+            SUDO=""; [ "$(id -u)" = 0 ] || SUDO=sudo
+            echo "$pythonLocation/lib" | $SUDO tee /etc/ld.so.conf.d/zz-setup-python.conf >/dev/null
+            $SUDO ldconfig
+          fi
       - id: app
         if: vars.VERDICT_GATE_CLIENT_ID != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0 (Node 24)

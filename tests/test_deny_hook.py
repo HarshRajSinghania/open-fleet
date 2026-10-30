@@ -3389,3 +3389,131 @@ class TestRemainingAuditFindings(ReviewHookBase):
             f"{{ {self.RECEIPT}; }} && gh issue close 34 && gh pr merge 1",
             f"( {self.RECEIPT} ) || gh issue close 34",
         ), reason="egress receipt")
+
+
+class TestAuditFindingsF1F2F7(ReviewHookBase):
+    """2026-10-29 audit, F1/F2/F7: a write inside a body another command runs escaped the worktree
+    boundary (F1), a busybox/toybox-fronted shell had its body never read (F2), and a malformed
+    event (no tool, no tool_input, an argv-list command) was allowed (F7)."""
+
+    BOTH = (False, True)
+
+    def test_a_write_inside_a_nested_body_is_held_to_the_worktree_boundary(self):
+        # F1: each body is judged as segments of its own, its redirects and tee operands included.
+        outside = (
+            "echo pwned > /etc/x",
+            "sh -c 'echo pwned > /etc/pwn1'",
+            "bash -lc 'echo pwned > /etc/pwn1'",
+            "sh -c 'echo pwned | tee /etc/pwn2'",
+            "sh -c 'echo pwned >> /etc/pwn7'",
+            "find . -maxdepth 0 -exec sh -c 'echo pwned > /etc/pwn3' \\;",
+            "xargs sh -c 'echo pwned > /etc/pwn4' <<< x",
+            "flock ./l sh -c 'echo pwned > /etc/pwn5'",
+            "sed -e 'e echo pwned > /etc/sedpwn' f",
+            "awk 'BEGIN{system(\"echo pwned > /etc/out-awk\")}'",
+            "perl -e 'system(\"echo pwned > /etc/out-perl\")'",
+            "sh -c \"bash -c 'echo pwned > /etc/deep'\"",
+            "sh -c 'echo x >> ~/.bashrc'",
+        )
+        self.expect("deny", outside, bounded_modes=(True,), reason="only write inside")
+        inside = (
+            "sh -c 'echo x > out.txt'",
+            f"bash -lc 'echo x > {self.repo}/out.txt'",
+            "sh -c 'echo x | tee out.txt'",
+            "find . -maxdepth 0 -exec sh -c 'echo x > out.txt' \\;",
+            "sed -e 'e echo x > out.txt' f",
+            "awk 'BEGIN{system(\"echo x > out.txt\")}'",
+            "sh -c 'ls 2>&1 >/dev/null'",
+        )
+        self.expect("allow", inside, bounded_modes=(True,))
+        # With no boundary armed, a nested write is not a boundary question at all.
+        self.expect("allow", ("sh -c 'echo pwned > /tmp/x'",), bounded_modes=(False,))
+
+    def test_a_busybox_or_toybox_fronted_shell_is_judged_as_the_shell(self):
+        # F2: busybox sh -c BODY runs BODY; the applet is peeled before the shell is read.
+        self.expect("deny", (
+            "busybox sh -c 'git push --force origin main'",
+            "busybox bash -c 'git push --force origin main'",
+            "busybox ash -c 'git push --force origin main'",
+            "busybox hush -c 'git push --force origin main'",
+            "busybox sh -c 'git push --mirror origin'",
+            "busybox sh -c 'orca orchestration reset'",
+            "/bin/busybox sh -c 'git push --force origin main'",
+            "busybox sh <<'EOF'\ngit push --force origin main\nEOF",
+            "echo 'git push --force origin main' | busybox sh",
+        ), bounded_modes=self.BOTH)
+        self.expect("deny", (
+            "busybox sh -c 'gh pr merge 12'",
+            "toybox sh -c 'gh pr merge 12'",
+        ), bounded_modes=self.BOTH, reason="egress receipt")
+        self.expect("deny", ("busybox sh -c 'echo pwned > /etc/x'",),
+                    bounded_modes=(True,), reason="only write inside")
+        self.expect("allow", (
+            "busybox ls", "busybox awk '{print $1}' f", "busybox sed -n '1p' f",
+            "busybox sh -c 'git status'", "toybox sh -c 'echo hi'",
+        ), bounded_modes=self.BOTH)
+        self.expect("deny", (
+            "busybox awk 'BEGIN{system(\"git push --force origin main\")}'",
+            "busybox sed -e 'e git push --force origin main' f",
+        ), bounded_modes=self.BOTH)
+
+    def raw(self, payload):
+        # A non-Claude tool name (local_shell, exec_command) is STRICT: it blocks with exit 2.
+        r = self.fire(json.dumps(payload))
+        self.assertIn(r.returncode, (0, 2), r.stderr)
+        if not r.stdout.strip():
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return "allow"
+        return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"]
+
+    def unreadable(self, payload):
+        r = self.fire(json.dumps(payload))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("Fail-closed", r.stderr)
+        return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"]
+
+    def test_an_argv_list_command_is_judged_as_the_line_it_spells(self):
+        # F7: Codex local_shell sends command as an argv list.
+        for tool in ("local_shell", "Bash", "exec_command"):
+            for argv in (["bash", "-lc", "git push --force origin main"],
+                         ["sh", "-c", "git push --force origin main"],
+                         ["git", "push", "--force", "origin", "main"],
+                         ["/bin/bash", "-lc", "busybox sh -c 'git push --force origin main'"]):
+                with self.subTest(tool=tool, argv=argv):
+                    self.assertEqual(self.raw({"tool_name": tool, "tool_input": {"command": argv}}),
+                                     "deny")
+        with self.subTest("cmd argv"):
+            self.assertEqual(self.raw({"tool_name": "exec_command", "tool_input": {
+                "cmd": ["bash", "-lc", "git push --force origin main"]}}), "deny")
+        for argv in (["ls", "-la"], ["bash", "-lc", "git status"], []):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.raw({"tool_name": "local_shell",
+                                           "tool_input": {"command": argv}}), "allow")
+
+    def test_a_malformed_event_is_refused_not_allowed(self):
+        # F7: no tool name, a shell event with no tool_input, a command of the wrong type.
+        for payload in (
+            {"tool_input": {"command": "git push --force origin main"}},
+            {"tool_input": {"command": "ls"}},
+            {"hook_event_name": "PreToolUse"},
+            {"tool_name": "", "tool_input": {"command": "ls"}},
+            {"tool_name": "Bash"},
+            {"tool_name": "Bash", "tool_input": None},
+            {"tool_name": "Bash", "tool_input": [1, 2]},
+            {"tool_name": "Bash", "tool_input": {"command": 5}},
+            {"tool_name": "Bash", "tool_input": {"command": {"x": "git push --force origin main"}}},
+            {"tool_name": "Bash", "tool_input": {"command": None}},
+            {"tool_name": "local_shell", "tool_input": {"command": ["git", 5]}},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.unreadable(payload), "deny")
+        # Negative controls: an empty tool_input runs nothing; a non-shell event without one is
+        # not a shell question; a Read is a Read.
+        for payload in (
+            {"tool_name": "Bash", "tool_input": {}},
+            {"tool_name": "Glob"},
+            {"tool_name": "Read", "tool_input": {"file_path": "/etc/hosts"}},
+            {"tool_name": "Bash", "tool_input": {"command": "ls"}},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.raw(payload), "allow")

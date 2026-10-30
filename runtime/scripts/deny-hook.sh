@@ -911,6 +911,11 @@ d = json.loads(open(3, encoding=sys.stdin.encoding, errors=sys.stdin.errors, clo
 if not isinstance(d, dict):
     raise SystemExit(1)
 raw_tool = d.get("tool_name") or d.get("tool") or os.environ.get("JCODE_HOOK_TOOL_NAME") or ""
+# An event that names no tool cannot be judged as any tool: refused, never allowed as nothing
+# (2026-10-29 audit, F7). A non-zero exit here is the unreadable-payload deny below.
+if not raw_tool:
+    raise SystemExit(1)
+_ti_missing = False   # no tool_input of any shape: refused for a shell event below (F7)
 ti = d.get("tool_input")
 if isinstance(ti, str):
     try:
@@ -924,7 +929,7 @@ elif not isinstance(ti, dict):
     elif isinstance(d.get("input"), dict):
         ti = d.get("input")
     else:
-        ti = {}
+        ti, _ti_missing = {}, True
 def s(v):
     return v.replace("\n", " ") if isinstance(v, str) else ""
 def r(v):
@@ -1286,6 +1291,32 @@ elif raw_tool in EDITOR_TOOLS:
     norm_tool = "Read" if fe_cmd == "view" else "Edit"
 else:
     norm_tool = str(raw_tool)
+
+
+def _argv_line(argv):
+    """The command line a shell command sent as an argv list spells (Codex local_shell sends
+    command as [bash, -lc, LINE]): [sh, -c, LINE] is LINE, any other list is its words joined
+    with shell quoting (2026-10-29 audit, F7). A word that is not a string is refused."""
+    if not all(isinstance(w, str) for w in argv):
+        raise SystemExit(1)
+    if len(argv) >= 3 and argv[0].rsplit("/", 1)[-1] in ("sh", "bash", "zsh", "dash", "ksh",
+                                                         "mksh", "ash", "yash", "posh", "hush") \
+            and re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", argv[1]):
+        return argv[2]
+    return shlex.join(argv)
+
+
+# A shell event with no tool_input, or a command that is neither a string nor an argv list, is
+# refused rather than read as an empty command (2026-10-29 audit, F7). An EMPTY tool_input runs
+# nothing and stays allowed.
+if norm_tool == "Bash":
+    if _ti_missing:
+        raise SystemExit(1)
+    for _ck in ("command", "cmd"):
+        if isinstance(ti.get(_ck), list):
+            ti[_ck] = _argv_line(ti[_ck])
+        elif _ck in ti and not isinstance(ti[_ck], str):
+            raise SystemExit(1)
 # STRICT when the payload names a tool Claude Code never sends: Claude tool names are
 # PascalCase, every other audited host uses snake/lowercase names (#577). Those hosts
 # either fail open on ask (Codex) or read only exit 2 / decision block (Hermes, jcode).
@@ -1830,7 +1861,7 @@ def _command_words(args, assigns=None):
     if ws and ws[-1].endswith(")"):
         last = ws[-1].rstrip(")")  # a subshell close glued to the last word
         ws = ws[:-1] + ([last] if last else [])
-    return _plain_words(ws, extended=True, assigns=assigns)
+    return _peel_shell(_plain_words(ws, extended=True, assigns=assigns))   # F2: busybox sh
 
 
 def _is_receipt(args):
@@ -2359,7 +2390,8 @@ def _tokenize(seg):
     return args, writes
 
 
-_SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh")
+# hush is the busybox shell applet (2026-10-29 audit, F2).
+_SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "posh", "hush")
 # Interpreters that run code straight from argv, and the option letters that carry it. awk has
 # no code flag -- its program is the first non-option word (-f takes a file) -- and deno takes a
 # code operand after its `eval` subcommand, so both are read in _inline_code own branches,
@@ -2370,7 +2402,8 @@ _INLINE_FLAGS = {"python": "c", "perl": "eE", "ruby": "e", "node": "ep", "nodejs
 _AWKS = ("awk", "gawk", "mawk", "nawk")
 # busybox <applet> ARGS runs the applet: peel it so `busybox awk …` is judged as awk (W1-03/W1-05).
 # toybox is the same multi-call shape.
-_BUSYBOX_APPLETS = set(_AWKS) | {"sh", "ash", "sed", "tar", "unzip", "cpio", "rm", "rmdir", "cp",
+# Every shell applet too: busybox bash -c and toybox sh -c run a shell (2026-10-29 audit, F2).
+_BUSYBOX_APPLETS = set(_AWKS) | set(_SHELLS) | {"sed", "tar", "unzip", "cpio", "rm", "rmdir", "cp",
                                  "mv", "dd", "tee", "wget", "vi", "ln", "install", "chmod"}
 
 
@@ -2395,6 +2428,18 @@ def _peel_busybox(head, rest):
     if head in ("busybox", "busybox.static", "toybox") and rest and rest[0] in _BUSYBOX_APPLETS:
         return rest[0], rest[1:]
     return head, rest
+
+
+def _peel_shell(ws):
+    """ws with a busybox/toybox front peeled when the applet it runs is a shell (2026-10-29
+    audit, F2): busybox sh -c BODY runs BODY exactly as sh -c BODY does, so its -c string, its
+    heredoc and its script operand are read as the shell reads them. Other applets keep their
+    front here; the places that judge them peel it themselves (awk, sed, tar, ...)."""
+    if ws:
+        head, rest = _peel_busybox(ws[0].rsplit("/", 1)[-1], ws[1:])
+        if head in _SHELLS and len(rest) < len(ws) - 1:
+            return [head] + list(rest)
+    return ws
 _CODE_LITERAL = re.compile(r"\x22((?:[^\x22\\]|\\.)*)\x22|\x27([^\x27]*)\x27", re.DOTALL)
 _CODE_WRITES = re.compile(r"write|unlink|remove|rmtree|rmdir|rename|replace|chmod|chown|truncate"
                           r"|symlink|link|copy|move|system|popen|spawn|exec|subprocess|FileUtils"
@@ -3009,6 +3054,7 @@ def _inner_body(ws):
     """
     if not ws:
         return None
+    ws = _peel_shell(ws)   # busybox sh -c / toybox sh -c (2026-10-29 audit, F2)
     head = ws[0].rsplit("/", 1)[-1]
     bodies = []
     if head == "eval":
@@ -3064,6 +3110,7 @@ def _stdin_kind(ws):
     """"shell" or "interp" when ws runs the program it reads on standard input, else None."""
     if not ws:
         return None
+    ws = _peel_shell(ws)   # busybox sh <<EOF reads its program on stdin (2026-10-29 audit, F2)
     head = ws[0].rsplit("/", 1)[-1]
     if head in _SHELLS:
         i, from_stdin = 1, False
@@ -3098,6 +3145,7 @@ def _script_operand(ws):
     """The script file ws runs: sh FILE, source FILE, . FILE, or ./FILE itself."""
     if not ws:
         return None
+    ws = _peel_shell(ws)   # busybox sh FILE (2026-10-29 audit, F2)
     head = ws[0].rsplit("/", 1)[-1]
     if head in ("source", ".") and len(ws) > 1:
         return ws[1]
@@ -3356,6 +3404,7 @@ def _reader_kind(ws):
     kind = _stdin_kind(ws)
     if kind or not ws:
         return kind
+    ws = _peel_shell(ws)   # busybox sh /dev/stdin (2026-10-29 audit, F2)
     head = ws[0].rsplit("/", 1)[-1]
     ops = [w for w in ws[1:] if not w.startswith(("-", "+"))]
     if not ops or ops[0] not in _STDIN_FILES:
@@ -3625,15 +3674,22 @@ def _expand(text, depth=0, nest=0, written=None):
     return parts, patches
 
 
-def _body_pairs(body):
+def _body_pairs(body, texts=None):
     """(join, args) per segment of a shell body: its substitutions and the programs it feeds a
-    shell are judged as commands too."""
+    shell are judged as commands too. texts, when given, collects each segment text so its
+    redirects and tee operands reach the write boundary (2026-10-29 audit, F1)."""
     parts, _patches = _expand(body)
-    return [(join, _tokenize(seg)[0]) for join, seg in _split(chr(10).join(parts))]
+    pairs = _split(chr(10).join(parts))
+    if texts is not None:
+        texts += [seg for _join, seg in pairs]
+    return [(join, _tokenize(seg)[0]) for join, seg in pairs]
 
 
-def _views(args, depth=0):
-    """[(assignments, words)]: the command a segment runs, then each command its body runs."""
+def _views(args, depth=0, texts=None):
+    """[(assignments, words)]: the command a segment runs, then each command its body runs.
+    texts, when given, collects the text of every body segment, at every depth, for the write
+    boundary: a redirect inside sh -c, find -exec sh -c, sed e or awk system() is a write the
+    shell makes as surely as one on the line itself (2026-10-29 audit, F1)."""
     assigns = []
     ws = _command_words(args, assigns)
     _note_assigns(assigns, ws)
@@ -3641,12 +3697,30 @@ def _views(args, depth=0):
     body = _inner_body(ws) if depth < 3 else None
     if body is not None:
         try:
-            pairs = _body_pairs(body)
+            pairs = _body_pairs(body, texts)
         except ValueError:
             # A body this reader cannot split is still judged by its words, never skipped.
             pairs = [("start", body.split())]
+            if texts is not None:
+                texts.append(_UNSPLIT + body)   # F1: its redirects are still read, coarsely
         for _j, inner in pairs:
-            out += _views(inner, depth + 1)
+            out += _views(inner, depth + 1, texts)
+    return out
+
+
+# Marks a body text the splitter could not read (F1): its write targets are taken coarsely.
+_UNSPLIT = chr(0xE001)
+
+
+def _coarse_writes(text):
+    """[(target, raw)] every word after a write redirect in text this reader cannot split, so
+    a body it fails to parse still has its writes judged, never dropped (2026-10-29 audit, F1)."""
+    found = re.findall(r"(?:&>>?|>>|>\||>&|<>|>)[ \t]*([^ \t\n;&|<>()]+)", text)
+    out = []
+    for word in found:
+        if not re.fullmatch(r"[0-9]+|-", word):
+            unq = word.strip(SQ + DQ)
+            out.append((unq, word))
     return out
 
 
@@ -3719,12 +3793,13 @@ for _join, seg in _split(_judged):
 _guard_segs = []
 _all_views = []   # (words, writes, segment text) of every command in order, bodies included
 _all_assigns = []   # the NAME=value words in front of each of those commands, in the same order
+_body_texts = []   # the text of every body segment the line runs, for the write boundary (F1)
 for _join, seg in _split(_judged):
     args, writes = _tokenize(seg)
     _guard_segs.append((args, writes))
     # C carries the peeled command, not the words as typed: the HIGH tier and the never list
     # anchor at its head (2026-10-23 review, P1-3). Assignments ride in front for git_redirected.
-    _seg_views = _views(args)
+    _seg_views = _views(args, texts=_body_texts)
     record("C", " ".join(policy_word(word) for word in _seg_views[0][0] + _seg_views[0][1]))
     for word in args:
         record("A", word)
@@ -4505,8 +4580,18 @@ def _code_guard_targets(code, depth=0):
 # and every tee operand, a leading ~/$HOME expanded QUOTE-AWARE (W1-01; Codex g1 P2 -- a quoted
 # ~ is left literal, as bash does). Read off the segment text so the raw (pre-unquote) word is
 # available to decide the expansion.
+# Every body segment is read too, at every depth (2026-10-29 audit, F1): sh -c, bash -lc,
+# find -exec sh -c, xargs sh -c, flock ... sh -c, sed e and the shell line awk system() or perl
+# system() hands over all write through their own redirects, which only the top level fed this.
 for _wj, _wseg in _split(_judged):
     for _wu, _wraw in _write_targets(_wseg):
+        record("W", _sh_home_path(_wu, _wraw))
+for _wseg in dict.fromkeys(_body_texts):
+    try:
+        _btargets = _coarse_writes(_wseg[1:]) if _wseg.startswith(_UNSPLIT) else _write_targets(_wseg)
+    except ValueError:
+        _btargets = _coarse_writes(_wseg)
+    for _wu, _wraw in _btargets:
         record("W", _sh_home_path(_wu, _wraw))
 
 

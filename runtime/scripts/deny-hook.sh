@@ -982,6 +982,8 @@ def _norm_join(sep_chars):
         return "start"
     if core in ("|", "|&"):
         return "|"
+    if core == ";":
+        return ";"   # a plain ; is seq too, told apart only to close a group (F8)
     return "&&" if core == "&&" else "seq"
 
 
@@ -2467,9 +2469,24 @@ def _awk_sources(rest):
             i += 2 if w in _takes else 1
             continue
         if w.startswith("-") and len(w) > 1:
-            # A short cluster: -f/-E inside it also names a program file (its operand follows).
-            if "f" in w[1:] or "E" in w[1:]:
-                saw_file, seen_src = True, True
+            # A short cluster, walked (2026-10-29 audit, F6): the first operand-taking letter
+            # takes the rest of the word, or the next word when none is left. Letters after
+            # F/v/W/i/l (and after f/E) are operand text, not flags: -Ffoo is a field separator,
+            # -vfs=, an assignment. f/E in flag position names a program file; e inline code.
+            for k, flag in enumerate(w[1:] if not w.startswith("--") else "", 2):
+                if flag in "dDLop":
+                    break                                   # an optional, attached operand
+                if flag in "fEeFvWil":
+                    operand = w[k:]
+                    if not operand and i + 1 < len(rest):
+                        i += 1
+                        operand = rest[i]
+                    if flag in "fE":
+                        saw_file, seen_src = True, True
+                    elif flag == "e":
+                        progs.append(operand)
+                        seen_src = True
+                    break
             i += 1
             continue
         if not seen_src:
@@ -2891,11 +2908,19 @@ def _shell_launcher_lines(head, rest):
                 continue
             if w.startswith("--expression="):
                 scripts.append(w.split("=", 1)[1])
-            elif re.fullmatch(r"-[A-Za-z]*e", w):
-                if i + 1 < len(rest):
-                    scripts.append(rest[i + 1])
-                    i += 2
-                    continue
+            elif w.startswith("-") and not w.startswith("--") and len(w) > 1:
+                # 2026-10-29 audit, F5: walk the short cluster. The first of e/f/l takes the
+                # rest of the word, or the next word when none is left (-e<SQ>e CMD<SQ> arrives
+                # as -ee CMD, -ne<SQ>...<SQ> as -ne...); only e gives a script, f names a file.
+                for k, flag in enumerate(w[1:], 2):
+                    if flag in "efl":
+                        operand = w[k:]
+                        if not operand and i + 1 < len(rest):
+                            i += 1
+                            operand = rest[i]
+                        if flag == "e":
+                            scripts.append(operand)
+                        break
             elif not w.startswith("-"):
                 scripts.append(w)   # the first bare word is the script when no -e/-f gave one
                 break
@@ -2909,6 +2934,65 @@ def _shell_launcher_lines(head, rest):
                     lines.append(m[1].strip())
             lines += _sed_s_execs(script)   # the s///e substitution-execute form (g1 P1)
     return lines
+
+
+# git global options that take the NEXT word as their operand (git -C DIR rebase ...).
+_GIT_GLOBAL_ARG = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
+                   "--super-prefix", "--attr-source")
+
+
+def _git_bodies(rest):
+    """Command lines a git subcommand runs by its own syntax (2026-10-29 audit, F3): git bisect
+    run CMD..., git rebase -x/--exec CMD (per commit) and git submodule foreach CMD (per
+    submodule). Each is a launcher, so its body is judged as segments of its own."""
+    i = 0
+    while i < len(rest) and rest[i].startswith("-"):
+        i += 2 if rest[i] in _GIT_GLOBAL_ARG else 1
+    sub, args = (rest[i], rest[i + 1:]) if i < len(rest) else ("", [])
+    out = []
+    if sub == "bisect":
+        if args[:1] == ["run"] and args[1:]:
+            out.append(shlex.join(args[1:]))   # run CMD [ARG...]: a vector, run per step
+    elif sub == "rebase":
+        k = 0
+        while k < len(args):
+            w = args[k]
+            name, eq, value = w[2:].partition("=")
+            if w.startswith("--") and len(name) >= 2 and "exec".startswith(name):
+                # --exec, or an unambiguous prefix of it (--ex, --exe), git accepts both
+                if eq:
+                    out.append(value)
+                elif k + 1 < len(args):
+                    k += 1
+                    out.append(args[k])
+            elif w.startswith("-") and not w.startswith("--"):
+                for j, flag in enumerate(w[1:], 2):
+                    if flag in "xsX":   # each takes the rest of the word, or the next word
+                        operand = w[j:]
+                        if not operand and k + 1 < len(args):
+                            k += 1
+                            operand = args[k]
+                        if flag == "x":
+                            out.append(operand)
+                        break
+                    if flag in "SC":
+                        break   # an attached, optional operand: -S<keyid>, -C<n>
+            k += 1
+    elif sub in ("submodule", "submodule--helper"):
+        k = 0
+        while k < len(args) and args[k].startswith("-"):
+            k += 1   # --quiet, --cached
+        if args[k:k + 1] == ["foreach"]:
+            k += 1
+            while k < len(args) and args[k] in ("--recursive", "--quiet", "-q", "--"):
+                k += 1
+                if args[k - 1] == "--":
+                    break
+            cmd = args[k:]
+            if cmd:
+                # One word is handed to a shell as a command line; several run as a vector.
+                out.append(cmd[0] if len(cmd) == 1 else shlex.join(cmd))
+    return out
 
 
 def _inner_body(ws):
@@ -2960,6 +3044,8 @@ def _inner_body(ws):
         alias = _gh_alias(ws)
         if alias and alias[0] == "set" and alias[3]:
             bodies.append(alias[2])
+    elif head == "git":
+        bodies += _git_bodies(ws[1:])   # bisect run, rebase -x, submodule foreach (F3)
     elif head in ("sqlite3", "sed") or _peel_busybox(head, ws[1:])[0] == "sed":
         bodies += _shell_launcher_lines(*_peel_busybox(head, ws[1:]))
     else:
@@ -3676,6 +3762,8 @@ def _repeats(args, ws):
     head = ws[0].rsplit("/", 1)[-1] if ws else ""
     if head in ("watch", "parallel", "entr", "repeat"):
         return True
+    if head == "git" and _git_bodies(ws[1:]):
+        return True   # rebase -x per commit, bisect run per step, foreach per submodule (F3)
     if head == "find" and any(w in ("-exec", "-execdir", "-ok", "-okdir") for w in ws[1:]):
         return True
     if head in ("fd", "fdfind") and any(_fd_exec(w) or w.startswith(("--exec=", "--exec-batch="))
@@ -3697,6 +3785,12 @@ def _unreceipted_flow(pipes, armed=False, depth=0):
         token = armed and (join == "&&" or n == 0)
         if len(stages) == 1 and _is_receipt(stages[0]["args"]):
             armed = True
+            continue
+        if armed and join in (";", "start") and len(stages) == 1 \
+                and stages[0]["args"] in (["}"], [")"]):
+            # 2026-10-29 audit, F8: `{ receipt; }` and `( receipt; )` end on the receipt, so the
+            # group exits with its status, as `( receipt )` does: the close keeps it armed. A
+            # close after & or |, or after a later command, is not the receipt and arms nothing.
             continue
         armed = False
         for k, st in enumerate(stages):
@@ -5537,6 +5631,11 @@ def canon(word):
 words = sys.stdin.read().split()
 out, skip, options = [], False, True
 lease, force = False, False
+# 2026-10-29 audit, F4: a lease with an explicit ref protects only that ref. lease_refs holds
+# the named refs, lease_all a bare lease that covers every pushed ref; pos the positionals.
+lease_refs, lease_all, pos = set(), False, []
+def bare_ref(ref):
+    return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
 for raw in words:
     if skip:
         skip = False
@@ -5557,13 +5656,18 @@ for raw in words:
                 force = word != "--no-force"
         elif word == "--no-force-with-lease":
             if options:
-                lease = False
+                lease, lease_refs, lease_all = False, set(), False
             else:
                 out.append("--lease-operand")
             continue
         elif word == "--force-with-lease" or word.startswith("--force-with-lease="):
             if options:
                 lease = True
+                ref = word.partition("=")[2].split(":", 1)[0]
+                if ref:
+                    lease_refs.add(bare_ref(ref))
+                else:
+                    lease_all = True
             else:
                 # An operand grants no lease but keeps its position: after --, the
                 # deletion loops skip the word after -o/--repo, and dropping this
@@ -5583,7 +5687,17 @@ for raw in words:
                     force = True
                 out.append("-" + flag)
             continue
+        if not word.startswith("-") or not options:
+            pos.append(word)
         out.append(word)
+# 2026-10-29 audit, F4: a lease naming refs leaves every other pushed ref unprotected, so a
+# destination it does not name (origin/main is not main; an implicit or HEAD destination
+# cannot be shown named) voids the lease and a forced refspec falls through to the deny.
+if lease and not lease_all:
+    refspecs = pos[pos.index("push") + 2:] if "push" in pos else []
+    dests = [bare_ref((r[1:] if r.startswith("+") else r).rpartition(":")[2]) for r in refspecs]
+    if not dests or not all(d and d in lease_refs for d in dests):
+        lease = False
 # Emit only the effective lease; canceled leases and operands after -- cannot
 # grant the HIGH-tier exemption. Explicit global force disables lease checks
 # (git-push 2.55), so an effective one replaces the lease marker. --no-force

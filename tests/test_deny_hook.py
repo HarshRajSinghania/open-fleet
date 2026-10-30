@@ -3286,3 +3286,106 @@ class TestReadOnlyTierWriteFloor(HookBase):
         text = HOOK.read_text(encoding="utf-8")
         self.assertIn("OPEN_FLEET_HOOK_READONLY", text)
         self.assertIn("NOT a filesystem sandbox", text)
+
+
+class TestRemainingAuditFindings(ReviewHookBase):
+    """2026-10-29 audit, F3-F8: shapes the reader did not read (a fail-open launcher, a lease that
+    names another ref, an attached sed script) and shapes it misread (awk operand text taken for
+    flags, a closed brace group dropping its receipt). JSON decision fixtures only."""
+
+    BOTH = (False, True)
+    RECEIPT = TestEgressReceiptRule.RECEIPT
+
+    def test_git_rebase_exec_bisect_run_and_submodule_foreach_bodies_are_judged(self):
+        # F3: each runs a command line of its own, so the body is judged as its own segments.
+        self.expect("deny", (
+            "git rebase -x 'git push --force origin main' HEAD~2",
+            "git rebase --exec 'git push --force origin main' HEAD~2",
+            "git rebase --exec='git push --force origin main' HEAD~2",
+            "git rebase -ix 'git push --force origin main' HEAD~2",
+            "git rebase -x'git push --force origin main' HEAD~2",
+            "git -C . rebase -x 'git push --force origin main' HEAD~2",
+            "git bisect run git push --force origin main",
+            "git bisect run sh -c 'git push --force origin main'",
+            "git submodule foreach --recursive 'git push --force origin main'",
+            "git submodule foreach git push --force origin main",
+        ), bounded_modes=self.BOTH)
+        self.expect("deny", (
+            "git submodule foreach 'gh pr merge 12'",
+            "git rebase -x 'gh pr merge 12' HEAD~2",
+            "git bisect run gh issue close 34",
+            # Each runs its body more than once, so an outer receipt cannot arm it.
+            f"{self.RECEIPT} && git submodule foreach 'gh pr merge 12'",
+        ), reason="egress receipt")
+        self.expect("allow", (
+            "git rebase -i HEAD~2", "git bisect start", "git rebase -x 'make test' HEAD~2",
+            "git submodule foreach 'git status'", "git rebase -s ours -X theirs main",
+            "git submodule update --init", "git bisect run make test",
+        ), bounded_modes=self.BOTH)
+
+    def test_a_lease_naming_another_ref_does_not_exempt_a_forced_refspec(self):
+        # F4: an explicit lease protects only the ref it names; origin/main is not main.
+        self.expect("deny", (
+            "git push --force-with-lease=other origin +main",
+            "git push --force-with-lease=origin/main origin +main",
+            "git push --force-with-lease=main origin +main +topic",
+            "git push --force-with-lease=topic origin +HEAD:main",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "git push --force-with-lease=main:abc123 origin +main",
+            "git push --force-with-lease=refs/heads/main origin +HEAD:refs/heads/main",
+            "git push --force-with-lease=main --force-with-lease=topic origin +main +topic",
+            "git push --force-with-lease origin main",
+            "git push --force-with-lease origin +main",
+            "git push --force-with-lease=other origin main",
+        ), bounded_modes=self.BOTH)
+
+    def test_a_sed_script_attached_to_its_short_option_is_read(self):
+        # F5: -e<script> arrives as one word (-ee CMD); a cluster takes its operand from the
+        # first of e/f/l, and only e gives a script (-fprog names a file, not a script).
+        self.expect("deny", (
+            "sed -e'e git push --force origin main' f",
+            "sed -ne'e git push --force origin main' f",
+            "sed -i -e'e git push --force origin main' f",
+            "sed -e's/.*/git push --force origin main/e' f",
+            "sed -fprog -e'e git push --force origin main' f",
+            "sed -e 'e git push --force origin main' f",
+        ), bounded_modes=self.BOTH)
+        self.expect("allow", (
+            "sed -ne'1,5p' f", "sed -fprog f", "sed -e's/a/b/g' f",
+        ), bounded_modes=self.BOTH)
+
+    def test_awk_option_operands_are_not_read_as_program_file_flags(self):
+        # F6: letters after F/v/W are operand text; -Ffoo is no -f, and the program is scanned.
+        self.expect("allow", (
+            "awk -Ffoo '{print $2}' f", "awk -vfs=, '{print}' f", "gawk -Wf '{print}' f",
+            "awk --re-interval '{print}' f",
+        ), bounded_modes=self.BOTH)
+        self.expect("deny", (
+            "awk -Ffoo 'BEGIN{system(\"git push --force origin main\")}'",
+            "awk -vfs=, 'BEGIN{system(\"git push --force origin main\")}'",
+            "awk --re-interval 'BEGIN{system(\"git push --force origin main\")}'",
+        ), bounded_modes=self.BOTH)
+        self.expect("deny", (
+            "awk -f prog.awk f", "awk -fprog.awk f", "awk -vx=1 -f prog.awk f",
+        ), bounded_modes=self.BOTH, reason="program FILE")
+
+    def test_a_brace_group_ending_on_its_receipt_arms_the_send_like_a_subshell(self):
+        # F8: the group exits with the status of its last command, as `( receipt )` does.
+        self.expect("allow", (
+            f"( {self.RECEIPT} ) && gh issue close 34",
+            f"{{ {self.RECEIPT}; }} && gh issue close 34",
+            f"{{ {self.RECEIPT};}} && gh issue close 34",
+            f"{{ {self.RECEIPT}\n}} && gh issue close 34",
+            f"( {self.RECEIPT}; ) && gh issue close 34",
+        ))
+        self.expect("deny", (
+            f"{{ {self.RECEIPT}; }} || gh issue close 34",
+            f"{{ {self.RECEIPT}; }}; gh issue close 34",
+            f"{{ {self.RECEIPT} & }} ; gh issue close 34",
+            f"{{ {self.RECEIPT} & }} && gh issue close 34",
+            f"{{ {self.RECEIPT}; false; }} && gh issue close 34",
+            f"{{ {self.RECEIPT}; }} | cat && gh issue close 34",
+            f"{{ {self.RECEIPT}; }} && gh issue close 34 && gh pr merge 1",
+            f"( {self.RECEIPT} ) || gh issue close 34",
+        ), reason="egress receipt")
